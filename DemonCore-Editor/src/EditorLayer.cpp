@@ -293,12 +293,23 @@ namespace Wasteland {
 			}
 			ImGui::Text("Hovered Entity: %s", name.c_str());
 
+			ImGui::Separator();
+
 			auto stats = Wasteland::Renderer2D::GetStats();
 			ImGui::Text("Renderer2D Stats:");
 			ImGui::Text("Draw Calls: %d", stats.DrawCalls);
 			ImGui::Text("Quads: %d", stats.QuadCount);
 			ImGui::Text("Vertices: %d", stats.GetTotalVertexCount());
 			ImGui::Text("Indices: %d", stats.GetTotalIndexCount());
+
+			ImGui::Separator();
+
+			auto stats3D = Wasteland::Renderer3D::GetStats();
+			ImGui::Text("Renderer3D Stats:");
+			ImGui::Text("Draw Calls: %d", stats3D.DrawCalls);
+			ImGui::Text("Quads: %d", stats3D.QuadCount);
+			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
+			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
 			ImGui::End();
 
@@ -411,6 +422,15 @@ namespace Wasteland {
 			ImGui::Text("Quads: %d", stats.QuadCount);
 			ImGui::Text("Vertices: %d", stats.GetTotalVertexCount());
 			ImGui::Text("Indices: %d", stats.GetTotalIndexCount());
+
+			ImGui::Separator();
+
+			auto stats3D = Renderer3D::GetStats();
+			ImGui::Text("Renderer3D Stats:");
+			ImGui::Text("Draw Calls: %d", stats3D.DrawCalls);
+			ImGui::Text("Quads: %d", stats3D.QuadCount);
+			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
+			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
 			ImGui::ColorEdit4("Square Color", glm::value_ptr(m_SquareColor));
 

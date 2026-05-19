@@ -1,0 +1,18 @@
+Scene: Untitled
+Entities:
+  - Entity: 123471849831008199
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
