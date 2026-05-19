@@ -88,7 +88,7 @@ void main()
     vec3 rayDir = normalize(targetPos - u_CameraPosition);
     
     Ray worldRay = Ray(u_CameraPosition, rayDir);
-    vec4 pixelColor = vec4(0.2, 0.3, 1.0, 1.0); // Ambient background
+    vec4 pixelColor = vec4(0.25, 0.5, 1.0, 1.0); // Ambient background
     
     float closestHit = 1e20;
     
