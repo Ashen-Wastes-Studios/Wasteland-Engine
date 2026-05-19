@@ -134,7 +134,7 @@ void main()
                 closestHit = tWorld;
                 
                 // Convert surface normal back into world coordinates using the inverse transpose method
-                vec3 worldNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+                vec3 worldNormal = normalize((inverse(inst.InvTransform) * vec4(localNormal, 0.0)).xyz);
                 
                 // Classic directional light source calculation
                 vec3 lightDir = normalize(vec3(1.0, 2.0, 0.5));

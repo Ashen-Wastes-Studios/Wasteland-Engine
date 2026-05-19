@@ -304,7 +304,7 @@ namespace Wasteland {
         {
             RayTracingInstance instance;
             // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
-            instance.Transform = glm::transpose(glm::inverse(transform));
+            instance.Transform = glm::inverse(transform);
             instance.Color = color;
             
             // x = Type (0.0 = Cube), y = Radius (0.0 for cube), z = EntityID
@@ -370,7 +370,7 @@ namespace Wasteland {
         {
             RayTracingInstance instance;
             // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
-            instance.Transform = glm::transpose(glm::inverse(transform));
+            instance.Transform = glm::inverse(transform);
             instance.Color = color;
             
             // x = Type (1.0 = Sphere), y = Base Radius, z = EntityID
