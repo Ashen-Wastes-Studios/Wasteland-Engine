@@ -1,3 +1,5 @@
+// Ray Tracing Shader for 3D Rendering
+
 #type compute
 #version 430 core
 
@@ -6,19 +8,19 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // Layout match for output image color targets
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 
-struct RenderInstance 
-{
+struct RayTracingInstance {
     mat4 Transform;
     vec4 Color;
-    uint Type; 
+    uint Type;
     float Radius;
     int EntityID;
+    float padding; // Aligns the struct to a clean 16-byte multiple if needed by your driver
 };
 
 // SSBO read layout receiving our batched scene geometry data
-layout(std430, binding = 1) buffer SceneData 
+layout(std430, binding = 1) buffer SceneInstances
 {
-    RenderInstance Instances[];
+    RayTracingInstance Instances[];
 };
 
 uniform vec3 u_CameraPosition;
@@ -59,7 +61,7 @@ void main()
     
     // Simplistic Linear Scan (Replace this logic with a BVH tree traversal)
     for(uint i = 0; i < u_InstanceCount; i++) {
-        RenderInstance inst = Instances[i];
+        RayTracingInstance inst = Instances[i];
         vec3 pos = vec3(inst.Transform[3]); // Extract translation vector
         
         if (inst.Type == 1) { // Sphere type handling

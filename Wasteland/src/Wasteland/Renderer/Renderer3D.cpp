@@ -127,13 +127,17 @@ namespace Wasteland {
         s_Data.RayTracingOutput = Texture2D::Create(1280, 720); // Example resolution
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_RayTracing.glsl");
 
+        uint32_t maxInstances = 10000;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
+        glNamedBufferData(s_Data.SceneInstanceBufferID, maxInstances * sizeof(RayTracingInstance), nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_Data.SceneInstanceBufferID);
 
         uint32_t whiteTextureData = 0xffffffff;
         Ref<Texture2D> whiteTexture = Texture2D::Create(1, 1);
         whiteTexture->SetData(&whiteTextureData, sizeof(uint32_t));
         s_Data.TextureSlots[0] = whiteTexture;
+
+        s_Data.m_SceneInstances.reserve(maxInstances);
     }
 
     void Renderer3D::Shutdown()
@@ -144,6 +148,16 @@ namespace Wasteland {
         delete[] s_Data.SphereIndexBufferBase;
 
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
+
+        // Force clear smart pointers before context dies
+        s_Data.CubeVertexArray = 0;
+        s_Data.CubeVertexBuffer = 0;
+        s_Data.SphereVertexArray = 0;
+        s_Data.SphereVertexBuffer = 0;
+        s_Data.SphereIndexBuffer = 0;
+        s_Data.BasicShader = 0;
+        s_Data.RayTracingShader = 0;
+        s_Data.RayTracingOutput = 0;
     }
 
     void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform)
@@ -180,10 +194,9 @@ namespace Wasteland {
         {
             if (s_Data.m_SceneInstances.empty()) return;
 
-            glNamedBufferData(s_Data.SceneInstanceBufferID, 
+            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
                           s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
-                          s_Data.m_SceneInstances.data(), 
-                          GL_DYNAMIC_DRAW);
+                          s_Data.m_SceneInstances.data());
 
             glBindImageTexture(0, s_Data.RayTracingOutput->GetRendererID(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
@@ -198,6 +211,8 @@ namespace Wasteland {
 
             // Ensure execution block finishes completely before anyone draws the texture map
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            s_Data.RayTracingShader->Unbind();
 
             s_Data.Stats.DrawCalls++;
             return;
