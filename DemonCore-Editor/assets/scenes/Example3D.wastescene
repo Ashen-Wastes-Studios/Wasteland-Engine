@@ -1,5 +1,37 @@
 Scene: Untitled
 Entities:
+  - Entity: 4699167857767981438
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [2, 2, 2]
+    SphereRendererComponent:
+      Color: [1, 0, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+  - Entity: 123471849831008199
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, -21.7000008, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 0, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 20
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
   - Entity: 11210703966252491217
     TagComponent:
       Tag: Camera
@@ -18,48 +50,3 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
-  - Entity: 123471849831008199
-    TagComponent:
-      Tag: Sphere
-    TransformComponent:
-      Translation: [-1.79999995, 0, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 0, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 0.5
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-  - Entity: 4699167857767981438
-    TagComponent:
-      Tag: Sphere
-    TransformComponent:
-      Translation: [0, 0, 0]
-      Rotation: [0, 0, 0]
-      Scale: [2, 2, 2]
-    SphereRendererComponent:
-      Color: [1, 0, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 0.5
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-  - Entity: 10491161121401815632
-    TagComponent:
-      Tag: Cube
-    TransformComponent:
-      Translation: [0, -4.4000001, 0]
-      Rotation: [0, 0, 0]
-      Scale: [4, 4, 4]
-    CubeRendererComponent:
-      Color: [1, 0, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1

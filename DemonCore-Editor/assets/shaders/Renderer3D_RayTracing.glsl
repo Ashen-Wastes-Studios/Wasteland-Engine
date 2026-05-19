@@ -8,12 +8,12 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 
 struct RayTracingInstance {
-    mat4 InvTransform; // Holds the Inverse Transform Matrix from C++
-    vec4 Color;
-    vec4 Properties;   // x = Type (0=Cube, 1=Sphere), y = Radius, z = EntityID, w = Unused
+    mat4 InvTransform;   // 64 bytes
+    mat4 WorldTransform; // 64 bytes
+    vec4 Color;          // 16 bytes
+    vec4 Properties;     // 16 bytes (x = Type, y = Radius)
 };
 
-// Explicit column_major forces the matrix memory architecture to mirror GLM's buffer layout configuration
 layout(std430, binding = 1) buffer SceneInstances
 {
     layout(column_major) RayTracingInstance Instances[];
@@ -25,10 +25,8 @@ uniform int u_InstanceCount;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
-// Local AABB Cube Intersection (-0.5 to 0.5 bounds) with safe division handling
 float HitCube(Ray localRay, out vec3 outNormal)
 {
-    // Prevent division by zero if a ray axis is perfectly parallel to an AABB wall plane
     vec3 safeDir = vec3(
         localRay.Direction.x == 0.0 ? 1e-6 : localRay.Direction.x,
         localRay.Direction.y == 0.0 ? 1e-6 : localRay.Direction.y,
@@ -46,7 +44,6 @@ float HitCube(Ray localRay, out vec3 outNormal)
     
     if (tNear > tFar || tFar < 0.0) return -1.0;
     
-    // Calculate local normal based on which face was hit
     vec3 hitPoint = localRay.Origin + tNear * localRay.Direction;
     vec3 absHit = abs(hitPoint);
     float eps = 0.001;
@@ -58,7 +55,6 @@ float HitCube(Ray localRay, out vec3 outNormal)
     return tNear;
 }
 
-// Local Unit Sphere Intersection (Centered at 0,0,0)
 float HitSphere(Ray localRay, float radius, out vec3 outNormal) 
 {
     float a = dot(localRay.Direction, localRay.Direction);
@@ -77,7 +73,6 @@ float HitSphere(Ray localRay, float radius, out vec3 outNormal)
         outNormal = normalize(localHitPoint); 
         return t;
     }
-    
     return -1.0;
 }
 
@@ -87,15 +82,13 @@ void main()
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
-    // Convert pixel to Normalized Device Coordinates (-1 to 1)
     vec2 ndc = (vec2(pixelCoords) / vec2(imgSize)) * 2.0 - 1.0;
-    
-    // Decoupled perspective vector math: Projects a clean ray vector outward from the camera space position
     vec4 target = u_InverseViewProjection * vec4(ndc, 1.0, 1.0);
-    vec3 rayDir = normalize(target.xyz - u_CameraPosition);
+    vec3 targetPos = target.xyz / target.w;
+    vec3 rayDir = normalize(targetPos - u_CameraPosition);
     
     Ray worldRay = Ray(u_CameraPosition, rayDir);
-    vec4 pixelColor = vec4(0.1, 0.15, 0.2, 1.0); // Ambient slate blue clear background color
+    vec4 pixelColor = vec4(0.2, 0.3, 1.0, 1.0); // Ambient background
     
     float closestHit = 1e20;
     
@@ -105,45 +98,31 @@ void main()
         uint type = uint(inst.Properties.x);
         float baseRadius = inst.Properties.y;
         
-        // Transform the world space ray into the object's clean LOCAL space bounds
         Ray localRay;
         localRay.Origin = (inst.InvTransform * vec4(worldRay.Origin, 1.0)).xyz;
         localRay.Direction = (inst.InvTransform * vec4(worldRay.Direction, 0.0)).xyz; 
         
         float tLocal = -1.0;
-        vec3 localNormal = vec3(0.0);
+        vec3 localNormal = vec3(0.0); 
         
-        if (type == 0) // Cube Path
-        {
-            tLocal = HitCube(localRay, localNormal);
-        }
-        else if (type == 1) // Sphere Path
-        {
-            tLocal = HitSphere(localRay, baseRadius, localNormal);
-        }
+        if (type == 0) tLocal = HitCube(localRay, localNormal);
+        else if (type == 1) tLocal = HitSphere(localRay, baseRadius, localNormal);
         
         if (tLocal > 0.0)
         {
-            // Compute real world depth space metrics to correctly resolve overlapping geometries
             vec3 localHitPoint = localRay.Origin + tLocal * localRay.Direction;
-            vec3 worldHitPoint = (inverse(inst.InvTransform) * vec4(localHitPoint, 1.0)).xyz;
+            vec3 worldHitPoint = (inst.WorldTransform * vec4(localHitPoint, 1.0)).xyz;
             float tWorld = distance(worldRay.Origin, worldHitPoint);
             
             if (tWorld < closestHit)
             {
                 closestHit = tWorld;
-                
-                // Convert surface normal back into world coordinates using the inverse transpose method
-                vec3 worldNormal = normalize((inverse(inst.InvTransform) * vec4(localNormal, 0.0)).xyz);
-                
-                // Classic directional light source calculation
+                vec3 worldNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
                 vec3 lightDir = normalize(vec3(1.0, 2.0, 0.5));
                 float lightIntensity = max(dot(worldNormal, lightDir), 0.1);
-                
                 pixelColor = inst.Color * lightIntensity;
             }
         }
     }
-    
     imageStore(img_Output, pixelCoords, pixelColor);
 }

@@ -108,7 +108,6 @@ namespace Wasteland {
 		WL_PROFILE_FUNCTION();
 
 		GLuint program = glCreateProgram();
-		WL_CORE_ASSERT(shaderSources.size() <= 2, "We only support 2 shaders for now");
 		std::array<GLenum, 2> glShaderIDs;
 		int glShaderIDIndex = 0;
 		for (auto& kv : shaderSources)
@@ -233,7 +232,7 @@ namespace Wasteland {
 	void OpenGLShader::UploadUniformInt(const std::string& name, int value)
 	{
 		GLint location = glGetUniformLocation(m_RendererID, name.c_str());
-		glUniform1f(location, value);
+		glUniform1i(location, value);
 	}
 
 	void OpenGLShader::UploadUniformIntArray(const std::string& name, int* values, uint32_t count)

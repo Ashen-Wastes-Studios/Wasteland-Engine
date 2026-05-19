@@ -24,9 +24,10 @@ namespace Wasteland {
 
     struct RayTracingInstance 
     {
-        glm::mat4 Transform;    // 64 bytes
-        glm::vec4 Color;        // 16 bytes
-        glm::vec4 Properties;   // 16 bytes -> x = Type, y = Radius, z = EntityID, w = Unused
+        glm::mat4 InvTransform;      // 64 bytes
+        glm::mat4 WorldTransform;    // 64 bytes
+        glm::vec4 Color;             // 16 bytes
+        glm::vec4 Properties;        // 16 bytes -> x = Type, y = Radius, z = EntityID, w = Unused
     }; // Total size = 96 bytes (Perfect 16-byte alignment stride for std430)
 
     struct Renderer3DData
@@ -300,20 +301,6 @@ namespace Wasteland {
 
     void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, int textureIndex, float tilingFactor, int entityID)
     {
-        if (s_Data.RayTracingEnabled)
-        {
-            RayTracingInstance instance;
-            // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
-            instance.Transform = glm::inverse(transform);
-            instance.Color = color;
-            
-            // x = Type (0.0 = Cube), y = Radius (0.0 for cube), z = EntityID
-            instance.Properties = glm::vec4(0.0f, 0.0f, (float)entityID, 0.0f);
-            
-            s_Data.m_SceneInstances.push_back(instance);
-            return;
-        }
-
         if (s_Data.CubeIndexCount + 36 >= s_Data.MaxIndices)
         {
             Flush();
@@ -356,6 +343,21 @@ namespace Wasteland {
         s_Data.CubeIndexCount += 36;
         s_Data.CubeVertexCount += 24;
         s_Data.Stats.QuadCount += 6; 
+
+        if (s_Data.RayTracingEnabled)
+        {
+            RayTracingInstance instance;
+            // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
+            instance.WorldTransform = transform;
+            instance.InvTransform = glm::inverse(transform);
+            instance.Color = color;
+            
+            // x = Type (0.0 = Cube), y = Radius (0.0 for cube), z = EntityID
+            instance.Properties = glm::vec4(0.0f, 0.0f, (float)entityID, 0.0f);
+            
+            s_Data.m_SceneInstances.push_back(instance);
+            return;
+        }
     }
 
     void Renderer3D::DrawSphere(const glm::vec3 &position, float radius, const glm::vec4 &color)
@@ -366,20 +368,6 @@ namespace Wasteland {
 
     void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, int textureIndex, float tilingFactor, int entityID)
     {
-        if (s_Data.RayTracingEnabled)
-        {
-            RayTracingInstance instance;
-            // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
-            instance.Transform = glm::inverse(transform);
-            instance.Color = color;
-            
-            // x = Type (1.0 = Sphere), y = Base Radius, z = EntityID
-            instance.Properties = glm::vec4(1.0f, radius, (float)entityID, 0.0f);
-            
-            s_Data.m_SceneInstances.push_back(instance);
-            return;
-        }
-
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
         uint32_t indexCount = 0;
         for (int i = 0; i < stacks; ++i) {
@@ -446,6 +434,21 @@ namespace Wasteland {
         s_Data.SphereVertexCount += vertexCount;
         s_Data.SphereIndexCount += indexCount;
         s_Data.Stats.QuadCount += (indexCount / 6);
+
+        if (s_Data.RayTracingEnabled)
+        {
+            RayTracingInstance instance;
+            // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
+            instance.WorldTransform = transform;
+            instance.InvTransform = glm::inverse(transform);
+            instance.Color = color;
+            
+            // x = Type (1.0 = Sphere), y = Base Radius, z = EntityID
+            instance.Properties = glm::vec4(1.0f, radius, (float)entityID, 0.0f);
+            
+            s_Data.m_SceneInstances.push_back(instance);
+            return;
+        }
     }
 
     void Renderer3D::Submit(const Ref<Shader>& shader, const Ref<VertexArray>& vertexArray, const glm::mat4& transform)
