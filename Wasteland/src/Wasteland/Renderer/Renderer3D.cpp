@@ -7,7 +7,6 @@
 #include "Renderer.h"
 
 #include <glm/gtc/matrix_transform.hpp>
-
 #include <glad/glad.h>
 
 namespace Wasteland {
@@ -25,12 +24,10 @@ namespace Wasteland {
 
     struct RayTracingInstance 
     {
-        glm::mat4 Transform;
-        glm::vec4 Color;
-        uint32_t Type; // 0 = Cube, 1 = Sphere
-        float Radius;
-        int EntityID;
-    };
+        glm::mat4 Transform;    // 64 bytes
+        glm::vec4 Color;        // 16 bytes
+        glm::vec4 Properties;   // 16 bytes -> x = Type, y = Radius, z = EntityID, w = Unused
+    }; // Total size = 96 bytes (Perfect 16-byte alignment stride for std430)
 
     struct Renderer3DData
     {
@@ -124,7 +121,7 @@ namespace Wasteland {
         // --- SHADER & UTILS ---
         s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
 
-        s_Data.RayTracingOutput = Texture2D::Create(1280, 720); // Example resolution
+        s_Data.RayTracingOutput = Texture2D::Create(1280, 720); 
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_RayTracing.glsl");
 
         uint32_t maxInstances = 10000;
@@ -149,15 +146,14 @@ namespace Wasteland {
 
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
 
-        // Force clear smart pointers before context dies
-        s_Data.CubeVertexArray = 0;
-        s_Data.CubeVertexBuffer = 0;
-        s_Data.SphereVertexArray = 0;
-        s_Data.SphereVertexBuffer = 0;
-        s_Data.SphereIndexBuffer = 0;
-        s_Data.BasicShader = 0;
-        s_Data.RayTracingShader = 0;
-        s_Data.RayTracingOutput = 0;
+        s_Data.CubeVertexArray = nullptr;
+        s_Data.CubeVertexBuffer = nullptr;
+        s_Data.SphereVertexArray = nullptr;
+        s_Data.SphereVertexBuffer = nullptr;
+        s_Data.SphereIndexBuffer = nullptr;
+        s_Data.BasicShader = nullptr;
+        s_Data.RayTracingShader = nullptr;
+        s_Data.RayTracingOutput = nullptr;
     }
 
     void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform)
@@ -167,6 +163,10 @@ namespace Wasteland {
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
+
+        s_Data.RayTracingShader->Bind();
+        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
+        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", glm::vec3(transform[3])); 
 
         FlushAndReset();
     }
@@ -178,6 +178,10 @@ namespace Wasteland {
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
+
+        s_Data.RayTracingShader->Bind();
+        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
+        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", camera.GetPosition());
 
         FlushAndReset();
     }
@@ -195,22 +199,21 @@ namespace Wasteland {
             if (s_Data.m_SceneInstances.empty()) return;
 
             glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
-                          s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
-                          s_Data.m_SceneInstances.data());
-
-            glBindImageTexture(0, s_Data.RayTracingOutput->GetRendererID(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+                                  s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
+                                  s_Data.m_SceneInstances.data());
+            
+            uint32_t textureID = s_Data.RayTracingOutput->GetRendererID();
+            glBindImageTexture(0, textureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
 
-            // Calculate workgroups based on texture size (divided by local group boundaries 8x8)
             uint32_t workGroupsX = (s_Data.RayTracingOutput->GetWidth() + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingOutput->GetHeight() + 7) / 8;
 
             glDispatchCompute(workGroupsX, workGroupsY, 1);
 
-            // Ensure execution block finishes completely before anyone draws the texture map
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
             s_Data.RayTracingShader->Unbind();
 
@@ -246,35 +249,31 @@ namespace Wasteland {
         }
     }
 
-    void Renderer3D::ResetStats()
-    {
-        s_Data.Stats.DrawCalls = 0;
-        s_Data.Stats.QuadCount = 0;
-    }
+    void Renderer3D::ResetStats() { s_Data.Stats.DrawCalls = 0; s_Data.Stats.QuadCount = 0; }
+    Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
+    bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
+    void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
+    uint32_t Renderer3D::GetRayTraceTargetID() { return s_Data.RayTracingOutput->GetRendererID(); }
+    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height) 
+    { 
+        uint32_t textureID = s_Data.RayTracingOutput->GetRendererID();
+        if (textureID)
+        {
+            glDeleteTextures(1, &textureID);
+        }
 
-    Renderer3D::Statistics Renderer3D::GetStats()
-    {
-        return s_Data.Stats;
-    }
+        glCreateTextures(GL_TEXTURE_2D, 1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
 
-    bool Renderer3D::IsRayTracingEnabled()
-    {
-        return s_Data.RayTracingEnabled;
-    }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    void Renderer3D::SetRayTracingEnabled(bool enabled)
-    {
-        s_Data.RayTracingEnabled = enabled;
-    }
+        // Compute shaders writing to rgba32f require glTexStorage2D, NOT glTexImage2D!
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, width, height);
 
-    uint32_t Renderer3D::GetRayTraceTargetID()
-    {
-        return s_Data.RayTracingOutput->GetRendererID();
-    }
-
-    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
-    {
-        s_Data.RayTracingOutput->Resize(width, height);
+        glBindTexture(GL_TEXTURE_2D, 0); 
     }
 
     void Renderer3D::FlushAndReset()
@@ -304,11 +303,13 @@ namespace Wasteland {
         if (s_Data.RayTracingEnabled)
         {
             RayTracingInstance instance;
-            instance.Transform = transform;
+            // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
+            instance.Transform = glm::transpose(glm::inverse(transform));
             instance.Color = color;
-            instance.Type = 0; // Cube
-            instance.Radius = 0.0f; // Not used for cubes
-            instance.EntityID = entityID;
+            
+            // x = Type (0.0 = Cube), y = Radius (0.0 for cube), z = EntityID
+            instance.Properties = glm::vec4(0.0f, 0.0f, (float)entityID, 0.0f);
+            
             s_Data.m_SceneInstances.push_back(instance);
             return;
         }
@@ -330,7 +331,7 @@ namespace Wasteland {
 
         static const glm::vec3 cubeNormals[24] = {
             {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, 
-            {  0.0f,  0.0f, -1.0f }, {  0.0f,  0.0f, -1.0f }, {  0.0f,  0.0f, -1.0f }, {  0.0f,  0.0f, -1.0f }, 
+            {  0.0f,  0.0f, -1.0f }, { -0.0f,  0.0f, -1.0f }, { -0.0f,  0.0f, -1.0f }, {  0.0f,  0.0f, -1.0f }, 
             {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, 
             {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, 
             {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, 
@@ -338,7 +339,6 @@ namespace Wasteland {
         };
 
         static const glm::vec2 texCoords[4] = { {0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f} };
-
         glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
         for (int i = 0; i < 24; i++)
@@ -355,8 +355,6 @@ namespace Wasteland {
 
         s_Data.CubeIndexCount += 36;
         s_Data.CubeVertexCount += 24;
-
-        // Updates QuadCount directly (1 Cube = 6 Quads)
         s_Data.Stats.QuadCount += 6; 
     }
 
@@ -371,11 +369,13 @@ namespace Wasteland {
         if (s_Data.RayTracingEnabled)
         {
             RayTracingInstance instance;
-            instance.Transform = transform;
+            // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
+            instance.Transform = glm::transpose(glm::inverse(transform));
             instance.Color = color;
-            instance.Type = 1; // Sphere
-            instance.Radius = radius;
-            instance.EntityID = entityID;
+            
+            // x = Type (1.0 = Sphere), y = Base Radius, z = EntityID
+            instance.Properties = glm::vec4(1.0f, radius, (float)entityID, 0.0f);
+            
             s_Data.m_SceneInstances.push_back(instance);
             return;
         }
@@ -394,7 +394,6 @@ namespace Wasteland {
         }
 
         uint32_t startIndexOffset = s_Data.SphereVertexCount;
-
         float sectorStep = 2 * glm::pi<float>() / sectors;
         float stackStep = glm::pi<float>() / stacks;
         glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
@@ -446,9 +445,6 @@ namespace Wasteland {
 
         s_Data.SphereVertexCount += vertexCount;
         s_Data.SphereIndexCount += indexCount;
-
-        // Converts the sphere's unique index workload back into an 
-        // equivalent Quad Count value so your custom header formulas calculate correctly!
         s_Data.Stats.QuadCount += (indexCount / 6);
     }
 
@@ -457,5 +453,4 @@ namespace Wasteland {
         WL_PROFILE_FUNCTION();
         Renderer::Submit(shader, vertexArray, transform);
     }
-
 }

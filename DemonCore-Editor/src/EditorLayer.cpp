@@ -138,9 +138,9 @@ namespace Wasteland {
 			m_ViewportSize.x > 0.0f && m_ViewportSize.y > 0.0f && // zero sized framebuffer is invalid
 			(spec.Width != m_ViewportSize.x || spec.Height != m_ViewportSize.y))
 		{
-			Renderer3D::ResizeRayTraceTarget((uint32_t)m_ViewportSize.x, (uint32_t)m_ViewportSize.y);
 			m_Framebuffer->Resize((uint32_t)m_ViewportSize.x, (uint32_t)m_ViewportSize.y);
 			m_CameraController.OnResize(m_ViewportSize.x, m_ViewportSize.y);
+			Renderer3D::ResizeRayTraceTarget((uint32_t)m_ViewportSize.x, (uint32_t)m_ViewportSize.y);
 			m_EditorCamera.SetViewportSize(m_ViewportSize.x, m_ViewportSize.y);
 			m_ActiveScene->OnViewportResize((uint32_t)m_ViewportSize.x, (uint32_t)m_ViewportSize.y);
 		}
@@ -148,12 +148,23 @@ namespace Wasteland {
 		// Render
 		Renderer2D::ResetStats();
 		Renderer3D::ResetStats();
-		m_Framebuffer->Bind();
-		RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
-		RenderCommand::Clear();
 
-		// Clear our entity ID attachment to -1
-		m_Framebuffer->ClearAttachment(1, -1);
+		bool isRayTracing = Renderer3D::IsRayTracingEnabled();
+
+		if (!isRayTracing)
+		{
+			// Standard raster pass needs the framebuffer bound
+			m_Framebuffer->Bind();
+			RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+			RenderCommand::Clear();
+			m_Framebuffer->ClearAttachment(1, -1);
+		}
+		else
+		{
+			// Ray tracing bypasses the default framebuffer entirely!
+			// We just need to clear out your 2D debug overlay stats/pipeline states
+			RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+		}
 
 		switch (m_SceneState)
 		{
@@ -176,24 +187,31 @@ namespace Wasteland {
 			}
 		}
 
-		// Update scene
-		auto [mx, my] = ImGui::GetMousePos();
-		mx -= m_ViewportBounds[0].x;
-		my -= m_ViewportBounds[0].y;
-		glm::vec2 viewportSize = m_ViewportBounds[1] - m_ViewportBounds[0];
-		my = viewportSize.y - my;
-		int mouseX = (int)mx;
-		int mouseY = (int)my;
-
-		if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
+		// Handle non-raytraced system layouts (like entity picking and overlays)
+		if (!isRayTracing)
 		{
-			int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
-			m_HoveredEntity = pixelData == -1 ? Entity() : Entity((entt::entity)pixelData, m_ActiveScene.get());
+			auto [mx, my] = ImGui::GetMousePos();
+			mx -= m_ViewportBounds[0].x;
+			my -= m_ViewportBounds[0].y;
+			glm::vec2 viewportSize = m_ViewportBounds[1] - m_ViewportBounds[0];
+			my = viewportSize.y - my;
+			int mouseX = (int)mx;
+			int mouseY = (int)my;
+
+			if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
+			{
+				int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
+				m_HoveredEntity = pixelData == -1 ? Entity() : Entity((entt::entity)pixelData, m_ActiveScene.get());
+			}
+
+			OnOverlayRender();
+			m_Framebuffer->Unbind(); // Safely unbind the active frame buffer
 		}
-
-		OnOverlayRender();
-
-		m_Framebuffer->Unbind();
+		else
+		{
+			// Reset entity mouse states when tracing rays to avoid reading dead FBO memory bounds
+			m_HoveredEntity = Entity();
+		}
 	}
 
 	void EditorLayer::OnImGuiRender()
@@ -328,93 +346,92 @@ namespace Wasteland {
 			ImGui::End();
 
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{ 0, 0 });
-			ImGui::Begin("Viewport");
-			auto viewportOffset = ImGui::GetCursorPos(); // Includes tab bar
+            ImGui::Begin("Viewport");
+            
+            ImVec2 minBound = ImGui::GetCursorScreenPos(); 
 
-			m_ViewportFocused = ImGui::IsWindowFocused();
-			m_ViewportHovered = ImGui::IsWindowHovered();
-			Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
+            m_ViewportFocused = ImGui::IsWindowFocused();
+            m_ViewportHovered = ImGui::IsWindowHovered();
+            Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
 
-			ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
-			m_ViewportSize = { viewportPanelSize.x, viewportPanelSize.y };
+            ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
+            m_ViewportSize = { viewportPanelSize.x, viewportPanelSize.y };
 
-			uint32_t textureID = m_Framebuffer->GetColorAttachmentRendererID();
-			ImGui::Image(reinterpret_cast<void*>(textureID), ImVec2{ m_ViewportSize.x, m_ViewportSize.y }, ImVec2{0, 1}, ImVec2{1, 0});
+            ImVec2 maxBound = { minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y };
+            m_ViewportBounds[0] = { minBound.x, minBound.y };
+            m_ViewportBounds[1] = { maxBound.x, maxBound.y };
 
-			if (ImGui::BeginDragDropTarget())
-			{
-				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
-				{
-					const wchar_t* path = (const wchar_t*)payload->Data;
-					OpenScene(std::filesystem::path(g_AssetPath) / path);
-				}
+            uint32_t textureID = 0;
+            if (Wasteland::Renderer3D::IsRayTracingEnabled())
+            {
+                // Pull the compute shader texture storage handle
+                textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
+            }
+            else
+            {
+                // Fall back to standard raster scene rendering pass Framebuffer attachment
+                textureID = m_Framebuffer->GetColorAttachmentRendererID();
+            }
 
-				ImGui::EndDragDropTarget();
-			}
+            ImGui::Image(reinterpret_cast<void*>(static_cast<uintptr_t>(textureID)), 
+                         ImVec2{ m_ViewportSize.x, m_ViewportSize.y }, 
+                         ImVec2{ 0, 1 }, ImVec2{ 1, 0 });
 
-			auto windowSize = ImGui::GetWindowSize();
-			ImVec2 minBound = ImGui::GetWindowPos();
-			minBound.x += viewportOffset.x;
-			minBound.y += viewportOffset.y;
+            if (ImGui::BeginDragDropTarget())
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+                {
+                    const wchar_t* path = (const wchar_t*)payload->Data;
+                    OpenScene(std::filesystem::path(g_AssetPath) / path);
+                }
 
-			ImVec2 maxBound = { minBound.x + windowSize.x, minBound.y + windowSize.y };
-			m_ViewportBounds[0] = { minBound.x, minBound.y };
-			m_ViewportBounds[1] = { maxBound.x, maxBound.y };
+                ImGui::EndDragDropTarget();
+            }
 
-			// Gizmos
-			Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
-			if (m_ActiveScene && selectedEntity && m_GizmoType != -1 && m_ActiveScene->IsEntityValid(selectedEntity))
-			{
-				ImGuizmo::SetOrthographic(false);
-				ImGuizmo::SetDrawlist();
+            // Gizmos
+            Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
+            if (m_ActiveScene && selectedEntity && m_GizmoType != -1 && m_ActiveScene->IsEntityValid(selectedEntity))
+            {
+                ImGuizmo::SetOrthographic(false);
+                ImGuizmo::SetDrawlist();
 
-				float windowWidth = (float)ImGui::GetWindowWidth();
-				float windowHeight = (float)ImGui::GetWindowHeight();
-				ImGuizmo::SetRect(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, windowWidth, windowHeight);
+                // Set rect explicitly using our clean canvas bounds instead of the window outer box
+                ImGuizmo::SetRect(m_ViewportBounds[0].x, m_ViewportBounds[0].y, m_ViewportSize.x, m_ViewportSize.y);
 
-				// Camera
-				
-				// Runtime camera from entity
-				// auto cameraEntity = m_ActiveScene->GetPrimaryCameraEntity();
-				// const auto& camera = cameraEntity.GetComponent<CameraComponent>().Camera;
-				// const glm::mat4& cameraProjection = camera.GetProjection();
-				// glm::mat4 cameraView = glm::inverse(cameraEntity.GetComponent<TransformComponent>().GetTransform());
+                // Editor camera matrices
+                const glm::mat4& cameraProjection = m_EditorCamera.GetProjection();
+                glm::mat4 cameraView = m_EditorCamera.GetViewMatrix();
 
-				// Editor camera
-				const glm::mat4& cameraProjection = m_EditorCamera.GetProjection();
-				glm::mat4 cameraView = m_EditorCamera.GetViewMatrix();
+                // Entity transform
+                auto& tc = selectedEntity.GetComponent<TransformComponent>();
+                glm::mat4 transform = tc.GetTransform();
 
-				// Entity transform
-				auto& tc = selectedEntity.GetComponent<TransformComponent>();
-				glm::mat4 transform = tc.GetTransform();
+                // Snapping
+                bool snap = Input::IsKeyPressed(WL_KEY_LEFT_CONTROL);
+                float snapValue = 0.5f; 
+                if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
+                    snapValue = 45.0f;
 
-				// Snapping
-				bool snap = Input::IsKeyPressed(WL_KEY_LEFT_CONTROL);
-				float snapValue = 0.5f; // Snap to 0.5m for translation/scale
-				// Snap to 45 degrees for rotation
-				if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
-					snapValue = 45.0f;
+                float snapValues[3] = { snapValue, snapValue, snapValue };
 
-				float snapValues[3] = { snapValue, snapValue, snapValue };
+                ImGuizmo::Manipulate(glm::value_ptr(cameraView), glm::value_ptr(cameraProjection),
+                    (ImGuizmo::OPERATION)m_GizmoType, ImGuizmo::LOCAL, glm::value_ptr(transform),
+                    nullptr, snap ? snapValues : nullptr);
 
-				ImGuizmo::Manipulate(glm::value_ptr(cameraView), glm::value_ptr(cameraProjection),
-					(ImGuizmo::OPERATION)m_GizmoType, ImGuizmo::LOCAL, glm::value_ptr(transform),
-					nullptr, snap ? snapValues : nullptr);
+                if (ImGuizmo::IsUsing())
+                {
+                    glm::vec3 translation, rotation, scale;
+                    Math::DecomposeTransform(transform, translation, rotation, scale);
 
-				if (ImGuizmo::IsUsing())
-				{
-					glm::vec3 translation, rotation, scale;
-					Math::DecomposeTransform(transform, translation, rotation, scale);
+                    glm::vec3 deltaRotation = rotation - tc.Rotation;
+                    tc.Translation = translation;
+                    tc.Rotation += deltaRotation;
+                    tc.Scale = scale;
+                }
+            }
 
-					glm::vec3 deltaRotation = rotation - tc.Rotation;
-					tc.Translation = translation;
-					tc.Rotation += deltaRotation;
-					tc.Scale = scale;
-				}
-			}
-
-			ImGui::End();
-			ImGui::PopStyleVar();
+            ImGui::End();
+            ImGui::PopStyleVar();
 
 			UI_Toolbar();
 
