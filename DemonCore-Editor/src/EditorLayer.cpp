@@ -311,6 +311,12 @@ namespace Wasteland {
 			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
 			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
+			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
+			if (ImGui::Checkbox("RayTracing", &rtEnabled))
+			{
+				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
+			}
+
 			ImGui::End();
 
 			ImGui::Begin("Settings");
@@ -430,6 +436,12 @@ namespace Wasteland {
 			ImGui::Text("Draw Calls: %d", stats3D.DrawCalls);
 			ImGui::Text("Quads: %d", stats3D.QuadCount);
 			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
+
+			bool rtEnabled = Renderer3D::IsRayTracingEnabled();
+			if (ImGui::Checkbox("RayTracing", &rtEnabled))
+			{
+				Renderer3D::SetRayTracingEnabled(rtEnabled);
+			}
 			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
 			ImGui::ColorEdit4("Square Color", glm::value_ptr(m_SquareColor));

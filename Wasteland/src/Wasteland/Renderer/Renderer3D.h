@@ -44,6 +44,8 @@ namespace Wasteland {
 		};
 		static void ResetStats();
 		static Statistics GetStats();
+        static bool IsRayTracingEnabled();
+        static void SetRayTracingEnabled(bool enabled);
     private:
         static void FlushAndReset();
     };

@@ -15,6 +15,8 @@ namespace Wasteland {
 			return GL_VERTEX_SHADER;
 		if (type == "fragment" || type == "pixel")
 			return GL_FRAGMENT_SHADER;
+		if (type == "compute")
+			return GL_COMPUTE_SHADER;
 
 		WL_CORE_ASSERT(false, "Unknown shader type!");
 		return 0;

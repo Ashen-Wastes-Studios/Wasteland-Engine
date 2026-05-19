@@ -8,6 +8,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <glad/glad.h>
+
 namespace Wasteland {
 
     struct Vertex3D 
@@ -18,6 +20,15 @@ namespace Wasteland {
         glm::vec2 TexCoord;
         float TexIndex;
         float TilingFactor;
+        int EntityID;
+    };
+
+    struct RayTracingInstance 
+    {
+        glm::mat4 Transform;
+        glm::vec4 Color;
+        uint32_t Type; // 0 = Cube, 1 = Sphere
+        float Radius;
         int EntityID;
     };
 
@@ -44,10 +55,17 @@ namespace Wasteland {
         uint32_t* SphereIndexBufferBase = nullptr;
         uint32_t* SphereIndexBufferPtr = nullptr;
 
-        Ref<Shader> Shader; 
+        Ref<Shader> BasicShader; 
 
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1; 
+
+        bool RayTracingEnabled = true;
+        Ref<Shader> RayTracingShader;
+        Ref<Texture2D> RayTracingOutput;
+
+        uint32_t SceneInstanceBufferID = 0;
+        std::vector<RayTracingInstance> m_SceneInstances;
 
         Renderer3D::Statistics Stats;
     };
@@ -104,7 +122,13 @@ namespace Wasteland {
         s_Data.SphereVertexArray->SetIndexBuffer(s_Data.SphereIndexBuffer);
 
         // --- SHADER & UTILS ---
-        s_Data.Shader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
+        s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
+
+        s_Data.RayTracingOutput = Texture2D::Create(1280, 720); // Example resolution
+        s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_RayTracing.glsl");
+
+        glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_Data.SceneInstanceBufferID);
 
         uint32_t whiteTextureData = 0xffffffff;
         Ref<Texture2D> whiteTexture = Texture2D::Create(1, 1);
@@ -118,6 +142,8 @@ namespace Wasteland {
         delete[] s_Data.CubeVertexBufferBase;
         delete[] s_Data.SphereVertexBufferBase;
         delete[] s_Data.SphereIndexBufferBase;
+
+        glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
     }
 
     void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform)
@@ -125,8 +151,8 @@ namespace Wasteland {
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
 
-        s_Data.Shader->Bind();
-        s_Data.Shader->SetMat4("u_ViewProjection", viewProj);
+        s_Data.BasicShader->Bind();
+        s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
 
         FlushAndReset();
     }
@@ -136,8 +162,8 @@ namespace Wasteland {
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetViewProjection();
 
-        s_Data.Shader->Bind();
-        s_Data.Shader->SetMat4("u_ViewProjection", viewProj);
+        s_Data.BasicShader->Bind();
+        s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
 
         FlushAndReset();
     }
@@ -150,7 +176,34 @@ namespace Wasteland {
 
     void Renderer3D::Flush()
     {
-        s_Data.Shader->Bind();
+        if (s_Data.RayTracingEnabled)
+        {
+            if (s_Data.m_SceneInstances.empty()) return;
+
+            glNamedBufferData(s_Data.SceneInstanceBufferID, 
+                          s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
+                          s_Data.m_SceneInstances.data(), 
+                          GL_DYNAMIC_DRAW);
+
+            glBindImageTexture(0, s_Data.RayTracingOutput->GetRendererID(), 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+
+            s_Data.RayTracingShader->Bind();
+            s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
+
+            // Calculate workgroups based on texture size (divided by local group boundaries 8x8)
+            uint32_t workGroupsX = (s_Data.RayTracingOutput->GetWidth() + 7) / 8;
+            uint32_t workGroupsY = (s_Data.RayTracingOutput->GetHeight() + 7) / 8;
+
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+
+            // Ensure execution block finishes completely before anyone draws the texture map
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            s_Data.Stats.DrawCalls++;
+            return;
+        }
+
+        s_Data.BasicShader->Bind();
         for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
             s_Data.TextureSlots[i]->Bind(i);
 
@@ -189,8 +242,20 @@ namespace Wasteland {
         return s_Data.Stats;
     }
 
+    bool Renderer3D::IsRayTracingEnabled()
+    {
+        return s_Data.RayTracingEnabled;
+    }
+
+    void Renderer3D::SetRayTracingEnabled(bool enabled)
+    {
+        s_Data.RayTracingEnabled = enabled;
+    }
+
     void Renderer3D::FlushAndReset()
     {
+        s_Data.m_SceneInstances.clear();
+
         s_Data.CubeIndexCount = 0;
         s_Data.CubeVertexCount = 0;
         s_Data.CubeVertexBufferPtr = s_Data.CubeVertexBufferBase;
@@ -211,6 +276,18 @@ namespace Wasteland {
 
     void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, int textureIndex, float tilingFactor, int entityID)
     {
+        if (s_Data.RayTracingEnabled)
+        {
+            RayTracingInstance instance;
+            instance.Transform = transform;
+            instance.Color = color;
+            instance.Type = 0; // Cube
+            instance.Radius = 0.0f; // Not used for cubes
+            instance.EntityID = entityID;
+            s_Data.m_SceneInstances.push_back(instance);
+            return;
+        }
+
         if (s_Data.CubeIndexCount + 36 >= s_Data.MaxIndices)
         {
             Flush();
@@ -266,6 +343,18 @@ namespace Wasteland {
 
     void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, int textureIndex, float tilingFactor, int entityID)
     {
+        if (s_Data.RayTracingEnabled)
+        {
+            RayTracingInstance instance;
+            instance.Transform = transform;
+            instance.Color = color;
+            instance.Type = 1; // Sphere
+            instance.Radius = radius;
+            instance.EntityID = entityID;
+            s_Data.m_SceneInstances.push_back(instance);
+            return;
+        }
+
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
         uint32_t indexCount = 0;
         for (int i = 0; i < stacks; ++i) {
