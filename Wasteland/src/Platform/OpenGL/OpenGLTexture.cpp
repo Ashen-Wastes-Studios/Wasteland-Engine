@@ -93,4 +93,30 @@ namespace Wasteland {
 		glBindTextureUnit(slot, m_RendererID);
 	}
 
+	void OpenGLTexture2D::Resize(uint32_t width, uint32_t height)
+	{
+		WL_PROFILE_FUNCTION();
+
+		m_Width = width;
+		m_Height = height;
+
+		if (m_RendererID)
+		{
+			glDeleteTextures(1, &m_RendererID);
+		}
+
+		// Note: This matches an uncompressed 32-bit floating point HDR buffer setup (ideal for ray tracing)
+		m_InternalFormat = GL_RGBA32F;
+		m_DataFormat = GL_RGBA;
+
+		glCreateTextures(GL_TEXTURE_2D, 1, &m_RendererID);
+		glTextureStorage2D(m_RendererID, 1, m_InternalFormat, m_Width, m_Height);
+
+		glTextureParameteri(m_RendererID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTextureParameteri(m_RendererID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	}
+
 }

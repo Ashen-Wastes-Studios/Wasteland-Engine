@@ -46,6 +46,8 @@ namespace Wasteland {
 		static Statistics GetStats();
         static bool IsRayTracingEnabled();
         static void SetRayTracingEnabled(bool enabled);
+        static uint32_t GetRayTraceTargetID(); 
+        static void ResizeRayTraceTarget(uint32_t width, uint32_t height); 
     private:
         static void FlushAndReset();
     };

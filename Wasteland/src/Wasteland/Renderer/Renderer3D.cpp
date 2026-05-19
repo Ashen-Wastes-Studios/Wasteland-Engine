@@ -252,6 +252,16 @@ namespace Wasteland {
         s_Data.RayTracingEnabled = enabled;
     }
 
+    uint32_t Renderer3D::GetRayTraceTargetID()
+    {
+        return s_Data.RayTracingOutput->GetRendererID();
+    }
+
+    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
+    {
+        s_Data.RayTracingOutput->Resize(width, height);
+    }
+
     void Renderer3D::FlushAndReset()
     {
         s_Data.m_SceneInstances.clear();
