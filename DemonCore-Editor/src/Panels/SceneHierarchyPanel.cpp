@@ -503,6 +503,17 @@ namespace Wasteland {
 			{
 				auto& crc = entity.GetComponent<CubeRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(crc.Color));
+				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
+				if (ImGui::BeginDragDropTarget())
+				{
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					{
+						const wchar_t* path = (const wchar_t*)payload->Data;
+						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
+						crc.Texture = Texture2D::Create(texturePath.string());
+					}
+					ImGui::EndDragDropTarget();
+				}
 				ImGui::DragInt("Texture Index", &crc.TextureIndex);
 				ImGui::TreePop();
 			}
@@ -535,6 +546,17 @@ namespace Wasteland {
 			{
 				auto& src = entity.GetComponent<SphereRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(src.Color));
+				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
+                if (ImGui::BeginDragDropTarget())
+                {
+                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+                    {
+                        const wchar_t* path = (const wchar_t*)payload->Data;
+                        std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
+                        src.Texture = Texture2D::Create(texturePath.string());
+                    }
+                    ImGui::EndDragDropTarget();
+                }
 				ImGui::DragFloat("Radius", &src.Radius, 0.1f, 0.0f, 100.0f);
 				ImGui::DragInt("Sectors", &src.Sectors, 1, 3, 100);
 				ImGui::DragInt("Stacks", &src.Stacks, 1, 2, 100);

@@ -25,6 +25,7 @@
 // ---Renderer------------------------------------
 #include "Wasteland/Renderer/Renderer.h"
 #include "Wasteland/Renderer/Renderer2D.h"
+#include "Wasteland/Renderer/Renderer3D.h"
 #include "Wasteland/Renderer/RenderCommand.h"
 
 #include "Wasteland/Renderer/Buffer.h"

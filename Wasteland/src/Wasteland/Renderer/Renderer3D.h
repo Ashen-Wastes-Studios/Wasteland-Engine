@@ -5,6 +5,9 @@
 #include "Wasteland/Renderer/Shader.h"
 #include "Wasteland/Renderer/VertexArray.h"
 
+#include "Wasteland/Renderer/Texture.h"
+#include <Wasteland/Scene/Components.h>
+
 #include <glm/glm.hpp>
 
 namespace Wasteland {
@@ -18,15 +21,31 @@ namespace Wasteland {
         static void BeginScene(const Camera& camera, const glm::mat4& transform);
         static void BeginScene(const EditorCamera& camera);
         static void EndScene();
+        static void Flush();
+        
 
         // Primitive 3D drawing functions mimicking 2D
         static void DrawCube(const glm::vec3& position, const glm::vec3& size, const glm::vec4& color);
-        static void DrawCube(const glm::mat4& transform, const glm::vec4& color, int textureIndex = 0);
+        static void DrawCube(const glm::mat4& transform, const glm::vec4& color, int textureIndex = 0, float tilingFactor = 1.0f, int entityID = -1);
 
         static void DrawSphere(const glm::vec3& position, float radius, const glm::vec4& color);
-        static void DrawSphere(const glm::mat4& transform, const glm::vec4& color, float radius, int sectors, int stacks, int textureIndex = 0);
+        static void DrawSphere(const glm::mat4& transform, const glm::vec4& color, float radius, int sectors, int stacks, int textureIndex = 0, float tilingFactor = 1.0f, int entityID = -1);
 
         static void Submit(const Ref<Shader>& shader, const Ref<VertexArray>& vertexArray, const glm::mat4& transform = glm::mat4(1.0f));
+
+        // Stats
+		struct Statistics
+		{
+			uint32_t DrawCalls = 0;
+			uint32_t QuadCount = 0;
+
+			uint32_t GetTotalVertexCount() { return QuadCount * 4; }
+			uint32_t GetTotalIndexCount() { return QuadCount * 6; }
+		};
+		static void ResetStats();
+		static Statistics GetStats();
+    private:
+        static void FlushAndReset();
     };
 
 }

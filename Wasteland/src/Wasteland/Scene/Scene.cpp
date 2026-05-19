@@ -347,7 +347,7 @@ namespace Wasteland {
 					auto [transform, cube] = cubeView.get<TransformComponent, CubeRendererComponent>(entity);
 					
 					// Pass the 3D entity data to the new batch renderer
-					Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex);
+					Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex, cube.TilingFactor, (int)entity);
 				}
 			}
 
@@ -362,7 +362,9 @@ namespace Wasteland {
 						sphere.Radius, 
 						sphere.Sectors, 
 						sphere.Stacks, 
-						sphere.TextureIndex
+						sphere.TextureIndex,
+						sphere.TilingFactor,
+						(int)entity
 					);
 				}
 			}
@@ -414,7 +416,7 @@ namespace Wasteland {
 				auto [transform, cube] = cubeView.get<TransformComponent, CubeRendererComponent>(entity);
 				
 				// Pass the 3D entity data to the new batch renderer
-				Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex);
+				Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex, cube.TilingFactor, (int)entity);
 			}
 		}
 
@@ -429,7 +431,9 @@ namespace Wasteland {
 					sphere.Radius, 
 					sphere.Sectors, 
 					sphere.Stacks, 
-					sphere.TextureIndex
+					sphere.TextureIndex,
+					sphere.TilingFactor,
+					(int)entity
 				);
 			}
 		}
@@ -532,13 +536,28 @@ namespace Wasteland {
 	template<>
 	void Scene::OnComponentAdded<CubeRendererComponent>(Entity entity, CubeRendererComponent& component)
 	{
+		if (!entity.HasComponent<TransformComponent>())
+		{
+			entity.AddComponent<TransformComponent>();
+		}
 
+		component.TextureIndex = 0;
+		component.TilingFactor = 1.0f;
 	}
 
 	template<>
 	void Scene::OnComponentAdded<SphereRendererComponent>(Entity entity, SphereRendererComponent& component)
 	{
+		if (!entity.HasComponent<TransformComponent>())
+		{
+			entity.AddComponent<TransformComponent>();
+		}
 
+		component.TextureIndex = 0;
+		component.TilingFactor = 1.0f;
+		component.Radius = 0.5f;
+		component.Sectors = 20;
+		component.Stacks = 20;
 	}
 
 	template<>

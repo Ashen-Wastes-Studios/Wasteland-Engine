@@ -225,7 +225,10 @@ namespace Wasteland {
 
 			auto& cubeRendererComponent = entity.GetComponent<CubeRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << cubeRendererComponent.Color;
+			out << YAML::Key << "TextureWidth" << YAML::Value << (cubeRendererComponent.Texture ? cubeRendererComponent.Texture->GetWidth() : 0);
+			out << YAML::Key << "TextureHeight" << YAML::Value << (cubeRendererComponent.Texture ? cubeRendererComponent.Texture->GetHeight() : 0);
 			out << YAML::Key << "TextureIndex" << YAML::Value << cubeRendererComponent.TextureIndex;
+			out << YAML::Key << "TilingFactor" << YAML::Value << cubeRendererComponent.TilingFactor;
 
 			out << YAML::EndMap; // CubeRendererComponent
 		}
@@ -237,10 +240,13 @@ namespace Wasteland {
 
 			auto& sphereRendererComponent = entity.GetComponent<SphereRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << sphereRendererComponent.Color;
+			out << YAML::Key << "TextureWidth" << YAML::Value << (sphereRendererComponent.Texture ? sphereRendererComponent.Texture->GetWidth() : 0);
+			out << YAML::Key << "TextureHeight" << YAML::Value << (sphereRendererComponent.Texture ? sphereRendererComponent.Texture->GetHeight() : 0);
 			out << YAML::Key << "Radius" << YAML::Value << sphereRendererComponent.Radius;
 			out << YAML::Key << "Sectors" << YAML::Value << sphereRendererComponent.Sectors;
 			out << YAML::Key << "Stacks" << YAML::Value << sphereRendererComponent.Stacks;
 			out << YAML::Key << "TextureIndex" << YAML::Value << sphereRendererComponent.TextureIndex;
+			out << YAML::Key << "TilingFactor" << YAML::Value << sphereRendererComponent.TilingFactor;
 
 			out << YAML::EndMap; // SphereRendererComponent
 		}
@@ -406,7 +412,15 @@ namespace Wasteland {
 					// Entities always have transforms
 					auto& crc = deserializedEntity.AddComponent<CubeRendererComponent>();
 					crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
+					if (cubeRendererComponent["TextureWidth"] && cubeRendererComponent["TextureHeight"])
+					{
+						int width = cubeRendererComponent["TextureWidth"].as<int>();
+						int height = cubeRendererComponent["TextureHeight"].as<int>();
+						if (width > 0 && height > 0)
+							crc.Texture = Texture2D::Create(width, height);
+					}
 					crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
+					crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
 				}
 
 				auto sphereRendererComponent = entity["SphereRendererComponent"];
@@ -415,10 +429,18 @@ namespace Wasteland {
 					// Entities always have transforms
 					auto& src = deserializedEntity.AddComponent<SphereRendererComponent>();
 					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
+					if (sphereRendererComponent["TextureWidth"] && sphereRendererComponent["TextureHeight"])
+				{
+					int width = sphereRendererComponent["TextureWidth"].as<int>();
+					int height = sphereRendererComponent["TextureHeight"].as<int>();
+					if (width > 0 && height > 0)
+						src.Texture = Texture2D::Create(width, height);
+				}
 					src.Radius = sphereRendererComponent["Radius"].as<float>();
 					src.Sectors = sphereRendererComponent["Sectors"].as<int>();
 					src.Stacks = sphereRendererComponent["Stacks"].as<int>();
 					src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
+					src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
 				}
 
 				auto rigidbody2DComponent = entity["Rigidbody2DComponent"];

@@ -78,7 +78,9 @@ namespace Wasteland {
 	struct CubeRendererComponent 
 	{
 		glm::vec4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		Ref<Texture2D> Texture;
 		int TextureIndex = 0; 
+		float TilingFactor = 1.0f;
 
 		CubeRendererComponent() = default;
 		CubeRendererComponent(const CubeRendererComponent&) = default;
@@ -87,7 +89,9 @@ namespace Wasteland {
 	struct SphereRendererComponent 
 	{
 		glm::vec4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		Ref<Texture2D> Texture;
 		int TextureIndex = 0;
+		float TilingFactor = 1.0f;
 		float Radius = 0.5f;
 		int Sectors = 20; // Horizontal smoothness
 		int Stacks = 20;  // Vertical smoothness
