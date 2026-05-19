@@ -1,23 +1,42 @@
 Scene: Untitled
 Entities:
-  - Entity: 11275147619065244
+  - Entity: 127481625498776523
     TagComponent:
-      Tag: Circle
+      Tag: Physics Sprite
     TransformComponent:
-      Translation: [1, -1, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    CircleRendererComponent:
-      Color: [0.808823526, 0.499567479, 0, 1]
-      Thickness: 0.100000001
-      Fade: 0.00499999989
-    CircleCollider2DComponent:
+      Translation: [0, 2, 0]
+      Rotation: [0, 0, 0.34906584]
+      Scale: [0.5, 0.5, 0.5]
+    SpriteRendererComponent:
+      Color: [1, 1, 1, 1]
+    Rigidbody2DComponent:
+      BodyType: Dynamic
+      FixedRotation: false
+    BoxCollider2DComponent:
       Offset: [0, 0]
-      Radius: 0.5
+      Size: [0.5, 0.5]
       Density: 1
       Friction: 0.5
       Restitution: 0
       RestitutionThreshold: 0.5
+  - Entity: 13034945360324169914
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [9.53674316e-07, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 1
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
   - Entity: 4438096616177984165
     TagComponent:
       Tag: Ground Plane
@@ -37,39 +56,20 @@ Entities:
       Friction: 0.5
       Restitution: 0
       RestitutionThreshold: 0.5
-  - Entity: 13034945360324169914
+  - Entity: 11275147619065244
     TagComponent:
-      Tag: Camera
+      Tag: Circle
     TransformComponent:
-      Translation: [9.53674316e-07, 0, -4.4000001]
+      Translation: [1, -1, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    CameraComponent:
-      Camera:
-        ProjectionType: 1
-        PerspectiveFOV: 0.785398185
-        PerspectiveNear: 0.00999999978
-        PerspectiveFar: 1000
-        OrthographicSize: 10
-        OrthographicNear: -1
-        OrthographicFar: 1
-      Primary: true
-      FixedAspectRatio: false
-  - Entity: 127481625498776523
-    TagComponent:
-      Tag: Physics Sprite
-    TransformComponent:
-      Translation: [0, 2, 0]
-      Rotation: [0, 0, 0.34906584]
-      Scale: [0.5, 0.5, 0.5]
-    SpriteRendererComponent:
-      Color: [1, 1, 1, 1]
-    Rigidbody2DComponent:
-      BodyType: Dynamic
-      FixedRotation: false
-    BoxCollider2DComponent:
+    CircleRendererComponent:
+      Color: [0.808823526, 0.499567479, 0, 1]
+      Thickness: 0.100000001
+      Fade: 0.00499999989
+    CircleCollider2DComponent:
       Offset: [0, 0]
-      Size: [0.5, 0.5]
+      Radius: 0.5
       Density: 1
       Friction: 0.5
       Restitution: 0
