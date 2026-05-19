@@ -22,9 +22,25 @@ Entities:
     TagComponent:
       Tag: Sphere
     TransformComponent:
-      Translation: [0, 0, 0]
+      Translation: [-1.79999995, 0, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 0, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+  - Entity: 4699167857767981438
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [2, 2, 2]
     SphereRendererComponent:
       Color: [1, 0, 1, 1]
       TextureWidth: 0
