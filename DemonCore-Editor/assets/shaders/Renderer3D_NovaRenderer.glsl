@@ -5,7 +5,7 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Bindings: 0 = Output, 1 = Accumulation, 1 = SceneInstances (Matches C++ glBindBufferBase)
+// Bindings
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 layout(rgba32f, binding = 1) uniform image2D img_Accumulation;
 
@@ -17,10 +17,9 @@ struct RayTracingInstance
     vec4 MaterialParams;    
     vec4 Min;
     vec4 Max;
-    vec4 Emission;
+    vec4 Emission; // xyz = color, w = intensity
 };
 
-// Ensure binding matches the one used in Renderer3D::Init (GL_SHADER_STORAGE_BUFFER, 1, ...)
 layout(std430, binding = 1) buffer SceneInstances 
 {
     RayTracingInstance Instances[];
@@ -34,6 +33,8 @@ uniform bool u_IsDenoisingPass;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
+// --- Utility Functions ---
+
 bool RayAABB(Ray r, vec3 minB, vec3 maxB) 
 {
     vec3 invDir = 1.0 / r.Direction;
@@ -46,7 +47,6 @@ bool RayAABB(Ray r, vec3 minB, vec3 maxB)
     return tNear <= tFar && tFar > 0.0;
 }
 
-// Random Number Generator (PCG Hash)
 uint seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000);
 float hash() 
 {
@@ -109,19 +109,17 @@ void main()
 
     if (u_IsDenoisingPass) 
     {
+        // Simple Denoising Logic
         vec4 centerColor = imageLoad(img_Accumulation, pixelCoords);
         vec4 totalColor = vec4(0.0);
         float totalWeight = 0.0;
-
         for(int x = -1; x <= 1; x++) {
             for(int y = -1; y <= 1; y++) {
                 ivec2 neighborCoord = clamp(pixelCoords + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
                 vec4 neighborColor = imageLoad(img_Accumulation, neighborCoord);
-                
                 float spatialWeight = 1.0 / (1.0 + float(x*x + y*y));
                 float colorDiff = distance(centerColor.rgb, neighborColor.rgb);
                 float similarityWeight = exp(-colorDiff * colorDiff / 0.05); 
-                
                 float weight = spatialWeight * similarityWeight;
                 totalColor += neighborColor * weight;
                 totalWeight += weight;
@@ -136,9 +134,7 @@ void main()
 
         for (int s = 0; s < SAMPLES_PER_PIXEL; s++) 
         {
-            // IMPORTANT: Offset the seed for each sample so they aren't identical
             seed += uint(s * 12345);
-
             Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4((vec2(pixelCoords) / vec2(imgSize)) * 2.0 - 1.0, 1.0, 1.0)).xyz));
             vec3 throughput = vec3(1.0);
             vec3 incomingLight = vec3(0.0);
@@ -180,11 +176,16 @@ void main()
                     }
                 }
 
-                if (hitIndex == -1) { incomingLight += throughput * vec3(0.1, 0.2, 0.5); break; }
+                // Handle Miss or Hit
+                if (hitIndex == -1) { 
+                    incomingLight += throughput * vec3(0.0, 0.0, 0.0); // Sky
+                    break; 
+                }
 
                 vec3 hitEmission = Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w;
                 incomingLight += throughput * hitEmission;
 
+                // Bounce
                 throughput *= hitAlbedo;
                 currentRay.Origin = hitPoint + hitNormal * 0.05;
                 currentRay.Direction = random_in_hemisphere(hitNormal);
@@ -192,22 +193,22 @@ void main()
             accumulatedLight += incomingLight;
         }
 
-        // Divide by sample count to get the average
         vec3 finalIncomingLight = accumulatedLight / float(SAMPLES_PER_PIXEL);
-
         vec4 incomingColor = vec4(finalIncomingLight, 1.0);
-        if (u_FrameIndex == 0)
-        {
-            imageStore(img_Accumulation, pixelCoords, incomingColor);
-            imageStore(img_Output, pixelCoords, incomingColor);
-        }
-        else
-        {
+
+        // --- ACCUMULATION BUFFER UPDATE ---
+        vec4 resultColor;
+        if (u_FrameIndex == 0) resultColor = incomingColor;
+        else {
             vec4 prevAccum = imageLoad(img_Accumulation, pixelCoords);
-            float alpha = 1.0 / float(u_FrameIndex + 1);
-            vec4 newAccum = mix(prevAccum, incomingColor, alpha);
-            imageStore(img_Accumulation, pixelCoords, newAccum);
-            imageStore(img_Output, pixelCoords, newAccum);
+            resultColor = mix(prevAccum, incomingColor, 1.0 / float(u_FrameIndex + 1));
         }
+        imageStore(img_Accumulation, pixelCoords, resultColor);
+
+        // --- TONE MAPPING & GAMMA CORRECTION ---
+        vec3 mappedColor = resultColor.rgb / (resultColor.rgb + vec3(1.0));
+        vec3 finalOutput = pow(mappedColor, vec3(1.0 / 2.2));
+        
+        imageStore(img_Output, pixelCoords, vec4(finalOutput, 1.0));
     }
 }
