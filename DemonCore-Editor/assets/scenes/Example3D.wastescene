@@ -1,44 +1,21 @@
 Scene: Untitled
 Entities:
-  - Entity: 4699167857767981438
+  - Entity: 5774720882215068596
     TagComponent:
-      Tag: Sphere
+      Tag: Cube
     TransformComponent:
-      Translation: [0, 0, 0]
-      Rotation: [0, 0, 0]
-      Scale: [2, 2, 2]
-    SphereRendererComponent:
-      Color: [0.617647052, 1, 0, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 0.5
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [0.619607866, 1, 0, 1]
-      Metallic: 0
-      Roughness: 0.5
-  - Entity: 123471849831008199
-    TagComponent:
-      Tag: Sphere
-    TransformComponent:
-      Translation: [0, -101, 0]
+      Translation: [0, 2.20000005, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 0, 1, 1]
+    CubeRendererComponent:
+      Color: [0.176470518, 1, 0, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 100
-      Sectors: 20
-      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [1, 0, 1, 1]
-      Metallic: 0
+      Albedo: [0.176470593, 1, 0, 1]
+      Metallic: 1
       Roughness: 0.5
   - Entity: 11210703966252491217
     TagComponent:
@@ -58,20 +35,43 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
-  - Entity: 5774720882215068596
+  - Entity: 123471849831008199
     TagComponent:
-      Tag: Cube
+      Tag: Sphere
     TransformComponent:
-      Translation: [0, 2.20000005, 0]
+      Translation: [0, -101, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    CubeRendererComponent:
-      Color: [0.176470518, 1, 0, 1]
+    SphereRendererComponent:
+      Color: [1, 0, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
+      Radius: 100
+      Sectors: 20
+      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [0.176470593, 1, 0, 1]
-      Metallic: 0
+      Albedo: [1, 0, 1, 1]
+      Metallic: 1
+      Roughness: 0.5
+  - Entity: 4699167857767981438
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [2, 2, 2]
+    SphereRendererComponent:
+      Color: [0.617647052, 1, 0, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.619607866, 1, 0, 1]
+      Metallic: 1
       Roughness: 0.5

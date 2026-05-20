@@ -60,6 +60,10 @@ namespace Wasteland {
         Ref<Shader> RayTracingShader;
         Ref<Texture2D> RayTracingOutput;
 
+        uint32_t RayTracingTexture = 0;
+        uint32_t RayTracingWidth = 0;
+        uint32_t RayTracingHeight = 0;
+
         uint32_t SceneInstanceBufferID = 0;
         std::vector<RayTracingInstance> m_SceneInstances;
 
@@ -120,7 +124,7 @@ namespace Wasteland {
         // --- SHADER & UTILS ---
         s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
 
-        s_Data.RayTracingOutput = Texture2D::Create(1280, 720); 
+        s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight); 
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_RayTracing.glsl");
 
         uint32_t maxInstances = 10000;
@@ -200,15 +204,16 @@ namespace Wasteland {
             glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
                                   s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
                                   s_Data.m_SceneInstances.data());
+
+            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
             
-            uint32_t textureID = s_Data.RayTracingOutput->GetRendererID();
-            glBindImageTexture(0, textureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
 
-            uint32_t workGroupsX = (s_Data.RayTracingOutput->GetWidth() + 7) / 8;
-            uint32_t workGroupsY = (s_Data.RayTracingOutput->GetHeight() + 7) / 8;
+            uint32_t workGroupsX = s_Data.RayTracingWidth / 8;
+            uint32_t workGroupsY = s_Data.RayTracingHeight / 8;
 
             glDispatchCompute(workGroupsX, workGroupsY, 1);
 
@@ -255,24 +260,25 @@ namespace Wasteland {
     uint32_t Renderer3D::GetRayTraceTargetID() { return s_Data.RayTracingOutput->GetRendererID(); }
     void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height) 
     { 
-        uint32_t textureID = s_Data.RayTracingOutput->GetRendererID();
-        if (textureID)
+        if (width == 0 || height == 0) return;
+
+        s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
+
+        if (s_Data.RayTracingTexture)
         {
-            glDeleteTextures(1, &textureID);
+            glDeleteTextures(1, &s_Data.RayTracingTexture);
         }
 
-        glCreateTextures(GL_TEXTURE_2D, 1, &textureID);
-        glBindTexture(GL_TEXTURE_2D, textureID);
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.RayTracingTexture);
+        glTextureStorage2D(s_Data.RayTracingTexture, 1, GL_RGBA32F, width, height);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-        // Compute shaders writing to rgba32f require glTexStorage2D, NOT glTexImage2D!
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, width, height);
+        s_Data.RayTracingWidth = width;
+        s_Data.RayTracingHeight = height;
 
-        glBindTexture(GL_TEXTURE_2D, 0); 
+        WL_CORE_INFO("Ray Tracing Target resized to {0}x{1}", width, height);
     }
 
     void Renderer3D::FlushAndReset()
