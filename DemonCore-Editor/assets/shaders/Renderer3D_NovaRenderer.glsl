@@ -108,7 +108,6 @@ void main()
 
     if (u_IsDenoisingPass) 
     {
-        // --- PASS 2: BILATERAL DENOISE ---
         vec4 centerColor = imageLoad(img_Accumulation, pixelCoords);
         vec4 totalColor = vec4(0.0);
         float totalWeight = 0.0;
@@ -120,7 +119,7 @@ void main()
                 
                 float spatialWeight = 1.0 / (1.0 + float(x*x + y*y));
                 float colorDiff = distance(centerColor.rgb, neighborColor.rgb);
-                float similarityWeight = exp(-colorDiff * colorDiff / 0.1); 
+                float similarityWeight = exp(-colorDiff * colorDiff / 0.05); 
                 
                 float weight = spatialWeight * similarityWeight;
                 totalColor += neighborColor * weight;
@@ -131,57 +130,68 @@ void main()
     } 
     else 
     {
-        // --- PASS 1: ORIGINAL PATH TRACING ---
-        Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4((vec2(pixelCoords) / vec2(imgSize)) * 2.0 - 1.0, 1.0, 1.0)).xyz));
-        vec3 throughput = vec3(1.0);
-        vec3 incomingLight = vec3(0.0);
+        const int SAMPLES_PER_PIXEL = 4;
+        vec3 accumulatedLight = vec3(0.0);
 
-        for(int bounce = 0; bounce < 5; bounce++) 
+        for (int s = 0; s < SAMPLES_PER_PIXEL; s++) 
         {
-            float closestHit = 1e20;
-            int hitIndex = -1;
-            vec3 hitNormal, hitPoint, hitAlbedo;
+            // IMPORTANT: Offset the seed for each sample so they aren't identical
+            seed += uint(s * 12345);
 
-            for(int i = 0; i < u_InstanceCount; i++) 
+            Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4((vec2(pixelCoords) / vec2(imgSize)) * 2.0 - 1.0, 1.0, 1.0)).xyz));
+            vec3 throughput = vec3(1.0);
+            vec3 incomingLight = vec3(0.0);
+
+            for(int bounce = 0; bounce < 5; bounce++) 
             {
-                RayTracingInstance inst = Instances[i];
-                Ray localRay;
-                localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
-                localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
-                
-                if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
+                float closestHit = 1e20;
+                int hitIndex = -1;
+                vec3 hitNormal, hitPoint, hitAlbedo;
 
-                vec3 localNormal;
-                float tLocal = -1.0;
-                uint type = uint(inst.MaterialParams.z);
-                
-                if (type == 0) tLocal = HitCube(localRay, localNormal);
-                else if (type == 1) tLocal = HitSphere(localRay, inst.MaterialParams.w, localNormal);
-                
-                if (tLocal > 0.0) 
+                for(int i = 0; i < u_InstanceCount; i++) 
                 {
-                    vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
-                    float tWorld = distance(currentRay.Origin, worldHit);
-                    if (tWorld < closestHit) 
+                    RayTracingInstance inst = Instances[i];
+                    Ray localRay;
+                    localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
+                    localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
+                    
+                    if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
+
+                    vec3 localNormal;
+                    float tLocal = -1.0;
+                    uint type = uint(inst.MaterialParams.z);
+                    
+                    if (type == 0) tLocal = HitCube(localRay, localNormal);
+                    else if (type == 1) tLocal = HitSphere(localRay, inst.MaterialParams.w, localNormal);
+                    
+                    if (tLocal > 0.0) 
                     {
-                        closestHit = tWorld;
-                        hitIndex = i;
-                        hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-                        hitPoint = worldHit;
-                        hitAlbedo = inst.Albedo.rgb;
+                        vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
+                        float tWorld = distance(currentRay.Origin, worldHit);
+                        if (tWorld < closestHit) 
+                        {
+                            closestHit = tWorld;
+                            hitIndex = i;
+                            hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+                            hitPoint = worldHit;
+                            hitAlbedo = inst.Albedo.rgb;
+                        }
                     }
                 }
+
+                if (hitIndex == -1) { incomingLight += throughput * vec3(0.1, 0.2, 0.5); break; }
+
+                throughput *= hitAlbedo;
+                currentRay.Origin = hitPoint + hitNormal * 0.05;
+                currentRay.Direction = random_in_hemisphere(hitNormal);
             }
-
-            if (hitIndex == -1) { incomingLight += throughput * vec3(0.1, 0.2, 0.5); break; }
-
-            throughput *= hitAlbedo;
-            currentRay.Origin = hitPoint + hitNormal * 0.001;
-            currentRay.Direction = random_in_hemisphere(hitNormal);
+            accumulatedLight += incomingLight;
         }
 
-        // --- Accumulation (Must be inside the 'else' block) ---
-        vec4 incomingColor = vec4(incomingLight, 1.0);
+        // Divide by sample count to get the average
+        vec3 finalIncomingLight = accumulatedLight / float(SAMPLES_PER_PIXEL);
+
+        vec4 incomingColor = vec4(finalIncomingLight, 1.0);
         if (u_FrameIndex == 0)
         {
             imageStore(img_Accumulation, pixelCoords, incomingColor);
