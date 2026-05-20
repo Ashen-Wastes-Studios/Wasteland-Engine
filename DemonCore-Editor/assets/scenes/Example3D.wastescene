@@ -1,27 +1,10 @@
 Scene: Untitled
 Entities:
-  - Entity: 5774720882215068596
-    TagComponent:
-      Tag: Cube
-    TransformComponent:
-      Translation: [0, 2.20000005, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    CubeRendererComponent:
-      Color: [0.176470518, 1, 0, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [0.176470593, 1, 0, 1]
-      Metallic: 1
-      Roughness: 0.5
-  - Entity: 11210703966252491217
+  - Entity: 8001134310104323193
     TagComponent:
       Tag: Camera
     TransformComponent:
-      Translation: [0, 0, 4.5]
+      Translation: [0, 0, 10]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     CameraComponent:
@@ -35,15 +18,37 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
-  - Entity: 123471849831008199
+  - Entity: 13026631445708257762
     TagComponent:
-      Tag: Sphere
+      Tag: Emission Sphere
+    TransformComponent:
+      Translation: [2.4000001, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.760784328, 0.486274511, 0.250980407, 1]
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.760784328, 0.486274511, 0.250980407, 1]
+      EmissionIntensity: 4.5
+  - Entity: 17094369140636357356
+    TagComponent:
+      Tag: Ground Sphere
     TransformComponent:
       Translation: [0, -101, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
-      Color: [1, 0, 1, 1]
+      Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
       Radius: 100
@@ -53,25 +58,29 @@ Entities:
       TilingFactor: 1
     MaterialComponent:
       Albedo: [1, 0, 1, 1]
-      Metallic: 1
+      Metallic: 0
       Roughness: 0.5
-  - Entity: 4699167857767981438
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+  - Entity: 2134128865833379018
     TagComponent:
       Tag: Sphere
     TransformComponent:
       Translation: [0, 0, 0]
       Rotation: [0, 0, 0]
-      Scale: [2, 2, 2]
+      Scale: [1, 1, 1]
     SphereRendererComponent:
-      Color: [0.617647052, 1, 0, 1]
+      Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 0.5
+      Radius: 1
       Sectors: 20
       Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [0.619607866, 1, 0, 1]
-      Metallic: 1
+      Albedo: [1, 0, 1, 1]
+      Metallic: 0
       Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0

@@ -28,6 +28,7 @@ namespace Wasteland {
         glm::vec4 MaterialParams;   
         glm::vec4 Min;
         glm::vec4 Max;    
+        glm::vec4 Emission;
     }; 
 
     struct Renderer3DData
@@ -408,6 +409,11 @@ namespace Wasteland {
 
             instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f); 
             instance.Max = glm::vec4( 0.5f,  0.5f,  0.5f, 1.0f);
+
+            instance.Emission = glm::vec4(material.EmissionColor.x, 
+                                      material.EmissionColor.y, 
+                                      material.EmissionColor.z, 
+                                      material.EmissionIntensity);
             
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
@@ -494,6 +500,11 @@ namespace Wasteland {
 
             instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);
             instance.Max = glm::vec4( radius,  radius,  radius, 1.0f);
+
+            instance.Emission = glm::vec4(material.EmissionColor.x, 
+                                      material.EmissionColor.y, 
+                                      material.EmissionColor.z, 
+                                      material.EmissionIntensity);
             
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;

@@ -260,6 +260,8 @@ namespace Wasteland {
 			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
 			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
 			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
+			out << YAML::Key << "EmissionColor" << YAML::Value << materialComponent.EmissionColor;
+			out << YAML::Key << "EmissionIntensity" << YAML::Value << materialComponent.EmissionIntensity;
 
 			out << YAML::EndMap; // MaterialComponent
 		}
@@ -464,6 +466,8 @@ namespace Wasteland {
 					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
 					mc.Metallic = materialComponent["Metallic"].as<float>();
 					mc.Roughness = materialComponent["Roughness"].as<float>();
+					mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
+					mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
 				}
 
 				auto rigidbody2DComponent = entity["Rigidbody2DComponent"];

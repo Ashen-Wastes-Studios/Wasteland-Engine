@@ -17,6 +17,7 @@ struct RayTracingInstance
     vec4 MaterialParams;    
     vec4 Min;
     vec4 Max;
+    vec4 Emission;
 };
 
 // Ensure binding matches the one used in Renderer3D::Init (GL_SHADER_STORAGE_BUFFER, 1, ...)
@@ -180,6 +181,9 @@ void main()
                 }
 
                 if (hitIndex == -1) { incomingLight += throughput * vec3(0.1, 0.2, 0.5); break; }
+
+                vec3 hitEmission = Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w;
+                incomingLight += throughput * hitEmission;
 
                 throughput *= hitAlbedo;
                 currentRay.Origin = hitPoint + hitNormal * 0.05;

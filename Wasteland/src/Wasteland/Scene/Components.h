@@ -105,6 +105,8 @@ namespace Wasteland {
 		glm::vec4 Albedo = { 1.0f, 1.0f, 1.0f, 1.0f };
 		float Metallic = 0.0f;
 		float Roughness = 0.5f;
+		glm::vec4 EmissionColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+		float EmissionIntensity = 0.0f;
 
 		MaterialComponent() = default;
 		MaterialComponent(const MaterialComponent&) = default;

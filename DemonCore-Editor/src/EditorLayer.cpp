@@ -331,17 +331,17 @@ namespace Wasteland {
 			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
 			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
-			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
-			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
-			{
-				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
-			}
-
 			ImGui::End();
 
 			ImGui::Begin("Settings");
 
 			ImGui::Checkbox("Show physics colliders", &m_ShowPhysicsColliders);
+
+			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
+			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
+			{
+				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
+			}
 
 			ImGui::End();
 

@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <Wasteland/Renderer/Texture.h>
+#include <Wasteland/Renderer/Renderer3D.h>
 
 /* The Microsoft C++ compiler is not-compatible with the C++ standard and needs
 the following definition to disable a security warning on std::strncpy().
@@ -567,8 +568,8 @@ namespace Wasteland {
                     ImGui::EndDragDropTarget();
                 }
 				ImGui::DragFloat("Radius", &src.Radius, 0.1f, 0.0f, 100.0f);
-				ImGui::DragInt("Sectors", &src.Sectors, 1, 3, 100);
-				ImGui::DragInt("Stacks", &src.Stacks, 1, 2, 100);
+				ImGui::DragInt("Sectors", &src.Sectors, 1.0f, 3.0f, 100.0f);
+				ImGui::DragInt("Stacks", &src.Stacks, 1.0f, 2.0f, 100.0f);
 				ImGui::DragInt("Texture Index", &src.TextureIndex);
 				ImGui::TreePop();
 			}
@@ -600,9 +601,13 @@ namespace Wasteland {
 			if (open)
 			{
 				auto& mc = entity.GetComponent<MaterialComponent>();
+
 				ImGui::ColorEdit4("Albedo", glm::value_ptr(mc.Albedo));
-				ImGui::DragFloat("Metallic", &mc.Metallic);
-				ImGui::DragFloat("Roughness", &mc.Roughness);
+				ImGui::DragFloat("Metallic", &mc.Metallic, 0.1f, 0.0f, 1.0f);
+				ImGui::DragFloat("Roughness", &mc.Roughness, 0.1f, 0.0f, 1.0f);
+				ImGui::ColorEdit4("Emission Color", glm::value_ptr(mc.EmissionColor));
+				ImGui::DragFloat("Emission Intensity", &mc.EmissionIntensity, 0.1f, 0.0f, FLT_MAX);
+
 				ImGui::TreePop();
 			}
 
