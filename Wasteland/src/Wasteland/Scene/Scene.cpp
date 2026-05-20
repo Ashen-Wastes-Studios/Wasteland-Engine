@@ -145,6 +145,7 @@ namespace Wasteland {
 		CopyComponent<CircleRendererComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CubeRendererComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<SphereRendererComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<MaterialComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CameraComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<Rigidbody2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<BoxCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
@@ -342,28 +343,32 @@ namespace Wasteland {
 
 			// Draw Cubes
 			{
-				auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent>();
+				auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent, MaterialComponent>();
 				for (auto entity : cubeView) {
-					auto [transform, cube] = cubeView.get<TransformComponent, CubeRendererComponent>(entity);
+					auto& tc = cubeView.get<TransformComponent>(entity);
+					auto& crc = cubeView.get<CubeRendererComponent>(entity);
+					auto& mc = cubeView.get<MaterialComponent>(entity);
 					
 					// Pass the 3D entity data to the new batch renderer
-					Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex, cube.TilingFactor, (int)entity);
+					Renderer3D::DrawCube(tc.GetTransform(), crc.Color, mc, (int)entity);
 				}
 			}
 
 			// Draw Spheres
 			{
-				auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent>();
+				auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent, MaterialComponent>();
 				for (auto entity : sphereView) {
-					auto [transform, sphere] = sphereView.get<TransformComponent, SphereRendererComponent>(entity);
+					auto& tc = sphereView.get<TransformComponent>(entity);
+					auto& src = sphereView.get<SphereRendererComponent>(entity);
+					auto& mc = sphereView.get<MaterialComponent>(entity);
+					
 					Renderer3D::DrawSphere(
-						transform.GetTransform(), 
-						sphere.Color, 
-						sphere.Radius, 
-						sphere.Sectors, 
-						sphere.Stacks, 
-						sphere.TextureIndex,
-						sphere.TilingFactor,
+						tc.GetTransform(), 
+						src.Color, 
+						src.Radius, 
+						src.Sectors, 
+						src.Stacks, 
+						mc,
 						(int)entity
 					);
 				}
@@ -411,28 +416,32 @@ namespace Wasteland {
 
 		// Draw Cubes
 		{
-			auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent>();
+			auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent, MaterialComponent>();
 			for (auto entity : cubeView) {
-				auto [transform, cube] = cubeView.get<TransformComponent, CubeRendererComponent>(entity);
+				auto& tc = cubeView.get<TransformComponent>(entity);
+				auto& crc = cubeView.get<CubeRendererComponent>(entity);
+				auto& mc = cubeView.get<MaterialComponent>(entity);
 				
 				// Pass the 3D entity data to the new batch renderer
-				Renderer3D::DrawCube(transform.GetTransform(), cube.Color, cube.TextureIndex, cube.TilingFactor, (int)entity);
+				Renderer3D::DrawCube(tc.GetTransform(), crc.Color, mc, (int)entity);
 			}
 		}
 
 		// Draw Spheres
 		{
-			auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent>();
+			auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent, MaterialComponent>();
 			for (auto entity : sphereView) {
-				auto [transform, sphere] = sphereView.get<TransformComponent, SphereRendererComponent>(entity);
+				auto& tc = sphereView.get<TransformComponent>(entity);
+				auto& src = sphereView.get<SphereRendererComponent>(entity);
+				auto& mc = sphereView.get<MaterialComponent>(entity);
+
 				Renderer3D::DrawSphere(
-					transform.GetTransform(), 
-					sphere.Color, 
-					sphere.Radius, 
-					sphere.Sectors, 
-					sphere.Stacks, 
-					sphere.TextureIndex,
-					sphere.TilingFactor,
+					tc.GetTransform(), 
+					src.Color, 
+					src.Radius, 
+					src.Sectors, 
+					src.Stacks, 
+					mc,
 					(int)entity
 				);
 			}
@@ -466,6 +475,7 @@ namespace Wasteland {
 		CopyComponentIfExists<CircleRendererComponent>(newEntity, entity);
 		CopyComponentIfExists<CubeRendererComponent>(newEntity, entity);
 		CopyComponentIfExists<SphereRendererComponent>(newEntity, entity);
+		CopyComponentIfExists<MaterialComponent>(newEntity, entity);
 		CopyComponentIfExists<CameraComponent>(newEntity, entity);
 		CopyComponentIfExists<Rigidbody2DComponent>(newEntity, entity);
 		CopyComponentIfExists<BoxCollider2DComponent>(newEntity, entity);
@@ -558,6 +568,12 @@ namespace Wasteland {
 		component.Radius = 0.5f;
 		component.Sectors = 20;
 		component.Stacks = 20;
+	}
+
+	template<>
+	void Scene::OnComponentAdded<MaterialComponent>(Entity entity, MaterialComponent& component)
+	{
+
 	}
 
 	template<>

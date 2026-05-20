@@ -251,6 +251,19 @@ namespace Wasteland {
 			out << YAML::EndMap; // SphereRendererComponent
 		}
 
+		if (entity.HasComponent<MaterialComponent>())
+		{
+			out << YAML::Key << "MaterialComponent";
+			out << YAML::BeginMap; // MaterialComponent
+
+			auto& materialComponent = entity.GetComponent<MaterialComponent>();
+			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
+			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
+			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
+
+			out << YAML::EndMap; // MaterialComponent
+		}
+
 		if (entity.HasComponent<Rigidbody2DComponent>())
 		{
 			out << YAML::Key << "Rigidbody2DComponent";
@@ -430,17 +443,27 @@ namespace Wasteland {
 					auto& src = deserializedEntity.AddComponent<SphereRendererComponent>();
 					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
 					if (sphereRendererComponent["TextureWidth"] && sphereRendererComponent["TextureHeight"])
-				{
-					int width = sphereRendererComponent["TextureWidth"].as<int>();
-					int height = sphereRendererComponent["TextureHeight"].as<int>();
-					if (width > 0 && height > 0)
-						src.Texture = Texture2D::Create(width, height);
-				}
+					{
+						int width = sphereRendererComponent["TextureWidth"].as<int>();
+						int height = sphereRendererComponent["TextureHeight"].as<int>();
+						if (width > 0 && height > 0)
+							src.Texture = Texture2D::Create(width, height);
+					}
 					src.Radius = sphereRendererComponent["Radius"].as<float>();
 					src.Sectors = sphereRendererComponent["Sectors"].as<int>();
 					src.Stacks = sphereRendererComponent["Stacks"].as<int>();
 					src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
 					src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
+				}
+
+				auto materialComponent = entity["MaterialComponent"];
+				if (materialComponent)
+				{
+					// Entities always have transforms
+					auto& mc = deserializedEntity.AddComponent<MaterialComponent>();
+					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
+					mc.Metallic = materialComponent["Metallic"].as<float>();
+					mc.Roughness = materialComponent["Roughness"].as<float>();
 				}
 
 				auto rigidbody2DComponent = entity["Rigidbody2DComponent"];

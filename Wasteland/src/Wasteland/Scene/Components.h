@@ -100,6 +100,16 @@ namespace Wasteland {
 		SphereRendererComponent(const SphereRendererComponent&) = default;
 	};
 
+	struct MaterialComponent
+	{
+		glm::vec4 Albedo = { 1.0f, 1.0f, 1.0f, 1.0f };
+		float Metallic = 0.0f;
+		float Roughness = 0.5f;
+
+		MaterialComponent() = default;
+		MaterialComponent(const MaterialComponent&) = default;
+	};
+
 	struct CameraComponent
 	{
 		SceneCamera Camera;

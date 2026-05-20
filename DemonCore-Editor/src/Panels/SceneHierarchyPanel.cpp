@@ -126,6 +126,15 @@ namespace Wasteland {
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<MaterialComponent>())
+				{
+					if (ImGui::MenuItem("Material Component"))
+					{
+						m_SelectionContext.AddComponent<MaterialComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<Rigidbody2DComponent>())
 				{
 					if (ImGui::MenuItem("Rigidbody 2D"))
@@ -566,6 +575,39 @@ namespace Wasteland {
 
 			if (removeComponent)
 				entity.RemoveComponent<SphereRendererComponent>();
+		}
+
+		if (entity.HasComponent<MaterialComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
+			bool open = ImGui::TreeNodeEx((void*)typeid(MaterialComponent).hash_code(), treeNodeFlags, "Material Component");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto& mc = entity.GetComponent<MaterialComponent>();
+				ImGui::ColorEdit4("Albedo", glm::value_ptr(mc.Albedo));
+				ImGui::DragFloat("Metallic", &mc.Metallic);
+				ImGui::DragFloat("Roughness", &mc.Roughness);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<MaterialComponent>();
 		}
 
 		if (entity.HasComponent<Rigidbody2DComponent>())

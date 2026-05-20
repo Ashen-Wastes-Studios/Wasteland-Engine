@@ -17,18 +17,16 @@ namespace Wasteland {
         glm::vec4 Color;
         glm::vec3 Normal;     
         glm::vec2 TexCoord;
-        float TexIndex;
-        float TilingFactor;
         int EntityID;
     };
 
     struct RayTracingInstance 
     {
-        glm::mat4 InvTransform;      // 64 bytes
-        glm::mat4 WorldTransform;    // 64 bytes
-        glm::vec4 Color;             // 16 bytes
-        glm::vec4 Properties;        // 16 bytes -> x = Type, y = Radius, z = EntityID, w = Unused
-    }; // Total size = 96 bytes (Perfect 16-byte alignment stride for std430)
+        glm::mat4 InvTransform;      
+        glm::mat4 WorldTransform;   
+        glm::vec4 Albedo;             
+        glm::vec4 MaterialParams;       
+    }; 
 
     struct Renderer3DData
     {
@@ -293,13 +291,7 @@ namespace Wasteland {
         s_Data.TextureSlotIndex = 1;
     }
 
-    void Renderer3D::DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color)
-    {
-        glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) * glm::scale(glm::mat4(1.0f), size);
-        DrawCube(transform, color, 0, 1.0f, -1);
-    }
-
-    void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, int textureIndex, float tilingFactor, int entityID)
+    void Renderer3D::DrawCube(const glm::mat4& transform, const glm::vec4& color, MaterialComponent& material, int entityID)
     {
         if (s_Data.CubeIndexCount + 36 >= s_Data.MaxIndices)
         {
@@ -331,11 +323,9 @@ namespace Wasteland {
         for (int i = 0; i < 24; i++)
         {
             s_Data.CubeVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(cubePositions[i], 1.0f));
-            s_Data.CubeVertexBufferPtr->Color = color;
+            s_Data.CubeVertexBufferPtr->Color = material.Albedo;
             s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]); 
             s_Data.CubeVertexBufferPtr->TexCoord = texCoords[i % 4];
-            s_Data.CubeVertexBufferPtr->TexIndex = (float)textureIndex;
-            s_Data.CubeVertexBufferPtr->TilingFactor = tilingFactor;
             s_Data.CubeVertexBufferPtr->EntityID = entityID; 
             s_Data.CubeVertexBufferPtr++;
         }
@@ -350,23 +340,16 @@ namespace Wasteland {
             // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
             instance.WorldTransform = transform;
             instance.InvTransform = glm::inverse(transform);
-            instance.Color = color;
-            
-            // x = Type (0.0 = Cube), y = Radius (0.0 for cube), z = EntityID
-            instance.Properties = glm::vec4(0.0f, 0.0f, (float)entityID, 0.0f);
+
+            instance.Albedo = material.Albedo;
+            instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 1.0f);
             
             s_Data.m_SceneInstances.push_back(instance);
             return;
         }
     }
 
-    void Renderer3D::DrawSphere(const glm::vec3 &position, float radius, const glm::vec4 &color)
-    {
-        glm::mat4 transform = glm::translate(glm::mat4(1.0f), position);
-        DrawSphere(transform, color, radius, 20, 20, 0, 1.0f, -1);
-    }
-
-    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, int textureIndex, float tilingFactor, int entityID)
+    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent& material, int entityID)
     {
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
         uint32_t indexCount = 0;
@@ -399,11 +382,9 @@ namespace Wasteland {
                 float y = xy * sinf(sectorAngle);
 
                 s_Data.SphereVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(x, y, z, 1.0f));
-                s_Data.SphereVertexBufferPtr->Color = color;
+                s_Data.SphereVertexBufferPtr->Color = material.Albedo;
                 s_Data.SphereVertexBufferPtr->Normal = glm::normalize(normalMatrix * glm::normalize(glm::vec3(x, y, z)));
                 s_Data.SphereVertexBufferPtr->TexCoord = glm::vec2((float)j / sectors, (float)i / stacks);
-                s_Data.SphereVertexBufferPtr->TexIndex = (float)textureIndex;
-                s_Data.SphereVertexBufferPtr->TilingFactor = tilingFactor;
                 s_Data.SphereVertexBufferPtr->EntityID = entityID;
                 s_Data.SphereVertexBufferPtr++;
             }
@@ -441,10 +422,9 @@ namespace Wasteland {
             // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
             instance.WorldTransform = transform;
             instance.InvTransform = glm::inverse(transform);
-            instance.Color = color;
-            
-            // x = Type (1.0 = Sphere), y = Base Radius, z = EntityID
-            instance.Properties = glm::vec4(1.0f, radius, (float)entityID, 0.0f);
+
+            instance.Albedo = material.Albedo;
+            instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
             
             s_Data.m_SceneInstances.push_back(instance);
             return;
