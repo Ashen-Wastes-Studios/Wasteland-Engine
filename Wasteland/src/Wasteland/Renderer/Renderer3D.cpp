@@ -58,7 +58,7 @@ namespace Wasteland {
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1; 
 
-        bool RayTracingEnabled = false;
+        bool RayTracingEnabled = true;
         Ref<Shader> RayTracingShader;
         Ref<Texture2D> RayTracingOutput;
 
