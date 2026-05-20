@@ -332,7 +332,7 @@ namespace Wasteland {
 			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
 			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
-			if (ImGui::Checkbox("RayTracing", &rtEnabled))
+			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
 			{
 				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
 			}
@@ -457,7 +457,7 @@ namespace Wasteland {
 			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
 
 			bool rtEnabled = Renderer3D::IsRayTracingEnabled();
-			if (ImGui::Checkbox("RayTracing", &rtEnabled))
+			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
 			{
 				Renderer3D::SetRayTracingEnabled(rtEnabled);
 			}

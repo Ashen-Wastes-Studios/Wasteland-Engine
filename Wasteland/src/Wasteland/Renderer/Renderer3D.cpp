@@ -25,7 +25,9 @@ namespace Wasteland {
         glm::mat4 InvTransform;      
         glm::mat4 WorldTransform;   
         glm::vec4 Albedo;             
-        glm::vec4 MaterialParams;       
+        glm::vec4 MaterialParams;   
+        glm::vec4 Min;
+        glm::vec4 Max;    
     }; 
 
     struct Renderer3DData
@@ -64,8 +66,14 @@ namespace Wasteland {
         uint32_t RayTracingWidth = 0;
         uint32_t RayTracingHeight = 0;
 
+        // Path Tracing state
+        uint32_t AccumulationTexture = 0;
+        uint32_t FrameIndex = 0;
+        glm::mat4 LastViewProjection = glm::mat4(1.0f);
+
         uint32_t SceneInstanceBufferID = 0;
         std::vector<RayTracingInstance> m_SceneInstances;
+        bool m_SceneDirty = true;
 
         Renderer3D::Statistics Stats;
     };
@@ -125,7 +133,10 @@ namespace Wasteland {
         s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
 
         s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight); 
-        s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_RayTracing.glsl");
+        s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_NovaRenderer.glsl");
+
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
+        glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
         uint32_t maxInstances = 10000;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
@@ -148,6 +159,7 @@ namespace Wasteland {
         delete[] s_Data.SphereIndexBufferBase;
 
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
+        glDeleteTextures(1, &s_Data.AccumulationTexture);
 
         s_Data.CubeVertexArray = nullptr;
         s_Data.CubeVertexBuffer = nullptr;
@@ -166,6 +178,13 @@ namespace Wasteland {
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
+
+        if (viewProj != s_Data.LastViewProjection)
+        {
+            s_Data.FrameIndex = 0;
+            s_Data.LastViewProjection = viewProj;
+            // Optionally clear the texture here if you have a clear function
+        }
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
@@ -201,27 +220,55 @@ namespace Wasteland {
         {
             if (s_Data.m_SceneInstances.empty()) return;
 
-            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
-                                  s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
-                                  s_Data.m_SceneInstances.data());
+            // Only upload if something changed
+            if (s_Data.m_SceneDirty) 
+            {
+                glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
+                                    s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
+                                    s_Data.m_SceneInstances.data());
+                s_Data.m_SceneDirty = false; // Reset flag
+            }
 
-            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
-            
-            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
+                                s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
+                                s_Data.m_SceneInstances.data());
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
+            s_Data.RayTracingShader->SetInt("u_FrameIndex", (int)s_Data.FrameIndex);
 
-            uint32_t workGroupsX = s_Data.RayTracingWidth / 8;
-            uint32_t workGroupsY = s_Data.RayTracingHeight / 8;
+            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
+            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            
+            glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+            uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
+            uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+            
+            glUniform1i(glGetUniformLocation(s_Data.RayTracingTexture, "u_IsDenoisingPass"), 0);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+
+            glUniform1i(glGetUniformLocation(s_Data.RayTracingTexture, "u_IsDenoisingPass"), 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
 
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
             s_Data.RayTracingShader->Unbind();
 
+            EditorCamera camera;
+
+            if (&camera.GetPosition()) 
+            {
+                s_Data.FrameIndex = 0; // Reset accumulation
+            }
+            else 
+            {
+                s_Data.FrameIndex++;   // Accumulate
+            }
+
             s_Data.Stats.DrawCalls++;
+            s_Data.FrameIndex++;
             return;
         }
 
@@ -262,7 +309,8 @@ namespace Wasteland {
     { 
         if (width == 0 || height == 0) return;
 
-        s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
+        // Resize Output Texture
+        s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID(); // Assuming your Texture2D handles this
 
         if (s_Data.RayTracingTexture)
         {
@@ -274,11 +322,19 @@ namespace Wasteland {
 
         glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        
+        // Resize Accumulation Texture
+        if (s_Data.AccumulationTexture) glDeleteTextures(1, &s_Data.AccumulationTexture);
+        
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
+        glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, width, height);
+        
+        glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;
-
-        WL_CORE_INFO("Ray Tracing Target resized to {0}x{1}", width, height);
+        s_Data.FrameIndex = 0; // Reset accumulation on resize
     }
 
     void Renderer3D::FlushAndReset()
@@ -348,9 +404,13 @@ namespace Wasteland {
             instance.InvTransform = glm::inverse(transform);
 
             instance.Albedo = material.Albedo;
-            instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 1.0f);
+            instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
+
+            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f); 
+            instance.Max = glm::vec4( 0.5f,  0.5f,  0.5f, 1.0f);
             
             s_Data.m_SceneInstances.push_back(instance);
+            s_Data.m_SceneDirty = true;
             return;
         }
     }
@@ -431,8 +491,12 @@ namespace Wasteland {
 
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
+
+            instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);
+            instance.Max = glm::vec4( radius,  radius,  radius, 1.0f);
             
             s_Data.m_SceneInstances.push_back(instance);
+            s_Data.m_SceneDirty = true;
             return;
         }
     }
