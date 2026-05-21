@@ -30,6 +30,7 @@ uniform mat4 u_InverseViewProjection;
 uniform int u_InstanceCount; 
 uniform int u_FrameIndex;
 uniform bool u_IsDenoisingPass;
+uniform int u_SamplesPerPixel;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -129,10 +130,9 @@ void main()
     } 
     else 
     {
-        const int SAMPLES_PER_PIXEL = 4;
         vec3 accumulatedLight = vec3(0.0);
 
-        for (int s = 0; s < SAMPLES_PER_PIXEL; s++) 
+        for (int s = 0; s < u_SamplesPerPixel; s++) 
         {
             seed += uint(s * 12345);
             Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4((vec2(pixelCoords) / vec2(imgSize)) * 2.0 - 1.0, 1.0, 1.0)).xyz));
@@ -193,7 +193,7 @@ void main()
             accumulatedLight += incomingLight;
         }
 
-        vec3 finalIncomingLight = accumulatedLight / float(SAMPLES_PER_PIXEL);
+        vec3 finalIncomingLight = accumulatedLight / float(u_SamplesPerPixel);
         vec4 incomingColor = vec4(finalIncomingLight, 1.0);
 
         // --- ACCUMULATION BUFFER UPDATE ---

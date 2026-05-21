@@ -70,11 +70,17 @@ namespace Wasteland {
         // Path Tracing state
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
+        uint32_t SamplesPerPixel = 1;
+        uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
         uint32_t SceneInstanceBufferID = 0;
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
+
+        glm::vec3 LastCameraPosition = glm::vec3(0.0f);
+        glm::vec2 LastCameraRotation = glm::vec2(0.0f);
+        float MovementThreshold = 0.0001f;
 
         Renderer3D::Statistics Stats;
     };
@@ -221,6 +227,22 @@ namespace Wasteland {
         {
             if (s_Data.m_SceneInstances.empty()) return;
 
+            EditorCamera editorCamera;
+
+            bool moved = CheckForCameraMovement(editorCamera); // Compare camera pos/rotation to last frame
+
+            if (moved)
+            {
+                s_Data.FrameIndex = 0; // Reset accumulation
+                s_Data.SamplesPerPixel = 1; // Go into "Fast/Draft" mode
+                s_Data.StillFrames = 0;
+            }
+            else
+            {
+                s_Data.StillFrames++;
+                s_Data.SamplesPerPixel = (s_Data.StillFrames > 120) ? 8 : 1;
+            }
+
             // Only upload if something changed
             if (s_Data.m_SceneDirty) 
             {
@@ -246,20 +268,22 @@ namespace Wasteland {
 
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+
+            s_Data.RayTracingShader->Bind();
+            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
             
-            glUniform1i(glGetUniformLocation(s_Data.RayTracingTexture, "u_IsDenoisingPass"), 0);
+            s_Data.RayTracingShader->SetInt("u_IsDenoisingPass", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
 
-            glUniform1i(glGetUniformLocation(s_Data.RayTracingTexture, "u_IsDenoisingPass"), 1);
+            s_Data.RayTracingShader->SetInt("u_IsDenoisingPass", 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
 
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
             s_Data.RayTracingShader->Unbind();
 
-            EditorCamera camera;
-
-            if (&camera.GetPosition()) 
+            if (&editorCamera.GetPosition()) 
             {
                 s_Data.FrameIndex = 0; // Reset accumulation
             }
@@ -352,6 +376,31 @@ namespace Wasteland {
         s_Data.SphereIndexBufferPtr = s_Data.SphereIndexBufferBase;
 
         s_Data.TextureSlotIndex = 1;
+    }
+
+    bool Renderer3D::CheckForCameraMovement(const EditorCamera &editorCamera)
+    {
+        glm::vec3 currentPos = editorCamera.GetPosition();
+        glm::vec2 currentRot = glm::vec2(editorCamera.GetPitch(), editorCamera.GetYaw());
+
+        // Calculate the difference between current and last frame
+        float posDelta = glm::distance(currentPos, s_Data.LastCameraPosition);
+        
+        // For rotation, we just check if any component changed
+        // (Euler angles are tricky, but this works for basic movement)
+        float rotDelta = glm::distance(currentRot, s_Data.LastCameraRotation);
+
+        // Check if the delta exceeds our tolerance
+        bool moved = (posDelta > s_Data.MovementThreshold) || (rotDelta > s_Data.MovementThreshold);
+
+        if (moved)
+        {
+            // Update the "Last" state for the next frame
+            s_Data.LastCameraPosition = currentPos;
+            s_Data.LastCameraRotation = currentRot;
+        }
+
+        return moved;
     }
 
     void Renderer3D::DrawCube(const glm::mat4& transform, const glm::vec4& color, MaterialComponent& material, int entityID)
