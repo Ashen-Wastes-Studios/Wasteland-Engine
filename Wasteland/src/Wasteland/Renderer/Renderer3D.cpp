@@ -82,6 +82,8 @@ namespace Wasteland {
         glm::vec2 LastCameraRotation = glm::vec2(0.0f);
         float MovementThreshold = 0.0001f;
 
+        uint32_t BloomTextureID = 0;
+
         Renderer3D::Statistics Stats;
     };
 
@@ -266,19 +268,33 @@ namespace Wasteland {
             
             glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
-            
-            s_Data.RayTracingShader->SetInt("u_IsDenoisingPass", 0);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
 
-            s_Data.RayTracingShader->SetInt("u_IsDenoisingPass", 1);
+            // 1. Ray Trace & Denoise
+            s_Data.RayTracingShader->SetInt("u_PassID", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
+            // 2. Bloom Threshold (Extract bright pixels)
+            s_Data.RayTracingShader->SetInt("u_PassID", 1);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+
+            // 3. Bloom Blur (Blur the extracted buffer)
+            s_Data.RayTracingShader->SetInt("u_PassID", 2);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+
+            // 4. Composite (Add glow back to main image)
+            s_Data.RayTracingShader->SetInt("u_PassID", 3);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
             s_Data.RayTracingShader->Unbind();

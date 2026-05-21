@@ -603,10 +603,10 @@ namespace Wasteland {
 				auto& mc = entity.GetComponent<MaterialComponent>();
 
 				ImGui::ColorEdit4("Albedo", glm::value_ptr(mc.Albedo));
-				ImGui::DragFloat("Metallic", &mc.Metallic, 0.1f, 0.0f, 1.0f);
-				ImGui::DragFloat("Roughness", &mc.Roughness, 0.1f, 0.0f, 1.0f);
+				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
+				ImGui::DragFloat("Roughness", &mc.Roughness, 0.05f, 0.0f, 1.0f);
 				ImGui::ColorEdit4("Emission Color", glm::value_ptr(mc.EmissionColor));
-				ImGui::DragFloat("Emission Intensity", &mc.EmissionIntensity, 0.1f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Emission Intensity", &mc.EmissionIntensity, 0.05f, 0.0f, FLT_MAX);
 
 				ImGui::TreePop();
 			}

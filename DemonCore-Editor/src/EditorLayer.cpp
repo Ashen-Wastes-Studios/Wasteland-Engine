@@ -338,7 +338,7 @@ namespace Wasteland {
 			ImGui::Checkbox("Show physics colliders", &m_ShowPhysicsColliders);
 
 			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
-			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
+			if (ImGui::Checkbox("Nova Rendering Pipeline", &rtEnabled))
 			{
 				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
 			}
@@ -457,7 +457,7 @@ namespace Wasteland {
 			ImGui::Text("Vertices: %d", stats3D.GetTotalVertexCount());
 
 			bool rtEnabled = Renderer3D::IsRayTracingEnabled();
-			if (ImGui::Checkbox("Nova Renderer", &rtEnabled))
+			if (ImGui::Checkbox("Nova Rendering Pipeline", &rtEnabled))
 			{
 				Renderer3D::SetRayTracingEnabled(rtEnabled);
 			}
