@@ -277,22 +277,22 @@ namespace Wasteland {
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
 
-            // 1. Ray Trace & Denoise
+            // Ray Trace & Denoise
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // 2. Bloom Threshold (Extract bright pixels)
+            // Bloom Threshold (Extract bright pixels)
             s_Data.RayTracingShader->SetInt("u_PassID", 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // 3. Bloom Blur (Blur the extracted buffer)
+            // Bloom Blur (Blur the extracted buffer)
             s_Data.RayTracingShader->SetInt("u_PassID", 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // 4. Composite (Add glow back to main image)
+            // Composite (Add glow back to main image)
             s_Data.RayTracingShader->SetInt("u_PassID", 3);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
