@@ -18,7 +18,7 @@ struct RayTracingInstance
     vec4 MaterialParams;    
     vec4 Min;
     vec4 Max;
-    vec4 Emission; // xyz = color, w = intensity
+    vec4 Emission; 
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -28,6 +28,7 @@ layout(std430, binding = 1) buffer SceneInstances
 
 uniform vec3 u_CameraPosition;
 uniform mat4 u_InverseViewProjection;
+uniform mat4 u_PrevViewProjection; 
 uniform int u_InstanceCount; 
 uniform int u_FrameIndex;
 uniform int u_SamplesPerPixel;
@@ -36,7 +37,6 @@ uniform int u_PassID;
 struct Ray { vec3 Origin; vec3 Direction; };
 
 // --- Utility Functions ---
-
 bool RayAABB(Ray r, vec3 minB, vec3 maxB) 
 {
     vec3 invDir = 1.0 / r.Direction;
@@ -110,17 +110,12 @@ void RunTraceAndDenoise()
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
     vec3 accumulatedLight = vec3(0.0);
-
     for (int s = 0; s < u_SamplesPerPixel; s++) 
     {
-        // Tent filter for smoother anti-aliasing
-        float r1 = hash();
-        float r2 = hash();
+        float r1 = hash(); float r2 = hash();
         float dx = (r1 < 0.5) ? sqrt(2.0 * r1) - 1.0 : 1.0 - sqrt(2.0 - 2.0 * r1);
         float dy = (r2 < 0.5) ? sqrt(2.0 * r2) - 1.0 : 1.0 - sqrt(2.0 - 2.0 * r2);
-        vec2 jitter = vec2(dx, dy) * 0.5; // Offset by half a pixel
-        
-        // This shifts the sample point slightly within the pixel bounds
+        vec2 jitter = vec2(dx, dy) * 0.5; 
         vec2 uv = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
 
         Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(uv, 1.0, 1.0)).xyz));
@@ -132,48 +127,29 @@ void RunTraceAndDenoise()
             float closestHit = 1e20;
             int hitIndex = -1;
             vec3 hitNormal, hitPoint, hitAlbedo;
-
             for(int i = 0; i < u_InstanceCount; i++) 
             {
                 RayTracingInstance inst = Instances[i];
                 Ray localRay;
                 localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
                 localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
-                
                 if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
-
                 vec3 localNormal;
-                float tLocal = -1.0;
-                uint type = uint(inst.MaterialParams.z);
-                    
-                if (type == 0) tLocal = HitCube(localRay, localNormal);
-                else if (type == 1) tLocal = HitSphere(localRay, inst.MaterialParams.w, localNormal);
-                    
+                float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
                 if (tLocal > 0.0) 
                 {
                     vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
                     float tWorld = distance(currentRay.Origin, worldHit);
                     if (tWorld < closestHit) 
                     {
-                        closestHit = tWorld;
-                        hitIndex = i;
+                        closestHit = tWorld; hitIndex = i;
                         hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-                        hitPoint = worldHit;
-                        hitAlbedo = inst.Albedo.rgb;
+                        hitPoint = worldHit; hitAlbedo = inst.Albedo.rgb;
                     }
                 }
             }
-
-            // Handle Miss or Hit
-            if (hitIndex == -1) { 
-                incomingLight += throughput * vec3(0.0, 0.0, 0.0); // Sky
-                break; 
-            }
-
-            vec3 hitEmission = Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w;
-            incomingLight += throughput * hitEmission;
-
-            // Bounce
+            if (hitIndex == -1) break;
+            incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
             throughput *= hitAlbedo;
             currentRay.Origin = hitPoint + hitNormal * 0.05;
             currentRay.Direction = random_in_hemisphere(hitNormal);
@@ -181,45 +157,51 @@ void RunTraceAndDenoise()
         accumulatedLight += incomingLight;
     }
 
-    vec3 finalIncomingLight = accumulatedLight / float(u_SamplesPerPixel);
-    vec4 incomingColor = vec4(finalIncomingLight, 1.0);
+    vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
 
-    // --- ACCUMULATION BUFFER UPDATE ---
-    vec4 resultColor;
-    if (u_FrameIndex == 0) resultColor = incomingColor;
-    else {
-        vec4 prevAccum = imageLoad(img_Accumulation, pixelCoords);
-        resultColor = mix(prevAccum, incomingColor, 1.0 / float(u_FrameIndex + 1));
+    // --- TAA ACCUMULATION ---
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
+    vec4 worldPos = inverse(u_InverseViewProjection) * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+    worldPos /= worldPos.w;
+    vec4 prevClip = u_PrevViewProjection * worldPos;
+    vec2 prevUV = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+    
+    vec3 boxMin = vec3(1e10); vec3 boxMax = vec3(-1e10);
+    for(int x = -1; x <= 1; x++) {
+        for(int y = -1; y <= 1; y++) {
+            vec3 neighbor = currentColor; // Simplified 3x3 clamp
+            boxMin = min(boxMin, neighbor); boxMax = max(boxMax, neighbor);
+        }
     }
-    imageStore(img_Accumulation, pixelCoords, resultColor);
 
-    // --- TONE MAPPING & GAMMA CORRECTION ---
-    vec3 mappedColor = resultColor.rgb / (resultColor.rgb + vec3(1.0));
-    vec3 finalOutput = pow(mappedColor, vec3(1.0 / 2.2));
-        
-    imageStore(img_Output, pixelCoords, vec4(finalOutput, 1.0));
+    vec2 prevCoord = clamp(prevUV * vec2(imgSize), vec2(0.0), vec2(imgSize) - 1.0);
+    vec3 history = imageLoad(img_Accumulation, ivec2(prevCoord)).rgb;
+    history = clamp(history, boxMin, boxMax);
+    
+    vec3 resultColor = mix(history, currentColor, 0.1); // Fixed Alpha
+    imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
+
+    // --- TONE MAPPING ---
+    vec3 mappedColor = resultColor / (resultColor + vec3(1.0));
+    imageStore(img_Output, pixelCoords, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
 }
 
 void RunBloomThreshold() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 color = imageLoad(img_Output, pos);
     float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-    
-    // Only keep bright pixels
     imageStore(img_Bloom, pos, (brightness > 1.0) ? color : vec4(0.0));
 }
 
 void RunBloomBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 sum = vec4(0.0);
-    int count = 0;
     for(int x = -2; x <= 2; x++) {
         for(int y = -2; y <= 2; y++) {
             sum += imageLoad(img_Bloom, pos + ivec2(x, y));
-            count++;
         }
     }
-    imageStore(img_Bloom, pos, sum / float(count));
+    imageStore(img_Bloom, pos, sum / 25.0);
 }
 
 void RunComposite() {

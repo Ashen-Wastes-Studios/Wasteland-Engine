@@ -84,6 +84,9 @@ namespace Wasteland {
 
         uint32_t BloomTextureID = 0;
 
+        glm::mat4 PrevViewProjection = glm::mat4(1.0f);
+        glm::mat4 CurrentViewProjection = glm::mat4(1.0f);
+
         Renderer3D::Statistics Stats;
     };
 
@@ -279,6 +282,7 @@ namespace Wasteland {
 
             // Ray Trace & Denoise
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
+            s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
@@ -308,6 +312,7 @@ namespace Wasteland {
                 s_Data.FrameIndex++;   // Accumulate
             }
 
+            s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
             s_Data.Stats.DrawCalls++;
             s_Data.FrameIndex++;
             return;
