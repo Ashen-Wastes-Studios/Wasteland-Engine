@@ -148,11 +148,11 @@ void RunTraceAndDenoise()
                     }
                 }
             }
-            
+
             if (hitIndex == -1)
             {
                 float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-                vec3 skyColor = mix(vec3(1.0), vec3(0.2, 0.3, 0.5), t);
+                vec3 skyColor = mix(vec3(1.0), vec3(0.0, 0.1, 0.3), t);
                 
                 incomingLight += throughput * skyColor;
                 break;
