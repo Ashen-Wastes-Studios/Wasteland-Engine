@@ -150,6 +150,12 @@ namespace Wasteland {
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTextureID);
+        glTextureStorage2D(s_Data.BloomTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+
+        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
         uint32_t maxInstances = 10000;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
         glNamedBufferData(s_Data.SceneInstanceBufferID, maxInstances * sizeof(RayTracingInstance), nullptr, GL_DYNAMIC_DRAW);
@@ -172,6 +178,7 @@ namespace Wasteland {
 
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
         glDeleteTextures(1, &s_Data.AccumulationTexture);
+        glDeleteTextures(1, &s_Data.BloomTextureID);
 
         s_Data.CubeVertexArray = nullptr;
         s_Data.CubeVertexBuffer = nullptr;
@@ -267,7 +274,7 @@ namespace Wasteland {
 
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
-            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             
             glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
@@ -377,6 +384,15 @@ namespace Wasteland {
         
         glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        // Resize Bloom Texture
+        if (s_Data.BloomTextureID) glDeleteTextures(1, &s_Data.BloomTextureID);
+    
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTextureID);
+        glTextureStorage2D(s_Data.BloomTextureID, 1, GL_RGBA32F, width, height);
+        
+        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;

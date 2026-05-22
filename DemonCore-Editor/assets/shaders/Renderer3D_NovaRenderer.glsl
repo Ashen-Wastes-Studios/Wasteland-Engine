@@ -178,12 +178,10 @@ void RunTraceAndDenoise()
     vec3 history = imageLoad(img_Accumulation, ivec2(prevCoord)).rgb;
     history = clamp(history, boxMin, boxMax);
     
-    vec3 resultColor = mix(history, currentColor, 0.1); // Fixed Alpha
+    vec3 resultColor = mix(history, currentColor, 0.1);
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
 
-    // --- TONE MAPPING ---
-    vec3 mappedColor = resultColor / (resultColor + vec3(1.0));
-    imageStore(img_Output, pixelCoords, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
+    imageStore(img_Output, pixelCoords, vec4(resultColor, 1.0));
 }
 
 void RunBloomThreshold() {
@@ -196,19 +194,28 @@ void RunBloomThreshold() {
 void RunBloomBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 sum = vec4(0.0);
-    for(int x = -2; x <= 2; x++) {
-        for(int y = -2; y <= 2; y++) {
+    int radius = 2;
+    float count = 0.0;
+    
+    for(int x = -radius; x <= radius; x++) {
+        for(int y = -radius; y <= radius; y++) {
             sum += imageLoad(img_Bloom, pos + ivec2(x, y));
+            count += 1.0;
         }
     }
-    imageStore(img_Bloom, pos, sum / 25.0);
+    imageStore(img_Bloom, pos, sum / float(count));
 }
 
 void RunComposite() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec4 scene = imageLoad(img_Output, pos);
-    vec4 bloom = imageLoad(img_Bloom, pos);
-    imageStore(img_Output, pos, scene + (bloom * 0.5));
+    vec3 scene = imageLoad(img_Output, pos).rgb;
+    vec3 bloom = imageLoad(img_Bloom, pos).rgb;
+    
+    // Multiply bloom by a factor (e.g., 2.0 or 5.0) to exaggerate it
+    vec3 combined = scene + (bloom * 5.0); 
+    
+    vec3 mappedColor = combined / (combined + vec3(1.0));
+    imageStore(img_Output, pos, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
 }
 
 void main()
