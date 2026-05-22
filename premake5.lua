@@ -141,7 +141,7 @@ project "Wasteland"
 
 		defines
 		{
-			"WL_PLATFORM_MAC",
+			"WL_PLATFORM_MACOS",
 			"WL_BUILD_DLL",
 			"GLFW_INCLUDE_NONE"
 		}
@@ -233,7 +233,7 @@ project "Sandbox"
 
 		defines
 		{
-			"WL_PLATFORM_MAC"
+			"WL_PLATFORM_MACOS"
 		}
 
 	filter "configurations:Debug"
