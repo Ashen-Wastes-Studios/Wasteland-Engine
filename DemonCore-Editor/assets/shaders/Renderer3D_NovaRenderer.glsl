@@ -148,7 +148,16 @@ void RunTraceAndDenoise()
                     }
                 }
             }
-            if (hitIndex == -1) break;
+            
+            if (hitIndex == -1)
+            {
+                float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
+                vec3 skyColor = mix(vec3(1.0), vec3(0.2, 0.3, 0.5), t);
+                
+                incomingLight += throughput * skyColor;
+                break;
+            }
+
             incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
             throughput *= hitAlbedo;
             currentRay.Origin = hitPoint + hitNormal * 0.05;
