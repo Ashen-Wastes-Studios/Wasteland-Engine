@@ -194,7 +194,7 @@ void RunBloomThreshold() {
 void RunBloomBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 sum = vec4(0.0);
-    int radius = 2;
+    int radius = 10;
     float count = 0.0;
     
     for(int x = -radius; x <= radius; x++) {
