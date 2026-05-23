@@ -89,6 +89,9 @@ namespace Wasteland {
 
         std::vector<uint32_t> LightIndicies;
 
+        uint32_t AccumulationTextures[2] = { 0, 0 };
+        uint32_t CurrentAccumulationIndex = 0;
+
         Renderer3D::Statistics Stats;
     };
 
@@ -158,6 +161,16 @@ namespace Wasteland {
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+        glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
+        for (int i = 0; i < 2; i++)
+        {
+            glTextureStorage2D(s_Data.AccumulationTextures[i], 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+
         uint32_t maxInstances = 10000;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
         glNamedBufferData(s_Data.SceneInstanceBufferID, maxInstances * sizeof(RayTracingInstance), nullptr, GL_DYNAMIC_DRAW);
@@ -181,6 +194,7 @@ namespace Wasteland {
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
         glDeleteTextures(1, &s_Data.AccumulationTexture);
         glDeleteTextures(1, &s_Data.BloomTextureID);
+        glDeleteTextures(2, s_Data.AccumulationTextures);
 
         s_Data.CubeVertexArray = nullptr;
         s_Data.CubeVertexBuffer = nullptr;
@@ -270,9 +284,15 @@ namespace Wasteland {
                 }
             }
 
+            uint32_t readIdx = s_Data.CurrentAccumulationIndex;
+            uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
+
             glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
                                 s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
                                 s_Data.m_SceneInstances.data());
+
+            glActiveTexture(GL_TEXTURE0 + 3); 
+            glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
@@ -283,8 +303,12 @@ namespace Wasteland {
             glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             
             glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+            GLuint velocityTexture;
+            glGenTextures(1, &velocityTexture);
 
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
@@ -328,7 +352,7 @@ namespace Wasteland {
 
             s_Data.LastCameraPosition = currentPos;
             s_Data.LastCameraRotation = currentPitch, currentYaw;
-            s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
+            s_Data.CurrentAccumulationIndex = 1 - s_Data.CurrentAccumulationIndex;
             s_Data.Stats.DrawCalls++;
             s_Data.FrameIndex++;
             return;
@@ -402,6 +426,17 @@ namespace Wasteland {
         
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        // Resize Accumulation Textures
+        if (s_Data.AccumulationTextures[0]) glDeleteTextures(2, s_Data.AccumulationTextures);
+
+        glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
+        for (int i = 0; i < 2; i++)
+        {
+            glTextureStorage2D(s_Data.AccumulationTextures[i], 1, GL_RGBA32F, width, height);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
 
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;

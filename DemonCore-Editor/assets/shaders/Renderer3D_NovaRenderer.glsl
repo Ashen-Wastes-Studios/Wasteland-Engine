@@ -9,6 +9,10 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 layout(rgba32f, binding = 1) uniform image2D img_Accumulation;
 layout(rgba32f, binding = 2) uniform image2D img_Bloom;
+layout(rg16f, binding = 5) uniform image2D img_Velocity;
+layout(rgba32f, binding = 6) uniform image2D img_FinalDisplay;
+layout(binding = 3) uniform sampler2D s_Accumulation;
+layout(binding = 4) uniform sampler2D s_DepthBuffer;
 
 struct RayTracingInstance 
 {
@@ -34,6 +38,7 @@ uniform int u_FrameIndex;
 uniform int u_SamplesPerPixel;
 uniform int u_PassID;
 uniform float u_CameraMoved;
+uniform mat4 u_ViewProjection;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -165,6 +170,21 @@ void GetNeighborhoodBounds(ivec2 center, out vec3 minCol, out vec3 maxCol)
     }
 }
 
+float Halton(int index, int base) {
+    float f = 1.0;
+    float r = 0.0;
+    while (index > 0) {
+        f /= float(base);
+        r += f * float(index % base);
+        index /= base;
+    }
+    return r;
+}
+
+vec2 GetJitter(int frameIndex) {
+    return vec2(Halton(frameIndex, 2), Halton(frameIndex, 3)) - 0.5;
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -172,12 +192,12 @@ void RunTraceAndDenoise()
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
     vec3 accumulatedLight = vec3(0.0);
+    vec2 frameVelocity = vec2(0.0); // Track velocity for this pixel
+    bool hitAnything = false; // To track if we need to calculate motion
+
     for (int s = 0; s < u_SamplesPerPixel; s++) 
     {
-        float r1 = hash(); float r2 = hash();
-        float dx = (r1 < 0.5) ? sqrt(2.0 * r1) - 1.0 : 1.0 - sqrt(2.0 - 2.0 * r1);
-        float dy = (r2 < 0.5) ? sqrt(2.0 * r2) - 1.0 : 1.0 - sqrt(2.0 - 2.0 * r2);
-        vec2 jitter = vec2(dx, dy) * 0.5; 
+        vec2 jitter = GetJitter(u_FrameIndex);
         vec2 uv = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
 
         Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(uv, 1.0, 1.0)).xyz));
@@ -217,6 +237,17 @@ void RunTraceAndDenoise()
 
             if (hitIndex != -1)
             {
+                if (bounce == 0) {
+                    vec4 currentPosNDC = u_ViewProjection * vec4(hitPoint, 1.0);
+                    currentPosNDC.xy /= currentPosNDC.w;
+                    
+                    vec4 prevPosNDC = u_PrevViewProjection * vec4(hitPoint, 1.0);
+                    prevPosNDC.xy /= prevPosNDC.w;
+                    
+                    frameVelocity = currentPosNDC.xy - prevPosNDC.xy;
+                    hitAnything = true;
+                }
+
                 // WE HIT SOMETHING: Shade it
                 vec3 directLight = vec3(0.0);
                 
@@ -258,21 +289,35 @@ void RunTraceAndDenoise()
     }
 
     vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
+    vec2 velocity = imageLoad(img_Velocity, pixelCoords).xy;
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
+
+    float depth = texture(s_DepthBuffer, uv).r;
+    vec4 clipPos = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 prevClipPos = u_PrevViewProjection * (u_InverseViewProjection * clipPos);
+    vec2 prevUV = uv - velocity;
+
+    vec2 currentJitter = GetJitter(u_FrameIndex);
+    vec2 prevJitter = GetJitter(u_FrameIndex - 1);
+    vec2 jitterOffset = (currentJitter - prevJitter) / vec2(imgSize);
+
+    bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
 
     imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
     memoryBarrierImage();
 
-    if (u_CameraMoved > 0.5) 
-    {
-        imageStore(img_Accumulation, pixelCoords, vec4(currentColor, 1.0));
-        return;
+    vec3 history = vec3(0.0);
+    if(inBounds && u_CameraMoved < 0.5) {
+        history = texture(s_Accumulation, prevUV).rgb;
+    } else {
+        history = currentColor; // Reset if out of bounds or camera just moved
     }
 
-    vec3 history = imageLoad(img_Accumulation, pixelCoords).rgb; 
+    float diff = distance(history, currentColor);
+    if (diff > 0.5) history = currentColor;
 
     vec3 minCol, maxCol;
     GetNeighborhoodBounds(pixelCoords, minCol, maxCol);
-
     history = clamp(history, minCol, maxCol);
 
     float alpha = 0.1;
@@ -339,6 +384,31 @@ void RunBilateralBlur() {
     imageStore(img_Output, pos, vec4(totalColor / totalWeight, 1.0));
 }
 
+void RunResolve() 
+{
+    ivec2 displayPos = ivec2(gl_GlobalInvocationID.xy);
+    vec2 displaySize = vec2(imageSize(img_FinalDisplay));
+    vec2 renderSize = vec2(imageSize(img_Output));
+
+    vec2 uv = vec2(displayPos) / displaySize;
+
+    // We sample from the accumulation buffer (the low-res result)
+    vec3 color = texture(s_Accumulation, uv).rgb;
+
+    // This makes the upscaled image look "native"
+    vec3 center = color;
+    vec3 up = texture(s_Accumulation, uv + vec2(0.0, 1.0/renderSize.y)).rgb;
+    vec3 down = texture(s_Accumulation, uv - vec2(0.0, 1.0/renderSize.y)).rgb;
+    vec3 left = texture(s_Accumulation, uv - vec2(1.0/renderSize.x, 0.0)).rgb;
+    vec3 right = texture(s_Accumulation, uv + vec2(1.0/renderSize.x, 0.0)).rgb;
+
+    // Apply a sharpening kernel
+    vec3 sharp = mix(center, center * 5.0 - (up + down + left + right) * 1.0, 0.5);
+    
+    // Store in display texture
+    imageStore(img_FinalDisplay, displayPos, vec4(sharp, 1.0));
+}
+
 void main()
 {
     switch(u_PassID) 
@@ -348,5 +418,6 @@ void main()
         case 2: RunBloomBlur(); break;
         case 3: RunComposite(); break;
         case 4: RunBilateralBlur(); break;
+        case 5: RunResolve(); break;
     }
 }
