@@ -37,6 +37,9 @@
     <Filter Include="src\Wasteland\Scene">
       <UniqueIdentifier>{1C4012F9-88A1-EF06-110F-36B97D6F26C6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Wasteland\Scripting">
+      <UniqueIdentifier>{81AF4098-EDE6-882F-F6F0-EC5262A7AF28}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Wasteland\Utils">
       <UniqueIdentifier>{5FD43FF9-CB35-1D07-54A3-63B9C00354C6}</UniqueIdentifier>
     </Filter>
@@ -1600,6 +1603,9 @@
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\SceneSerializer.cpp">
       <Filter>src\Wasteland\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp">
+      <Filter>src\Wasteland\Scripting</Filter>
     </ClCompile>
     <ClCompile Include="src\wlpch.cpp">
       <Filter>src</Filter>

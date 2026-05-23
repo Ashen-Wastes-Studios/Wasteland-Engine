@@ -9,15 +9,29 @@
 
 #include <GLFW/glfw3.h>
 
-namespace Wasteland {
+#include <pybind11/pybind11.h>
+#include <Python.h>
+
+namespace Wasteland
+{
 
 #define BIND_EVENT_FN(x) std::bind(&Application::x, this, std::placeholders::_1)
 
-	Application* Application::s_Instance = nullptr;
+	Application *Application::s_Instance = nullptr;
 
-	Application::Application(const std::string& name)
+	extern "C" PyObject *PyInit_WastelandCore(void);
+
+	Application::Application(const std::string &name)
 	{
 		WL_PROFILE_FUNCTION();
+
+		PyImport_AppendInittab("WastelandCore", &PyInit_WastelandCore);
+
+		Py_SetPythonHome(L"C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64");
+
+		Py_Initialize();
+
+		PyRun_SimpleString("import sys; print('Python sys.path:', sys.path)");
 
 		WL_CORE_ASSERT(!s_Instance, "Application already exists");
 		s_Instance = this;
@@ -34,9 +48,11 @@ namespace Wasteland {
 	Application::~Application()
 	{
 		WL_PROFILE_FUNCTION();
+
+		Py_Finalize();
 	}
 
-	void Application::PushLayer(Layer* layer)
+	void Application::PushLayer(Layer *layer)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -44,7 +60,7 @@ namespace Wasteland {
 		layer->OnAttach();
 	}
 
-	void Application::PushOverlay(Layer* layer)
+	void Application::PushOverlay(Layer *layer)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -57,7 +73,7 @@ namespace Wasteland {
 		m_Running = false;
 	}
 
-	void Application::OnEvent(Event& e)
+	void Application::OnEvent(Event &e)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -65,7 +81,7 @@ namespace Wasteland {
 		dispatcher.Dispatch<WindowCloseEvent>(BIND_EVENT_FN(OnWindowClose));
 		dispatcher.Dispatch<WindowResizeEvent>(BIND_EVENT_FN(OnWindowResize));
 
-		for (auto it = m_LayerStack.end(); it != m_LayerStack.begin(); )
+		for (auto it = m_LayerStack.end(); it != m_LayerStack.begin();)
 		{
 			(*--it)->OnEvent(e);
 			if (e.Handled)
@@ -90,7 +106,7 @@ namespace Wasteland {
 				{
 					WL_PROFILE_SCOPE("LayerStack OnUpdate");
 
-					for (Layer* layer : m_LayerStack)
+					for (Layer *layer : m_LayerStack)
 						layer->OnUpdate(timestep);
 				}
 
@@ -98,7 +114,7 @@ namespace Wasteland {
 				{
 					WL_PROFILE_SCOPE("LayerStack OnImGuiRender");
 
-					for (Layer* layer : m_LayerStack)
+					for (Layer *layer : m_LayerStack)
 						layer->OnImGuiRender();
 				}
 				m_ImGuiLayer->End();
@@ -108,13 +124,13 @@ namespace Wasteland {
 		}
 	}
 
-	bool Application::OnWindowClose(WindowCloseEvent& e)
+	bool Application::OnWindowClose(WindowCloseEvent &e)
 	{
 		m_Running = false;
 		return true;
 	}
 
-	bool Application::OnWindowResize(WindowResizeEvent& e)
+	bool Application::OnWindowResize(WindowResizeEvent &e)
 	{
 		WL_PROFILE_FUNCTION();
 

@@ -28,7 +28,7 @@ ifeq ($(origin AR), default)
   AR = ar
 endif
 RESCOMP = windres
-INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include
+INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include -I../Wasteland/vendor/pybind11/include
 FORCE_INCLUDE +=
 ALL_CPPFLAGS += $(CPPFLAGS) -MD -MP $(DEFINES) $(INCLUDES)
 ALL_RESFLAGS += $(RESFLAGS) $(DEFINES) $(INCLUDES)

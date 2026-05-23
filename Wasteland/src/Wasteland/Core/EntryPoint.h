@@ -1,10 +1,12 @@
 #pragma once
 
+#include <pybind11/pybind11.h>
+
 #ifdef WL_PLATFORM_WINDOWS
 
-extern Wasteland::Application* Wasteland::CreateApplication();
+extern Wasteland::Application *Wasteland::CreateApplication();
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
 	Wasteland::Log::Init();
 

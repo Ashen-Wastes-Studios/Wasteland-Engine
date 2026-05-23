@@ -22,6 +22,9 @@ IncludeDir["entt"] = "Wasteland/vendor/entt/single_include"
 IncludeDir["yaml_cpp"] = "Wasteland/vendor/yaml-cpp/include"
 IncludeDir["ImGuizmo"] = "Wasteland/vendor/ImGuizmo"
 IncludeDir["Box2D"] = "Wasteland/vendor/Box2D/include"
+IncludeDir["pybind11"] = "Wasteland/vendor/pybind11/include"
+
+pythonpath = "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64"
 
 group "Dependencies"
 	include "Wasteland/vendor/GLFW"
@@ -76,7 +79,14 @@ project "Wasteland"
 		"%{IncludeDir.entt}",
 		"%{IncludeDir.yaml_cpp}",
 		"%{IncludeDir.ImGuizmo}",
-		"%{IncludeDir.Box2D}"
+		"%{IncludeDir.Box2D}",
+		"%{IncludeDir.pybind11}",
+		pythonpath .. "/include"
+	}
+
+	libdirs
+	{
+		pythonpath .. "/libs"
 	}
 
 	links 
@@ -85,7 +95,8 @@ project "Wasteland"
 		"Glad",
 		"ImGui",
 		"yaml-cpp",
-		"Box2D"
+		"Box2D",
+		"python314"
 	}
 
 	filter "files:vendor/ImGuizmo/**.cpp"
@@ -193,12 +204,20 @@ project "Sandbox"
 		"%{IncludeDir.glm}",
 		"%{IncludeDir.Glad}",
 		"%{IncludeDir.entt}",
+		"%{IncludeDir.pybind11}",
+		pythonpath .. "/include"
+	}
+
+	libdirs
+	{
+		pythonpath .. "/libs"
 	}
 
 	links
 	{
 		"Wasteland",
-		"ImGui"
+		"ImGui",
+		"python314"
 	}
 
 	filter "system:windows"
@@ -282,15 +301,30 @@ project "DemonCore-Editor"
 		"%{IncludeDir.Glad}",
 		"%{IncludeDir.entt}",
 		"%{IncludeDir.yaml_cpp}",
-		"%{IncludeDir.ImGuizmo}"
+		"%{IncludeDir.ImGuizmo}",
+		"%{IncludeDir.pybind11}",
+		pythonpath .. "/include"
+	}
+
+	libdirs
+	{
+		pythonpath .. "/libs"
 	}
 
 	links
 	{
 		"Wasteland",
 		"ImGui",
-		"yaml-cpp"
+		"yaml-cpp",
+		"python314"
 	}
+
+	postbuildcommands {
+        'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.dll" "$(TargetDir)python314.dll"',
+		'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314._pth" "$(TargetDir)"',
+        'xcopy /Y /E /I "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib" "$(TargetDir)Lib"',
+        'xcopy /Y /E /I "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs" "$(TargetDir)DLLs"'
+    }
 
 	filter "system:windows"
 		systemversion "latest"

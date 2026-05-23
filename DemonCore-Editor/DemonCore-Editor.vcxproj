@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;..\Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -90,16 +90,24 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>python314.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ProjectReference>
     </ProjectReference>
+    <PostBuildEvent>
+      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;..\Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -114,16 +122,24 @@
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>python314.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ProjectReference>
     </ProjectReference>
+    <PostBuildEvent>
+      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\Wasteland\vendor\spdlog\include;..\Wasteland\vendor;..\Wasteland\src;..\Wasteland\vendor\glm;..\Wasteland\vendor\Glad\include;..\Wasteland\vendor\entt\single_include;..\Wasteland\vendor\yaml-cpp\include;..\Wasteland\vendor\ImGuizmo;..\Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -138,9 +154,17 @@
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>python314.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ProjectReference>
     </ProjectReference>
+    <PostBuildEvent>
+      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
+xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\EditorLayer.h" />

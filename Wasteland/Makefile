@@ -31,7 +31,7 @@ RESCOMP = windres
 PCH = src/wlpch.h
 PCH_PLACEHOLDER = $(OBJDIR)/$(notdir $(PCH))
 GCH = $(PCH_PLACEHOLDER).gch
-INCLUDES += -Isrc -Ivendor/spdlog/include -Ivendor/GLFW/include -Ivendor/Glad/include -Ivendor/imgui -Ivendor/glm -Ivendor/stb_image -Ivendor/entt/single_include -Ivendor/yaml-cpp/include -Ivendor/ImGuizmo -Ivendor/Box2D/include
+INCLUDES += -Isrc -Ivendor/spdlog/include -Ivendor/GLFW/include -Ivendor/Glad/include -Ivendor/imgui -Ivendor/glm -Ivendor/stb_image -Ivendor/entt/single_include -Ivendor/yaml-cpp/include -Ivendor/ImGuizmo -Ivendor/Box2D/include -Ivendor/pybind11/include -I"C:/Program Files/WindowsApps/PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0/include"
 FORCE_INCLUDE +=
 ALL_CPPFLAGS += $(CPPFLAGS) -MD -MP $(DEFINES) $(INCLUDES)
 ALL_RESFLAGS += $(RESFLAGS) $(DEFINES) $(INCLUDES)
@@ -50,9 +50,9 @@ OBJDIR = ../bin-int/Debug-windows-x86_64/Wasteland
 DEFINES += -D_CRT_SECURE_NO_WARNINGS -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_BUILD_DLL -DGLFW_INCLUDE_NONE -DWL_DEBUG
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -g /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -g -std=c++17 /utf-8
-LIBS += vendor/GLFW/bin/Debug-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Debug-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Debug-windows-x86_64/Box2D/Box2D.lib -lopengl32.lib
+LIBS += vendor/GLFW/bin/Debug-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Debug-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Debug-windows-x86_64/Box2D/Box2D.lib -lpython312 -lopengl32.lib
 LDDEPS += vendor/GLFW/bin/Debug-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Debug-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Debug-windows-x86_64/Box2D/Box2D.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64
+ALL_LDFLAGS += $(LDFLAGS) -L"C:/Program Files/WindowsApps/PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0/libs" -L/usr/lib64 -m64
 
 else ifeq ($(config),release)
 TARGETDIR = ../bin/Release-windows-x86_64/Wasteland
@@ -61,9 +61,9 @@ OBJDIR = ../bin-int/Release-windows-x86_64/Wasteland
 DEFINES += -D_CRT_SECURE_NO_WARNINGS -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_BUILD_DLL -DGLFW_INCLUDE_NONE -DWL_RELEASE
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += vendor/GLFW/bin/Release-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Release-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Release-windows-x86_64/Box2D/Box2D.lib -lopengl32.lib
+LIBS += vendor/GLFW/bin/Release-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Release-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Release-windows-x86_64/Box2D/Box2D.lib -lpython312 -lopengl32.lib
 LDDEPS += vendor/GLFW/bin/Release-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Release-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Release-windows-x86_64/Box2D/Box2D.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -L"C:/Program Files/WindowsApps/PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0/libs" -L/usr/lib64 -m64 -s
 
 else ifeq ($(config),dist)
 TARGETDIR = ../bin/Dist-windows-x86_64/Wasteland
@@ -72,9 +72,9 @@ OBJDIR = ../bin-int/Dist-windows-x86_64/Wasteland
 DEFINES += -D_CRT_SECURE_NO_WARNINGS -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_BUILD_DLL -DGLFW_INCLUDE_NONE -DWL_DIST
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += vendor/GLFW/bin/Dist-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Dist-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Dist-windows-x86_64/Box2D/Box2D.lib -lopengl32.lib
+LIBS += vendor/GLFW/bin/Dist-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Dist-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Dist-windows-x86_64/Box2D/Box2D.lib -lpython312 -lopengl32.lib
 LDDEPS += vendor/GLFW/bin/Dist-windows-x86_64/GLFW/GLFW.lib vendor/Glad/bin/Dist-windows-x86_64/Glad/Glad.lib vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib vendor/Box2D/bin/Dist-windows-x86_64/Box2D/Box2D.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -L"C:/Program Files/WindowsApps/PythonSoftwareFoundation.Python.3.12_3.12.2800.0_x64__qbz5n2kfra8p0/libs" -L/usr/lib64 -m64 -s
 
 endif
 
@@ -89,6 +89,7 @@ GENERATED :=
 OBJECTS :=
 
 GENERATED += $(OBJDIR)/Application.o
+GENERATED += $(OBJDIR)/Bindings.o
 GENERATED += $(OBJDIR)/Buffer.o
 GENERATED += $(OBJDIR)/EditorCamera.o
 GENERATED += $(OBJDIR)/Entity.o
@@ -128,6 +129,7 @@ GENERATED += $(OBJDIR)/WindowsWindow.o
 GENERATED += $(OBJDIR)/stb_image.o
 GENERATED += $(OBJDIR)/wlpch.o
 OBJECTS += $(OBJDIR)/Application.o
+OBJECTS += $(OBJDIR)/Bindings.o
 OBJECTS += $(OBJDIR)/Buffer.o
 OBJECTS += $(OBJDIR)/EditorCamera.o
 OBJECTS += $(OBJDIR)/Entity.o
@@ -335,6 +337,9 @@ $(OBJDIR)/SceneCamera.o: src/Wasteland/Scene/SceneCamera.cpp
 	@echo "$(notdir $<)"
 	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
 $(OBJDIR)/SceneSerializer.o: src/Wasteland/Scene/SceneSerializer.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/Bindings.o: src/Wasteland/Scripting/Bindings.cpp
 	@echo "$(notdir $<)"
 	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
 $(OBJDIR)/wlpch.o: src/wlpch.cpp
