@@ -33,6 +33,7 @@ uniform int u_InstanceCount;
 uniform int u_FrameIndex;
 uniform int u_SamplesPerPixel;
 uniform int u_PassID;
+uniform float u_CameraMoved;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -103,6 +104,49 @@ float HitSphere(Ray localRay, float radius, out vec3 outNormal)
     return -1.0;
 }
 
+bool IsOccluded(Ray r, float maxDist) {
+    for(int i = 0; i < u_InstanceCount; i++) {
+        RayTracingInstance inst = Instances[i];
+        Ray localRay;
+        localRay.Origin = (inst.InvTransform * vec4(r.Origin, 1.0)).xyz;
+        localRay.Direction = (inst.InvTransform * vec4(r.Direction, 0.0)).xyz;
+        
+        if (RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) {
+            vec3 localNormal;
+            float t = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+            if (t > 0.0 && t < maxDist) return true; // It hit something!
+        }
+    }
+    return false;
+}
+
+vec3 GetNormal(RayTracingInstance inst, vec3 hitPoint) {
+    // Transform the hit point into the object's local space
+    vec3 localPoint = (inst.InvTransform * vec4(hitPoint, 1.0)).xyz;
+    vec3 localNormal;
+
+    // Check if it's a Sphere (MaterialParams.z == 1) or Cube (MaterialParams.z == 0)
+    // Adjust the index (z) based on how you set it in C++
+    if (uint(inst.MaterialParams.z) == 1) { 
+        // Sphere normal is just the normalized point itself
+        localNormal = normalize(localPoint);
+    } else { 
+        // Cube normal (find the face closest to the edge)
+        // We compare localPoint to the Min/Max bounds
+        vec3 absP = abs(localPoint);
+        vec3 boxDim = (inst.Max.xyz - inst.Min.xyz) * 0.5;
+        
+        // Find which face is hit by looking for the largest component
+        if (absP.x > absP.y && absP.x > absP.z) localNormal = vec3(sign(localPoint.x), 0.0, 0.0);
+        else if (absP.y > absP.z)              localNormal = vec3(0.0, sign(localPoint.y), 0.0);
+        else                                   localNormal = vec3(0.0, 0.0, sign(localPoint.z));
+    }
+
+    // Transform local normal to world space
+    // We use the transpose of the inverse model matrix (or just the WorldTransform if no scale)
+    return normalize(mat3(inst.WorldTransform) * localNormal);
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -127,15 +171,19 @@ void RunTraceAndDenoise()
             float closestHit = 1e20;
             int hitIndex = -1;
             vec3 hitNormal, hitPoint, hitAlbedo;
+
             for(int i = 0; i < u_InstanceCount; i++) 
             {
                 RayTracingInstance inst = Instances[i];
                 Ray localRay;
                 localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
                 localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
+                
                 if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
+                
                 vec3 localNormal;
                 float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+                
                 if (tLocal > 0.0) 
                 {
                     vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
@@ -149,47 +197,66 @@ void RunTraceAndDenoise()
                 }
             }
 
-            if (hitIndex == -1)
+            if (hitIndex != -1)
+            {
+                // WE HIT SOMETHING: Shade it
+                vec3 directLight = vec3(0.0);
+                
+                // NEE: Direct Lighting
+                for(int i = 0; i < u_InstanceCount; i++) 
+                {
+                    if(Instances[i].Emission.w > 0.0) 
+                    {
+                        vec3 lightPos = Instances[i].WorldTransform[3].xyz;
+                        vec3 dirToLight = normalize(lightPos - hitPoint);
+                        float distToLight = length(lightPos - hitPoint);
+                        
+                        Ray shadowRay = Ray(hitPoint + hitNormal * 0.001, dirToLight);
+                        if(!IsOccluded(shadowRay, distToLight)) 
+                        {
+                            float diff = max(dot(hitNormal, dirToLight), 0.0);
+                            directLight += Instances[i].Emission.xyz * Instances[i].Emission.w * diff;
+                        }
+                    }
+                }
+
+                incomingLight += throughput * directLight; 
+                incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
+                
+                // Update for next bounce
+                throughput *= hitAlbedo;
+                currentRay.Origin = hitPoint + hitNormal * 0.001;
+                currentRay.Direction = random_in_hemisphere(hitNormal);
+            }
+            else
             {
                 float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-                vec3 skyColor = mix(vec3(1.0), vec3(0.0, 0.1, 0.3), t);
-                
+                vec3 skyColor = mix(vec3(0.5), vec3(0.0, 0.1, 0.3), t);
                 incomingLight += throughput * skyColor;
                 break;
             }
-
-            incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
-            throughput *= hitAlbedo;
-            currentRay.Origin = hitPoint + hitNormal * 0.05;
-            currentRay.Direction = random_in_hemisphere(hitNormal);
         }
         accumulatedLight += incomingLight;
     }
 
     vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
 
-    // --- TAA ACCUMULATION ---
-    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
-    vec4 worldPos = inverse(u_InverseViewProjection) * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
-    worldPos /= worldPos.w;
-    vec4 prevClip = u_PrevViewProjection * worldPos;
-    vec2 prevUV = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
-    
-    vec3 boxMin = vec3(1e10); vec3 boxMax = vec3(-1e10);
-    for(int x = -1; x <= 1; x++) {
-        for(int y = -1; y <= 1; y++) {
-            vec3 neighbor = currentColor; // Simplified 3x3 clamp
-            boxMin = min(boxMin, neighbor); boxMax = max(boxMax, neighbor);
-        }
+    if (u_CameraMoved > 0.5) 
+    {
+        // Reset the history buffer to the current frame only
+        imageStore(img_Accumulation, pixelCoords, vec4(currentColor, 1.0));
+        // Store to output and exit
+        imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
+        return; 
     }
 
-    vec2 prevCoord = clamp(prevUV * vec2(imgSize), vec2(0.0), vec2(imgSize) - 1.0);
-    vec3 history = imageLoad(img_Accumulation, ivec2(prevCoord)).rgb;
-    history = clamp(history, boxMin, boxMax);
-    
-    vec3 resultColor = mix(history, currentColor, 0.1);
-    imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
+    vec3 history = imageLoad(img_Accumulation, pixelCoords).rgb; 
 
+    float alpha = 0.5;
+
+    vec3 resultColor = mix(history, currentColor, alpha);
+
+    imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
     imageStore(img_Output, pixelCoords, vec4(resultColor, 1.0));
 }
 
@@ -227,6 +294,29 @@ void RunComposite() {
     imageStore(img_Output, pos, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
 }
 
+void RunBilateralBlur() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    vec3 centerColor = imageLoad(img_Output, pos).rgb;
+    
+    vec3 totalColor = vec3(0.0);
+    float totalWeight = 0.0;
+    
+    // Blur window
+    for(int x = -2; x <= 2; x++) {
+        for(int y = -2; y <= 2; y++) {
+            ivec2 samplePos = pos + ivec2(x, y);
+            vec3 sampleColor = imageLoad(img_Output, samplePos).rgb;
+            
+            // Weight based on color difference (similarity)
+            float weight = exp(-distance(centerColor, sampleColor) * 10.0);
+            
+            totalColor += sampleColor * weight;
+            totalWeight += weight;
+        }
+    }
+    imageStore(img_Output, pos, vec4(totalColor / totalWeight, 1.0));
+}
+
 void main()
 {
     switch(u_PassID) 
@@ -235,5 +325,6 @@ void main()
         case 1: RunBloomThreshold(); break;
         case 2: RunBloomBlur(); break;
         case 3: RunComposite(); break;
+        case 4: RunBilateralBlur(); break;
     }
 }

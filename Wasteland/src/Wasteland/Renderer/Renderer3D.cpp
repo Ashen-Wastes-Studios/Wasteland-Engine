@@ -78,14 +78,16 @@ namespace Wasteland {
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
-        glm::vec3 LastCameraPosition = glm::vec3(0.0f);
-        glm::vec2 LastCameraRotation = glm::vec2(0.0f);
+        glm::vec3 LastCameraPosition;
+        float LastCameraRotation;
         float MovementThreshold = 0.0001f;
 
         uint32_t BloomTextureID = 0;
 
         glm::mat4 PrevViewProjection = glm::mat4(1.0f);
         glm::mat4 CurrentViewProjection = glm::mat4(1.0f);
+
+        std::vector<uint32_t> LightIndicies;
 
         Renderer3D::Statistics Stats;
     };
@@ -239,21 +241,16 @@ namespace Wasteland {
         {
             if (s_Data.m_SceneInstances.empty()) return;
 
+            s_Data.SamplesPerPixel = 1;
+
             EditorCamera editorCamera;
 
-            bool moved = CheckForCameraMovement(editorCamera); // Compare camera pos/rotation to last frame
+            glm::vec3 currentPos = editorCamera.GetPosition();
+            float currentPitch = editorCamera.GetPitch();
+            float currentYaw = editorCamera.GetYaw();
 
-            if (moved)
-            {
-                s_Data.FrameIndex = 0; // Reset accumulation
-                s_Data.SamplesPerPixel = 1; // Go into "Fast/Draft" mode
-                s_Data.StillFrames = 0;
-            }
-            else
-            {
-                s_Data.StillFrames++;
-                s_Data.SamplesPerPixel = (s_Data.StillFrames > 120) ? 8 : 1;
-            }
+            bool moved = (currentPos != s_Data.LastCameraPosition) || (currentPitch != s_Data.LastCameraRotation) || (currentYaw != s_Data.LastCameraRotation);
+            float movedValue = moved ? 1.0f : 0.0f;
 
             // Only upload if something changed
             if (s_Data.m_SceneDirty) 
@@ -262,6 +259,15 @@ namespace Wasteland {
                                     s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
                                     s_Data.m_SceneInstances.data());
                 s_Data.m_SceneDirty = false; // Reset flag
+            }
+
+            s_Data.LightIndicies.clear();
+            for (uint32_t i = 0; i < s_Data.m_SceneInstances.size(); i++)
+            {
+                if (s_Data.m_SceneInstances[i].Emission.w > 0.0f)
+                {
+                    s_Data.LightIndicies.push_back(i);
+                }
             }
 
             glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
@@ -285,6 +291,7 @@ namespace Wasteland {
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
 
             // Ray Trace & Denoise
@@ -319,6 +326,8 @@ namespace Wasteland {
                 s_Data.FrameIndex++;   // Accumulate
             }
 
+            s_Data.LastCameraPosition = currentPos;
+            s_Data.LastCameraRotation = currentPitch, currentYaw;
             s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
             s_Data.Stats.DrawCalls++;
             s_Data.FrameIndex++;
@@ -413,31 +422,6 @@ namespace Wasteland {
         s_Data.SphereIndexBufferPtr = s_Data.SphereIndexBufferBase;
 
         s_Data.TextureSlotIndex = 1;
-    }
-
-    bool Renderer3D::CheckForCameraMovement(const EditorCamera &editorCamera)
-    {
-        glm::vec3 currentPos = editorCamera.GetPosition();
-        glm::vec2 currentRot = glm::vec2(editorCamera.GetPitch(), editorCamera.GetYaw());
-
-        // Calculate the difference between current and last frame
-        float posDelta = glm::distance(currentPos, s_Data.LastCameraPosition);
-        
-        // For rotation, we just check if any component changed
-        // (Euler angles are tricky, but this works for basic movement)
-        float rotDelta = glm::distance(currentRot, s_Data.LastCameraRotation);
-
-        // Check if the delta exceeds our tolerance
-        bool moved = (posDelta > s_Data.MovementThreshold) || (rotDelta > s_Data.MovementThreshold);
-
-        if (moved)
-        {
-            // Update the "Last" state for the next frame
-            s_Data.LastCameraPosition = currentPos;
-            s_Data.LastCameraRotation = currentRot;
-        }
-
-        return moved;
     }
 
     void Renderer3D::DrawCube(const glm::mat4& transform, const glm::vec4& color, MaterialComponent& material, int entityID)
