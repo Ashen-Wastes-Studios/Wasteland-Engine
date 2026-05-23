@@ -147,6 +147,24 @@ vec3 GetNormal(RayTracingInstance inst, vec3 hitPoint) {
     return normalize(mat3(inst.WorldTransform) * localNormal);
 }
 
+void GetNeighborhoodBounds(ivec2 center, out vec3 minCol, out vec3 maxCol) 
+{
+    minCol = vec3(1e6);
+    maxCol = vec3(-1e6);
+
+    for(int x = -1; x <= 1; x++) 
+    {
+        for(int y = -1; y <= 1; y++) 
+        {
+            // Note: This reads from img_Output, which should contain the raw 
+            // current frame result BEFORE accumulation.
+            vec3 col = imageLoad(img_Output, center + ivec2(x, y)).rgb;
+            minCol = min(minCol, col);
+            maxCol = max(maxCol, col);
+        }
+    }
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -231,7 +249,7 @@ void RunTraceAndDenoise()
             else
             {
                 float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-                vec3 skyColor = mix(vec3(0.5), vec3(0.0, 0.1, 0.3), t);
+                vec3 skyColor = mix(vec3(0.1), vec3(0.2, 0.3, 0.7), t);
                 incomingLight += throughput * skyColor;
                 break;
             }
@@ -241,19 +259,23 @@ void RunTraceAndDenoise()
 
     vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
 
+    imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
+    memoryBarrierImage();
+
     if (u_CameraMoved > 0.5) 
     {
-        // Reset the history buffer to the current frame only
         imageStore(img_Accumulation, pixelCoords, vec4(currentColor, 1.0));
-        // Store to output and exit
-        imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
-        return; 
+        return;
     }
 
     vec3 history = imageLoad(img_Accumulation, pixelCoords).rgb; 
 
-    float alpha = 0.5;
+    vec3 minCol, maxCol;
+    GetNeighborhoodBounds(pixelCoords, minCol, maxCol);
 
+    history = clamp(history, minCol, maxCol);
+
+    float alpha = 0.1;
     vec3 resultColor = mix(history, currentColor, alpha);
 
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
