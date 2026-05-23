@@ -241,7 +241,7 @@ namespace Wasteland {
         {
             if (s_Data.m_SceneInstances.empty()) return;
 
-            s_Data.SamplesPerPixel = 4;
+            s_Data.SamplesPerPixel = 8;
 
             EditorCamera editorCamera;
 
