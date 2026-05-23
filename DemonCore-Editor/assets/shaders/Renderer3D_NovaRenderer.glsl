@@ -330,23 +330,37 @@ void RunTraceAndDenoise()
 void RunBloomThreshold() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 color = imageLoad(img_Output, pos);
+    
+    float threshold = 1.0; 
+    float knee = 0.2; 
+    
     float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-    imageStore(img_Bloom, pos, (brightness > 1.0) ? color : vec4(0.0));
+    float soft = smoothstep(threshold - knee, threshold + knee, brightness);
+    
+    // Multiply by soft to keep the falloff smooth
+    imageStore(img_Bloom, pos, color * soft);
 }
 
 void RunBloomBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec4 sum = vec4(0.0);
-    int radius = 5;
-    float count = 0.0;
     
-    for(int x = -radius; x <= radius; x++) {
-        for(int y = -radius; y <= radius; y++) {
-            sum += imageLoad(img_Bloom, pos + ivec2(x, y));
-            count += 1.0;
+    // 11x11 Gaussian Kernel (Radius 5)
+    // Larger spread to restore the aura
+    float weights[11] = float[](
+        0.0009, 0.0035, 0.0116, 0.0303, 0.0635, 0.0805, 0.0635, 0.0303, 0.0116, 0.0035, 0.0009
+    );
+    
+    vec4 sum = vec4(0.0);
+    
+    for(int x = -5; x <= 5; x++) {
+        for(int y = -5; y <= 5; y++) {
+            // Apply 2D Gaussian distribution
+            float weight = weights[x + 5] * weights[y + 5];
+            sum += imageLoad(img_Bloom, pos + ivec2(x, y)) * weight;
         }
     }
-    imageStore(img_Bloom, pos, sum / float(count));
+    
+    imageStore(img_Bloom, pos, sum);
 }
 
 void RunComposite() {
@@ -354,8 +368,9 @@ void RunComposite() {
     vec3 scene = imageLoad(img_Output, pos).rgb;
     vec3 bloom = imageLoad(img_Bloom, pos).rgb;
     
-    // Multiply bloom by a factor (e.g., 2.0 or 5.0) to exaggerate it
-    vec3 combined = scene + (bloom * 5.0); 
+    // Increase this number to make the aura/glow brighter
+    // Try 10.0 or 15.0 instead of 5.0
+    vec3 combined = scene + (bloom * 10.0); 
     
     vec3 mappedColor = combined / (combined + vec3(1.0));
     imageStore(img_Output, pos, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
