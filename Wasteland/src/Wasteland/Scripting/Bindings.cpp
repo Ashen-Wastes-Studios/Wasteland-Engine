@@ -5,6 +5,9 @@
 #include <Wasteland/Core/Log.h>
 #include <Wasteland/Scene/Entity.h>
 #include <Wasteland/Scene/Components.h>
+#include "Wasteland/Core/Input.h"
+#include "Wasteland/Core/KeyCodes.h"
+#include "Wasteland/Core/MouseButtonCodes.h"
 
 namespace py = pybind11;
 
@@ -52,6 +55,11 @@ namespace Wasteland
         py::class_<Scene, Ref<Scene>>(m, "Scene")
             .def("CreateEntity", &Scene::CreateEntity, py::arg("name") = std::string())
             .def("DestroyEntity", &Scene::DestroyEntity);
+
+        m.def("IsKeyPressed", [](const std::string &keyName)
+              {
+            // Replace 'Wasteland::Input' with your actual engine input class
+            return Input::IsKeyPressed(WL_KEY_W); });
     }
 
 }

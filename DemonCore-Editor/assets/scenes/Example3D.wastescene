@@ -22,6 +22,9 @@ Entities:
       Roughness: 0.5
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+    ScriptComponent:
+      ScriptPath: ""
+      ScriptName: Player
   - Entity: 17094369140636357356
     TagComponent:
       Tag: Ground Sphere
@@ -84,3 +87,6 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: ""
+      ScriptName: Player

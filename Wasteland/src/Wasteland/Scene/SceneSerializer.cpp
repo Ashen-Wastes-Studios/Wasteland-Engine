@@ -8,12 +8,13 @@
 #include <yaml-cpp/yaml.h>
 #include "Components.h"
 
-namespace YAML {
+namespace YAML
+{
 
-	template<>
+	template <>
 	struct convert<glm::vec2>
 	{
-		static Node encode(const glm::vec2& rhs)
+		static Node encode(const glm::vec2 &rhs)
 		{
 			Node node;
 			node.push_back(rhs.x);
@@ -22,7 +23,7 @@ namespace YAML {
 			return node;
 		}
 
-		static bool decode(const Node& node, glm::vec2& rhs)
+		static bool decode(const Node &node, glm::vec2 &rhs)
 		{
 			if (!node.IsSequence() || node.size() != 2)
 				return false;
@@ -33,10 +34,10 @@ namespace YAML {
 		}
 	};
 
-	template<>
+	template <>
 	struct convert<glm::vec3>
 	{
-		static Node encode(const glm::vec3& rhs)
+		static Node encode(const glm::vec3 &rhs)
 		{
 			Node node;
 			node.push_back(rhs.x);
@@ -46,7 +47,7 @@ namespace YAML {
 			return node;
 		}
 
-		static bool decode(const Node& node, glm::vec3& rhs)
+		static bool decode(const Node &node, glm::vec3 &rhs)
 		{
 			if (!node.IsSequence() || node.size() != 3)
 				return false;
@@ -58,10 +59,10 @@ namespace YAML {
 		}
 	};
 
-	template<>
+	template <>
 	struct convert<glm::vec4>
 	{
-		static Node encode(const glm::vec4& rhs)
+		static Node encode(const glm::vec4 &rhs)
 		{
 			Node node;
 			node.push_back(rhs.x);
@@ -72,7 +73,7 @@ namespace YAML {
 			return node;
 		}
 
-		static bool decode(const Node& node, glm::vec4& rhs)
+		static bool decode(const Node &node, glm::vec4 &rhs)
 		{
 			if (!node.IsSequence() || node.size() != 4)
 				return false;
@@ -87,23 +88,24 @@ namespace YAML {
 
 }
 
-namespace Wasteland {
+namespace Wasteland
+{
 
-	YAML::Emitter& operator<<(YAML::Emitter& out, const glm::vec2& v)
+	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec2 &v)
 	{
 		out << YAML::Flow;
 		out << YAML::BeginSeq << v.x << v.y << YAML::EndSeq;
 		return out;
 	}
 
-	YAML::Emitter& operator<<(YAML::Emitter& out, const glm::vec3& v)
+	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec3 &v)
 	{
 		out << YAML::Flow;
 		out << YAML::BeginSeq << v.x << v.y << v.z << YAML::EndSeq;
 		return out;
 	}
 
-	YAML::Emitter& operator<<(YAML::Emitter& out, const glm::vec4& v)
+	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec4 &v)
 	{
 		out << YAML::Flow;
 		out << YAML::BeginSeq << v.x << v.y << v.z << v.w << YAML::EndSeq;
@@ -114,9 +116,12 @@ namespace Wasteland {
 	{
 		switch (bodyType)
 		{
-			case Rigidbody2DComponent::BodyType::Static: return "Static";
-			case Rigidbody2DComponent::BodyType::Dynamic: return "Dynamic";
-			case Rigidbody2DComponent::BodyType::Kinematic: return "Kinematic";
+		case Rigidbody2DComponent::BodyType::Static:
+			return "Static";
+		case Rigidbody2DComponent::BodyType::Dynamic:
+			return "Dynamic";
+		case Rigidbody2DComponent::BodyType::Kinematic:
+			return "Kinematic";
 		}
 
 		WL_CORE_ASSERT(false, "Unknown body type");
@@ -125,20 +130,23 @@ namespace Wasteland {
 
 	static Rigidbody2DComponent::BodyType RigidBody2DBodyTypeFromString(const std::string bodyTypeString)
 	{
-		if (bodyTypeString == "Static") return Rigidbody2DComponent::BodyType::Static;
-		if (bodyTypeString == "Dynamic") return Rigidbody2DComponent::BodyType::Dynamic;
-		if (bodyTypeString == "Kinematic") return Rigidbody2DComponent::BodyType::Kinematic;
+		if (bodyTypeString == "Static")
+			return Rigidbody2DComponent::BodyType::Static;
+		if (bodyTypeString == "Dynamic")
+			return Rigidbody2DComponent::BodyType::Dynamic;
+		if (bodyTypeString == "Kinematic")
+			return Rigidbody2DComponent::BodyType::Kinematic;
 
 		WL_CORE_ASSERT(false, "Unknown body type");
 		return Rigidbody2DComponent::BodyType::Static;
 	}
 
-	SceneSerializer::SceneSerializer(const Ref<Scene>& scene)
+	SceneSerializer::SceneSerializer(const Ref<Scene> &scene)
 		: m_Scene(scene)
 	{
 	}
 
-	static void SerializeEntity(YAML::Emitter& out, Entity entity)
+	static void SerializeEntity(YAML::Emitter &out, Entity entity)
 	{
 		WL_CORE_ASSERT(entity.HasComponent<IDComponent>(), nullptr);
 
@@ -150,7 +158,7 @@ namespace Wasteland {
 			out << YAML::Key << "TagComponent";
 			out << YAML::BeginMap; // TagComponent
 
-			auto& tag = entity.GetComponent<TagComponent>().Tag;
+			auto &tag = entity.GetComponent<TagComponent>().Tag;
 			out << YAML::Key << "Tag" << YAML::Value << tag;
 
 			out << YAML::EndMap; // TagComponent
@@ -161,7 +169,7 @@ namespace Wasteland {
 			out << YAML::Key << "TransformComponent";
 			out << YAML::BeginMap; // TransformComponent
 
-			auto& tc = entity.GetComponent<TransformComponent>();
+			auto &tc = entity.GetComponent<TransformComponent>();
 			out << YAML::Key << "Translation" << YAML::Value << tc.Translation;
 			out << YAML::Key << "Rotation" << YAML::Value << tc.Rotation;
 			out << YAML::Key << "Scale" << YAML::Value << tc.Scale;
@@ -174,8 +182,8 @@ namespace Wasteland {
 			out << YAML::Key << "CameraComponent";
 			out << YAML::BeginMap; // CameraComponent
 
-			auto& cameraComponent = entity.GetComponent<CameraComponent>();
-			auto& camera = cameraComponent.Camera;
+			auto &cameraComponent = entity.GetComponent<CameraComponent>();
+			auto &camera = cameraComponent.Camera;
 
 			out << YAML::Key << "Camera" << YAML::Value;
 			out << YAML::BeginMap; // Camera
@@ -199,7 +207,7 @@ namespace Wasteland {
 			out << YAML::Key << "SpriteRendererComponent";
 			out << YAML::BeginMap; // SpriteRendererComponent
 
-			auto& spriteRendererComponent = entity.GetComponent<SpriteRendererComponent>();
+			auto &spriteRendererComponent = entity.GetComponent<SpriteRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << spriteRendererComponent.Color;
 
 			out << YAML::EndMap; // SpriteRendererComponent
@@ -210,7 +218,7 @@ namespace Wasteland {
 			out << YAML::Key << "CircleRendererComponent";
 			out << YAML::BeginMap; // CircleRendererComponent
 
-			auto& circleRendererComponent = entity.GetComponent<CircleRendererComponent>();
+			auto &circleRendererComponent = entity.GetComponent<CircleRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << circleRendererComponent.Color;
 			out << YAML::Key << "Thickness" << YAML::Value << circleRendererComponent.Thickness;
 			out << YAML::Key << "Fade" << YAML::Value << circleRendererComponent.Fade;
@@ -223,7 +231,7 @@ namespace Wasteland {
 			out << YAML::Key << "CubeRendererComponent";
 			out << YAML::BeginMap; // CubeRendererComponent
 
-			auto& cubeRendererComponent = entity.GetComponent<CubeRendererComponent>();
+			auto &cubeRendererComponent = entity.GetComponent<CubeRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << cubeRendererComponent.Color;
 			out << YAML::Key << "TextureWidth" << YAML::Value << (cubeRendererComponent.Texture ? cubeRendererComponent.Texture->GetWidth() : 0);
 			out << YAML::Key << "TextureHeight" << YAML::Value << (cubeRendererComponent.Texture ? cubeRendererComponent.Texture->GetHeight() : 0);
@@ -238,7 +246,7 @@ namespace Wasteland {
 			out << YAML::Key << "SphereRendererComponent";
 			out << YAML::BeginMap; // SphereRendererComponent
 
-			auto& sphereRendererComponent = entity.GetComponent<SphereRendererComponent>();
+			auto &sphereRendererComponent = entity.GetComponent<SphereRendererComponent>();
 			out << YAML::Key << "Color" << YAML::Value << sphereRendererComponent.Color;
 			out << YAML::Key << "TextureWidth" << YAML::Value << (sphereRendererComponent.Texture ? sphereRendererComponent.Texture->GetWidth() : 0);
 			out << YAML::Key << "TextureHeight" << YAML::Value << (sphereRendererComponent.Texture ? sphereRendererComponent.Texture->GetHeight() : 0);
@@ -256,7 +264,7 @@ namespace Wasteland {
 			out << YAML::Key << "MaterialComponent";
 			out << YAML::BeginMap; // MaterialComponent
 
-			auto& materialComponent = entity.GetComponent<MaterialComponent>();
+			auto &materialComponent = entity.GetComponent<MaterialComponent>();
 			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
 			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
 			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
@@ -271,7 +279,7 @@ namespace Wasteland {
 			out << YAML::Key << "Rigidbody2DComponent";
 			out << YAML::BeginMap; // Rigidbody2DComponent
 
-			auto& rigidbody2DComponent = entity.GetComponent<Rigidbody2DComponent>();
+			auto &rigidbody2DComponent = entity.GetComponent<Rigidbody2DComponent>();
 			out << YAML::Key << "BodyType" << YAML::Value << RigidBody2DBodyTypeToString(rigidbody2DComponent.Type);
 			out << YAML::Key << "FixedRotation" << YAML::Value << rigidbody2DComponent.FixedRotation;
 
@@ -283,7 +291,7 @@ namespace Wasteland {
 			out << YAML::Key << "BoxCollider2DComponent";
 			out << YAML::BeginMap; // BoxCollider2DComponent
 
-			auto& boxCollider2DComponent = entity.GetComponent<BoxCollider2DComponent>();
+			auto &boxCollider2DComponent = entity.GetComponent<BoxCollider2DComponent>();
 			out << YAML::Key << "Offset" << YAML::Value << boxCollider2DComponent.Offset;
 			out << YAML::Key << "Size" << YAML::Value << boxCollider2DComponent.Size;
 			out << YAML::Key << "Density" << YAML::Value << boxCollider2DComponent.Density;
@@ -299,7 +307,7 @@ namespace Wasteland {
 			out << YAML::Key << "CircleCollider2DComponent";
 			out << YAML::BeginMap; // CircleCollider2DComponent
 
-			auto& circleCollider2DComponent = entity.GetComponent<CircleCollider2DComponent>();
+			auto &circleCollider2DComponent = entity.GetComponent<CircleCollider2DComponent>();
 			out << YAML::Key << "Offset" << YAML::Value << circleCollider2DComponent.Offset;
 			out << YAML::Key << "Radius" << YAML::Value << circleCollider2DComponent.Radius;
 			out << YAML::Key << "Density" << YAML::Value << circleCollider2DComponent.Density;
@@ -310,23 +318,34 @@ namespace Wasteland {
 			out << YAML::EndMap; // CircleCollider2DComponent
 		}
 
+		if (entity.HasComponent<ScriptComponent>())
+		{
+			out << YAML::Key << "ScriptComponent";
+			out << YAML::BeginMap; // ScriptComponent
+
+			auto &sc = entity.GetComponent<ScriptComponent>();
+			out << YAML::Key << "ScriptPath" << YAML::Value << sc.ScriptPath;
+			out << YAML::Key << "ScriptName" << YAML::Value << sc.ScriptName;
+
+			out << YAML::EndMap; // ScriptComponent
+		}
+
 		out << YAML::EndMap; // Entity
 	}
 
-	void SceneSerializer::Serialize(const std::string& filepath)
+	void SceneSerializer::Serialize(const std::string &filepath)
 	{
 		YAML::Emitter out;
 		out << YAML::BeginMap;
 		out << YAML::Key << "Scene" << YAML::Value << "Untitled";
 		out << YAML::Key << "Entities" << YAML::Value << YAML::BeginSeq;
 		m_Scene->m_Registry.view<entt::entity>().each([&](auto entityID)
-			{
+													  {
 				Entity entity = { entityID, m_Scene.get() };
 				if (!entity)
 					return;
 
-				SerializeEntity(out, entity);
-			});
+				SerializeEntity(out, entity); });
 		out << YAML::EndSeq;
 		out << YAML::EndMap;
 
@@ -334,13 +353,13 @@ namespace Wasteland {
 		fout << out.c_str();
 	}
 
-	void SceneSerializer::SerializeRuntime(const std::string& filepath)
+	void SceneSerializer::SerializeRuntime(const std::string &filepath)
 	{
 		// Not implemented
 		WL_CORE_ASSERT(false, nullptr);
 	}
 
-	bool SceneSerializer::Deserialize(const std::string& filepath)
+	bool SceneSerializer::Deserialize(const std::string &filepath)
 	{
 		std::ifstream stream(filepath);
 		std::stringstream strStream;
@@ -373,7 +392,7 @@ namespace Wasteland {
 				if (transformComponent)
 				{
 					// Entities always have transforms
-					auto& tc = deserializedEntity.GetComponent<TransformComponent>();
+					auto &tc = deserializedEntity.GetComponent<TransformComponent>();
 					tc.Translation = transformComponent["Translation"].as<glm::vec3>();
 					tc.Rotation = transformComponent["Rotation"].as<glm::vec3>();
 					tc.Scale = transformComponent["Scale"].as<glm::vec3>();
@@ -382,7 +401,7 @@ namespace Wasteland {
 				auto cameraComponent = entity["CameraComponent"];
 				if (cameraComponent)
 				{
-					auto& cc = deserializedEntity.AddComponent<CameraComponent>();
+					auto &cc = deserializedEntity.AddComponent<CameraComponent>();
 
 					auto cameraProps = cameraComponent["Camera"];
 
@@ -407,7 +426,7 @@ namespace Wasteland {
 				if (spriteRendererComponent)
 				{
 					// Entities always have transforms
-					auto& src = deserializedEntity.AddComponent<SpriteRendererComponent>();
+					auto &src = deserializedEntity.AddComponent<SpriteRendererComponent>();
 					src.Color = spriteRendererComponent["Color"].as<glm::vec4>();
 				}
 
@@ -415,7 +434,7 @@ namespace Wasteland {
 				if (circleRendererComponent)
 				{
 					// Entities always have transforms
-					auto& crc = deserializedEntity.AddComponent<CircleRendererComponent>();
+					auto &crc = deserializedEntity.AddComponent<CircleRendererComponent>();
 					crc.Color = circleRendererComponent["Color"].as<glm::vec4>();
 					crc.Thickness = circleRendererComponent["Thickness"].as<float>();
 					crc.Fade = circleRendererComponent["Fade"].as<float>();
@@ -425,7 +444,7 @@ namespace Wasteland {
 				if (cubeRendererComponent)
 				{
 					// Entities always have transforms
-					auto& crc = deserializedEntity.AddComponent<CubeRendererComponent>();
+					auto &crc = deserializedEntity.AddComponent<CubeRendererComponent>();
 					crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
 					if (cubeRendererComponent["TextureWidth"] && cubeRendererComponent["TextureHeight"])
 					{
@@ -442,7 +461,7 @@ namespace Wasteland {
 				if (sphereRendererComponent)
 				{
 					// Entities always have transforms
-					auto& src = deserializedEntity.AddComponent<SphereRendererComponent>();
+					auto &src = deserializedEntity.AddComponent<SphereRendererComponent>();
 					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
 					if (sphereRendererComponent["TextureWidth"] && sphereRendererComponent["TextureHeight"])
 					{
@@ -462,7 +481,7 @@ namespace Wasteland {
 				if (materialComponent)
 				{
 					// Entities always have transforms
-					auto& mc = deserializedEntity.AddComponent<MaterialComponent>();
+					auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
 					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
 					mc.Metallic = materialComponent["Metallic"].as<float>();
 					mc.Roughness = materialComponent["Roughness"].as<float>();
@@ -474,7 +493,7 @@ namespace Wasteland {
 				if (rigidbody2DComponent)
 				{
 					// Entities always have transforms
-					auto& rigidbody2D = deserializedEntity.AddComponent<Rigidbody2DComponent>();
+					auto &rigidbody2D = deserializedEntity.AddComponent<Rigidbody2DComponent>();
 					rigidbody2D.Type = RigidBody2DBodyTypeFromString(rigidbody2DComponent["BodyType"].as<std::string>());
 					rigidbody2D.FixedRotation = rigidbody2DComponent["FixedRotation"].as<bool>();
 				}
@@ -483,7 +502,7 @@ namespace Wasteland {
 				if (boxCollider2DComponent)
 				{
 					// Entities always have transforms
-					auto& boxCollider2D = deserializedEntity.AddComponent<BoxCollider2DComponent>();
+					auto &boxCollider2D = deserializedEntity.AddComponent<BoxCollider2DComponent>();
 					boxCollider2D.Offset = boxCollider2DComponent["Offset"].as<glm::vec2>();
 					boxCollider2D.Size = boxCollider2DComponent["Size"].as<glm::vec2>();
 					boxCollider2D.Density = boxCollider2DComponent["Density"].as<float>();
@@ -495,12 +514,20 @@ namespace Wasteland {
 				if (circleCollider2DComponent)
 				{
 					// Entities always have transforms
-					auto& circleCollider2D = deserializedEntity.AddComponent<CircleCollider2DComponent>();
+					auto &circleCollider2D = deserializedEntity.AddComponent<CircleCollider2DComponent>();
 					circleCollider2D.Offset = circleCollider2DComponent["Offset"].as<glm::vec2>();
 					circleCollider2D.Radius = circleCollider2DComponent["Radius"].as<float>();
 					circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
 					circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
 					circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
+				}
+
+				auto scriptComponent = entity["ScriptComponent"];
+				if (scriptComponent)
+				{
+					auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
+					sc.ScriptPath = scriptComponent["ScriptPath"].as<std::string>();
+					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
 				}
 			}
 		}
@@ -508,7 +535,7 @@ namespace Wasteland {
 		return true;
 	}
 
-	bool SceneSerializer::DeserializeRuntime(const std::string& filepath)
+	bool SceneSerializer::DeserializeRuntime(const std::string &filepath)
 	{
 		// Not implemented
 		WL_CORE_ASSERT(false, nullptr);

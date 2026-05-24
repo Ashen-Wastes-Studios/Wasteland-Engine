@@ -9,6 +9,7 @@
 
 #include "Entity.h"
 #include "ScriptableEntity.h"
+#include "Wasteland/Scripting/ScriptEngine.h"
 
 // Box2D
 #include "box2d/b2_world.h"
@@ -17,15 +18,19 @@
 #include "box2d/b2_polygon_shape.h"
 #include "box2d/b2_circle_shape.h"
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	static b2BodyType Rigidbody2DTypeToBox2DBody(Rigidbody2DComponent::BodyType bodyType)
 	{
 		switch (bodyType)
 		{
-			case Rigidbody2DComponent::BodyType::Static: return b2_staticBody;
-			case Rigidbody2DComponent::BodyType::Dynamic: return b2_dynamicBody;
-			case Rigidbody2DComponent::BodyType::Kinematic: return b2_kinematicBody;
+		case Rigidbody2DComponent::BodyType::Static:
+			return b2_staticBody;
+		case Rigidbody2DComponent::BodyType::Dynamic:
+			return b2_dynamicBody;
+		case Rigidbody2DComponent::BodyType::Kinematic:
+			return b2_kinematicBody;
 		}
 
 		WL_CORE_ASSERT(false, "Unknown body type");
@@ -40,93 +45,99 @@ namespace Wasteland {
 	{
 	}
 
-	template<typename T>
-	static void CopyComponent(entt::registry& dst, entt::registry& src, const std::unordered_map<UUID, entt::entity>& enttMap)
+	template <typename T>
+	static void CopyComponent(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
 	{
 		auto view = src.view<T>();
 		for (auto e : view)
 		{
-			if (!src.valid(e) || !src.all_of<IDComponent>(e)) continue;
+			if (!src.valid(e) || !src.all_of<IDComponent>(e))
+				continue;
 
 			UUID uuid = src.get<IDComponent>(e).ID;
 			auto it = enttMap.find(uuid);
-			if (it == enttMap.end()) continue;
+			if (it == enttMap.end())
+				continue;
 
 			entt::entity dstEnttID = it->second;
-			auto& component = src.get<T>(e);
-			
+			auto &component = src.get<T>(e);
+
 			dst.emplace_or_replace<T>(dstEnttID, component);
 		}
 	}
 
-	template<>
-	static void CopyComponent<NativeScriptComponent>(entt::registry& dst, entt::registry& src, const std::unordered_map<UUID, entt::entity>& enttMap)
+	template <>
+	static void CopyComponent<NativeScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
 	{
 		auto view = src.view<NativeScriptComponent>();
 		for (auto e : view)
 		{
-			if (!src.valid(e) || !src.all_of<IDComponent>(e)) continue;
+			if (!src.valid(e) || !src.all_of<IDComponent>(e))
+				continue;
 
 			UUID uuid = src.get<IDComponent>(e).ID;
 			auto it = enttMap.find(uuid);
-			if (it == enttMap.end()) continue;
+			if (it == enttMap.end())
+				continue;
 
 			entt::entity dstEnttID = it->second;
-			auto& srcComponent = src.get<NativeScriptComponent>(e);
-			
+			auto &srcComponent = src.get<NativeScriptComponent>(e);
+
 			// Emplace a clean script component container
-			auto& dstComponent = dst.emplace_or_replace<NativeScriptComponent>(dstEnttID);
-			
+			auto &dstComponent = dst.emplace_or_replace<NativeScriptComponent>(dstEnttID);
+
 			// Explicitly copy only the function pointers, keeping Instance safely null
 			dstComponent.InstantiateScript = srcComponent.InstantiateScript;
 			dstComponent.DestroyScript = srcComponent.DestroyScript;
-			dstComponent.Instance = nullptr; 
+			dstComponent.Instance = nullptr;
 		}
 	}
 
-	template<>
-	static void CopyComponent<CameraComponent>(entt::registry& dst, entt::registry& src, const std::unordered_map<UUID, entt::entity>& enttMap)
+	template <>
+	static void CopyComponent<CameraComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
 	{
 		auto view = src.view<CameraComponent>();
 		for (auto e : view)
 		{
-			if (!src.valid(e) || !src.all_of<IDComponent>(e)) continue;
+			if (!src.valid(e) || !src.all_of<IDComponent>(e))
+				continue;
 
 			UUID uuid = src.get<IDComponent>(e).ID;
 			auto it = enttMap.find(uuid);
-			if (it == enttMap.end()) continue;
+			if (it == enttMap.end())
+				continue;
 
 			entt::entity dstEnttID = it->second;
-			auto& srcComponent = src.get<CameraComponent>(e);
-			
+			auto &srcComponent = src.get<CameraComponent>(e);
+
 			// Force create a completely fresh, brand new camera component container
-			auto& dstComponent = dst.emplace_or_replace<CameraComponent>(dstEnttID);
-			
+			auto &dstComponent = dst.emplace_or_replace<CameraComponent>(dstEnttID);
+
 			// Manually copy individual properties to trigger any internal setter functions properly
 			dstComponent.Primary = srcComponent.Primary;
 			dstComponent.FixedAspectRatio = srcComponent.FixedAspectRatio;
-			
+
 			// Copy standard camera configuration details (adjust these names if your class names vary)
-			dstComponent.Camera = srcComponent.Camera; 
+			dstComponent.Camera = srcComponent.Camera;
 		}
 	}
 
-	template<typename T>
+	template <typename T>
 	static void CopyComponentIfExists(Entity dst, Entity src)
 	{
 		if (src.HasComponent<T>())
-		    dst.AddOrReplaceComponent<T>(src.GetComponent<T>());
+			dst.AddOrReplaceComponent<T>(src.GetComponent<T>());
 	}
 
-    Ref<Scene> Scene::Copy(Ref<Scene> other)
-    {
-        Ref<Scene> newScene = CreateRef<Scene>();
+	Ref<Scene> Scene::Copy(Ref<Scene> other)
+	{
+		Ref<Scene> newScene = CreateRef<Scene>();
 
 		newScene->m_ViewportWidth = other->m_ViewportWidth;
 		newScene->m_ViewportHeight = other->m_ViewportHeight;
 
-		auto& srcSceneRegistry = other->m_Registry;
-		auto& dstSceneRegistry = newScene->m_Registry;
+		auto &srcSceneRegistry = other->m_Registry;
+		auto &dstSceneRegistry = newScene->m_Registry;
 		std::unordered_map<UUID, entt::entity> enttMap;
 
 		// Create entities in new scene
@@ -134,7 +145,7 @@ namespace Wasteland {
 		for (auto e : idView)
 		{
 			UUID uuid = srcSceneRegistry.get<IDComponent>(e).ID;
-			const auto& name = srcSceneRegistry.get<TagComponent>(e).Tag;
+			const auto &name = srcSceneRegistry.get<TagComponent>(e).Tag;
 			Entity newEntity = newScene->CreateEntityWithUUID(uuid, name);
 			enttMap[uuid] = (entt::entity)newEntity;
 		}
@@ -150,6 +161,7 @@ namespace Wasteland {
 		CopyComponent<Rigidbody2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<BoxCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CircleCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
@@ -157,11 +169,11 @@ namespace Wasteland {
 			auto view = dstSceneRegistry.view<CameraComponent>();
 			for (auto entity : view)
 			{
-				auto& cameraComponent = view.get<CameraComponent>(entity);
+				auto &cameraComponent = view.get<CameraComponent>(entity);
 				if (!cameraComponent.FixedAspectRatio)
 				{
 					// Set it to an alternate temporary size first to clear dirty flags
-					cameraComponent.Camera.SetViewportSize(100, 100); 
+					cameraComponent.Camera.SetViewportSize(100, 100);
 					// Restore its actual matrix bounds
 					cameraComponent.Camera.SetViewportSize(newScene->m_ViewportWidth, newScene->m_ViewportHeight);
 				}
@@ -169,19 +181,19 @@ namespace Wasteland {
 		}
 
 		return newScene;
-    }
+	}
 
-    Entity Scene::CreateEntity(const std::string& name)
+	Entity Scene::CreateEntity(const std::string &name)
 	{
 		return CreateEntityWithUUID(UUID(), name);
 	}
 
-	Entity Scene::CreateEntityWithUUID(UUID uuid, const std::string& name)
+	Entity Scene::CreateEntityWithUUID(UUID uuid, const std::string &name)
 	{
-		Entity entity = { m_Registry.create(), this };
+		Entity entity = {m_Registry.create(), this};
 		entity.AddComponent<IDComponent>(uuid);
 		entity.AddComponent<TransformComponent>();
-		auto& tag = entity.AddComponent<TagComponent>();
+		auto &tag = entity.AddComponent<TagComponent>();
 		tag.Tag = name.empty() ? "Entity" : name;
 		return entity;
 	}
@@ -193,27 +205,27 @@ namespace Wasteland {
 
 	void Scene::OnRuntimeStart()
 	{
-		m_PhysicsWorld = new b2World({ 0.0f, -9.8f });
+		m_PhysicsWorld = new b2World({0.0f, -9.8f});
 
 		auto view = m_Registry.view<Rigidbody2DComponent>();
 		for (auto e : view)
 		{
-			Entity entity = { e, this };
-			auto& transform = entity.GetComponent<TransformComponent>();
-			auto& rb2d = entity.GetComponent<Rigidbody2DComponent>();
+			Entity entity = {e, this};
+			auto &transform = entity.GetComponent<TransformComponent>();
+			auto &rb2d = entity.GetComponent<Rigidbody2DComponent>();
 
 			b2BodyDef bodyDef;
 			bodyDef.type = Rigidbody2DTypeToBox2DBody(rb2d.Type);
 			bodyDef.position.Set(transform.Translation.x, transform.Translation.y);
 			bodyDef.angle = transform.Rotation.z;
 
-			b2Body* body = m_PhysicsWorld->CreateBody(&bodyDef);
+			b2Body *body = m_PhysicsWorld->CreateBody(&bodyDef);
 			body->SetFixedRotation(rb2d.FixedRotation);
 			rb2d.RuntimeBody = body;
 
 			if (entity.HasComponent<BoxCollider2DComponent>())
 			{
-				auto& bc2d = entity.GetComponent<BoxCollider2DComponent>();
+				auto &bc2d = entity.GetComponent<BoxCollider2DComponent>();
 
 				b2PolygonShape boxShape;
 				boxShape.SetAsBox(bc2d.Size.x * transform.Scale.x, bc2d.Size.y * transform.Scale.y);
@@ -229,7 +241,7 @@ namespace Wasteland {
 
 			if (entity.HasComponent<CircleCollider2DComponent>())
 			{
-				auto& cc2d = entity.GetComponent<CircleCollider2DComponent>();
+				auto &cc2d = entity.GetComponent<CircleCollider2DComponent>();
 
 				b2CircleShape circleShape;
 				circleShape.m_p.Set(cc2d.Offset.x, cc2d.Offset.y);
@@ -256,8 +268,8 @@ namespace Wasteland {
 	{
 		// Update scripts
 		{
-			m_Registry.view<NativeScriptComponent>().each([=](auto entity, auto& nsc)
-				{
+			m_Registry.view<NativeScriptComponent>().each([=](auto entity, auto &nsc)
+														  {
 					// TODO: Move to Scene::OnScenePlay
 					if (!nsc.Instance)
 					{
@@ -266,8 +278,15 @@ namespace Wasteland {
 						nsc.Instance->OnCreate();
 					}
 
-					nsc.Instance->OnUpdate(ts);
-				});
+					nsc.Instance->OnUpdate(ts); });
+
+			auto view = m_Registry.view<ScriptComponent>();
+			for (auto entity : view)
+			{
+				Entity e = {entity, this};
+
+				ScriptEngine::OnUpdateEntity(e, ts);
+			}
 		}
 
 		// Physics
@@ -280,12 +299,12 @@ namespace Wasteland {
 			auto view = m_Registry.view<Rigidbody2DComponent>();
 			for (auto e : view)
 			{
-				Entity entity = { e, this };
-				auto& transform = entity.GetComponent<TransformComponent>();
-				auto& rb2d = entity.GetComponent<Rigidbody2DComponent>();
+				Entity entity = {e, this};
+				auto &transform = entity.GetComponent<TransformComponent>();
+				auto &rb2d = entity.GetComponent<Rigidbody2DComponent>();
 
-				b2Body* body = (b2Body*)rb2d.RuntimeBody;
-				const auto& position = body->GetPosition();
+				b2Body *body = (b2Body *)rb2d.RuntimeBody;
+				const auto &position = body->GetPosition();
 				transform.Translation.x = position.x;
 				transform.Translation.y = position.y;
 				transform.Rotation.z = body->GetAngle();
@@ -293,14 +312,14 @@ namespace Wasteland {
 		}
 
 		// Render 2D
-		Camera* mainCamera = nullptr;
+		Camera *mainCamera = nullptr;
 		glm::mat4 cameraTransform;
 		{
 			auto view = m_Registry.view<TransformComponent, CameraComponent>();
 			for (auto entity : view)
 			{
 				auto [transform, camera] = view.get<TransformComponent, CameraComponent>(entity);
-				
+
 				if (camera.Primary)
 				{
 					mainCamera = &camera.Camera;
@@ -344,11 +363,12 @@ namespace Wasteland {
 			// Draw Cubes
 			{
 				auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent, MaterialComponent>();
-				for (auto entity : cubeView) {
-					auto& tc = cubeView.get<TransformComponent>(entity);
-					auto& crc = cubeView.get<CubeRendererComponent>(entity);
-					auto& mc = cubeView.get<MaterialComponent>(entity);
-					
+				for (auto entity : cubeView)
+				{
+					auto &tc = cubeView.get<TransformComponent>(entity);
+					auto &crc = cubeView.get<CubeRendererComponent>(entity);
+					auto &mc = cubeView.get<MaterialComponent>(entity);
+
 					// Pass the 3D entity data to the new batch renderer
 					Renderer3D::DrawCube(tc.GetTransform(), crc.Color, mc, (int)entity);
 				}
@@ -357,20 +377,20 @@ namespace Wasteland {
 			// Draw Spheres
 			{
 				auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent, MaterialComponent>();
-				for (auto entity : sphereView) {
-					auto& tc = sphereView.get<TransformComponent>(entity);
-					auto& src = sphereView.get<SphereRendererComponent>(entity);
-					auto& mc = sphereView.get<MaterialComponent>(entity);
-					
+				for (auto entity : sphereView)
+				{
+					auto &tc = sphereView.get<TransformComponent>(entity);
+					auto &src = sphereView.get<SphereRendererComponent>(entity);
+					auto &mc = sphereView.get<MaterialComponent>(entity);
+
 					Renderer3D::DrawSphere(
-						tc.GetTransform(), 
-						src.Color, 
-						src.Radius, 
-						src.Sectors, 
-						src.Stacks, 
+						tc.GetTransform(),
+						src.Color,
+						src.Radius,
+						src.Sectors,
+						src.Stacks,
 						mc,
-						(int)entity
-					);
+						(int)entity);
 				}
 			}
 
@@ -378,7 +398,7 @@ namespace Wasteland {
 		}
 	}
 
-	void Scene::OnUpdateEditor(Timestep ts, EditorCamera& camera)
+	void Scene::OnUpdateEditor(Timestep ts, EditorCamera &camera)
 	{
 		// Render 2D
 		Renderer2D::BeginScene(camera);
@@ -417,11 +437,12 @@ namespace Wasteland {
 		// Draw Cubes
 		{
 			auto cubeView = m_Registry.view<TransformComponent, CubeRendererComponent, MaterialComponent>();
-			for (auto entity : cubeView) {
-				auto& tc = cubeView.get<TransformComponent>(entity);
-				auto& crc = cubeView.get<CubeRendererComponent>(entity);
-				auto& mc = cubeView.get<MaterialComponent>(entity);
-				
+			for (auto entity : cubeView)
+			{
+				auto &tc = cubeView.get<TransformComponent>(entity);
+				auto &crc = cubeView.get<CubeRendererComponent>(entity);
+				auto &mc = cubeView.get<MaterialComponent>(entity);
+
 				// Pass the 3D entity data to the new batch renderer
 				Renderer3D::DrawCube(tc.GetTransform(), crc.Color, mc, (int)entity);
 			}
@@ -430,20 +451,20 @@ namespace Wasteland {
 		// Draw Spheres
 		{
 			auto sphereView = m_Registry.view<TransformComponent, SphereRendererComponent, MaterialComponent>();
-			for (auto entity : sphereView) {
-				auto& tc = sphereView.get<TransformComponent>(entity);
-				auto& src = sphereView.get<SphereRendererComponent>(entity);
-				auto& mc = sphereView.get<MaterialComponent>(entity);
+			for (auto entity : sphereView)
+			{
+				auto &tc = sphereView.get<TransformComponent>(entity);
+				auto &src = sphereView.get<SphereRendererComponent>(entity);
+				auto &mc = sphereView.get<MaterialComponent>(entity);
 
 				Renderer3D::DrawSphere(
-					tc.GetTransform(), 
-					src.Color, 
-					src.Radius, 
-					src.Sectors, 
-					src.Stacks, 
+					tc.GetTransform(),
+					src.Color,
+					src.Radius,
+					src.Sectors,
+					src.Stacks,
 					mc,
-					(int)entity
-				);
+					(int)entity);
 			}
 		}
 
@@ -459,14 +480,14 @@ namespace Wasteland {
 		auto view = m_Registry.view<CameraComponent>();
 		for (auto entity : view)
 		{
-			auto& cameraComponent = view.get<CameraComponent>(entity);
+			auto &cameraComponent = view.get<CameraComponent>(entity);
 			if (!cameraComponent.FixedAspectRatio)
 				cameraComponent.Camera.SetViewportSize(width, height);
 		}
 	}
 
-    void Scene::DuplicateEntity(Entity entity)
-    {
+	void Scene::DuplicateEntity(Entity entity)
+	{
 		std::string name = entity.GetName();
 		Entity newEntity = CreateEntity(name);
 
@@ -480,18 +501,19 @@ namespace Wasteland {
 		CopyComponentIfExists<Rigidbody2DComponent>(newEntity, entity);
 		CopyComponentIfExists<BoxCollider2DComponent>(newEntity, entity);
 		CopyComponentIfExists<CircleCollider2DComponent>(newEntity, entity);
+		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
-    }
+	}
 
-    Entity Scene::GetPrimaryCameraEntity()
+	Entity Scene::GetPrimaryCameraEntity()
 	{
 		auto view = m_Registry.view<CameraComponent>();
 		for (auto entity : view)
 		{
-			const auto& camera = view.get<CameraComponent>(entity);
+			const auto &camera = view.get<CameraComponent>(entity);
 			if (camera.Primary)
-				return Entity{ entity, this };
+				return Entity{entity, this};
 		}
 		return {};
 	}
@@ -501,50 +523,45 @@ namespace Wasteland {
 		return m_Registry.valid(entity);
 	}
 
-	template<typename T>
-	void Scene::OnComponentAdded(Entity entity, T& component)
+	template <typename T>
+	void Scene::OnComponentAdded(Entity entity, T &component)
 	{
 		static_assert(false);
 	}
 
-	template<>
-	void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent& component)
+	template <>
+	void Scene::OnComponentAdded<IDComponent>(Entity entity, IDComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<TagComponent>(Entity entity, TagComponent& component)
+	template <>
+	void Scene::OnComponentAdded<TagComponent>(Entity entity, TagComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<TransformComponent>(Entity entity, TransformComponent& component)
+	template <>
+	void Scene::OnComponentAdded<TransformComponent>(Entity entity, TransformComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<CameraComponent>(Entity entity, CameraComponent& component)
+	template <>
+	void Scene::OnComponentAdded<CameraComponent>(Entity entity, CameraComponent &component)
 	{
 		component.Camera.SetViewportSize(m_ViewportWidth, m_ViewportHeight);
 	}
 
-	template<>
-	void Scene::OnComponentAdded<SpriteRendererComponent>(Entity entity, SpriteRendererComponent& component)
+	template <>
+	void Scene::OnComponentAdded<SpriteRendererComponent>(Entity entity, SpriteRendererComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<CircleRendererComponent>(Entity entity, CircleRendererComponent& component)
+	template <>
+	void Scene::OnComponentAdded<CircleRendererComponent>(Entity entity, CircleRendererComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<CubeRendererComponent>(Entity entity, CubeRendererComponent& component)
+	template <>
+	void Scene::OnComponentAdded<CubeRendererComponent>(Entity entity, CubeRendererComponent &component)
 	{
 		if (!entity.HasComponent<TransformComponent>())
 		{
@@ -555,8 +572,8 @@ namespace Wasteland {
 		component.TilingFactor = 1.0f;
 	}
 
-	template<>
-	void Scene::OnComponentAdded<SphereRendererComponent>(Entity entity, SphereRendererComponent& component)
+	template <>
+	void Scene::OnComponentAdded<SphereRendererComponent>(Entity entity, SphereRendererComponent &component)
 	{
 		if (!entity.HasComponent<TransformComponent>())
 		{
@@ -570,34 +587,34 @@ namespace Wasteland {
 		component.Stacks = 20;
 	}
 
-	template<>
-	void Scene::OnComponentAdded<MaterialComponent>(Entity entity, MaterialComponent& component)
+	template <>
+	void Scene::OnComponentAdded<MaterialComponent>(Entity entity, MaterialComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent& component)
+	template <>
+	void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<Rigidbody2DComponent>(Entity entity, Rigidbody2DComponent& component)
+	template <>
+	void Scene::OnComponentAdded<ScriptComponent>(Entity entity, ScriptComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<BoxCollider2DComponent>(Entity entity, BoxCollider2DComponent& component)
+	template <>
+	void Scene::OnComponentAdded<Rigidbody2DComponent>(Entity entity, Rigidbody2DComponent &component)
 	{
-
 	}
 
-	template<>
-	void Scene::OnComponentAdded<CircleCollider2DComponent>(Entity entity, CircleCollider2DComponent& component)
+	template <>
+	void Scene::OnComponentAdded<BoxCollider2DComponent>(Entity entity, BoxCollider2DComponent &component)
 	{
+	}
 
+	template <>
+	void Scene::OnComponentAdded<CircleCollider2DComponent>(Entity entity, CircleCollider2DComponent &component)
+	{
 	}
 
 }

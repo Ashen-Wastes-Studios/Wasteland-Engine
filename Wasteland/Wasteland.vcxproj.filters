@@ -225,6 +225,9 @@
     <ClInclude Include="src\Wasteland\Scene\ScriptableEntity.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Scripting\ScriptEngine.h">
+      <Filter>src\Wasteland\Scripting</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Utils\PlatformUtils.h">
       <Filter>src\Wasteland\Utils</Filter>
     </ClInclude>
@@ -1605,6 +1608,9 @@
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp">
+      <Filter>src\Wasteland\Scripting</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Scripting\ScriptEngine.cpp">
       <Filter>src\Wasteland\Scripting</Filter>
     </ClCompile>
     <ClCompile Include="src\wlpch.cpp">

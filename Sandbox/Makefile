@@ -28,7 +28,7 @@ ifeq ($(origin AR), default)
   AR = ar
 endif
 RESCOMP = windres
-INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include -I../Wasteland/vendor/pybind11/include
+INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include -I../Wasteland/vendor/pybind11/include -IC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/include
 FORCE_INCLUDE +=
 ALL_CPPFLAGS += $(CPPFLAGS) -MD -MP $(DEFINES) $(INCLUDES)
 ALL_RESFLAGS += $(RESFLAGS) $(DEFINES) $(INCLUDES)
@@ -47,9 +47,9 @@ OBJDIR = ../bin-int/Debug-windows-x86_64/Sandbox
 DEFINES += -DWL_PLATFORM_WINDOWS -DWL_DEBUG
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -g /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -g -std=c++17 /utf-8
-LIBS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib
+LIBS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib -lpython314
 LDDEPS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64
 
 else ifeq ($(config),release)
 TARGETDIR = ../bin/Release-windows-x86_64/Sandbox
@@ -58,9 +58,9 @@ OBJDIR = ../bin-int/Release-windows-x86_64/Sandbox
 DEFINES += -DWL_PLATFORM_WINDOWS -DWL_RELEASE
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib
+LIBS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib -lpython314
 LDDEPS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64 -s
 
 else ifeq ($(config),dist)
 TARGETDIR = ../bin/Dist-windows-x86_64/Sandbox
@@ -69,9 +69,9 @@ OBJDIR = ../bin-int/Dist-windows-x86_64/Sandbox
 DEFINES += -DWL_PLATFORM_WINDOWS -DWL_DIST
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib
+LIBS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib -lpython314
 LDDEPS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64 -s
 
 endif
 

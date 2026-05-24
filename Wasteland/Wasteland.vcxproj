@@ -206,6 +206,7 @@
     <ClInclude Include="src\Wasteland\Scene\SceneCamera.h" />
     <ClInclude Include="src\Wasteland\Scene\SceneSerializer.h" />
     <ClInclude Include="src\Wasteland\Scene\ScriptableEntity.h" />
+    <ClInclude Include="src\Wasteland\Scripting\ScriptEngine.h" />
     <ClInclude Include="src\Wasteland\Utils\PlatformUtils.h" />
     <ClInclude Include="src\wlpch.h" />
     <ClInclude Include="vendor\ImGuizmo\ImGuizmo.h" />
@@ -668,6 +669,7 @@
     <ClCompile Include="src\Wasteland\Scene\SceneCamera.cpp" />
     <ClCompile Include="src\Wasteland\Scene\SceneSerializer.cpp" />
     <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp" />
+    <ClCompile Include="src\Wasteland\Scripting\ScriptEngine.cpp" />
     <ClCompile Include="src\wlpch.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>

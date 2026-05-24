@@ -28,7 +28,7 @@ ifeq ($(origin AR), default)
   AR = ar
 endif
 RESCOMP = windres
-INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include -I../Wasteland/vendor/yaml-cpp/include -I../Wasteland/vendor/ImGuizmo -I../Wasteland/vendor/pybind11/include
+INCLUDES += -I../Wasteland/vendor/spdlog/include -I../Wasteland/vendor -I../Wasteland/src -I../Wasteland/vendor/glm -I../Wasteland/vendor/Glad/include -I../Wasteland/vendor/entt/single_include -I../Wasteland/vendor/yaml-cpp/include -I../Wasteland/vendor/ImGuizmo -I../Wasteland/vendor/pybind11/include -IC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/include
 FORCE_INCLUDE +=
 ALL_CPPFLAGS += $(CPPFLAGS) -MD -MP $(DEFINES) $(INCLUDES)
 ALL_RESFLAGS += $(RESFLAGS) $(DEFINES) $(INCLUDES)
@@ -38,6 +38,11 @@ endef
 define PRELINKCMDS
 endef
 define POSTBUILDCMDS
+	@echo Running postbuild commands
+	copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+	copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
+	xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
+	xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"
 endef
 
 ifeq ($(config),debug)
@@ -47,9 +52,9 @@ OBJDIR = ../bin-int/Debug-windows-x86_64/DemonCore-Editor
 DEFINES += -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_DEBUG
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -g /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -g -std=c++17 /utf-8
-LIBS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib
+LIBS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib -lpython314
 LDDEPS += ../bin/Debug-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Debug-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Debug-windows-x86_64/yaml-cpp/yaml-cpp.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64
 
 else ifeq ($(config),release)
 TARGETDIR = ../bin/Release-windows-x86_64/DemonCore-Editor
@@ -58,9 +63,9 @@ OBJDIR = ../bin-int/Release-windows-x86_64/DemonCore-Editor
 DEFINES += -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_RELEASE
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib
+LIBS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib -lpython314
 LDDEPS += ../bin/Release-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Release-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Release-windows-x86_64/yaml-cpp/yaml-cpp.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64 -s
 
 else ifeq ($(config),dist)
 TARGETDIR = ../bin/Dist-windows-x86_64/DemonCore-Editor
@@ -69,9 +74,9 @@ OBJDIR = ../bin-int/Dist-windows-x86_64/DemonCore-Editor
 DEFINES += -DYAML_CPP_STATIC_DEFINE -DWL_PLATFORM_WINDOWS -DWL_DIST
 ALL_CFLAGS += $(CFLAGS) $(ALL_CPPFLAGS) -m64 -O2 /utf-8
 ALL_CXXFLAGS += $(CXXFLAGS) $(ALL_CPPFLAGS) -m64 -O2 -std=c++17 /utf-8
-LIBS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib
+LIBS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib -lpython314
 LDDEPS += ../bin/Dist-windows-x86_64/Wasteland/Wasteland.lib ../Wasteland/vendor/imgui/bin/Dist-windows-x86_64/ImGui/ImGui.lib ../Wasteland/vendor/yaml-cpp/bin/Dist-windows-x86_64/yaml-cpp/yaml-cpp.lib
-ALL_LDFLAGS += $(LDFLAGS) -L/usr/lib64 -m64 -s
+ALL_LDFLAGS += $(LDFLAGS) -LC:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64/libs -L/usr/lib64 -m64 -s
 
 endif
 

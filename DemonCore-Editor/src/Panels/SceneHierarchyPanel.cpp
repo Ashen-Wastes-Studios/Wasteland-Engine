@@ -19,16 +19,17 @@ the following definition to disable a security warning on std::strncpy().
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	extern const std::filesystem::path g_AssetPath;
 
-	SceneHierarchyPanel::SceneHierarchyPanel(const Ref<Scene>& context)
+	SceneHierarchyPanel::SceneHierarchyPanel(const Ref<Scene> &context)
 	{
 		SetContext(context);
 	}
 
-	void SceneHierarchyPanel::SetContext(const Ref<Scene>& context)
+	void SceneHierarchyPanel::SetContext(const Ref<Scene> &context)
 	{
 		m_Context = context;
 		m_SelectionContext = {};
@@ -40,11 +41,10 @@ namespace Wasteland {
 
 		if (m_Context)
 		{
-			m_Context->m_Registry.view<TransformComponent, TagComponent>().each([&](entt::entity entityID, auto& transform, auto& tag)
-				{
+			m_Context->m_Registry.view<TransformComponent, TagComponent>().each([&](entt::entity entityID, auto &transform, auto &tag)
+																				{
 					Entity entity{ entityID, m_Context.get() };
-					DrawEntityNode(entity);
-				});
+					DrawEntityNode(entity); });
 
 			if (ImGui::IsMouseDown(0) && ImGui::IsWindowHovered())
 				m_SelectionContext = {};
@@ -163,6 +163,15 @@ namespace Wasteland {
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<ScriptComponent>())
+				{
+					if (ImGui::MenuItem("Script Component"))
+					{
+						m_SelectionContext.AddComponent<ScriptComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				ImGui::EndPopup();
 			}
 		}
@@ -179,10 +188,10 @@ namespace Wasteland {
 	{
 		if (entity.HasComponent<TagComponent>())
 		{
-			auto& tag = entity.GetComponent<TagComponent>().Tag;
+			auto &tag = entity.GetComponent<TagComponent>().Tag;
 
 			ImGuiTreeNodeFlags flags = ((m_SelectionContext == entity) ? ImGuiTreeNodeFlags_Selected : 0) | ImGuiTreeNodeFlags_OpenOnArrow;
-			bool opened = ImGui::TreeNodeEx((void*)(uint64_t)(uint32_t)entity, flags, tag.c_str());
+			bool opened = ImGui::TreeNodeEx((void *)(uint64_t)(uint32_t)entity, flags, tag.c_str());
 			if (ImGui::IsItemClicked())
 			{
 				m_SelectionContext = entity;
@@ -200,7 +209,7 @@ namespace Wasteland {
 			if (opened)
 			{
 				ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
-				bool opened = ImGui::TreeNodeEx((void*)9817239, flags, tag.c_str());
+				bool opened = ImGui::TreeNodeEx((void *)9817239, flags, tag.c_str());
 				if (opened)
 					ImGui::TreePop();
 				ImGui::TreePop();
@@ -215,7 +224,7 @@ namespace Wasteland {
 		}
 	}
 
-	static void DrawVec3Control(const std::string& label, glm::vec3& values, float resetValue = 0.0f, float columnWidth = 100.0f)
+	static void DrawVec3Control(const std::string &label, glm::vec3 &values, float resetValue = 0.0f, float columnWidth = 100.0f)
 	{
 		ImGui::PushID(label.c_str());
 
@@ -225,14 +234,14 @@ namespace Wasteland {
 		ImGui::NextColumn();
 
 		ImGui::PushMultiItemsWidths(3, ImGui::CalcItemWidth());
-		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{ 0, 0 });
+		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2{0, 0});
 
 		float lineHeight = GImGui->Font->FontSize + GImGui->Style.FramePadding.y * 2.0f;
-		ImVec2 buttonSize = { lineHeight + 3.0f, lineHeight };
+		ImVec2 buttonSize = {lineHeight + 3.0f, lineHeight};
 
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.8f, 0.1f, 0.15f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.9f, 0.2f, 0.2f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.8f, 0.1f, 0.15f, 1.0f });
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.8f, 0.1f, 0.15f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.9f, 0.2f, 0.2f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.8f, 0.1f, 0.15f, 1.0f});
 		if (ImGui::Button("X", buttonSize))
 			values.x = resetValue;
 		ImGui::PopStyleColor(3);
@@ -242,9 +251,9 @@ namespace Wasteland {
 		ImGui::PopItemWidth();
 		ImGui::SameLine();
 
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.2f, 0.7f, 0.2f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.3f, 0.8f, 0.3f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.2f, 0.7f, 0.2f, 1.0f });
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.2f, 0.7f, 0.2f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.3f, 0.8f, 0.3f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.2f, 0.7f, 0.2f, 1.0f});
 		if (ImGui::Button("Y", buttonSize))
 			values.y = resetValue;
 		ImGui::PopStyleColor(3);
@@ -254,9 +263,9 @@ namespace Wasteland {
 		ImGui::PopItemWidth();
 		ImGui::SameLine();
 
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.1f, 0.25f, 0.8f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{ 0.2f, 0.35f, 0.9f, 1.0f });
-		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{ 0.1f, 0.25f, 0.8f, 1.0f });
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.1f, 0.25f, 0.8f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.2f, 0.35f, 0.9f, 1.0f});
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.1f, 0.25f, 0.8f, 1.0f});
 		if (ImGui::Button("Z", buttonSize))
 			values.z = resetValue;
 		ImGui::PopStyleColor(3);
@@ -276,12 +285,12 @@ namespace Wasteland {
 	{
 		if (entity.HasComponent<TagComponent>())
 		{
-			auto& tag = entity.GetComponent<TagComponent>().Tag;
+			auto &tag = entity.GetComponent<TagComponent>().Tag;
 
 			char buffer[256];
 			memset(buffer, 0, sizeof(buffer));
 			strcpy_s(buffer, sizeof(buffer), tag.c_str());
-			if (ImGui::InputText("Tag", buffer, sizeof(buffer))) 
+			if (ImGui::InputText("Tag", buffer, sizeof(buffer)))
 			{
 				tag = std::string(buffer);
 			}
@@ -291,10 +300,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<TransformComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(TransformComponent).hash_code(), treeNodeFlags, "Transform");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(TransformComponent).hash_code(), treeNodeFlags, "Transform");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -311,7 +320,7 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& tc = entity.GetComponent<TransformComponent>();
+				auto &tc = entity.GetComponent<TransformComponent>();
 				DrawVec3Control("Translation", tc.Translation);
 				glm::vec3 rotation = glm::degrees(tc.Rotation);
 				DrawVec3Control("Rotation", rotation);
@@ -327,10 +336,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<CameraComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(CameraComponent).hash_code(), treeNodeFlags, "Camera");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(CameraComponent).hash_code(), treeNodeFlags, "Camera");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -347,13 +356,13 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& cameraComponent = entity.GetComponent<CameraComponent>();
-				auto& camera = cameraComponent.Camera;
+				auto &cameraComponent = entity.GetComponent<CameraComponent>();
+				auto &camera = cameraComponent.Camera;
 
 				ImGui::Checkbox("Primary", &cameraComponent.Primary);
 
-				const char* projectionTypeStrings[] = { "Perspective", "Orthographic" };
-				const char* currentProjectionTypeString = projectionTypeStrings[(int)camera.GetProjectionType()];
+				const char *projectionTypeStrings[] = {"Perspective", "Orthographic"};
+				const char *currentProjectionTypeString = projectionTypeStrings[(int)camera.GetProjectionType()];
 				if (ImGui::BeginCombo("Projection", currentProjectionTypeString))
 				{
 					for (int i = 0; i < 2; i++)
@@ -413,10 +422,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<SpriteRendererComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(SpriteRendererComponent).hash_code(), treeNodeFlags, "Sprite Renderer");
-			ImGui::SameLine(ImGui::GetWindowWidth() -25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(SpriteRendererComponent).hash_code(), treeNodeFlags, "Sprite Renderer");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -433,15 +442,15 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& src = entity.GetComponent<SpriteRendererComponent>();
+				auto &src = entity.GetComponent<SpriteRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(src.Color));
-				
+
 				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
 				if (ImGui::BeginDragDropTarget())
 				{
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
 					{
-						const wchar_t* path = (const wchar_t*)payload->Data;
+						const wchar_t *path = (const wchar_t *)payload->Data;
 						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
 						src.Texture = Texture2D::Create(texturePath.string());
 					}
@@ -458,10 +467,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<CircleRendererComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(CircleRendererComponent).hash_code(), treeNodeFlags, "Circle Renderer");
-			ImGui::SameLine(ImGui::GetWindowWidth() -25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(CircleRendererComponent).hash_code(), treeNodeFlags, "Circle Renderer");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -478,7 +487,7 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& crc = entity.GetComponent<CircleRendererComponent>();
+				auto &crc = entity.GetComponent<CircleRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(crc.Color));
 				ImGui::DragFloat("Thickness", &crc.Thickness, 0.025f, 0.0f, 1.0f);
 				ImGui::DragFloat("Fade", &crc.Fade, 0.00025f, 0.0f, 1.0f);
@@ -491,10 +500,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<CubeRendererComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(CubeRendererComponent).hash_code(), treeNodeFlags, "Cube Renderer");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(CubeRendererComponent).hash_code(), treeNodeFlags, "Cube Renderer");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -511,14 +520,14 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& crc = entity.GetComponent<CubeRendererComponent>();
+				auto &crc = entity.GetComponent<CubeRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(crc.Color));
 				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
 				if (ImGui::BeginDragDropTarget())
 				{
-					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
 					{
-						const wchar_t* path = (const wchar_t*)payload->Data;
+						const wchar_t *path = (const wchar_t *)payload->Data;
 						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
 						crc.Texture = Texture2D::Create(texturePath.string());
 					}
@@ -534,10 +543,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<SphereRendererComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(SphereRendererComponent).hash_code(), treeNodeFlags, "Sphere Renderer");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(SphereRendererComponent).hash_code(), treeNodeFlags, "Sphere Renderer");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -554,19 +563,19 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& src = entity.GetComponent<SphereRendererComponent>();
+				auto &src = entity.GetComponent<SphereRendererComponent>();
 				ImGui::ColorEdit4("Color", glm::value_ptr(src.Color));
 				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
-                if (ImGui::BeginDragDropTarget())
-                {
-                    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
-                    {
-                        const wchar_t* path = (const wchar_t*)payload->Data;
-                        std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
-                        src.Texture = Texture2D::Create(texturePath.string());
-                    }
-                    ImGui::EndDragDropTarget();
-                }
+				if (ImGui::BeginDragDropTarget())
+				{
+					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					{
+						const wchar_t *path = (const wchar_t *)payload->Data;
+						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
+						src.Texture = Texture2D::Create(texturePath.string());
+					}
+					ImGui::EndDragDropTarget();
+				}
 				ImGui::DragFloat("Radius", &src.Radius, 0.1f, 0.0f, 100.0f);
 				ImGui::DragInt("Sectors", &src.Sectors, 1.0f, 3.0f, 100.0f);
 				ImGui::DragInt("Stacks", &src.Stacks, 1.0f, 2.0f, 100.0f);
@@ -580,10 +589,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<MaterialComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(MaterialComponent).hash_code(), treeNodeFlags, "Material Component");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(MaterialComponent).hash_code(), treeNodeFlags, "Material Component");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -600,7 +609,7 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& mc = entity.GetComponent<MaterialComponent>();
+				auto &mc = entity.GetComponent<MaterialComponent>();
 
 				ImGui::ColorEdit4("Albedo", glm::value_ptr(mc.Albedo));
 				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
@@ -617,10 +626,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<Rigidbody2DComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(Rigidbody2DComponent).hash_code(), treeNodeFlags, "Rigidbody 2D");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(Rigidbody2DComponent).hash_code(), treeNodeFlags, "Rigidbody 2D");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -637,9 +646,9 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& rigidbody2D = entity.GetComponent<Rigidbody2DComponent>();
-				const char* bodyTypeStrings[] = { "Static", "Dynamic", "Kinematic" };
-				const char* currentBodyTypeString = bodyTypeStrings[(int)rigidbody2D.Type];
+				auto &rigidbody2D = entity.GetComponent<Rigidbody2DComponent>();
+				const char *bodyTypeStrings[] = {"Static", "Dynamic", "Kinematic"};
+				const char *currentBodyTypeString = bodyTypeStrings[(int)rigidbody2D.Type];
 				if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
 				{
 					for (int i = 0; i < 2; i++)
@@ -668,10 +677,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<BoxCollider2DComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(BoxCollider2DComponent).hash_code(), treeNodeFlags, "Box Collider 2D");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(BoxCollider2DComponent).hash_code(), treeNodeFlags, "Box Collider 2D");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -688,7 +697,7 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& boxCollider2D = entity.GetComponent<BoxCollider2DComponent>();
+				auto &boxCollider2D = entity.GetComponent<BoxCollider2DComponent>();
 
 				ImGui::DragFloat2("Offset", glm::value_ptr(boxCollider2D.Offset));
 				ImGui::DragFloat2("Size", glm::value_ptr(boxCollider2D.Size));
@@ -705,10 +714,10 @@ namespace Wasteland {
 
 		if (entity.HasComponent<CircleCollider2DComponent>())
 		{
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{ 4, 4 });
-			bool open = ImGui::TreeNodeEx((void*)typeid(CircleCollider2DComponent).hash_code(), treeNodeFlags, "Circle Collider 2D");
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(CircleCollider2DComponent).hash_code(), treeNodeFlags, "Circle Collider 2D");
 			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
-			if (ImGui::Button("+", ImVec2{ 20, 20 }))
+			if (ImGui::Button("+", ImVec2{20, 20}))
 			{
 				ImGui::OpenPopup("ComponentSettings");
 			}
@@ -725,7 +734,7 @@ namespace Wasteland {
 
 			if (open)
 			{
-				auto& circleCollider2D = entity.GetComponent<CircleCollider2DComponent>();
+				auto &circleCollider2D = entity.GetComponent<CircleCollider2DComponent>();
 
 				ImGui::DragFloat2("Offset", glm::value_ptr(circleCollider2D.Offset));
 				ImGui::DragFloat("Radius", &circleCollider2D.Radius, 0.01f, 0.0f, 1.0f);
@@ -738,6 +747,59 @@ namespace Wasteland {
 
 			if (removeComponent)
 				entity.RemoveComponent<CircleCollider2DComponent>();
+		}
+
+		if (entity.HasComponent<ScriptComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(ScriptComponent).hash_code(), treeNodeFlags, "Script Component");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &scriptComponent = entity.GetComponent<ScriptComponent>();
+
+				char buffer[256];
+				memset(buffer, 0, sizeof(buffer));
+				strcpy_s(buffer, sizeof(buffer), scriptComponent.ScriptName.c_str());
+
+				if (ImGui::InputText("Script Class", buffer, sizeof(buffer)))
+				{
+					scriptComponent.ScriptName = std::string(buffer);
+				}
+
+				ImGui::Button("Drag Script Here", ImVec2(100.0f, 0.0f));
+				if (ImGui::BeginDragDropTarget())
+				{
+					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					{
+						const wchar_t *path = (const wchar_t *)payload->Data;
+						// Extract the filename as the script name
+						std::filesystem::path scriptPath = path;
+						scriptComponent.ScriptName = scriptPath.stem().string();
+					}
+					ImGui::EndDragDropTarget();
+				}
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<ScriptComponent>();
 		}
 	}
 
