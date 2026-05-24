@@ -788,7 +788,6 @@ namespace Wasteland
 					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
 					{
 						const wchar_t *path = (const wchar_t *)payload->Data;
-						// Extract the filename as the script name
 						std::filesystem::path scriptPath = path;
 
 						scriptComponent.ScriptName = scriptPath.stem().string();
