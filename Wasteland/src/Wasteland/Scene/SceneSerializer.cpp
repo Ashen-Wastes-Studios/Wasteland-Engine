@@ -4,6 +4,7 @@
 #include "Entity.h"
 
 #include <fstream>
+#include <filesystem>
 
 #include <yaml-cpp/yaml.h>
 #include "Components.h"
@@ -526,7 +527,12 @@ namespace Wasteland
 				if (scriptComponent)
 				{
 					auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
-					sc.ScriptPath = scriptComponent["ScriptPath"].as<std::string>();
+
+					std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
+					sc.ScriptPath = Trim(rawPath);
+
+					sc.ScriptPath = rawPath;
+
 					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
 				}
 			}

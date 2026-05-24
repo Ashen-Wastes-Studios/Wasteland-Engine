@@ -370,3 +370,5 @@ FodyWeavers.xsd
 /DemonCore-Editor/WastelandProfile-Shutdown.json
 /DemonCore-Editor/WastelandProfile-Startup.json
 /DemonCore-Editor/imgui.ini
+
+*.json

@@ -110,6 +110,8 @@ namespace Wasteland
 			entt::entity dstEnttID = it->second;
 			auto &srcComponent = src.get<ScriptComponent>(e);
 
+			WL_CORE_INFO("Copying Script: '{0}' from {1}", srcComponent.ScriptPath, srcComponent.ScriptName);
+
 			// Emplace a clean script component container in the destination scene
 			auto &dstComponent = dst.emplace_or_replace<ScriptComponent>(dstEnttID);
 

@@ -1,6 +1,6 @@
 import WastelandCore
 
-class CameraMovement:
+class ScriptEngine:
     def __init__(self, entity):
         self.entity = entity
         self.speed = 10.0

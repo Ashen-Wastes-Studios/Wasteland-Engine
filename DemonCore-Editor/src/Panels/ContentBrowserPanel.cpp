@@ -3,32 +3,33 @@
 
 #include <imgui/imgui.h>
 
-namespace Wasteland {
+namespace Wasteland
+{
 
-	// Once we have projects, change this
-	extern const std::filesystem::path g_AssetPath = "assets";
+    // Once we have projects, change this
+    extern const std::filesystem::path g_AssetPath = "C:\\dev\\Wasteland";
 
-	ContentBrowserPanel::ContentBrowserPanel()
-		: m_CurrentDirectory(g_AssetPath)
-	{
-		m_CurrentDirectory = g_AssetPath;
-	}
+    ContentBrowserPanel::ContentBrowserPanel()
+        : m_CurrentDirectory(g_AssetPath)
+    {
+        m_CurrentDirectory = g_AssetPath;
+    }
 
-	void ContentBrowserPanel::OnImGuiRender()
-	{
-		ImGui::Begin("Content Browser");
+    void ContentBrowserPanel::OnImGuiRender()
+    {
+        ImGui::Begin("Content Browser");
 
-		if (m_CurrentDirectory != std::filesystem::path(g_AssetPath))
-		{
-			if (ImGui::Button("<-"))
-			{
-				m_CurrentDirectory = m_CurrentDirectory.parent_path();
-			}
-		}
-
-        for (auto& directoryEntry : std::filesystem::directory_iterator(m_CurrentDirectory))
+        if (m_CurrentDirectory != std::filesystem::path(g_AssetPath))
         {
-            const auto& path = directoryEntry.path();
+            if (ImGui::Button("<-"))
+            {
+                m_CurrentDirectory = m_CurrentDirectory.parent_path();
+            }
+        }
+
+        for (auto &directoryEntry : std::filesystem::directory_iterator(m_CurrentDirectory))
+        {
+            const auto &path = directoryEntry.path();
             auto relativePath = std::filesystem::relative(path, g_AssetPath);
             std::string filenameString = relativePath.filename().string();
 
@@ -41,7 +42,7 @@ namespace Wasteland {
 
             if (ImGui::BeginDragDropSource())
             {
-                const wchar_t* itemPath = relativePath.c_str();
+                const wchar_t *itemPath = relativePath.c_str();
                 ImGui::SetDragDropPayload("CONTENT_BROWSER_ITEM", itemPath, (wcslen(itemPath) + 1) * sizeof(wchar_t));
                 ImGui::EndDragDropSource();
             }
@@ -55,7 +56,7 @@ namespace Wasteland {
             ImGui::PopID();
         }
 
-		ImGui::End();
-	}
+        ImGui::End();
+    }
 
 }
