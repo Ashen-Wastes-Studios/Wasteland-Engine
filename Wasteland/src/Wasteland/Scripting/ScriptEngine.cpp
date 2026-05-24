@@ -1,6 +1,8 @@
 #include "wlpch.h"
 #include "ScriptEngine.h"
+
 #include "Wasteland/Scene/Components.h"
+
 #include <filesystem>
 #include <unordered_set>
 #include <algorithm>
@@ -27,11 +29,9 @@ namespace Wasteland
         auto &sc = entity.GetComponent<ScriptComponent>();
         auto id = entity.GetComponent<IDComponent>().ID;
 
-        // 1. Prevent the "Loop of Doom": If we already tried and failed, stop immediately
         if (s_FailedScripts.find(id) != s_FailedScripts.end())
             return;
 
-        // 2. Initialize if not already instantiated
         if (s_EntityInstances.find(id) == s_EntityInstances.end())
         {
             // Clean the path before doing anything else
@@ -90,7 +90,6 @@ namespace Wasteland
             }
         }
 
-        // 3. Update Phase
         auto it = s_EntityInstances.find(id);
         if (it != s_EntityInstances.end())
         {
