@@ -94,6 +94,32 @@ namespace Wasteland
 	}
 
 	template <>
+	static void CopyComponent<ScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
+	{
+		auto scriptView = src.view<ScriptComponent>();
+		for (auto e : scriptView)
+		{
+			if (!src.valid(e) || !src.all_of<IDComponent>(e))
+				continue;
+
+			UUID uuid = src.get<IDComponent>(e).ID;
+			auto it = enttMap.find(uuid);
+			if (it == enttMap.end())
+				continue;
+
+			entt::entity dstEnttID = it->second;
+			auto &srcComponent = src.get<ScriptComponent>(e);
+
+			// Emplace a clean script component container in the destination scene
+			auto &dstComponent = dst.emplace_or_replace<ScriptComponent>(dstEnttID);
+
+			// Explicitly copy the data members
+			dstComponent.ScriptPath = srcComponent.ScriptPath;
+			dstComponent.ScriptName = srcComponent.ScriptName;
+		}
+	}
+
+	template <>
 	static void CopyComponent<CameraComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
 	{
 		auto view = src.view<CameraComponent>();
@@ -161,9 +187,9 @@ namespace Wasteland
 		CopyComponent<Rigidbody2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<BoxCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CircleCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
-		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		{
 			auto view = dstSceneRegistry.view<CameraComponent>();
@@ -501,9 +527,9 @@ namespace Wasteland
 		CopyComponentIfExists<Rigidbody2DComponent>(newEntity, entity);
 		CopyComponentIfExists<BoxCollider2DComponent>(newEntity, entity);
 		CopyComponentIfExists<CircleCollider2DComponent>(newEntity, entity);
-		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
+		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
 	}
 
 	Entity Scene::GetPrimaryCameraEntity()

@@ -13,7 +13,6 @@ namespace Wasteland
     class ScriptEngine
     {
     public:
-        static void OnUpdate(Timestep ts);
         static void OnUpdateEntity(Entity entity, Timestep ts);
 
     private:

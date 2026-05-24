@@ -790,7 +790,9 @@ namespace Wasteland
 						const wchar_t *path = (const wchar_t *)payload->Data;
 						// Extract the filename as the script name
 						std::filesystem::path scriptPath = path;
+
 						scriptComponent.ScriptName = scriptPath.stem().string();
+						scriptComponent.ScriptPath = std::filesystem::absolute(scriptPath).string();
 					}
 					ImGui::EndDragDropTarget();
 				}
