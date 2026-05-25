@@ -179,6 +179,114 @@ project "Wasteland"
 		optimize "On"
 		runtime "Release"
 
+project "WastelandPython"
+    kind "SharedLib"
+    language "C++"
+    cppdialect "C++17"
+    
+    -- Rename the output to .pyd so Python can import it
+    targetextension ".pyd"
+    targetname "Wasteland" -- This results in Wasteland.pyd
+    
+    targetdir ("bin/" .. outputdir .. "/%{wks.startproject}")
+    
+    files 
+    { 
+        "Wasteland/src/Wasteland/Scripting/Bindings.cpp" -- Path to your Bindings.cpp
+    }
+
+    includedirs
+    {
+        "Wasteland/src",
+		"Wasteland/vendor/spdlog/include",
+		"%{IncludeDir.entt}",
+		"%{IncludeDir.glm}",
+        "%{IncludeDir.pybind11}",
+        pythonpath .. "/include"
+    }
+
+    libdirs { pythonpath .. "/libs" }
+
+    links 
+    { 
+        "Wasteland", -- Link your core engine static lib
+        "python314" 
+    }
+
+	filter "system:windows"
+		systemversion "latest"
+
+		buildoptions
+		{
+			"/utf-8"
+		}
+
+		defines
+		{
+			"WL_PLATFORM_WINDOWS",
+			"WL_BUILD_DLL",
+			"GLFW_INCLUDE_NONE"
+		}
+
+		links
+		{
+			"opengl32.lib"
+		}
+
+	filter "system:linux"
+		buildoptions
+		{
+			"-fPIC"
+		}
+
+		defines
+		{
+			"WL_PLATFORM_LINUX",
+			"WL_BUILD_DLL",
+			"GLFW_INCLUDE_NONE"
+		}
+
+		links
+		{
+			"GL",
+			"pthread"
+		}
+
+	filter "system:macosx"
+		buildoptions
+		{
+			"-fPIC"
+		}
+
+		defines
+		{
+			"WL_PLATFORM_MACOS",
+			"WL_BUILD_DLL",
+			"GLFW_INCLUDE_NONE"
+		}
+
+		links
+		{
+			"Cocoa.framework",
+			"IOKit.framework",
+			"CoreFoundation.framework"
+		}
+
+	filter "configurations:Debug"
+		defines "WL_DEBUG"
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines "WL_RELEASE"
+		optimize "On"
+		runtime "Release"
+
+	filter "configurations:Dist"
+		defines "WL_DIST"
+		optimize "On"
+		runtime "Release"
+
 project "Sandbox"
 	location "Sandbox"
 	kind "ConsoleApp"

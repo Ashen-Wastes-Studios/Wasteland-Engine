@@ -325,7 +325,12 @@ namespace Wasteland
 			out << YAML::BeginMap; // ScriptComponent
 
 			auto &sc = entity.GetComponent<ScriptComponent>();
-			out << YAML::Key << "ScriptPath" << YAML::Value << sc.ScriptPath;
+			std::string pathToSave = sc.ScriptPath;
+			if (pathToSave.find("assets/") == std::string::npos)
+			{
+				pathToSave = "assets/" + pathToSave;
+			}
+			out << YAML::Key << "ScriptPath" << YAML::Value << pathToSave;
 			out << YAML::Key << "ScriptName" << YAML::Value << sc.ScriptName;
 
 			out << YAML::EndMap; // ScriptComponent
@@ -527,12 +532,9 @@ namespace Wasteland
 				if (scriptComponent)
 				{
 					auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
-
 					std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
-					sc.ScriptPath = Trim(rawPath);
-
-					sc.ScriptPath = rawPath;
-
+					// Always store as a relative path
+					sc.ScriptPath = "scripts/" + std::filesystem::path(rawPath).filename().string();
 					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
 				}
 			}

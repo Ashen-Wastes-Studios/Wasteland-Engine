@@ -1,10 +1,10 @@
 #pragma once
 
 #include <xhash>
+#include <spdlog/fmt/fmt.h>
 
 namespace Wasteland
 {
-
 	class UUID
 	{
 	public:
@@ -18,12 +18,22 @@ namespace Wasteland
 	private:
 		uint64_t m_UUID;
 	};
+}
 
+namespace fmt
+{
+	template <>
+	struct formatter<Wasteland::UUID> : formatter<std::string_view>
+	{
+		auto format(const Wasteland::UUID &uuid, format_context &ctx) const
+		{
+			return formatter<std::string_view>::format(std::to_string((uint64_t)uuid), ctx);
+		}
+	};
 }
 
 namespace std
 {
-
 	template <>
 	struct hash<Wasteland::UUID>
 	{
@@ -32,5 +42,4 @@ namespace std
 			return hash<uint64_t>()((uint64_t)uuid);
 		}
 	};
-
 }

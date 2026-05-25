@@ -15,6 +15,7 @@ ifeq ($(config),debug)
   yaml_cpp_config = debug
   Box2D_config = debug
   Wasteland_config = debug
+  WastelandPython_config = debug
   Sandbox_config = debug
   DemonCore_Editor_config = debug
 
@@ -25,6 +26,7 @@ else ifeq ($(config),release)
   yaml_cpp_config = release
   Box2D_config = release
   Wasteland_config = release
+  WastelandPython_config = release
   Sandbox_config = release
   DemonCore_Editor_config = release
 
@@ -35,6 +37,7 @@ else ifeq ($(config),dist)
   yaml_cpp_config = dist
   Box2D_config = dist
   Wasteland_config = dist
+  WastelandPython_config = dist
   Sandbox_config = dist
   DemonCore_Editor_config = dist
 
@@ -42,7 +45,7 @@ else
   $(error "invalid configuration $(config)")
 endif
 
-PROJECTS := GLFW Glad ImGui yaml-cpp Box2D Wasteland Sandbox DemonCore-Editor
+PROJECTS := GLFW Glad ImGui yaml-cpp Box2D Wasteland WastelandPython Sandbox DemonCore-Editor
 
 .PHONY: all clean help $(PROJECTS) Dependencies
 
@@ -86,6 +89,12 @@ ifneq (,$(Wasteland_config))
 	@${MAKE} --no-print-directory -C Wasteland -f Makefile config=$(Wasteland_config)
 endif
 
+WastelandPython: Wasteland
+ifneq (,$(WastelandPython_config))
+	@echo "==== Building WastelandPython ($(WastelandPython_config)) ===="
+	@${MAKE} --no-print-directory -C . -f WastelandPython.make config=$(WastelandPython_config)
+endif
+
 Sandbox: Wasteland ImGui
 ifneq (,$(Sandbox_config))
 	@echo "==== Building Sandbox ($(Sandbox_config)) ===="
@@ -105,6 +114,7 @@ clean:
 	@${MAKE} --no-print-directory -C Wasteland/vendor/yaml-cpp -f Makefile clean
 	@${MAKE} --no-print-directory -C Wasteland/vendor/Box2D -f Makefile clean
 	@${MAKE} --no-print-directory -C Wasteland -f Makefile clean
+	@${MAKE} --no-print-directory -C . -f WastelandPython.make clean
 	@${MAKE} --no-print-directory -C Sandbox -f Makefile clean
 	@${MAKE} --no-print-directory -C DemonCore-Editor -f Makefile clean
 
@@ -125,6 +135,7 @@ help:
 	@echo "   yaml-cpp"
 	@echo "   Box2D"
 	@echo "   Wasteland"
+	@echo "   WastelandPython"
 	@echo "   Sandbox"
 	@echo "   DemonCore-Editor"
 	@echo ""

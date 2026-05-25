@@ -11,6 +11,8 @@
   </Project>
   <Project Path="Wasteland\Wasteland.vcxproj" Id="E8DDB8B7-5448-6D2E-9D86-1ED409304B83">
   </Project>
+  <Project Path="WastelandPython.vcxproj" Id="4A585D2E-B6E3-CAF2-BFF4-4DE72BFF26F3">
+  </Project>
   <Folder Name="/Dependencies/">
     <Project Path="Wasteland\vendor\Box2D\Box2D.vcxproj" Id="A434E80C-1049-10BE-D9CA-B31D459E0CEF">
     </Project>
