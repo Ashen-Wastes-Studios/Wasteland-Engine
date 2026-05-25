@@ -24,7 +24,7 @@ namespace Wasteland
                          { return e.GetComponent<T>(); }, py::return_value_policy::reference);
     }
 
-    PYBIND11_MODULE(WastelandCore, m)
+    PYBIND11_MODULE(Wasteland, m)
     {
         py::class_<Entity> entity_cls(m, "Entity");
         BindComponent<TransformComponent>(entity_cls, "Transform");

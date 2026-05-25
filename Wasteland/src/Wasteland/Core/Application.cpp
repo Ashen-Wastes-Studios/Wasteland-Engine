@@ -19,13 +19,13 @@ namespace Wasteland
 
 	Application *Application::s_Instance = nullptr;
 
-	extern "C" PyObject *PyInit_WastelandCore(void);
+	extern "C" PyObject *PyInit_Wasteland(void);
 
 	Application::Application(const std::string &name)
 	{
 		WL_PROFILE_FUNCTION();
 
-		PyImport_AppendInittab("WastelandCore", &PyInit_WastelandCore);
+		PyImport_AppendInittab("WastelandCore", &PyInit_Wasteland);
 
 		Py_SetPythonHome(L"C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64");
 

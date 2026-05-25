@@ -1,6 +1,6 @@
-import WastelandCore
+import Wasteland
 
-class ScriptEngine:
+class Camera:
     def __init__(self, entity):
         self.entity = entity
         self.speed = 10.0
@@ -11,13 +11,13 @@ class ScriptEngine:
         
         # 2. Logic for movement
         # dt (delta time) ensures movement is consistent regardless of FPS
-        if WastelandCore.IsKeyPressed("W"):
+        if Wasteland.IsKeyPressed("W"):
             transform.Translation.z -= self.speed * dt
-        if WastelandCore.IsKeyPressed("S"):
+        if Wasteland.IsKeyPressed("S"):
             transform.Translation.z += self.speed * dt
-        if WastelandCore.IsKeyPressed("A"):
+        if Wasteland.IsKeyPressed("A"):
             transform.Translation.x -= self.speed * dt
-        if WastelandCore.IsKeyPressed("D"):
+        if Wasteland.IsKeyPressed("D"):
             transform.Translation.x += self.speed * dt
 
         # The 'transform' is a reference, so updating it here 

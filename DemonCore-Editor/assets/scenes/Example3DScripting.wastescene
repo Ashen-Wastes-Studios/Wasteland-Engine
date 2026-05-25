@@ -87,3 +87,6 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: C:\dev\Wasteland\DemonCore-Editor\DemonCore-Editor\scripts\Camera.py
+      ScriptName: Camera
