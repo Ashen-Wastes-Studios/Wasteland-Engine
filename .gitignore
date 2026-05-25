@@ -27,12 +27,20 @@ x86/
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
 bld/
-[Bb]in/
-[Bb]in-[Ii]nt/
 [Oo]bj/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+bin/Debug-windows-x86_64/DemonCore-Editor/DLLs/
+bin/Debug-windows-x86_64/DemonCore-Editor/Lib/
+bin/Debug-windows-x86_64/Wasteland/
+bin/Debug-windows-x86_64/Sandbox/
+bin/Release-windows-x86_64/DemonCore-Editor/DLLs/
+bin/Release-windows-x86_64/DemonCore-Editor/Lib/
+bin/Release-windows-x86_64/Wasteland/
+bin/Release-windows-x86_64/Sandbox/
+[Bb]in-[Ii]nt/
+python314.dll
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/

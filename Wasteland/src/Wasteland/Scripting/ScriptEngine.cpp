@@ -9,18 +9,15 @@
 
 namespace Wasteland
 {
-    // Persistence containers
     std::unordered_map<UUID, py::object> ScriptEngine::s_EntityInstances;
     static std::unordered_set<UUID> s_FailedScripts;
 
     static std::string CleanPath(std::string path)
     {
-        // 1. Remove non-printable control characters
         path.erase(std::remove_if(path.begin(), path.end(), [](char c)
                                   { return (unsigned char)c < 32; }),
                    path.end());
 
-        // 2. Trim whitespace from start and end
         size_t first = path.find_first_not_of(" \t\r\n");
         if (first == std::string::npos)
             return "";
@@ -34,62 +31,62 @@ namespace Wasteland
         auto &sc = entity.GetComponent<ScriptComponent>();
         auto id = entity.GetComponent<IDComponent>().ID;
 
-        // Skip if this script already failed to load
         if (s_FailedScripts.find(id) != s_FailedScripts.end())
             return;
 
-        // --- 1. INITIALIZATION: Load script if not already instance-held ---
         if (s_EntityInstances.find(id) == s_EntityInstances.end())
         {
             std::string cleanedPath = CleanPath(sc.ScriptPath);
-            std::filesystem::path scriptFullPath(cleanedPath);
 
-            // Bulletproof Resolution:
-            // Try raw path first (if it's absolute, this works immediately)
-            bool found = std::filesystem::exists(scriptFullPath);
+            // 1. SANITIZE: Strip absolute path if present
+            std::filesystem::path p(cleanedPath);
+            if (p.is_absolute())
+                cleanedPath = p.parent_path().filename().string() + "/" + p.filename().string();
 
-            // Fallback: Try resolving relative to Project Root
-            if (!found)
+            // 2. RESOLVE: Build absolute path in assets/
+            std::filesystem::path assetRoot = std::filesystem::current_path() / "assets";
+            std::filesystem::path scriptFullPath = assetRoot / cleanedPath;
+            scriptFullPath.make_preferred(); // Fixes slash issues
+
+            if (!std::filesystem::exists(scriptFullPath))
             {
-                std::filesystem::path relativePath = std::filesystem::current_path().parent_path() / cleanedPath;
-                if (std::filesystem::exists(relativePath))
-                {
-                    scriptFullPath = relativePath;
-                    found = true;
-                }
-            }
-
-            if (!found)
-            {
-                WL_CORE_ERROR("Script file NOT FOUND at: {0}", cleanedPath);
+                WL_CORE_ERROR("Script file NOT FOUND at: {0}", scriptFullPath.string());
                 s_FailedScripts.insert(id);
                 return;
             }
 
-            // --- 2. PYTHON LOADING ---
+            // 3. PYTHON LOADING
             try
             {
-                std::string moduleName = scriptFullPath.stem().string();
-
-                // Cache these imports so they only happen once
                 static py::module_ sys = py::module_::import("sys");
+                py::list sysPath = sys.attr("path").cast<py::list>();
+
+                // Add script folder to sys.path
+                std::string scriptDir = scriptFullPath.parent_path().string();
+                // Add engine module folder (where the Wasteland module lives)
+                std::string engineDir = std::filesystem::current_path().string();
+
+                auto AddToPath = [&](const std::string &path)
+                {
+                    for (auto item : sysPath)
+                        if (item.cast<std::string>() == path)
+                            return;
+                    sysPath.append(path);
+                };
+
+                AddToPath(scriptDir);
+                AddToPath(engineDir); // Ensures "import Wasteland" works
+
+                std::string moduleName = scriptFullPath.stem().string();
                 static py::module_ importlib = py::module_::import("importlib");
                 py::dict modules = sys.attr("modules").cast<py::dict>();
 
                 py::module_ scriptModule;
-
                 if (modules.contains(moduleName.c_str()))
-                {
-                    // Reload if already exists (allows hot-reloading)
                     scriptModule = importlib.attr("reload")(modules[moduleName.c_str()]);
-                }
                 else
-                {
-                    // Import fresh
                     scriptModule = py::module_::import(moduleName.c_str());
-                }
 
-                // Instantiate class
                 py::object scriptClass = scriptModule.attr(sc.ScriptName.c_str());
                 s_EntityInstances[id] = scriptClass(entity);
 
@@ -100,11 +97,10 @@ namespace Wasteland
                 WL_CORE_ERROR("Python Error during init: {0}", e.what());
                 PyErr_Clear();
                 s_FailedScripts.insert(id);
-                return;
             }
         }
 
-        // --- 3. RUNTIME UPDATE ---
+        // 4. RUNTIME UPDATE
         auto it = s_EntityInstances.find(id);
         if (it != s_EntityInstances.end())
         {

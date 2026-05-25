@@ -7,7 +7,7 @@ namespace Wasteland
 {
 
     // Once we have projects, change this
-    extern const std::filesystem::path g_AssetPath = "C:\\dev\\Wasteland";
+    extern const std::filesystem::path g_AssetPath = "assets";
 
     ContentBrowserPanel::ContentBrowserPanel()
         : m_CurrentDirectory(g_AssetPath)

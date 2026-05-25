@@ -15,12 +15,13 @@
 
 #include "Wasteland/Math/Math.h"
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	extern const std::filesystem::path g_AssetPath;
 
 	static const uint32_t s_MapWidth = 24;
-	static const char* s_MapTiles =
+	static const char *s_MapTiles =
 		"WWWWWWWWWWWWWWWWWWWWWWWW"
 		"WWWWWWWDDDDDWWWWWWWWWWWW"
 		"WWWWWDDDDDDDDDDWWWWWWWWW"
@@ -37,7 +38,7 @@ namespace Wasteland {
 		"WWWWWWWWWWWWWWWWWWWWWWWW";
 
 	EditorLayer::EditorLayer()
-		: Layer("EditorLayer"), m_CameraController(1280.0f / 720.0f), m_SquareColor({ 0.2f, 0.3f, 0.8f, 1.0f })
+		: Layer("EditorLayer"), m_CameraController(1280.0f / 720.0f), m_SquareColor({0.2f, 0.3f, 0.8f, 1.0f})
 	{
 	}
 
@@ -45,11 +46,11 @@ namespace Wasteland {
 	{
 		WL_PROFILE_FUNCTION();
 
-		m_CheckerboardTexture = Texture2D::Create("assets/textures/Checkerboard.png");
-		m_SpriteSheet = Texture2D::Create("assets/game/textures/RPGpack_sheet_2X.png");
+		m_CheckerboardTexture = nullptr;
+		m_SpriteSheet = nullptr;
 
 		FramebufferSpecification fbSpec;
-		fbSpec.Attachments = { FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER, FramebufferTextureFormat::Depth };
+		fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER, FramebufferTextureFormat::Depth};
 		fbSpec.Width = 1280;
 		fbSpec.Height = 720;
 		m_Framebuffer = Framebuffer::Create(fbSpec);
@@ -112,14 +113,14 @@ namespace Wasteland {
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 
-		m_TextureStairs = SubTexture2D::CreateFromCoords(m_SpriteSheet, { 0, 11 }, { 128.0f, 128.0f });
-		m_TextureTree = SubTexture2D::CreateFromCoords(m_SpriteSheet, { 2, 1 }, { 128.0f, 128.0f }, { 1, 2 });
+		m_TextureStairs = nullptr;
+		m_TextureTree = nullptr;
 
 		m_MapWidth = s_MapWidth;
 		m_MapHeight = strlen(s_MapTiles) / s_MapWidth;
 
-		s_TextureMap['D'] = SubTexture2D::CreateFromCoords(m_SpriteSheet, { 6, 11 }, { 128.0f, 128.0f });
-		s_TextureMap['W'] = SubTexture2D::CreateFromCoords(m_SpriteSheet, { 11, 11 }, { 128.0f, 128.0f });
+		s_TextureMap['D'] = nullptr;
+		s_TextureMap['W'] = nullptr;
 
 		m_CameraController.SetZoomLevel(5.0f);
 	}
@@ -155,7 +156,7 @@ namespace Wasteland {
 		{
 			// Standard raster pass needs the framebuffer bound
 			m_Framebuffer->Bind();
-			RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+			RenderCommand::SetClearColor({0.1f, 0.1f, 0.1f, 1.0f});
 			RenderCommand::Clear();
 			m_Framebuffer->ClearAttachment(1, -1);
 		}
@@ -163,28 +164,28 @@ namespace Wasteland {
 		{
 			// Ray tracing bypasses the default framebuffer entirely!
 			// We just need to clear out your 2D debug overlay stats/pipeline states
-			RenderCommand::SetClearColor({ 0.1f, 0.1f, 0.1f, 1.0f });
+			RenderCommand::SetClearColor({0.1f, 0.1f, 0.1f, 1.0f});
 		}
 
 		switch (m_SceneState)
 		{
-			case SceneState::Edit:
+		case SceneState::Edit:
+		{
+			if (m_ViewportFocused)
 			{
-				if (m_ViewportFocused)
-				{
-					m_CameraController.OnUpdate(ts);
-				}
-
-				m_EditorCamera.OnUpdate(ts);
-
-				m_ActiveScene->OnUpdateEditor(ts, m_EditorCamera);
-				break;
+				m_CameraController.OnUpdate(ts);
 			}
-			case SceneState::Play:
-			{
-				m_ActiveScene->OnUpdateRuntime(ts);
-				break;
-			}
+
+			m_EditorCamera.OnUpdate(ts);
+
+			m_ActiveScene->OnUpdateEditor(ts, m_EditorCamera);
+			break;
+		}
+		case SceneState::Play:
+		{
+			m_ActiveScene->OnUpdateRuntime(ts);
+			break;
+		}
 		}
 
 		// Handle non-raytraced system layouts (like entity picking and overlays)
@@ -232,7 +233,7 @@ namespace Wasteland {
 			ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
 			if (opt_fullscreen)
 			{
-				const ImGuiViewport* viewport = ImGui::GetMainViewport();
+				const ImGuiViewport *viewport = ImGui::GetMainViewport();
 				ImGui::SetNextWindowPos(viewport->WorkPos);
 				ImGui::SetNextWindowSize(viewport->WorkSize);
 				ImGui::SetNextWindowViewport(viewport->ID);
@@ -266,7 +267,7 @@ namespace Wasteland {
 				ImGui::PopStyleVar(2);
 
 			// Submit the DockSpace
-			ImGuiIO& io = ImGui::GetIO();
+			ImGuiIO &io = ImGui::GetIO();
 			if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
 			{
 				ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
@@ -291,7 +292,8 @@ namespace Wasteland {
 
 					ImGui::Separator();
 
-					if (ImGui::MenuItem("Exit")) Wasteland::Application::Get().Close();
+					if (ImGui::MenuItem("Exit"))
+						Wasteland::Application::Get().Close();
 					ImGui::EndMenu();
 				}
 
@@ -345,93 +347,93 @@ namespace Wasteland {
 
 			ImGui::End();
 
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{ 0, 0 });
-            ImGui::Begin("Viewport");
-            
-            ImVec2 minBound = ImGui::GetCursorScreenPos(); 
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});
+			ImGui::Begin("Viewport");
 
-            m_ViewportFocused = ImGui::IsWindowFocused();
-            m_ViewportHovered = ImGui::IsWindowHovered();
-            Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
+			ImVec2 minBound = ImGui::GetCursorScreenPos();
 
-            ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
-            m_ViewportSize = { viewportPanelSize.x, viewportPanelSize.y };
+			m_ViewportFocused = ImGui::IsWindowFocused();
+			m_ViewportHovered = ImGui::IsWindowHovered();
+			Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
 
-            ImVec2 maxBound = { minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y };
-            m_ViewportBounds[0] = { minBound.x, minBound.y };
-            m_ViewportBounds[1] = { maxBound.x, maxBound.y };
+			ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
+			m_ViewportSize = {viewportPanelSize.x, viewportPanelSize.y};
 
-            uint32_t textureID = 0;
-            if (Wasteland::Renderer3D::IsRayTracingEnabled())
-            {
-                // Pull the compute shader texture storage handle
-                textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
-            }
-            else
-            {
-                // Fall back to standard raster scene rendering pass Framebuffer attachment
-                textureID = m_Framebuffer->GetColorAttachmentRendererID();
-            }
+			ImVec2 maxBound = {minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y};
+			m_ViewportBounds[0] = {minBound.x, minBound.y};
+			m_ViewportBounds[1] = {maxBound.x, maxBound.y};
 
-            ImGui::Image(reinterpret_cast<void*>(static_cast<uintptr_t>(textureID)), 
-                         ImVec2{ m_ViewportSize.x, m_ViewportSize.y }, 
-                         ImVec2{ 0, 1 }, ImVec2{ 1, 0 });
+			uint32_t textureID = 0;
+			if (Wasteland::Renderer3D::IsRayTracingEnabled())
+			{
+				// Pull the compute shader texture storage handle
+				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
+			}
+			else
+			{
+				// Fall back to standard raster scene rendering pass Framebuffer attachment
+				textureID = m_Framebuffer->GetColorAttachmentRendererID();
+			}
 
-            if (ImGui::BeginDragDropTarget())
-            {
-                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
-                {
-                    const wchar_t* path = (const wchar_t*)payload->Data;
-                    OpenScene(std::filesystem::path(g_AssetPath) / path);
-                }
+			ImGui::Image(reinterpret_cast<void *>(static_cast<uintptr_t>(textureID)),
+						 ImVec2{m_ViewportSize.x, m_ViewportSize.y},
+						 ImVec2{0, 1}, ImVec2{1, 0});
 
-                ImGui::EndDragDropTarget();
-            }
+			if (ImGui::BeginDragDropTarget())
+			{
+				if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+				{
+					const wchar_t *path = (const wchar_t *)payload->Data;
+					OpenScene(std::filesystem::path(g_AssetPath) / path);
+				}
 
-            // Gizmos
-            Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
-            if (m_ActiveScene && selectedEntity && m_GizmoType != -1 && m_ActiveScene->IsEntityValid(selectedEntity))
-            {
-                ImGuizmo::SetOrthographic(false);
-                ImGuizmo::SetDrawlist();
+				ImGui::EndDragDropTarget();
+			}
 
-                // Set rect explicitly using our clean canvas bounds instead of the window outer box
-                ImGuizmo::SetRect(m_ViewportBounds[0].x, m_ViewportBounds[0].y, m_ViewportSize.x, m_ViewportSize.y);
+			// Gizmos
+			Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
+			if (m_ActiveScene && selectedEntity && m_GizmoType != -1 && m_ActiveScene->IsEntityValid(selectedEntity))
+			{
+				ImGuizmo::SetOrthographic(false);
+				ImGuizmo::SetDrawlist();
 
-                // Editor camera matrices
-                const glm::mat4& cameraProjection = m_EditorCamera.GetProjection();
-                glm::mat4 cameraView = m_EditorCamera.GetViewMatrix();
+				// Set rect explicitly using our clean canvas bounds instead of the window outer box
+				ImGuizmo::SetRect(m_ViewportBounds[0].x, m_ViewportBounds[0].y, m_ViewportSize.x, m_ViewportSize.y);
 
-                // Entity transform
-                auto& tc = selectedEntity.GetComponent<TransformComponent>();
-                glm::mat4 transform = tc.GetTransform();
+				// Editor camera matrices
+				const glm::mat4 &cameraProjection = m_EditorCamera.GetProjection();
+				glm::mat4 cameraView = m_EditorCamera.GetViewMatrix();
 
-                // Snapping
-                bool snap = Input::IsKeyPressed(WL_KEY_LEFT_CONTROL);
-                float snapValue = 0.5f; 
-                if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
-                    snapValue = 45.0f;
+				// Entity transform
+				auto &tc = selectedEntity.GetComponent<TransformComponent>();
+				glm::mat4 transform = tc.GetTransform();
 
-                float snapValues[3] = { snapValue, snapValue, snapValue };
+				// Snapping
+				bool snap = Input::IsKeyPressed(WL_KEY_LEFT_CONTROL);
+				float snapValue = 0.5f;
+				if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
+					snapValue = 45.0f;
 
-                ImGuizmo::Manipulate(glm::value_ptr(cameraView), glm::value_ptr(cameraProjection),
-                    (ImGuizmo::OPERATION)m_GizmoType, ImGuizmo::LOCAL, glm::value_ptr(transform),
-                    nullptr, snap ? snapValues : nullptr);
+				float snapValues[3] = {snapValue, snapValue, snapValue};
 
-                if (ImGuizmo::IsUsing())
-                {
-                    glm::vec3 translation, rotation, scale;
-                    Math::DecomposeTransform(transform, translation, rotation, scale);
+				ImGuizmo::Manipulate(glm::value_ptr(cameraView), glm::value_ptr(cameraProjection),
+									 (ImGuizmo::OPERATION)m_GizmoType, ImGuizmo::LOCAL, glm::value_ptr(transform),
+									 nullptr, snap ? snapValues : nullptr);
 
-                    glm::vec3 deltaRotation = rotation - tc.Rotation;
-                    tc.Translation = translation;
-                    tc.Rotation += deltaRotation;
-                    tc.Scale = scale;
-                }
-            }
+				if (ImGuizmo::IsUsing())
+				{
+					glm::vec3 translation, rotation, scale;
+					Math::DecomposeTransform(transform, translation, rotation, scale);
 
-            ImGui::End();
-            ImGui::PopStyleVar();
+					glm::vec3 deltaRotation = rotation - tc.Rotation;
+					tc.Translation = translation;
+					tc.Rotation += deltaRotation;
+					tc.Scale = scale;
+				}
+			}
+
+			ImGui::End();
+			ImGui::PopStyleVar();
 
 			UI_Toolbar();
 
@@ -466,7 +468,7 @@ namespace Wasteland {
 			ImGui::ColorEdit4("Square Color", glm::value_ptr(m_SquareColor));
 
 			uint32_t textureID = m_CheckerboardTexture->GetRendererID();
-			ImGui::Image((void*)textureID, ImVec2{ 1280.0f, 720.0f }, ImVec2{ 0, 1 }, ImVec2{ 1, 0 });
+			ImGui::Image((void *)textureID, ImVec2{1280.0f, 720.0f}, ImVec2{0, 1}, ImVec2{1, 0});
 			ImGui::End();
 		}
 	}
@@ -500,7 +502,7 @@ namespace Wasteland {
 		ImGui::End();
 	}
 
-	void EditorLayer::OnEvent(Event& e)
+	void EditorLayer::OnEvent(Event &e)
 	{
 		m_CameraController.OnEvent(e);
 		m_EditorCamera.OnEvent(e);
@@ -510,7 +512,7 @@ namespace Wasteland {
 		dispatcher.Dispatch<MouseButtonPressedEvent>(WL_BIND_EVENT_FN(EditorLayer::OnMouseButtonPressed));
 	}
 
-	bool EditorLayer::OnKeyPressed(KeyPressedEvent& e)
+	bool EditorLayer::OnKeyPressed(KeyPressedEvent &e)
 	{
 		// Shortcuts
 		if (e.GetRepeatCount() > 0)
@@ -520,59 +522,59 @@ namespace Wasteland {
 		bool shift = Input::IsKeyPressed(WL_KEY_LEFT_SHIFT) || Input::IsKeyPressed(WL_KEY_RIGHT_SHIFT);
 		switch (e.GetKeyCode())
 		{
-			case WL_KEY_N:
-			{
-				if (control)
-					NewScene();
+		case WL_KEY_N:
+		{
+			if (control)
+				NewScene();
 
-				break;
-			}
-			case WL_KEY_O:
-			{
-				if (control)
-					OpenScene();
+			break;
+		}
+		case WL_KEY_O:
+		{
+			if (control)
+				OpenScene();
 
-				break;
-			}
-			case WL_KEY_S:
+			break;
+		}
+		case WL_KEY_S:
+		{
+			if (control)
 			{
-				if (control)
-				{
-					if (shift)
-						SaveSceneAs();
-					else
-						SaveScene();
-				}
-
-				break;
+				if (shift)
+					SaveSceneAs();
+				else
+					SaveScene();
 			}
 
-			// Commands
-			case WL_KEY_D:
-			{
-				if (control)
-					OnDuplicateEntity();
+			break;
+		}
 
-				break;
-			}
+		// Commands
+		case WL_KEY_D:
+		{
+			if (control)
+				OnDuplicateEntity();
 
-			// Gizmos
-			case WL_KEY_Q:
-				m_GizmoType = -1;
-				break;
-			case WL_KEY_W:
-				m_GizmoType = ImGuizmo::OPERATION::TRANSLATE;
-				break;
-			case WL_KEY_E:
-				m_GizmoType = ImGuizmo::OPERATION::ROTATE;
-				break;
-			case WL_KEY_R:
-				m_GizmoType = ImGuizmo::OPERATION::SCALE;
-				break;
+			break;
+		}
+
+		// Gizmos
+		case WL_KEY_Q:
+			m_GizmoType = -1;
+			break;
+		case WL_KEY_W:
+			m_GizmoType = ImGuizmo::OPERATION::TRANSLATE;
+			break;
+		case WL_KEY_E:
+			m_GizmoType = ImGuizmo::OPERATION::ROTATE;
+			break;
+		case WL_KEY_R:
+			m_GizmoType = ImGuizmo::OPERATION::SCALE;
+			break;
 		}
 	}
 
-	bool EditorLayer::OnMouseButtonPressed(MouseButtonPressedEvent& e)
+	bool EditorLayer::OnMouseButtonPressed(MouseButtonPressedEvent &e)
 	{
 		if (e.GetMouseButton() == WL_MOUSE_BUTTON_LEFT)
 		{
@@ -582,8 +584,8 @@ namespace Wasteland {
 		return false;
 	}
 
-    void EditorLayer::OnOverlayRender()
-    {
+	void EditorLayer::OnOverlayRender()
+	{
 		if (m_SceneState == SceneState::Play)
 		{
 			Entity camera = m_ActiveScene->GetPrimaryCameraEntity();
@@ -610,9 +612,7 @@ namespace Wasteland {
 					glm::vec3 translation = tc.Translation + glm::vec3(bc2d.Offset, 0.001f);
 					glm::vec3 scale = tc.Scale * glm::vec3(bc2d.Size * 2.0f, 1.0f);
 
-					glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation)
-						* glm::rotate(glm::mat4(1.0f), tc.Rotation.z, glm::vec3(0.0f, 0.0f, 1.0f))
-						* glm::scale(glm::mat4(1.0f), scale);
+					glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation) * glm::rotate(glm::mat4(1.0f), tc.Rotation.z, glm::vec3(0.0f, 0.0f, 1.0f)) * glm::scale(glm::mat4(1.0f), scale);
 
 					Renderer2D::DrawRect(transform, glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
 				}
@@ -628,8 +628,7 @@ namespace Wasteland {
 					glm::vec3 translation = tc.Translation + glm::vec3(cc2d.Offset, 0.001f);
 					glm::vec3 scale = tc.Scale * glm::vec3(cc2d.Radius * 2.0f);
 
-					glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation)
-						* glm::scale(glm::mat4(1.0f), scale);
+					glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation) * glm::scale(glm::mat4(1.0f), scale);
 
 					Renderer2D::DrawCircle(transform, glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), 0.015f);
 				}
@@ -637,9 +636,9 @@ namespace Wasteland {
 		}
 
 		Renderer2D::EndScene();
-    }
+	}
 
-    void EditorLayer::NewScene()
+	void EditorLayer::NewScene()
 	{
 		m_ActiveScene = CreateRef<Scene>();
 		m_ActiveScene->OnViewportResize((uint32_t)m_ViewportSize.x, (uint32_t)m_ViewportSize.y);
@@ -657,7 +656,7 @@ namespace Wasteland {
 		}
 	}
 
-	void EditorLayer::OpenScene(const std::filesystem::path& path)
+	void EditorLayer::OpenScene(const std::filesystem::path &path)
 	{
 		if (m_SceneState != SceneState::Edit)
 			OnSceneStop();
@@ -679,15 +678,15 @@ namespace Wasteland {
 		}
 	}
 
-    void EditorLayer::SaveScene()
-    {
+	void EditorLayer::SaveScene()
+	{
 		if (!m_EditorScenePath.empty())
 			SerializeScene(m_ActiveScene, m_EditorScenePath);
 		else
 			SaveSceneAs();
-    }
+	}
 
-    void EditorLayer::SaveSceneAs()
+	void EditorLayer::SaveSceneAs()
 	{
 		std::string filepath = FileDialogs::SaveFile("Wasteland Scene (*.wastescene)\0*.wastescene\0");
 		if (!filepath.empty())
@@ -698,39 +697,39 @@ namespace Wasteland {
 		}
 	}
 
-    void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
-    {
+	void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
+	{
 		SceneSerializer serializer(scene);
 		serializer.Serialize(path.string());
-    }
+	}
 
-    void EditorLayer::OnScenePlay()
+	void EditorLayer::OnScenePlay()
 	{
 		m_SceneState = SceneState::Play;
-    
+
 		m_ActiveScene = Scene::Copy(m_EditorScene);
 		m_ActiveScene->OnRuntimeStart();
-		
+
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 	}
 
 	void EditorLayer::OnSceneStop()
 	{
 		m_SceneState = SceneState::Edit;
-    
+
 		m_ActiveScene->OnRuntimeStop();
 		m_ActiveScene = m_EditorScene;
-		
+
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 	}
 
-    void EditorLayer::OnDuplicateEntity()
-    {
+	void EditorLayer::OnDuplicateEntity()
+	{
 		if (m_SceneState != SceneState::Edit)
 			return;
 
 		Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
 		if (selectedEntity)
 			m_EditorScene->DuplicateEntity(selectedEntity);
-    }
+	}
 }
