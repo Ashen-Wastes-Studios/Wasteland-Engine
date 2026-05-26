@@ -3,21 +3,24 @@ import Wasteland
 class Player:
     def __init__(self, entity):
         self.entity = entity
+        self.speed = 10.0
 
-    class Camera:
-        def __init__(self, entity):
-            self.entity = entity
-            self.speed = 10.0
+    def OnUpdateEntity(self, ts):
+        if self.entity is None:
+            return
 
-        def OnUpdateEntity(self, ts):
-            transform = self.entity.GetTransform()
+        transform = self.entity.GetTransform()
+
+        if transform is not None:
+            pos = transform.Translation
             
-            # Using the exposed C++ enum values via Python
             if Wasteland.IsKeyPressed(Wasteland.Key.W):
-                transform.Translation.z -= self.speed * ts
+                pos.z -= self.speed * ts
             if Wasteland.IsKeyPressed(Wasteland.Key.S):
-                transform.Translation.z += self.speed * ts
+                pos.z += self.speed * ts
             if Wasteland.IsKeyPressed(Wasteland.Key.A):
-                transform.Translation.x -= self.speed * ts
+                pos.x -= self.speed * ts
             if Wasteland.IsKeyPressed(Wasteland.Key.D):
-                transform.Translation.x += self.speed * ts
+                pos.x += self.speed * ts
+
+            transform.Translation = pos
