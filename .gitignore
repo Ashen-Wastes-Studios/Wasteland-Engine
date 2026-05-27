@@ -33,12 +33,8 @@ bld/
 [Ll]ogs/
 bin/Debug-windows-x86_64/DemonCore-Editor/DLLs/
 bin/Debug-windows-x86_64/DemonCore-Editor/Lib/
-bin/Debug-windows-x86_64/Wasteland/
-bin/Debug-windows-x86_64/Sandbox/
 bin/Release-windows-x86_64/DemonCore-Editor/DLLs/
 bin/Release-windows-x86_64/DemonCore-Editor/Lib/
-bin/Release-windows-x86_64/Wasteland/
-bin/Release-windows-x86_64/Sandbox/
 [Bb]in-[Ii]nt/
 python314.dll
 
