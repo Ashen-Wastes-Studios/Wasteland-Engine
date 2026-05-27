@@ -6,4 +6,5 @@ Note: all assets most be located where the assets folder is and in order to buil
 
 Note: the Python scripting engine is a work in progress feel free to contribute via pull request and help with working on it
 
-![Screenshot of the Nova Rendering Pipeline being used: ](image.png)
+Screenshot of the Nova Rendering Pipeline being used:
+![Screenshot of the Nova Rendering Pipeline being used ](image.png)
