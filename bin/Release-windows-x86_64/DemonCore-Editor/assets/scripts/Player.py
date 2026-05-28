@@ -24,5 +24,3 @@ class Player:
                 pos.x += self.speed * dt
 
             transform.Translation = pos
-
-Player(entity=Player)
