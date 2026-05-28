@@ -54,7 +54,7 @@ namespace Wasteland
             try
             {
                 static py::module_ sys = py::module_::import("sys");
-                py::list sysPath = sys.attr("path").cast<py::list>();
+                py::list sysPath = sys.attr("path").attr("append")("bin/Release-windows-x86_64/DemonCore-Editor/assets/scripts");
 
                 std::string scriptDir = scriptFullPath.parent_path().string();
                 std::string engineDir = std::filesystem::current_path().string();
@@ -80,9 +80,16 @@ namespace Wasteland
                 else
                     scriptModule = py::module_::import(moduleName.c_str());
 
-                // IMPORTANT: Ensure the class name inside your script matches sc.ScriptName
-                py::object scriptClass = scriptModule.attr(sc.ScriptName.c_str());
-                s_EntityInstances[id] = scriptClass(entity);
+                try
+                {
+                    py::object scriptClass = scriptModule.attr(sc.ScriptName.c_str());
+                    s_EntityInstances[id] = scriptClass(py::cast(entity));
+                }
+                catch (py::error_already_set &e)
+                {
+                    std::cout << "Python Error: " << e.what() << std::endl;
+                    e.restore();
+                }
 
                 WL_CORE_INFO("Successfully initialized: {0}", moduleName);
             }
