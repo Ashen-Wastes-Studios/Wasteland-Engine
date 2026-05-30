@@ -14,6 +14,7 @@ namespace Wasteland
     {
     public:
         static void OnUpdateEntity(Entity entity, Timestep ts);
+        static void OnDestroyEntity(UUID id);
 
     private:
         static std::unordered_map<UUID, py::object> s_EntityInstances;

@@ -13,7 +13,6 @@ namespace Wasteland
 
     static std::string CleanPath(std::string path)
     {
-        // Remove non-printable characters and trim whitespace
         path.erase(std::remove_if(path.begin(), path.end(), [](char c)
                                   { return (unsigned char)c < 32; }),
                    path.end());
@@ -26,10 +25,15 @@ namespace Wasteland
 
     void ScriptEngine::OnUpdateEntity(Entity entity, Timestep ts)
     {
+        if (!entity.IsValid())
+            return;
+
+        if (!entity.HasComponent<ScriptComponent>())
+            return;
+
         auto &sc = entity.GetComponent<ScriptComponent>();
         auto id = entity.GetComponent<IDComponent>().ID;
 
-        // If the script failed previously, stop processing to avoid spamming errors
         if (s_FailedScripts.find(id) != s_FailedScripts.end())
             return;
 
@@ -37,7 +41,6 @@ namespace Wasteland
         {
             std::string cleanedPath = CleanPath(sc.ScriptPath);
 
-            // LOGGING: Helps identify if the component has the wrong filename
             WL_CORE_INFO("ScriptEngine: Initializing Entity ID {0} with Path: {1}, Class: {2}", id, cleanedPath, sc.ScriptName);
 
             std::filesystem::path assetRoot = std::filesystem::current_path() / "assets";
@@ -108,13 +111,21 @@ namespace Wasteland
         {
             try
             {
-                it->second.attr("OnUpdateEntity")(ts.GetSeconds());
-            } // Ensure this matches Camera.py
+                it->second.attr("OnUpdateEntity")(ts);
+            }
             catch (const py::error_already_set &e)
             {
                 WL_CORE_ERROR("Python Error during update: {0}", e.what());
                 PyErr_Clear();
             }
+        }
+    }
+
+    void ScriptEngine::OnDestroyEntity(UUID id)
+    {
+        if (s_EntityInstances.find(id) != s_EntityInstances.end())
+        {
+            s_EntityInstances.erase(id);
         }
     }
 }
