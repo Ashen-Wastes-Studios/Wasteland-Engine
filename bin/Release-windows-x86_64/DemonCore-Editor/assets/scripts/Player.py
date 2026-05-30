@@ -4,7 +4,7 @@ sys.path.append(os.path.dirname(__file__))
 import Wasteland
 
 class Player:
-    def __init__(self, entity=None):
+    def __init__(self, entity):
         self.entity = entity
         self.speed = 10.0
 
