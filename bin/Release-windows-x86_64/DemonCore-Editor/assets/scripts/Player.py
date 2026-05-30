@@ -5,11 +5,19 @@ import Wasteland
 
 class Player:
     def __init__(self, entity):
-        self.entity = entity
-        self.speed = 10.0
+        try:
+            self.entity = entity
+            print(f"DEBUG: Initializing Entity: {entity}")
+            self.speed = 10.0
+        except Exception as e:
+            print(f"DEBUG: Error caught in __init__: {e}")
+            raise e
 
     def OnUpdateEntity(self, dt):
         if self.entity is None:
+            return
+        
+        if not hasattr(self.entity, 'GetTransform'):
             return
 
         transform = self.entity.GetTransform()

@@ -54,7 +54,9 @@ namespace Wasteland
             try
             {
                 static py::module_ sys = py::module_::import("sys");
-                py::list sysPath = sys.attr("path").attr("append")("bin/Release-windows-x86_64/DemonCore-Editor/assets/scripts");
+                py::list sysPath = sys.attr("path").cast<py::list>();
+
+                sysPath.append("bin/Release-windows-x86_64/DemonCore-Editor/assets/scripts");
 
                 std::string scriptDir = scriptFullPath.parent_path().string();
                 std::string engineDir = std::filesystem::current_path().string();
@@ -106,7 +108,7 @@ namespace Wasteland
         {
             try
             {
-                it->second.attr("OnUpdateEntity")(ts);
+                it->second.attr("OnUpdateEntity")(ts.GetSeconds());
             } // Ensure this matches Camera.py
             catch (const py::error_already_set &e)
             {

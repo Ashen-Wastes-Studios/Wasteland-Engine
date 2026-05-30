@@ -7,20 +7,18 @@
 #include <Wasteland/Scene/Components.h>
 #include <Wasteland/Scene/Scene.h>
 #include "Wasteland/Core/Input.h"
+#include "Wasteland/Core/KeyCodes.h"
 
 namespace py = pybind11;
 
 PYBIND11_MODULE(Wasteland, m)
 {
-    // 1. Bind glm::vec3 as a standard Python object.
-    // No custom type_caster needed, which resolves the cast_error.
     py::class_<glm::vec3>(m, "Vec3")
         .def(py::init<float, float, float>(), py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f)
         .def_readwrite("x", &glm::vec3::x)
         .def_readwrite("y", &glm::vec3::y)
         .def_readwrite("z", &glm::vec3::z);
 
-    // 2. Bind Components using properties to bridge C++ memory to Python
     py::class_<Wasteland::TransformComponent>(m, "TransformComponent")
         .def(py::init<>())
         .def_property("Translation", [](Wasteland::TransformComponent &t)
@@ -37,7 +35,6 @@ PYBIND11_MODULE(Wasteland, m)
         .def(py::init<const std::string &>())
         .def_readwrite("Tag", &Wasteland::TagComponent::Tag);
 
-    // 3. Bind Entity
     py::class_<Wasteland::Entity>(m, "Entity")
         .def(py::init<>())
         .def("HasTransform", [](Wasteland::Entity &e)
@@ -49,12 +46,20 @@ PYBIND11_MODULE(Wasteland, m)
         .def("GetTag", [](Wasteland::Entity &e) -> Wasteland::TagComponent &
              { return e.GetComponent<Wasteland::TagComponent>(); }, py::return_value_policy::reference);
 
-    // 4. Bind Scene
     py::class_<Wasteland::Scene, std::shared_ptr<Wasteland::Scene>>(m, "Scene")
         .def("CreateEntity", &Wasteland::Scene::CreateEntity, py::arg("name") = std::string())
         .def("DestroyEntity", &Wasteland::Scene::DestroyEntity);
 
-    // 5. Utilities
+    py::class_<Wasteland::Timestep>(m, "Timestep")
+        .def(py::init<float>(), py::arg("time") = 0.0f)
+        .def("GetSeconds", &Wasteland::Timestep::GetSeconds)
+        .def("GetMilliseconds", &Wasteland::Timestep::GetMilliseconds);
+
+    m.attr("WL_KEY_W") = WL_KEY_W;
+    m.attr("WL_KEY_S") = WL_KEY_S;
+    m.attr("WL_KEY_A") = WL_KEY_A;
+    m.attr("WL_KEY_D") = WL_KEY_D;
+
     m.def("IsKeyPressed", [](int keyCode)
           { return Wasteland::Input::IsKeyPressed(keyCode); }, py::arg("keyCode"));
 }
