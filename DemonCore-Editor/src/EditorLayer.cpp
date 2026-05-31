@@ -241,6 +241,9 @@ namespace Wasteland
 					if (ImGui::MenuItem("New"))
 						NewScript();
 
+					if (ImGui::MenuItem("Open"))
+						OpenScript();
+
 					ImGui::EndMenu();
 				}
 
@@ -687,6 +690,29 @@ namespace Wasteland
 	{
 		m_ShowNewScriptModal = true;
 		memset(m_NewScriptBuffer, 0, sizeof(m_NewScriptBuffer));
+	}
+
+	void EditorLayer::OpenScript()
+	{
+		// Open file dialog
+		std::string filepath = FileDialogs::OpenFile("Python Script (*.py)\0*.py\0");
+
+		if (!filepath.empty())
+		{
+			// Construct the command.
+			std::string command = "code \"" + filepath + "\"";
+
+			int result = std::system(command.c_str());
+
+			if (result != 0)
+			{
+				WL_CORE_ERROR("Failed to open script. Ensure 'code' (VS Code) is added to your system PATH. Attempted: {0}", command);
+			}
+			else
+			{
+				WL_CORE_INFO("Opened script in VS Code: {0}", filepath);
+			}
+		}
 	}
 
 	void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)

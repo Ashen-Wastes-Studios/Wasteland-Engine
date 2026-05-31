@@ -37,6 +37,7 @@ namespace Wasteland
 		void SaveSceneAs();
 
 		void NewScript();
+		void OpenScript();
 
 		void SerializeScene(Ref<Scene> scene, const std::filesystem::path &path);
 
