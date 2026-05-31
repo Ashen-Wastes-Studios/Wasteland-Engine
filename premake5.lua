@@ -209,7 +209,7 @@ project "WastelandPython"
 
     links 
     { 
-        "Wasteland", -- Link your core engine static lib
+        "Wasteland",
         "python314" 
     }
 
