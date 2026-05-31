@@ -28,13 +28,7 @@ bld/
 [Ll]ogs/
 Lib/
 DLLs/
-*.exe
 *.dll
-*.pyd
-*.lib
-*.exp
-*.pdb
-*.py[cod]
 bin-int/
 obj/
 
