@@ -15,6 +15,9 @@
 
 #include "Wasteland/Math/Math.h"
 
+#include <fstream>
+#include <filesystem>
+
 namespace Wasteland
 {
 
@@ -58,58 +61,6 @@ namespace Wasteland
 		m_ActiveScene = CreateRef<Scene>();
 
 		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
-
-#if 0
-		// Entity
-		auto square = m_ActiveScene->CreateEntity("Green Square");
-		square.AddComponent<SpriteRendererComponent>(glm::vec4{ 0.0f, 1.0f, 0.0f, 1.0f });
-
-		auto redSquare = m_ActiveScene->CreateEntity("Red Square");
-		redSquare.AddComponent<SpriteRendererComponent>(glm::vec4{ 1.0f, 0.0f, 0.0f, 1.0f });
-
-		m_SquareEntity = square;
-
-		m_CameraEntity = m_ActiveScene->CreateEntity("Camera A");
-		auto& cc1 = m_CameraEntity.AddComponent<CameraComponent>();
-		cc1.Primary = true;
-
-		m_SecondCamera = m_ActiveScene->CreateEntity("Camera B");
-		auto& cc2 = m_SecondCamera.AddComponent<CameraComponent>();
-		cc2.Primary = false;
-		
-		class CameraController : public ScriptableEntity
-		{
-		public:
-			void OnCreate()
-			{
-				auto& translation = GetComponent<TransformComponent>().Translation;
-				translation.x = rand() % 10 - 5.0f;
-			}
-
-			void OnDestroy()
-			{
-			}
-
-			void OnUpdate(Timestep ts)
-			{
-				auto& translation = GetComponent<TransformComponent>().Translation;
-
-				float speed = 5.0f;
-
-				if (Input::IsKeyPressed(WL_KEY_A))
-					translation.x -= speed * ts;
-				if (Input::IsKeyPressed(WL_KEY_D))
-					translation.x += speed * ts;
-				if (Input::IsKeyPressed(WL_KEY_W))
-					translation.y += speed * ts;
-				if (Input::IsKeyPressed(WL_KEY_S))
-					translation.y -= speed * ts;
-			}
-		};
-
-		m_CameraEntity.AddComponent<NativeScriptComponent>().Bind<CameraController>();
-		m_SecondCamera.AddComponent<NativeScriptComponent>().Bind<CameraController>();
-#endif
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 
@@ -228,8 +179,6 @@ namespace Wasteland
 			static bool opt_padding = false;
 			static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_None;
 
-			// We are using the ImGuiWindowFlags_NoDocking flag to make the parent window not dockable into,
-			// because it would be confusing to have two docking targets within each others.
 			ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
 			if (opt_fullscreen)
 			{
@@ -247,16 +196,9 @@ namespace Wasteland
 				dockspace_flags &= ~ImGuiDockNodeFlags_PassthruCentralNode;
 			}
 
-			// When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our background
-			// and handle the pass-thru hole, so we ask Begin() to not render a background.
 			if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
 				window_flags |= ImGuiWindowFlags_NoBackground;
 
-			// Important: note that we proceed even if Begin() returns false (aka window is collapsed).
-			// This is because we want to keep our DockSpace() active. If a DockSpace() is inactive,
-			// all active windows docked into it will lose their parent and become undocked.
-			// We cannot preserve the docking relationship between an active window and an inactive docking, otherwise
-			// any change of dockspace/settings would lead to windows being stuck in limbo and never being visible.
 			if (!opt_padding)
 				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 			ImGui::Begin("DockSpace Demo", &dockspaceOpen, window_flags);
@@ -278,22 +220,27 @@ namespace Wasteland
 			{
 				if (ImGui::BeginMenu("File"))
 				{
-					// Disabling fullscreen would allow the window to be moved to the front of other windows,
-					// which we can't undo at the moment without finer window depth/z control.
-
-					if (ImGui::MenuItem("New", "Ctrl+N"))
+					if (ImGui::MenuItem("New"))
 						NewScene();
 
-					if (ImGui::MenuItem("Open...", "Ctrl+O"))
+					if (ImGui::MenuItem("Open..."))
 						OpenScene();
 
-					if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
+					if (ImGui::MenuItem("Save As..."))
 						SaveSceneAs();
 
 					ImGui::Separator();
 
 					if (ImGui::MenuItem("Exit"))
 						Wasteland::Application::Get().Close();
+					ImGui::EndMenu();
+				}
+
+				if (ImGui::BeginMenu("Scripts"))
+				{
+					if (ImGui::MenuItem("New"))
+						NewScript();
+
 					ImGui::EndMenu();
 				}
 
@@ -308,7 +255,7 @@ namespace Wasteland
 			std::string name = "None";
 			if (m_HoveredEntity)
 			{
-				if (m_HoveredEntity.HasComponent<TagComponent>()) // Add this check
+				if (m_HoveredEntity.HasComponent<TagComponent>())
 					name = m_HoveredEntity.GetComponent<TagComponent>().Tag;
 				else
 					name = "Unnamed Entity";
@@ -366,12 +313,10 @@ namespace Wasteland
 			uint32_t textureID = 0;
 			if (Wasteland::Renderer3D::IsRayTracingEnabled())
 			{
-				// Pull the compute shader texture storage handle
 				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
 			}
 			else
 			{
-				// Fall back to standard raster scene rendering pass Framebuffer attachment
 				textureID = m_Framebuffer->GetColorAttachmentRendererID();
 			}
 
@@ -396,19 +341,14 @@ namespace Wasteland
 			{
 				ImGuizmo::SetOrthographic(false);
 				ImGuizmo::SetDrawlist();
-
-				// Set rect explicitly using our clean canvas bounds instead of the window outer box
 				ImGuizmo::SetRect(m_ViewportBounds[0].x, m_ViewportBounds[0].y, m_ViewportSize.x, m_ViewportSize.y);
 
-				// Editor camera matrices
 				const glm::mat4 &cameraProjection = m_EditorCamera.GetProjection();
 				glm::mat4 cameraView = m_EditorCamera.GetViewMatrix();
 
-				// Entity transform
 				auto &tc = selectedEntity.GetComponent<TransformComponent>();
 				glm::mat4 transform = tc.GetTransform();
 
-				// Snapping
 				bool snap = Input::IsKeyPressed(WL_KEY_LEFT_CONTROL);
 				float snapValue = 0.5f;
 				if (m_GizmoType == ImGuizmo::OPERATION::ROTATE)
@@ -437,7 +377,9 @@ namespace Wasteland
 
 			UI_Toolbar();
 
-			ImGui::End();
+			ImGui::End(); // End DockSpace
+
+			UI_NewScriptModal();
 		}
 		else
 		{
@@ -502,6 +444,58 @@ namespace Wasteland
 		ImGui::End();
 	}
 
+	void EditorLayer::UI_NewScriptModal()
+	{
+		if (m_ShowNewScriptModal)
+			ImGui::OpenPopup("New Script");
+
+		if (ImGui::BeginPopupModal("New Script", &m_ShowNewScriptModal, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Enter script name:");
+			ImGui::InputText("##ScriptName", m_NewScriptBuffer, IM_ARRAYSIZE(m_NewScriptBuffer));
+
+			if (ImGui::Button("Create", ImVec2(120, 0)))
+			{
+				if (strlen(m_NewScriptBuffer) > 0)
+				{
+					std::filesystem::path scriptDir = g_AssetPath / "scripts";
+					if (!std::filesystem::exists(scriptDir))
+						std::filesystem::create_directories(scriptDir);
+
+					std::string fileName = m_NewScriptBuffer;
+					if (fileName.find(".py") == std::string::npos)
+						fileName += ".py";
+
+					std::filesystem::path scriptPath = scriptDir / fileName;
+					std::ofstream outFile(scriptPath);
+
+					if (outFile.is_open())
+					{
+						outFile << "# Wasteland Engine Script\n";
+						outFile << "class " << m_NewScriptBuffer << ":\n";
+						outFile << "    def __init__(self):\n";
+						outFile << "		pass\n";
+						outFile << "    def OnUpdateEntity(self, dt):\n";
+						outFile << "		pass\n";
+						outFile.close();
+						WL_CORE_INFO("Created new script at: {0}", scriptPath.string());
+					}
+				}
+				m_ShowNewScriptModal = false;
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_ShowNewScriptModal = false;
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+	}
+
 	void EditorLayer::OnEvent(Event &e)
 	{
 		m_CameraController.OnEvent(e);
@@ -514,7 +508,6 @@ namespace Wasteland
 
 	bool EditorLayer::OnKeyPressed(KeyPressedEvent &e)
 	{
-		// Shortcuts
 		if (e.GetRepeatCount() > 0)
 			return false;
 
@@ -526,14 +519,12 @@ namespace Wasteland
 		{
 			if (control)
 				NewScene();
-
 			break;
 		}
 		case WL_KEY_O:
 		{
 			if (control)
 				OpenScene();
-
 			break;
 		}
 		case WL_KEY_S:
@@ -545,20 +536,14 @@ namespace Wasteland
 				else
 					SaveScene();
 			}
-
 			break;
 		}
-
-		// Commands
 		case WL_KEY_D:
 		{
 			if (control)
 				OnDuplicateEntity();
-
 			break;
 		}
-
-		// Gizmos
 		case WL_KEY_Q:
 			m_GizmoType = -1;
 			break;
@@ -572,6 +557,7 @@ namespace Wasteland
 			m_GizmoType = ImGuizmo::OPERATION::SCALE;
 			break;
 		}
+		return false;
 	}
 
 	bool EditorLayer::OnMouseButtonPressed(MouseButtonPressedEvent &e)
@@ -695,6 +681,12 @@ namespace Wasteland
 
 			m_EditorScenePath = filepath;
 		}
+	}
+
+	void EditorLayer::NewScript()
+	{
+		m_ShowNewScriptModal = true;
+		memset(m_NewScriptBuffer, 0, sizeof(m_NewScriptBuffer));
 	}
 
 	void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
