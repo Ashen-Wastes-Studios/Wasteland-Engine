@@ -14,7 +14,11 @@ class Player:
             raise e
 
     def OnUpdateEntity(self, dt):
-        if self.entity is None:
+        try:
+            if self.entity is None:
+                return
+            
+        except: 
             return
         
         if not hasattr(self.entity, 'GetTransform'):

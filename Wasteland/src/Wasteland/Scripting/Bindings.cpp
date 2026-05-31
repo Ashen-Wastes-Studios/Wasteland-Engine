@@ -37,6 +37,8 @@ PYBIND11_MODULE(Wasteland, m)
 
     py::class_<Wasteland::Entity>(m, "Entity")
         .def(py::init<>())
+        .def("IsValid", [](Wasteland::Entity &e)
+             { return e.IsValid(); })
         .def("HasTransform", [](Wasteland::Entity &e)
              { return e.HasComponent<Wasteland::TransformComponent>(); })
         .def("GetTransform", [](Wasteland::Entity &e) -> Wasteland::TransformComponent &
