@@ -1,7 +1,5 @@
 #pragma once
 
-#include <pybind11/pybind11.h>
-
 #ifdef WL_PLATFORM_WINDOWS
 
 extern Wasteland::Application *Wasteland::CreateApplication();
