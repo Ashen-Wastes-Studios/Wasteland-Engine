@@ -27,7 +27,7 @@ namespace Wasteland
 
 		PyImport_AppendInittab("Wasteland", &PyInit_Wasteland);
 
-		Py_SetPythonHome(L"C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64");
+		Py_SetPythonHome(L"C:/Users/rtoue/AppData/Local/Python/pythoncore-3.14-64");
 
 		Py_Initialize();
 

@@ -25,13 +25,15 @@ class Player:
         if transform is not None:
             pos = transform.Translation
             
+            seconds = dt.GetSeconds() 
+
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_W):
-                pos.z -= self.speed * dt
+                pos.z -= self.speed * seconds
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_S):
-                pos.z += self.speed * dt
+                pos.z += self.speed * seconds
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_A):
-                pos.x -= self.speed * dt
+                pos.x -= self.speed * seconds
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_D):
-                pos.x += self.speed * dt
+                pos.x += self.speed * seconds
 
             transform.Translation = pos

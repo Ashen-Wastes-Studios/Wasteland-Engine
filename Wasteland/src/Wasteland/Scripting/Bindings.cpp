@@ -53,7 +53,11 @@ PYBIND11_MODULE(Wasteland, m)
     py::class_<Wasteland::Timestep>(m, "Timestep")
         .def(py::init<float>(), py::arg("time") = 0.0f)
         .def("GetSeconds", &Wasteland::Timestep::GetSeconds)
-        .def("GetMilliseconds", &Wasteland::Timestep::GetMilliseconds);
+        .def("GetMilliseconds", &Wasteland::Timestep::GetMilliseconds)
+        .def("__mul__", [](const Wasteland::Timestep &ts, float scalar)
+             { return ts.GetSeconds() * scalar; })
+        .def("__rmul__", [](const Wasteland::Timestep &ts, float scalar)
+             { return ts.GetSeconds() * scalar; });
 
     m.attr("WL_KEY_W") = WL_KEY_W;
     m.attr("WL_KEY_S") = WL_KEY_S;
