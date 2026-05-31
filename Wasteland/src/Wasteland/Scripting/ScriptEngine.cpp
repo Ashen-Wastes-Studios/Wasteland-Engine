@@ -123,10 +123,17 @@ namespace Wasteland
 
     void ScriptEngine::OnDestroyEntity(UUID id)
     {
+        if (s_EntityInstances.find(id) != s_EntityInstances.end())
+        {
+            s_EntityInstances.erase(id);
+        }
+    }
+
+    void ScriptEngine::Shutdown()
+    {
         s_EntityInstances.clear();
         s_FailedScripts.clear();
 
-        py::module_ gc = py::module_::import("gc");
-        gc.attr("collect")();
+        WL_CORE_INFO("ScriptEngine: Cleaned up instance cache.");
     }
 }

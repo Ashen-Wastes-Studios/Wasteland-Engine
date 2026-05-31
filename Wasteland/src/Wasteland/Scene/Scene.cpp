@@ -290,6 +290,8 @@ namespace Wasteland
 	{
 		delete m_PhysicsWorld;
 		m_PhysicsWorld = nullptr;
+
+		ScriptEngine::Shutdown();
 	}
 
 	void Scene::OnUpdateRuntime(Timestep ts)
