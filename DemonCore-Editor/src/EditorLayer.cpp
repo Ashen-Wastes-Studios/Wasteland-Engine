@@ -475,11 +475,18 @@ namespace Wasteland
 					if (outFile.is_open())
 					{
 						outFile << "# Wasteland Engine Script\n";
+						outFile << "import sys\n";
+						outFile << "import os\n";
+						outFile << "sys.path.append(os.path.dirname(__file__))\n";
+						outFile << "import Wasteland\n";
+						outFile << "\n";
 						outFile << "class " << m_NewScriptBuffer << ":\n";
-						outFile << "    def __init__(self):\n";
+						outFile << "	def __init__(self):\n";
 						outFile << "		pass\n";
-						outFile << "    def OnUpdateEntity(self, dt):\n";
+						outFile << "\n";
+						outFile << "	def OnUpdateEntity(self, dt):\n";
 						outFile << "		pass\n";
+						outFile << "\n";
 						outFile.close();
 						WL_CORE_INFO("Created new script at: {0}", scriptPath.string());
 					}
