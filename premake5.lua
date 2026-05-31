@@ -184,15 +184,14 @@ project "WastelandPython"
     language "C++"
     cppdialect "C++17"
     
-    -- Rename the output to .pyd so Python can import it
     targetextension ".pyd"
-    targetname "Wasteland" -- This results in Wasteland.pyd
+    targetname "Wasteland"
     
     targetdir ("bin/" .. outputdir .. "/%{wks.startproject}")
     
     files 
     { 
-        "Wasteland/src/Wasteland/Scripting/Bindings.cpp" -- Path to your Bindings.cpp
+        "Wasteland/src/Wasteland/Scripting/Bindings.cpp"
     }
 
     includedirs
