@@ -5,7 +5,6 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Bindings
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 layout(rgba32f, binding = 1) uniform image2D img_Accumulation;
 layout(rgba32f, binding = 2) uniform image2D img_Bloom;
@@ -39,10 +38,11 @@ uniform int u_SamplesPerPixel;
 uniform int u_PassID;
 uniform float u_CameraMoved;
 uniform mat4 u_ViewProjection;
+uniform vec3 u_SkyBottomColor;
+uniform vec3 u_SkyTopColor;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
-// --- Utility Functions ---
 bool RayAABB(Ray r, vec3 minB, vec3 maxB) 
 {
     vec3 invDir = 1.0 / r.Direction;
@@ -119,36 +119,27 @@ bool IsOccluded(Ray r, float maxDist) {
         if (RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) {
             vec3 localNormal;
             float t = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-            if (t > 0.0 && t < maxDist) return true; // It hit something!
+            if (t > 0.0 && t < maxDist) return true;
         }
     }
     return false;
 }
 
 vec3 GetNormal(RayTracingInstance inst, vec3 hitPoint) {
-    // Transform the hit point into the object's local space
     vec3 localPoint = (inst.InvTransform * vec4(hitPoint, 1.0)).xyz;
     vec3 localNormal;
 
-    // Check if it's a Sphere (MaterialParams.z == 1) or Cube (MaterialParams.z == 0)
-    // Adjust the index (z) based on how you set it in C++
     if (uint(inst.MaterialParams.z) == 1) { 
-        // Sphere normal is just the normalized point itself
         localNormal = normalize(localPoint);
     } else { 
-        // Cube normal (find the face closest to the edge)
-        // We compare localPoint to the Min/Max bounds
         vec3 absP = abs(localPoint);
         vec3 boxDim = (inst.Max.xyz - inst.Min.xyz) * 0.5;
         
-        // Find which face is hit by looking for the largest component
         if (absP.x > absP.y && absP.x > absP.z) localNormal = vec3(sign(localPoint.x), 0.0, 0.0);
         else if (absP.y > absP.z)              localNormal = vec3(0.0, sign(localPoint.y), 0.0);
         else                                   localNormal = vec3(0.0, 0.0, sign(localPoint.z));
     }
 
-    // Transform local normal to world space
-    // We use the transpose of the inverse model matrix (or just the WorldTransform if no scale)
     return normalize(mat3(inst.WorldTransform) * localNormal);
 }
 
@@ -161,8 +152,6 @@ void GetNeighborhoodBounds(ivec2 center, out vec3 minCol, out vec3 maxCol)
     {
         for(int y = -1; y <= 1; y++) 
         {
-            // Note: This reads from img_Output, which should contain the raw 
-            // current frame result BEFORE accumulation.
             vec3 col = imageLoad(img_Output, center + ivec2(x, y)).rgb;
             minCol = min(minCol, col);
             maxCol = max(maxCol, col);
@@ -192,8 +181,8 @@ void RunTraceAndDenoise()
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
     vec3 accumulatedLight = vec3(0.0);
-    vec2 frameVelocity = vec2(0.0); // Track velocity for this pixel
-    bool hitAnything = false; // To track if we need to calculate motion
+    vec2 frameVelocity = vec2(0.0);
+    bool hitAnything = false; 
 
     for (int s = 0; s < u_SamplesPerPixel; s++) 
     {
@@ -248,10 +237,8 @@ void RunTraceAndDenoise()
                     hitAnything = true;
                 }
 
-                // WE HIT SOMETHING: Shade it
                 vec3 directLight = vec3(0.0);
                 
-                // NEE: Direct Lighting
                 for(int i = 0; i < u_InstanceCount; i++) 
                 {
                     if(Instances[i].Emission.w > 0.0) 
@@ -272,7 +259,6 @@ void RunTraceAndDenoise()
                 incomingLight += throughput * directLight; 
                 incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
                 
-                // Update for next bounce
                 throughput *= hitAlbedo;
                 currentRay.Origin = hitPoint + hitNormal * 0.001;
                 currentRay.Direction = random_in_hemisphere(hitNormal);
@@ -280,7 +266,7 @@ void RunTraceAndDenoise()
             else
             {
                 float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-                vec3 skyColor = mix(vec3(0.1), vec3(0.2, 0.3, 0.7), t);
+                vec3 skyColor = mix(u_SkyBottomColor, u_SkyTopColor, t);
                 incomingLight += throughput * skyColor;
                 break;
             }
@@ -289,19 +275,24 @@ void RunTraceAndDenoise()
     }
 
     vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
-    vec2 velocity = imageLoad(img_Velocity, pixelCoords).xy;
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
 
     float depth = texture(s_DepthBuffer, uv).r;
     vec4 clipPos = vec4(uv * 2.0 - 1.0, depth, 1.0);
-    vec4 prevClipPos = u_PrevViewProjection * (u_InverseViewProjection * clipPos);
-    vec2 prevUV = uv - velocity;
 
+    // Reproject to previous frame using inverse/current and previous view-projection
+    vec4 worldPos = u_InverseViewProjection * clipPos;
+    if (worldPos.w != 0.0) worldPos /= worldPos.w;
+    vec4 prevClipPos = u_PrevViewProjection * worldPos;
+    vec2 prevUV = (prevClipPos.xy / prevClipPos.w) * 0.5 + 0.5;
+
+    // Compensate for halton jitter between frames
     vec2 currentJitter = GetJitter(u_FrameIndex);
     vec2 prevJitter = GetJitter(u_FrameIndex - 1);
-    vec2 jitterOffset = (currentJitter - prevJitter) / vec2(imgSize);
+    vec2 jitterCorrection = (prevJitter - currentJitter) / vec2(imgSize);
+    prevUV += jitterCorrection;
 
-    bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
+    bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0 && prevClipPos.w > 0.0;
 
     imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
     memoryBarrierImage();
@@ -310,17 +301,19 @@ void RunTraceAndDenoise()
     if(inBounds && u_CameraMoved < 0.5) {
         history = texture(s_Accumulation, prevUV).rgb;
     } else {
-        history = currentColor; // Reset if out of bounds or camera just moved
+        history = currentColor;
     }
 
+    // Reject history when it deviates strongly from current sample (helps remove smearing)
     float diff = distance(history, currentColor);
-    if (diff > 0.5) history = currentColor;
+    if (diff > 0.3) history = currentColor;
 
     vec3 minCol, maxCol;
     GetNeighborhoodBounds(pixelCoords, minCol, maxCol);
     history = clamp(history, minCol, maxCol);
 
-    float alpha = 0.1;
+    // Increase weight for current frame to reduce temporal ghosting (higher = less trailing)
+    float alpha = 0.85;
     vec3 resultColor = mix(history, currentColor, alpha);
 
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
@@ -337,15 +330,12 @@ void RunBloomThreshold() {
     float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     float soft = smoothstep(threshold - knee, threshold + knee, brightness);
     
-    // Multiply by soft to keep the falloff smooth
     imageStore(img_Bloom, pos, color * soft);
 }
 
 void RunBloomBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     
-    // 11x11 Gaussian Kernel (Radius 5)
-    // Larger spread to restore the aura
     float weights[11] = float[](
         0.0009, 0.0035, 0.0116, 0.0303, 0.0635, 0.0805, 0.0635, 0.0303, 0.0116, 0.0035, 0.0009
     );
@@ -354,7 +344,6 @@ void RunBloomBlur() {
     
     for(int x = -5; x <= 5; x++) {
         for(int y = -5; y <= 5; y++) {
-            // Apply 2D Gaussian distribution
             float weight = weights[x + 5] * weights[y + 5];
             sum += imageLoad(img_Bloom, pos + ivec2(x, y)) * weight;
         }
@@ -389,7 +378,6 @@ void RunBilateralBlur() {
             ivec2 samplePos = pos + ivec2(x, y);
             vec3 sampleColor = imageLoad(img_Output, samplePos).rgb;
             
-            // Weight based on color difference (similarity)
             float weight = exp(-distance(centerColor, sampleColor) * 10.0);
             
             totalColor += sampleColor * weight;
@@ -407,20 +395,16 @@ void RunResolve()
 
     vec2 uv = vec2(displayPos) / displaySize;
 
-    // We sample from the accumulation buffer (the low-res result)
     vec3 color = texture(s_Accumulation, uv).rgb;
 
-    // This makes the upscaled image look "native"
     vec3 center = color;
     vec3 up = texture(s_Accumulation, uv + vec2(0.0, 1.0/renderSize.y)).rgb;
     vec3 down = texture(s_Accumulation, uv - vec2(0.0, 1.0/renderSize.y)).rgb;
     vec3 left = texture(s_Accumulation, uv - vec2(1.0/renderSize.x, 0.0)).rgb;
     vec3 right = texture(s_Accumulation, uv + vec2(1.0/renderSize.x, 0.0)).rgb;
 
-    // Apply a sharpening kernel
     vec3 sharp = mix(center, center * 5.0 - (up + down + left + right) * 1.0, 0.5);
     
-    // Store in display texture
     imageStore(img_FinalDisplay, displayPos, vec4(sharp, 1.0));
 }
 

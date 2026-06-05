@@ -295,6 +295,42 @@ namespace Wasteland
 				Wasteland::Renderer3D::SetRayTracingEnabled(rtEnabled);
 			}
 
+			ImGui::Separator();
+			ImGui::Text("Ray Tracing Settings");
+
+			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
+			uint32_t minSamples = 1;
+			uint32_t maxSamples = 256;
+			if (ImGui::SliderScalar("Samples Per Pixel", ImGuiDataType_U32, &samplesPerPixel, &minSamples, &maxSamples))
+			{
+				Wasteland::Renderer3D::SetSamplesPerPixel(samplesPerPixel);
+			}
+
+			float movementThreshold = Wasteland::Renderer3D::GetMovementThreshold();
+			float minThreshold = 0.00001f;
+			float maxThreshold = 0.1f;
+			if (ImGui::SliderFloat("Movement Threshold", &movementThreshold, minThreshold, maxThreshold, "%.5f"))
+			{
+				Wasteland::Renderer3D::SetMovementThreshold(movementThreshold);
+			}
+
+			ImGui::Separator();
+			ImGui::Text("Sky Settings");
+
+			glm::vec3 skyBottomColor = Wasteland::Renderer3D::GetSkyBottomColor();
+			float bottomColor[3] = {skyBottomColor.r, skyBottomColor.g, skyBottomColor.b};
+			if (ImGui::ColorEdit3("Sky Bottom Color", bottomColor))
+			{
+				Wasteland::Renderer3D::SetSkyBottomColor(glm::vec3(bottomColor[0], bottomColor[1], bottomColor[2]));
+			}
+
+			glm::vec3 skyTopColor = Wasteland::Renderer3D::GetSkyTopColor();
+			float topColor[3] = {skyTopColor.r, skyTopColor.g, skyTopColor.b};
+			if (ImGui::ColorEdit3("Sky Top Color", topColor))
+			{
+				Wasteland::Renderer3D::SetSkyTopColor(glm::vec3(topColor[0], topColor[1], topColor[2]));
+			}
+
 			ImGui::End();
 
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});

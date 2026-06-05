@@ -9,55 +9,56 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glad/glad.h>
 
-namespace Wasteland {
+namespace Wasteland
+{
 
-    struct Vertex3D 
+    struct Vertex3D
     {
         glm::vec3 Position;
         glm::vec4 Color;
-        glm::vec3 Normal;     
+        glm::vec3 Normal;
         glm::vec2 TexCoord;
         int EntityID;
     };
 
-    struct RayTracingInstance 
+    struct RayTracingInstance
     {
-        glm::mat4 InvTransform;      
-        glm::mat4 WorldTransform;   
-        glm::vec4 Albedo;             
-        glm::vec4 MaterialParams;   
+        glm::mat4 InvTransform;
+        glm::mat4 WorldTransform;
+        glm::vec4 Albedo;
+        glm::vec4 MaterialParams;
         glm::vec4 Min;
-        glm::vec4 Max;    
+        glm::vec4 Max;
         glm::vec4 Emission;
-    }; 
+    };
 
     struct Renderer3DData
     {
-        static const uint32_t MaxVertices = 100000; 
-        static const uint32_t MaxIndices = MaxVertices * 3; 
-        static const uint32_t MaxTextureSlots = 32; 
+        static const uint32_t MaxVertices = 100000;
+        static const uint32_t MaxIndices = MaxVertices * 3;
+        static const uint32_t MaxTextureSlots = 32;
 
         Ref<VertexArray> CubeVertexArray;
         Ref<VertexBuffer> CubeVertexBuffer;
         uint32_t CubeVertexCount = 0;
         uint32_t CubeIndexCount = 0;
-        Vertex3D* CubeVertexBufferBase = nullptr;
-        Vertex3D* CubeVertexBufferPtr = nullptr;
+        Vertex3D *CubeVertexBufferBase = nullptr;
+        Vertex3D *CubeVertexBufferPtr = nullptr;
 
         Ref<VertexArray> SphereVertexArray;
         Ref<VertexBuffer> SphereVertexBuffer;
-        Ref<IndexBuffer> SphereIndexBuffer; 
+        Ref<IndexBuffer> SphereIndexBuffer;
         uint32_t SphereVertexCount = 0;
         uint32_t SphereIndexCount = 0;
-        Vertex3D* SphereVertexBufferBase = nullptr;
-        Vertex3D* SphereVertexBufferPtr = nullptr;
-        uint32_t* SphereIndexBufferBase = nullptr;
-        uint32_t* SphereIndexBufferPtr = nullptr;
+        Vertex3D *SphereVertexBufferBase = nullptr;
+        Vertex3D *SphereVertexBufferPtr = nullptr;
+        uint32_t *SphereIndexBufferBase = nullptr;
+        uint32_t *SphereIndexBufferPtr = nullptr;
 
-        Ref<Shader> BasicShader; 
+        Ref<Shader> BasicShader;
 
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
-        uint32_t TextureSlotIndex = 1; 
+        uint32_t TextureSlotIndex = 1;
 
         bool RayTracingEnabled = true;
         Ref<Shader> RayTracingShader;
@@ -82,6 +83,9 @@ namespace Wasteland {
         float LastCameraRotation;
         float MovementThreshold = 0.0001f;
 
+        glm::vec3 SkyBottomColor = glm::vec3(0.1f);
+        glm::vec3 SkyTopColor = glm::vec3(0.2f, 0.3f, 0.7f);
+
         uint32_t BloomTextureID = 0;
 
         glm::mat4 PrevViewProjection = glm::mat4(1.0f);
@@ -89,7 +93,7 @@ namespace Wasteland {
 
         std::vector<uint32_t> LightIndicies;
 
-        uint32_t AccumulationTextures[2] = { 0, 0 };
+        uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
 
         Renderer3D::Statistics Stats;
@@ -102,14 +106,13 @@ namespace Wasteland {
         WL_PROFILE_FUNCTION();
 
         BufferLayout layout = {
-            { ShaderDataType::Float3, "a_Position"     },
-            { ShaderDataType::Float4, "a_Color"        },
-            { ShaderDataType::Float3, "a_Normal"       }, 
-            { ShaderDataType::Float2, "a_TexCoord"     },
-            { ShaderDataType::Float,  "a_TexIndex"     },
-            { ShaderDataType::Float,  "a_TilingFactor" },
-            { ShaderDataType::Int,    "a_EntityID"     }
-        };
+            {ShaderDataType::Float3, "a_Position"},
+            {ShaderDataType::Float4, "a_Color"},
+            {ShaderDataType::Float3, "a_Normal"},
+            {ShaderDataType::Float2, "a_TexCoord"},
+            {ShaderDataType::Float, "a_TexIndex"},
+            {ShaderDataType::Float, "a_TilingFactor"},
+            {ShaderDataType::Int, "a_EntityID"}};
 
         // --- CUBE SETUP ---
         s_Data.CubeVertexArray = VertexArray::Create();
@@ -118,7 +121,7 @@ namespace Wasteland {
         s_Data.CubeVertexArray->AddVertexBuffer(s_Data.CubeVertexBuffer);
         s_Data.CubeVertexBufferBase = new Vertex3D[s_Data.MaxVertices];
 
-        uint32_t* cubeIndices = new uint32_t[s_Data.MaxIndices];
+        uint32_t *cubeIndices = new uint32_t[s_Data.MaxIndices];
         uint32_t offset = 0;
         for (uint32_t i = 0; i < s_Data.MaxIndices; i += 6)
         {
@@ -139,7 +142,7 @@ namespace Wasteland {
         s_Data.SphereVertexBuffer = VertexBuffer::Create(s_Data.MaxVertices * sizeof(Vertex3D));
         s_Data.SphereVertexBuffer->SetLayout(layout);
         s_Data.SphereVertexArray->AddVertexBuffer(s_Data.SphereVertexBuffer);
-        
+
         s_Data.SphereVertexBufferBase = new Vertex3D[s_Data.MaxVertices];
         s_Data.SphereIndexBufferBase = new uint32_t[s_Data.MaxIndices];
 
@@ -149,7 +152,7 @@ namespace Wasteland {
         // --- SHADER & UTILS ---
         s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
 
-        s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight); 
+        s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight);
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_NovaRenderer.glsl");
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
@@ -206,7 +209,7 @@ namespace Wasteland {
         s_Data.RayTracingOutput = nullptr;
     }
 
-    void Renderer3D::BeginScene(const Camera& camera, const glm::mat4& transform)
+    void Renderer3D::BeginScene(const Camera &camera, const glm::mat4 &transform)
     {
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
@@ -223,12 +226,12 @@ namespace Wasteland {
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
-        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", glm::vec3(transform[3])); 
+        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", glm::vec3(transform[3]));
 
         FlushAndReset();
     }
 
-    void Renderer3D::BeginScene(const EditorCamera& camera)
+    void Renderer3D::BeginScene(const EditorCamera &camera)
     {
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetViewProjection();
@@ -253,9 +256,8 @@ namespace Wasteland {
     {
         if (s_Data.RayTracingEnabled)
         {
-            if (s_Data.m_SceneInstances.empty()) return;
-
-            s_Data.SamplesPerPixel = 1;
+            if (s_Data.m_SceneInstances.empty())
+                return;
 
             EditorCamera editorCamera;
 
@@ -267,11 +269,11 @@ namespace Wasteland {
             float movedValue = moved ? 1.0f : 0.0f;
 
             // Only upload if something changed
-            if (s_Data.m_SceneDirty) 
+            if (s_Data.m_SceneDirty)
             {
-                glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
-                                    s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
-                                    s_Data.m_SceneInstances.data());
+                glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
+                                     s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
+                                     s_Data.m_SceneInstances.data());
                 s_Data.m_SceneDirty = false; // Reset flag
             }
 
@@ -287,11 +289,11 @@ namespace Wasteland {
             uint32_t readIdx = s_Data.CurrentAccumulationIndex;
             uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
 
-            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0, 
-                                s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance), 
-                                s_Data.m_SceneInstances.data());
+            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
+                                 s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
+                                 s_Data.m_SceneInstances.data());
 
-            glActiveTexture(GL_TEXTURE0 + 3); 
+            glActiveTexture(GL_TEXTURE0 + 3);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
 
             s_Data.RayTracingShader->Bind();
@@ -301,7 +303,7 @@ namespace Wasteland {
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
             glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            
+
             glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
@@ -317,6 +319,8 @@ namespace Wasteland {
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
+            s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+            s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
 
             // Ray Trace & Denoise
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
@@ -341,13 +345,13 @@ namespace Wasteland {
 
             s_Data.RayTracingShader->Unbind();
 
-            if (&editorCamera.GetPosition()) 
+            if (&editorCamera.GetPosition())
             {
                 s_Data.FrameIndex = 0; // Reset accumulation
             }
-            else 
+            else
             {
-                s_Data.FrameIndex++;   // Accumulate
+                s_Data.FrameIndex++; // Accumulate
             }
 
             s_Data.LastCameraPosition = currentPos;
@@ -365,7 +369,7 @@ namespace Wasteland {
         // Draw Cubes
         if (s_Data.CubeIndexCount)
         {
-            uint32_t dataSize = (uint32_t)((uint8_t*)s_Data.CubeVertexBufferPtr - (uint8_t*)s_Data.CubeVertexBufferBase);
+            uint32_t dataSize = (uint32_t)((uint8_t *)s_Data.CubeVertexBufferPtr - (uint8_t *)s_Data.CubeVertexBufferBase);
             s_Data.CubeVertexBuffer->SetData(s_Data.CubeVertexBufferBase, dataSize);
 
             RenderCommand::DrawIndexed(s_Data.CubeVertexArray, s_Data.CubeIndexCount);
@@ -375,7 +379,7 @@ namespace Wasteland {
         // Draw Spheres
         if (s_Data.SphereIndexCount)
         {
-            uint32_t vertexDataSize = (uint32_t)((uint8_t*)s_Data.SphereVertexBufferPtr - (uint8_t*)s_Data.SphereVertexBufferBase);
+            uint32_t vertexDataSize = (uint32_t)((uint8_t *)s_Data.SphereVertexBufferPtr - (uint8_t *)s_Data.SphereVertexBufferBase);
             s_Data.SphereVertexBuffer->SetData(s_Data.SphereVertexBufferBase, vertexDataSize);
 
             uint32_t indexDataSize = (uint32_t)(s_Data.SphereIndexBufferPtr - s_Data.SphereIndexBufferBase) * sizeof(uint32_t);
@@ -386,14 +390,19 @@ namespace Wasteland {
         }
     }
 
-    void Renderer3D::ResetStats() { s_Data.Stats.DrawCalls = 0; s_Data.Stats.QuadCount = 0; }
+    void Renderer3D::ResetStats()
+    {
+        s_Data.Stats.DrawCalls = 0;
+        s_Data.Stats.QuadCount = 0;
+    }
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
     void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
     uint32_t Renderer3D::GetRayTraceTargetID() { return s_Data.RayTracingOutput->GetRendererID(); }
-    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height) 
-    { 
-        if (width == 0 || height == 0) return;
+    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
+    {
+        if (width == 0 || height == 0)
+            return;
 
         // Resize Output Texture
         s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID(); // Assuming your Texture2D handles this
@@ -408,27 +417,30 @@ namespace Wasteland {
 
         glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.RayTracingTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        
+
         // Resize Accumulation Texture
-        if (s_Data.AccumulationTexture) glDeleteTextures(1, &s_Data.AccumulationTexture);
-        
+        if (s_Data.AccumulationTexture)
+            glDeleteTextures(1, &s_Data.AccumulationTexture);
+
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, width, height);
-        
+
         glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.AccumulationTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         // Resize Bloom Texture
-        if (s_Data.BloomTextureID) glDeleteTextures(1, &s_Data.BloomTextureID);
-    
+        if (s_Data.BloomTextureID)
+            glDeleteTextures(1, &s_Data.BloomTextureID);
+
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTextureID);
         glTextureStorage2D(s_Data.BloomTextureID, 1, GL_RGBA32F, width, height);
-        
+
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         // Resize Accumulation Textures
-        if (s_Data.AccumulationTextures[0]) glDeleteTextures(2, s_Data.AccumulationTextures);
+        if (s_Data.AccumulationTextures[0])
+            glDeleteTextures(2, s_Data.AccumulationTextures);
 
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
@@ -441,6 +453,30 @@ namespace Wasteland {
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;
         s_Data.FrameIndex = 0; // Reset accumulation on resize
+    }
+
+    uint32_t Renderer3D::GetSamplesPerPixel() { return s_Data.SamplesPerPixel; }
+    void Renderer3D::SetSamplesPerPixel(uint32_t samples)
+    {
+        s_Data.SamplesPerPixel = glm::max(1u, samples);
+        s_Data.FrameIndex = 0; // Reset accumulation when changing samples
+    }
+
+    float Renderer3D::GetMovementThreshold() { return s_Data.MovementThreshold; }
+    void Renderer3D::SetMovementThreshold(float threshold) { s_Data.MovementThreshold = glm::max(0.00001f, threshold); }
+
+    glm::vec3 Renderer3D::GetSkyBottomColor() { return s_Data.SkyBottomColor; }
+    void Renderer3D::SetSkyBottomColor(const glm::vec3 &color)
+    {
+        s_Data.SkyBottomColor = color;
+        s_Data.FrameIndex = 0; // Reset accumulation when changing sky
+    }
+
+    glm::vec3 Renderer3D::GetSkyTopColor() { return s_Data.SkyTopColor; }
+    void Renderer3D::SetSkyTopColor(const glm::vec3 &color)
+    {
+        s_Data.SkyTopColor = color;
+        s_Data.FrameIndex = 0; // Reset accumulation when changing sky
     }
 
     void Renderer3D::FlushAndReset()
@@ -459,7 +495,7 @@ namespace Wasteland {
         s_Data.TextureSlotIndex = 1;
     }
 
-    void Renderer3D::DrawCube(const glm::mat4& transform, const glm::vec4& color, MaterialComponent& material, int entityID)
+    void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, MaterialComponent &material, int entityID)
     {
         if (s_Data.CubeIndexCount + 36 >= s_Data.MaxIndices)
         {
@@ -468,39 +504,27 @@ namespace Wasteland {
         }
 
         static const glm::vec3 cubePositions[24] = {
-            { -0.5f, -0.5f,  0.5f }, {  0.5f, -0.5f,  0.5f }, {  0.5f,  0.5f,  0.5f }, { -0.5f,  0.5f,  0.5f }, 
-            {  0.5f, -0.5f, -0.5f }, { -0.5f, -0.5f, -0.5f }, { -0.5f,  0.5f, -0.5f }, {  0.5f,  0.5f, -0.5f }, 
-            { -0.5f,  0.5f,  0.5f }, {  0.5f,  0.5f,  0.5f }, {  0.5f,  0.5f, -0.5f }, { -0.5f,  0.5f, -0.5f }, 
-            { -0.5f, -0.5f, -0.5f }, {  0.5f, -0.5f, -0.5f }, {  0.5f, -0.5f,  0.5f }, { -0.5f, -0.5f,  0.5f }, 
-            {  0.5f, -0.5f,  0.5f }, {  0.5f, -0.5f, -0.5f }, {  0.5f,  0.5f, -0.5f }, {  0.5f,  0.5f,  0.5f }, 
-            { -0.5f, -0.5f, -0.5f }, { -0.5f, -0.5f,  0.5f }, { -0.5f,  0.5f,  0.5f }, { -0.5f,  0.5f, -0.5f }  
-        };
+            {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, -0.5f}};
 
         static const glm::vec3 cubeNormals[24] = {
-            {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f,  1.0f }, 
-            {  0.0f,  0.0f, -1.0f }, { -0.0f,  0.0f, -1.0f }, { -0.0f,  0.0f, -1.0f }, {  0.0f,  0.0f, -1.0f }, 
-            {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, {  0.0f,  1.0f,  0.0f }, 
-            {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f }, 
-            {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, {  1.0f,  0.0f,  0.0f }, 
-            { -1.0f,  0.0f,  0.0f }, { -1.0f,  0.0f,  0.0f }, { -1.0f,  0.0f,  0.0f }, { -1.0f,  0.0f, -0.0f }  
-        };
+            {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, -0.0f}};
 
-        static const glm::vec2 texCoords[4] = { {0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f} };
+        static const glm::vec2 texCoords[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
         glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
 
         for (int i = 0; i < 24; i++)
         {
             s_Data.CubeVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(cubePositions[i], 1.0f));
             s_Data.CubeVertexBufferPtr->Color = material.Albedo;
-            s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]); 
+            s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]);
             s_Data.CubeVertexBufferPtr->TexCoord = texCoords[i % 4];
-            s_Data.CubeVertexBufferPtr->EntityID = entityID; 
+            s_Data.CubeVertexBufferPtr->EntityID = entityID;
             s_Data.CubeVertexBufferPtr++;
         }
 
         s_Data.CubeIndexCount += 36;
         s_Data.CubeVertexCount += 24;
-        s_Data.Stats.QuadCount += 6; 
+        s_Data.Stats.QuadCount += 6;
 
         if (s_Data.RayTracingEnabled)
         {
@@ -512,27 +536,30 @@ namespace Wasteland {
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
 
-            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f); 
-            instance.Max = glm::vec4( 0.5f,  0.5f,  0.5f, 1.0f);
+            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
+            instance.Max = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
 
-            instance.Emission = glm::vec4(material.EmissionColor.x, 
-                                      material.EmissionColor.y, 
-                                      material.EmissionColor.z, 
-                                      material.EmissionIntensity);
-            
+            instance.Emission = glm::vec4(material.EmissionColor.x,
+                                          material.EmissionColor.y,
+                                          material.EmissionColor.z,
+                                          material.EmissionIntensity);
+
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
             return;
         }
     }
 
-    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent& material, int entityID)
+    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent &material, int entityID)
     {
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
         uint32_t indexCount = 0;
-        for (int i = 0; i < stacks; ++i) {
-            if (i != 0) indexCount += sectors * 3;
-            if (i != (stacks - 1)) indexCount += sectors * 3;
+        for (int i = 0; i < stacks; ++i)
+        {
+            if (i != 0)
+                indexCount += sectors * 3;
+            if (i != (stacks - 1))
+                indexCount += sectors * 3;
         }
 
         if (s_Data.SphereIndexCount + indexCount >= s_Data.MaxIndices || s_Data.SphereVertexCount + vertexCount >= s_Data.MaxVertices)
@@ -604,20 +631,20 @@ namespace Wasteland {
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
 
             instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);
-            instance.Max = glm::vec4( radius,  radius,  radius, 1.0f);
+            instance.Max = glm::vec4(radius, radius, radius, 1.0f);
 
-            instance.Emission = glm::vec4(material.EmissionColor.x, 
-                                      material.EmissionColor.y, 
-                                      material.EmissionColor.z, 
-                                      material.EmissionIntensity);
-            
+            instance.Emission = glm::vec4(material.EmissionColor.x,
+                                          material.EmissionColor.y,
+                                          material.EmissionColor.z,
+                                          material.EmissionIntensity);
+
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
             return;
         }
     }
 
-    void Renderer3D::Submit(const Ref<Shader>& shader, const Ref<VertexArray>& vertexArray, const glm::mat4& transform)
+    void Renderer3D::Submit(const Ref<Shader> &shader, const Ref<VertexArray> &vertexArray, const glm::mat4 &transform)
     {
         WL_PROFILE_FUNCTION();
         Renderer::Submit(shader, vertexArray, transform);
