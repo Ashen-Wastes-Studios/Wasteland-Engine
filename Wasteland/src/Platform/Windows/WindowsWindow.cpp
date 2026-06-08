@@ -8,22 +8,26 @@
 #include "Platform/OpenGL/OpenGLContext.h"
 
 #include <glad/glad.h>
+#include <GLFW/glfw3.h>
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	static bool s_GLFWInitialized = false;
 
-	static void GLFWErrorCallback(int error, const char* description)
+	static void GLFWErrorCallback(int error, const char *description)
 	{
 		WL_CORE_ERROR("GLFW Error ({0}): {1}", error, description);
 	}
 
-	Window* Window::Create(const WindowProps& props)
+#if defined(WL_PLATFORM_WINDOWS)
+	Window *Window::Create(const WindowProps &props)
 	{
 		return new WindowsWindow(props);
 	}
+#endif
 
-	WindowsWindow::WindowsWindow(const WindowProps& props)
+	WindowsWindow::WindowsWindow(const WindowProps &props)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -37,7 +41,7 @@ namespace Wasteland {
 		Shutdown();
 	}
 
-	void WindowsWindow::Init(const WindowProps& props)
+	void WindowsWindow::Init(const WindowProps &props)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -70,26 +74,24 @@ namespace Wasteland {
 		SetVSync(true);
 
 		// Set GLFW callbacks
-		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow* window, int width, int height)
-			{
+		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow *window, int width, int height)
+								  {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 				data.Width = width;
 				data.Height = height;
 
 				WindowResizeEvent event(width, height);
 				WL_CORE_WARN("{0}, {1}", width, height);
-				data.EventCallback(event);
-			});
+				data.EventCallback(event); });
 
-		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow* window)
-			{
+		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow *window)
+								   {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 				WindowCloseEvent event;
-				data.EventCallback(event);
-			});
+				data.EventCallback(event); });
 
-		glfwSetKeyCallback(m_Window, [](GLFWwindow* window, int key, int scancode, int action, int mods)
-			{
+		glfwSetKeyCallback(m_Window, [](GLFWwindow *window, int key, int scancode, int action, int mods)
+						   {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 				switch (action)
@@ -112,19 +114,17 @@ namespace Wasteland {
 						data.EventCallback(event);
 						break;
 					}
-				}
-			});
+				} });
 
-		glfwSetCharCallback(m_Window, [](GLFWwindow* window, unsigned int keycode)
-			{
+		glfwSetCharCallback(m_Window, [](GLFWwindow *window, unsigned int keycode)
+							{
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 				KeyTypedEvent event(keycode);
-				data.EventCallback(event);
-			});
+				data.EventCallback(event); });
 
-		glfwSetMouseButtonCallback(m_Window, [](GLFWwindow* window, int button, int action, int mods)
-			{
+		glfwSetMouseButtonCallback(m_Window, [](GLFWwindow *window, int button, int action, int mods)
+								   {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 				switch (action)
@@ -141,24 +141,21 @@ namespace Wasteland {
 						data.EventCallback(event);
 						break;
 					}
-				}
-			});
+				} });
 
-		glfwSetScrollCallback(m_Window, [](GLFWwindow* window, double xOffset, double yOffset)
-			{
+		glfwSetScrollCallback(m_Window, [](GLFWwindow *window, double xOffset, double yOffset)
+							  {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 				MouseScrolledEvent event((float)xOffset, (float)yOffset);
-				data.EventCallback(event);
-			});
+				data.EventCallback(event); });
 
-		glfwSetCursorPosCallback(m_Window, [](GLFWwindow* window, double xPos, double yPos)
-			{
+		glfwSetCursorPosCallback(m_Window, [](GLFWwindow *window, double xPos, double yPos)
+								 {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 				MouseMovedEvent event((float)xPos, (float)yPos);
-				data.EventCallback(event);
-			});
+				data.EventCallback(event); });
 	}
 
 	void WindowsWindow::Shutdown()

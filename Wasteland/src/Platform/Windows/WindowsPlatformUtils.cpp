@@ -1,22 +1,25 @@
 #include "wlpch.h"
 #include "Wasteland/Utils/PlatformUtils.h"
 
+#if defined(WL_PLATFORM_WINDOWS)
+
 #include <commdlg.h>
-#include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 
 #include "Wasteland/Core/Application.h"
 
-namespace Wasteland {
+namespace Wasteland
+{
 
-	std::string FileDialogs::OpenFile(const char* filter)
+	std::string FileDialogs::OpenFile(const char *filter)
 	{
 		OPENFILENAMEA ofn;
-		CHAR szFile[260] = { 0 };
+		CHAR szFile[260] = {0};
 		ZeroMemory(&ofn, sizeof(OPENFILENAME));
 		ofn.lStructSize = sizeof(OPENFILENAME);
-		ofn.hwndOwner = glfwGetWin32Window((GLFWwindow*)Application::Get().GetWindow().GetNativeWindow());
+		ofn.hwndOwner = glfwGetWin32Window((GLFWwindow *)Application::Get().GetWindow().GetNativeWindow());
 		ofn.lpstrFile = szFile;
 		ofn.nMaxFile = sizeof(szFile);
 		ofn.lpstrFilter = filter;
@@ -29,13 +32,13 @@ namespace Wasteland {
 		return std::string();
 	}
 
-	std::string FileDialogs::SaveFile(const char* filter)
+	std::string FileDialogs::SaveFile(const char *filter)
 	{
 		OPENFILENAMEA ofn;
-		CHAR szFile[260] = { 0 };
+		CHAR szFile[260] = {0};
 		ZeroMemory(&ofn, sizeof(OPENFILENAME));
 		ofn.lStructSize = sizeof(OPENFILENAME);
-		ofn.hwndOwner = glfwGetWin32Window((GLFWwindow*)Application::Get().GetWindow().GetNativeWindow());
+		ofn.hwndOwner = glfwGetWin32Window((GLFWwindow *)Application::Get().GetWindow().GetNativeWindow());
 		ofn.lpstrFile = szFile;
 		ofn.nMaxFile = sizeof(szFile);
 		ofn.lpstrFilter = filter;
@@ -49,3 +52,5 @@ namespace Wasteland {
 	}
 
 }
+
+#endif // WL_PLATFORM_WINDOWS

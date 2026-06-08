@@ -7,7 +7,9 @@
 namespace Wasteland
 {
 
+#if defined(WL_PLATFORM_WINDOWS)
 	Input *Input::s_Instance = new WindowsInput();
+#endif
 
 	bool WindowsInput::IsKeyPressedImpl(int keycode)
 	{

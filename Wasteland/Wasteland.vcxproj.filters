@@ -7,6 +7,12 @@
     <Filter Include="src\Platform">
       <UniqueIdentifier>{21CA02E5-0D2D-9289-B6B2-CA3FA2F45D0C}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Platform\Linux">
+      <UniqueIdentifier>{0052F1F1-EC35-B247-5596-AC9A41999CC9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Platform\Mac">
+      <UniqueIdentifier>{E10CC8DF-CD05-E731-F637-CCB6E28FC63D}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Platform\OpenGL">
       <UniqueIdentifier>{35A49437-A105-7245-2A73-B8F796D3A804}</UniqueIdentifier>
     </Filter>
@@ -72,6 +78,18 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\Platform\Linux\LinuxInput.h">
+      <Filter>src\Platform\Linux</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Platform\Linux\LinuxWindow.h">
+      <Filter>src\Platform\Linux</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Platform\Mac\MacInput.h">
+      <Filter>src\Platform\Mac</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Platform\Mac\MacWindow.h">
+      <Filter>src\Platform\Mac</Filter>
+    </ClInclude>
     <ClInclude Include="src\Platform\OpenGL\OpenGLBuffer.h">
       <Filter>src\Platform\OpenGL</Filter>
     </ClInclude>
@@ -1499,6 +1517,24 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\Platform\Linux\LinuxInput.cpp">
+      <Filter>src\Platform\Linux</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\Linux\LinuxPlatformUtils.cpp">
+      <Filter>src\Platform\Linux</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\Linux\LinuxWindow.cpp">
+      <Filter>src\Platform\Linux</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\Mac\MacInput.cpp">
+      <Filter>src\Platform\Mac</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\Mac\MacPlatformUtils.cpp">
+      <Filter>src\Platform\Mac</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\Mac\MacWindow.cpp">
+      <Filter>src\Platform\Mac</Filter>
+    </ClCompile>
     <ClCompile Include="src\Platform\OpenGL\OpenGLBuffer.cpp">
       <Filter>src\Platform\OpenGL</Filter>
     </ClCompile>
