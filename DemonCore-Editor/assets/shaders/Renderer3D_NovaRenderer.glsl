@@ -74,6 +74,37 @@ vec3 random_in_hemisphere(vec3 normal)
     return dot(dir, normal) > 0.0 ? dir : -dir;
 }
 
+const float PI = 3.14159265359;
+
+float DistributionGGX(float NdotH, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = (NdotH * NdotH) * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denom * denom, 0.0001);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return NdotV / (NdotV * (1.0 - k) + k);
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx1 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx2 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+vec3 FresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
 float HitCube(Ray localRay, out vec3 outNormal) 
 {
     vec3 tMin = (vec3(-0.5) - localRay.Origin) / localRay.Direction;
@@ -237,6 +268,13 @@ void RunTraceAndDenoise()
                     hitAnything = true;
                 }
 
+                vec3 V = normalize(-currentRay.Direction);
+                float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
+                float rough = clamp(Instances[hitIndex].MaterialParams.y, 0.04, 1.0);
+                vec3 albedo = hitAlbedo;
+                vec3 F0 = mix(vec3(0.04), albedo, metal);
+                vec3 diffuseColor = albedo * (1.0 - metal);
+
                 vec3 directLight = vec3(0.0);
                 
                 for(int i = 0; i < u_InstanceCount; i++) 
@@ -250,18 +288,38 @@ void RunTraceAndDenoise()
                         Ray shadowRay = Ray(hitPoint + hitNormal * 0.001, dirToLight);
                         if(!IsOccluded(shadowRay, distToLight)) 
                         {
-                            float diff = max(dot(hitNormal, dirToLight), 0.0);
-                            directLight += Instances[i].Emission.xyz * Instances[i].Emission.w * diff;
+                            float NdotL = max(dot(hitNormal, dirToLight), 0.0);
+                            vec3 H = normalize(V + dirToLight);
+                            vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+                            float D = DistributionGGX(max(dot(hitNormal, H), 0.0), rough);
+                            float G = GeometrySmith(hitNormal, V, dirToLight, rough);
+                            vec3 numerator = D * G * F;
+                            vec3 specular = numerator / max(4.0 * max(dot(hitNormal, V), 0.0) * NdotL, 0.001);
+                            vec3 kS = F;
+                            vec3 kD = (vec3(1.0) - kS) * (1.0 - metal);
+                            vec3 brdf = kD * albedo / PI + specular;
+                            directLight += brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
                         }
                     }
                 }
 
-                incomingLight += throughput * directLight; 
+                incomingLight += throughput * directLight;
                 incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
                 
-                throughput *= hitAlbedo;
+                float specularChance = mix(0.2, 0.95, metal);
+                if (hash() < specularChance)
+                {
+                    vec3 reflection = reflect(currentRay.Direction, hitNormal);
+                    currentRay.Direction = normalize(mix(reflection, random_in_hemisphere(hitNormal), rough));
+                    throughput *= F0;
+                }
+                else
+                {
+                    currentRay.Direction = random_in_hemisphere(hitNormal);
+                    throughput *= diffuseColor;
+                }
+
                 currentRay.Origin = hitPoint + hitNormal * 0.001;
-                currentRay.Direction = random_in_hemisphere(hitNormal);
             }
             else
             {

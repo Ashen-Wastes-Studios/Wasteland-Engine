@@ -79,7 +79,6 @@ namespace Wasteland
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
-        glm::vec3 LastCameraPosition;
         float LastCameraRotation;
         float MovementThreshold = 0.0001f;
 
@@ -90,6 +89,14 @@ namespace Wasteland
 
         glm::mat4 PrevViewProjection = glm::mat4(1.0f);
         glm::mat4 CurrentViewProjection = glm::mat4(1.0f);
+
+        glm::vec3 CurrentCameraPosition = glm::vec3(0.0f);
+        float CurrentCameraPitch = 0.0f;
+        float CurrentCameraYaw = 0.0f;
+
+        glm::vec3 LastCameraPosition = glm::vec3(0.0f);
+        float LastCameraPitch = 0.0f;
+        float LastCameraYaw = 0.0f;
 
         std::vector<uint32_t> LightIndicies;
 
@@ -214,6 +221,9 @@ namespace Wasteland
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
 
+        s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
+        s_Data.CurrentViewProjection = viewProj;
+
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
 
@@ -224,9 +234,14 @@ namespace Wasteland
             // Optionally clear the texture here if you have a clear function
         }
 
+        s_Data.CurrentCameraPosition = glm::vec3(transform[3]);
+        s_Data.CurrentCameraPitch = 0.0f;
+        s_Data.CurrentCameraYaw = 0.0f;
+
         s_Data.RayTracingShader->Bind();
+        s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
         s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
-        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", glm::vec3(transform[3]));
+        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
     }
@@ -236,12 +251,26 @@ namespace Wasteland
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetViewProjection();
 
+        s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
+        s_Data.CurrentViewProjection = viewProj;
+
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
 
+        if (viewProj != s_Data.LastViewProjection)
+        {
+            s_Data.FrameIndex = 0;
+            s_Data.LastViewProjection = viewProj;
+        }
+
+        s_Data.CurrentCameraPosition = camera.GetPosition();
+        s_Data.CurrentCameraPitch = camera.GetPitch();
+        s_Data.CurrentCameraYaw = camera.GetYaw();
+
         s_Data.RayTracingShader->Bind();
+        s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
         s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
-        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", camera.GetPosition());
+        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
     }
@@ -259,13 +288,9 @@ namespace Wasteland
             if (s_Data.m_SceneInstances.empty())
                 return;
 
-            EditorCamera editorCamera;
-
-            glm::vec3 currentPos = editorCamera.GetPosition();
-            float currentPitch = editorCamera.GetPitch();
-            float currentYaw = editorCamera.GetYaw();
-
-            bool moved = (currentPos != s_Data.LastCameraPosition) || (currentPitch != s_Data.LastCameraRotation) || (currentYaw != s_Data.LastCameraRotation);
+            bool moved = (s_Data.CurrentCameraPosition != s_Data.LastCameraPosition) ||
+                         (s_Data.CurrentCameraPitch != s_Data.LastCameraPitch) ||
+                         (s_Data.CurrentCameraYaw != s_Data.LastCameraYaw);
             float movedValue = moved ? 1.0f : 0.0f;
 
             // Only upload if something changed
@@ -303,14 +328,9 @@ namespace Wasteland
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
             glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-
-            glBindImageTexture(1, s_Data.AccumulationTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
 
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-
-            GLuint velocityTexture;
-            glGenTextures(1, &velocityTexture);
 
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
@@ -345,20 +365,20 @@ namespace Wasteland
 
             s_Data.RayTracingShader->Unbind();
 
-            if (&editorCamera.GetPosition())
+            if (moved)
             {
-                s_Data.FrameIndex = 0; // Reset accumulation
+                s_Data.FrameIndex = 0;
             }
             else
             {
-                s_Data.FrameIndex++; // Accumulate
+                s_Data.FrameIndex++;
             }
 
-            s_Data.LastCameraPosition = currentPos;
-            s_Data.LastCameraRotation = currentPitch, currentYaw;
+            s_Data.LastCameraPosition = s_Data.CurrentCameraPosition;
+            s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
+            s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
             s_Data.CurrentAccumulationIndex = 1 - s_Data.CurrentAccumulationIndex;
             s_Data.Stats.DrawCalls++;
-            s_Data.FrameIndex++;
             return;
         }
 
