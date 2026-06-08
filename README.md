@@ -6,3 +6,4 @@ Note: the Python scripting engine is a work in progress feel free to contribute 
 
 Screenshot of the Nova Rendering Pipeline being used:
 ![Screenshot of the Nova Rendering Pipeline being used ](image.png)
+![Screenshot of the Nova Rendering Pipeline being used ](image-1.png)
