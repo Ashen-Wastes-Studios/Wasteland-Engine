@@ -293,72 +293,66 @@ namespace Wasteland
                          (s_Data.CurrentCameraYaw != s_Data.LastCameraYaw);
             float movedValue = moved ? 1.0f : 0.0f;
 
-            // Only upload if something changed
             if (s_Data.m_SceneDirty)
             {
                 glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
                                      s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
                                      s_Data.m_SceneInstances.data());
-                s_Data.m_SceneDirty = false; // Reset flag
+                s_Data.m_SceneDirty = false;
             }
 
             s_Data.LightIndicies.clear();
             for (uint32_t i = 0; i < s_Data.m_SceneInstances.size(); i++)
             {
                 if (s_Data.m_SceneInstances[i].Emission.w > 0.0f)
-                {
                     s_Data.LightIndicies.push_back(i);
-                }
             }
 
             uint32_t readIdx = s_Data.CurrentAccumulationIndex;
             uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
-
-            glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
-                                 s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
-                                 s_Data.m_SceneInstances.data());
 
             glActiveTexture(GL_TEXTURE0 + 3);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
-            s_Data.RayTracingShader->SetInt("u_FrameIndex", (int)s_Data.FrameIndex);
-
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
             glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_READ_WRITE, GL_RGBA32F, 0, GL_READ_WRITE);
 
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
 
-            s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
             s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
 
-            // Ray Trace & Denoise
+            // 1. Ray Trace & Denoise
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // Bloom Threshold (Extract bright pixels)
+            // 2. Spatial Bilateral Blur (Added for noise reduction)
+            s_Data.RayTracingShader->SetInt("u_PassID", 4);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            // 3. Bloom Threshold
             s_Data.RayTracingShader->SetInt("u_PassID", 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // Bloom Blur (Blur the extracted buffer)
+            // 4. Bloom Blur
             s_Data.RayTracingShader->SetInt("u_PassID", 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
 
-            // Composite (Add glow back to main image)
+            // 5. Composite
             s_Data.RayTracingShader->SetInt("u_PassID", 3);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -366,17 +360,15 @@ namespace Wasteland
             s_Data.RayTracingShader->Unbind();
 
             if (moved)
-            {
                 s_Data.FrameIndex = 0;
-            }
             else
-            {
                 s_Data.FrameIndex++;
-            }
 
             s_Data.LastCameraPosition = s_Data.CurrentCameraPosition;
             s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
             s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
+            s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
+            s_Data.LastCameraPosition = s_Data.CurrentCameraPosition;
             s_Data.CurrentAccumulationIndex = 1 - s_Data.CurrentAccumulationIndex;
             s_Data.Stats.DrawCalls++;
             return;
