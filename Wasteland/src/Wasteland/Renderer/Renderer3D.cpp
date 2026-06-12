@@ -382,7 +382,6 @@ namespace Wasteland
             else
                 s_Data.FrameIndex++;
 
-            s_Data.LastCameraPosition = s_Data.CurrentCameraPosition;
             s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
             s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
             s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
