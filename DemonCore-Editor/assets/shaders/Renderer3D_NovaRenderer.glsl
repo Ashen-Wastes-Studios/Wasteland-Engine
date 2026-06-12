@@ -8,10 +8,12 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(rgba32f, binding = 0) uniform image2D img_Output;
 layout(rgba32f, binding = 1) uniform image2D img_Accumulation;
 layout(rgba32f, binding = 2) uniform image2D img_Bloom;
+layout(rgba32f, binding = 7) uniform image2D img_Bloom_Temp;
 layout(rg16f, binding = 5) uniform image2D img_Velocity;
 layout(rgba32f, binding = 6) uniform image2D img_FinalDisplay;
 layout(binding = 3) uniform sampler2D s_Accumulation;
 layout(binding = 4) uniform sampler2D s_DepthBuffer;
+layout(binding = 8) uniform sampler2D s_Output;
 
 struct RayTracingInstance 
 {
@@ -362,8 +364,8 @@ void RunBloomThreshold() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec4 color = imageLoad(img_Output, pos);
     
-    float threshold = 1.0;
-    float knee = 0.2; 
+    float threshold = 0.5;
+    float knee = 0.1; 
     
     float brightness = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     float soft = smoothstep(threshold - knee, threshold + knee, brightness);
@@ -371,20 +373,28 @@ void RunBloomThreshold() {
     imageStore(img_Bloom, pos, color * soft);
 }
 
-void RunBloomBlur() {
+void RunBloomBlurHorizontal() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    float weights[11] = float[](
-        0.0009, 0.0035, 0.0116, 0.0303, 0.0635, 0.0805, 0.0635, 0.0303, 0.0116, 0.0035, 0.0009
-    );
-    vec4 sum = vec4(0.0);
+    float weights[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    vec4 sum = imageLoad(img_Bloom, pos) * weights[0];
     
-    for(int x = -5; x <= 5; x++) {
-        for(int y = -5; y <= 5; y++) {
-            float weight = weights[x + 5] * weights[y + 5];
-            sum += imageLoad(img_Bloom, pos + ivec2(x, y)) * weight;
-        }
+    for(int i = 1; i < 5; i++) {
+        sum += imageLoad(img_Bloom, pos + ivec2(i, 0)) * weights[i];
+        sum += imageLoad(img_Bloom, pos - ivec2(i, 0)) * weights[i];
     }
+    imageStore(img_Bloom_Temp, pos, sum);
+}
+
+void RunBloomBlurVertical()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    float weights[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    vec4 sum = imageLoad(img_Bloom_Temp, pos) * weights[0];
     
+    for(int i = 1; i < 5; i++) {
+        sum += imageLoad(img_Bloom_Temp, pos + ivec2(0, i)) * weights[i];
+        sum += imageLoad(img_Bloom_Temp, pos + ivec2(0, -i)) * weights[i];
+    }
     imageStore(img_Bloom, pos, sum);
 }
 
@@ -392,9 +402,13 @@ void RunComposite() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     vec3 scene = imageLoad(img_Output, pos).rgb;
     vec3 bloom = imageLoad(img_Bloom, pos).rgb;
-    vec3 combined = scene + (bloom * 10.0);
-    vec3 mappedColor = combined / (combined + vec3(1.0));
-    imageStore(img_Output, pos, vec4(pow(mappedColor, vec3(1.0 / 2.2)), 1.0));
+    
+    // We add the bloom, but we do NOT tonemap here.
+    // We store this in a temporary buffer or a dedicated "Composition" buffer.
+    // For now, let's assume we store it in img_FinalDisplay
+    vec3 combined = scene + bloom; 
+    
+    imageStore(img_Output, pos, vec4(combined, 1.0));
 }
 
 void RunBilateralBlur() {
@@ -420,18 +434,24 @@ void RunResolve()
 {
     ivec2 displayPos = ivec2(gl_GlobalInvocationID.xy);
     vec2 displaySize = vec2(imageSize(img_FinalDisplay));
-    vec2 renderSize = vec2(imageSize(img_Output));
     vec2 uv = vec2(displayPos) / displaySize;
 
-    vec3 color = texture(s_Accumulation, uv).rgb;
+    vec3 color = texture(s_Output, uv).rgb;
 
-    vec3 center = color;
-    vec3 up = texture(s_Accumulation, uv + vec2(0.0, 1.0/renderSize.y)).rgb;
-    vec3 down = texture(s_Accumulation, uv - vec2(0.0, 1.0/renderSize.y)).rgb;
-    vec3 left = texture(s_Accumulation, uv - vec2(1.0/renderSize.x, 0.0)).rgb;
-    vec3 right = texture(s_Accumulation, uv + vec2(1.0/renderSize.x, 0.0)).rgb;
-    vec3 sharp = mix(center, center * 5.0 - (up + down + left + right) * 1.0, 0.5);
-    imageStore(img_FinalDisplay, displayPos, vec4(sharp, 1.0));
+    vec2 texelSize = 1.0 / vec2(textureSize(s_Output, 0));
+    vec3 up    = texture(s_Output, uv + vec2(0.0, texelSize.y)).rgb;
+    vec3 down  = texture(s_Output, uv - vec2(0.0, texelSize.y)).rgb;
+    vec3 left  = texture(s_Output, uv - vec2(texelSize.x, 0.0)).rgb;
+    vec3 right = texture(s_Output, uv + vec2(texelSize.x, 0.0)).rgb;
+    vec3 sharp = mix(color, color * 5.0 - (up + down + left + right) * 1.0, 0.3);
+
+    // This squashes the 0.0 - infinity HDR range into 0.0 - 1.0
+    vec3 mapped = sharp / (sharp + vec3(1.0));
+
+    // This transforms the color from linear space to sRGB space
+    vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
+
+    imageStore(img_FinalDisplay, displayPos, vec4(finalColor, 1.0));
 }
 
 void main()
@@ -440,9 +460,10 @@ void main()
     {
         case 0: RunTraceAndDenoise(); break;
         case 1: RunBloomThreshold(); break;
-        case 2: RunBloomBlur(); break;
-        case 3: RunComposite(); break;
-        case 4: RunBilateralBlur(); break;
-        case 5: RunResolve(); break;
+        case 2: RunBloomBlurHorizontal(); break;
+        case 3: RunBloomBlurVertical(); break;
+        case 4: RunComposite(); break;
+        case 5: RunBilateralBlur(); break;
+        case 6: RunResolve(); break;
     }
 }

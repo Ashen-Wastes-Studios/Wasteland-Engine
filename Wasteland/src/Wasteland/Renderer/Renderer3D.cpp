@@ -86,6 +86,7 @@ namespace Wasteland
         glm::vec3 SkyTopColor = glm::vec3(0.2f, 0.3f, 0.7f);
 
         uint32_t BloomTextureID = 0;
+        uint32_t BloomTempTextureID = 0;
 
         glm::mat4 PrevViewProjection = glm::mat4(1.0f);
         glm::mat4 CurrentViewProjection = glm::mat4(1.0f);
@@ -171,6 +172,12 @@ namespace Wasteland
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTempTextureID);
+        glTextureStorage2D(s_Data.BloomTempTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+
+        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
         {
@@ -204,6 +211,7 @@ namespace Wasteland
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
         glDeleteTextures(1, &s_Data.AccumulationTexture);
         glDeleteTextures(1, &s_Data.BloomTextureID);
+        glDeleteTextures(1, &s_Data.BloomTempTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
 
         s_Data.CubeVertexArray = nullptr;
@@ -335,27 +343,37 @@ namespace Wasteland
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 2. Spatial Bilateral Blur (Added for noise reduction)
-            s_Data.RayTracingShader->SetInt("u_PassID", 4);
+            s_Data.RayTracingShader->SetInt("u_PassID", 5);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 3. Bloom Threshold
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             s_Data.RayTracingShader->SetInt("u_PassID", 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 4. Bloom Blur
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             s_Data.RayTracingShader->SetInt("u_PassID", 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
-            // 5. Composite
+            glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             s_Data.RayTracingShader->SetInt("u_PassID", 3);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+
+            // 5. Composite
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+            s_Data.RayTracingShader->SetInt("u_PassID", 4);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             s_Data.RayTracingShader->Unbind();
 
@@ -449,6 +467,15 @@ namespace Wasteland
 
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        if (s_Data.BloomTempTextureID)
+            glDeleteTextures(1, &s_Data.BloomTempTextureID);
+
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTempTextureID);
+        glTextureStorage2D(s_Data.BloomTempTextureID, 1, GL_RGBA32F, width, height);
+
+        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         // Resize Accumulation Textures
         if (s_Data.AccumulationTextures[0])
