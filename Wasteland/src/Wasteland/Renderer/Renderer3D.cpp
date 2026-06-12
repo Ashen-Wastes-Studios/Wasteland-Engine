@@ -34,6 +34,12 @@ namespace Wasteland
 
     struct Renderer3DData
     {
+        struct Plane
+        {
+            glm::vec3 normal;
+            float distance;
+        };
+
         static const uint32_t MaxVertices = 100000;
         static const uint32_t MaxIndices = MaxVertices * 3;
         static const uint32_t MaxTextureSlots = 32;
@@ -103,6 +109,8 @@ namespace Wasteland
 
         uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
+
+        std::array<Plane, 6> FrustumPlanes;
 
         Renderer3D::Statistics Stats;
     };
@@ -228,6 +236,29 @@ namespace Wasteland
     {
         WL_PROFILE_FUNCTION();
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
+
+        // Helper lambda to extract planes cleanly using glm::vec4
+        auto extract = [&](int row, int sign) -> Renderer3DData::Plane
+        {
+            glm::vec4 planeEq;
+            // Calculate the plane equation (Ax + By + Cz + D = 0)
+            // Row 3 is column 3 of the matrix (index 3), Row 0/1/2 are the components
+            for (int i = 0; i < 4; ++i)
+                planeEq[i] = viewProj[i][3] + sign * viewProj[i][row];
+
+            // The length of the normal (A, B, C)
+            float length = glm::length(glm::vec3(planeEq));
+
+            // Return normalized Plane struct
+            return Renderer3DData::Plane{glm::vec3(planeEq) / length, planeEq.w / length};
+        };
+
+        s_Data.FrustumPlanes[0] = extract(0, 1);  // Left
+        s_Data.FrustumPlanes[1] = extract(0, -1); // Right
+        s_Data.FrustumPlanes[2] = extract(1, 1);  // Bottom
+        s_Data.FrustumPlanes[3] = extract(1, -1); // Top
+        s_Data.FrustumPlanes[4] = extract(2, 1);  // Near
+        s_Data.FrustumPlanes[5] = extract(2, -1); // Far
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
@@ -492,6 +523,38 @@ namespace Wasteland
         s_Data.RayTracingHeight = height;
         s_Data.FrameIndex = 0; // Reset accumulation on resize
     }
+    static bool IsAABBInFrustum(const std::array<Renderer3DData::Plane, 6> &planes, const glm::vec3 &min, const glm::vec3 &max, const glm::mat4 &transform)
+    {
+        // 1. Calculate local extents
+        glm::vec3 localCenter = (min + max) * 0.5f;
+        glm::vec3 localExtents = (max - min) * 0.5f;
+
+        // 2. Transform the center to world space
+        glm::vec3 worldCenter = glm::vec3(transform * glm::vec4(localCenter, 1.0f));
+
+        // 3. Transform the basis vectors (columns of the matrix) to get world-space axes
+        // We use these to project the local extents onto the plane normals
+        glm::vec3 worldAxisX = glm::vec3(transform[0]);
+        glm::vec3 worldAxisY = glm::vec3(transform[1]);
+        glm::vec3 worldAxisZ = glm::vec3(transform[2]);
+
+        for (const auto &plane : planes)
+        {
+            // Calculate the "radius" of the box projected onto the plane normal
+            // Radius = sum(|N dot Axis_i| * extent_i)
+            float r = localExtents.x * glm::abs(glm::dot(plane.normal, worldAxisX)) +
+                      localExtents.y * glm::abs(glm::dot(plane.normal, worldAxisY)) +
+                      localExtents.z * glm::abs(glm::dot(plane.normal, worldAxisZ));
+
+            // Distance from center to plane
+            float dist = glm::dot(plane.normal, worldCenter) + plane.distance;
+
+            // If the box is completely behind the plane, cull it
+            if (dist < -r)
+                return false;
+        }
+        return true;
+    }
 
     uint32_t Renderer3D::GetSamplesPerPixel() { return s_Data.SamplesPerPixel; }
     void Renderer3D::SetSamplesPerPixel(uint32_t samples)
@@ -540,6 +603,9 @@ namespace Wasteland
             Flush();
             FlushAndReset();
         }
+
+        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-0.5f), glm::vec3(0.5f), transform))
+            return;
 
         static const glm::vec3 cubePositions[24] = {
             {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, 0.5f}, {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, -0.5f}, {0.5f, 0.5f, -0.5f}, {0.5f, 0.5f, 0.5f}, {-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, -0.5f}};
@@ -590,6 +656,9 @@ namespace Wasteland
 
     void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent &material, int entityID)
     {
+        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-radius), glm::vec3(radius), transform))
+            return;
+
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
         uint32_t indexCount = 0;
         for (int i = 0; i < stacks; ++i)

@@ -194,6 +194,14 @@ vec2 GetJitter(int frameIndex, float cameraMoved) {
     return vec2(x, y) - 0.5;
 }
 
+float CalculateLightPDF(float dist, float area) {
+    return 1.0 / area;
+}
+
+float CalculateBSDFPDF(float NdotL) {
+    return max(NdotL / PI, 0.0001);
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -256,7 +264,7 @@ void RunTraceAndDenoise()
 
                 vec3 V = normalize(-currentRay.Direction);
                 float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
-                float rough = clamp(Instances[hitIndex].MaterialParams.y, 0.04, 1.0);
+                float rough = max(Instances[hitIndex].MaterialParams.y, 0.05);
                 vec3 albedo = hitAlbedo;
                 vec3 F0 = mix(vec3(0.04), albedo, metal);
                 vec3 diffuseColor = albedo * (1.0 - metal);
@@ -282,7 +290,19 @@ void RunTraceAndDenoise()
                             vec3 kS = F;
                             vec3 kD = (vec3(1.0) - kS) * (1.0 - metal);
                             vec3 brdf = kD * albedo / PI + specular;
-                            directLight += brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
+
+                            incomingLight += throughput * directLight;
+
+                            if (bounce == 0) {
+                                incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
+                            }
+
+                            float p_light = CalculateLightPDF(distToLight, 1.0);
+                            float p_bsdf = CalculateBSDFPDF(NdotL);
+                            float p_light_sq = p_light * p_light;
+                            float p_bsdf_sq = p_bsdf * p_bsdf;
+                            float weight = p_light_sq / max(p_light_sq + p_bsdf_sq, 1e-6);
+                            directLight += (brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL) * weight;
                         }
                     }
                 }
@@ -320,7 +340,6 @@ void RunTraceAndDenoise()
     vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
     
-    // UPDATED: Used consistent naming
     vec2 currentJitter = GetJitter(u_FrameIndex, u_CameraMoved);
     vec2 prevJitter = GetJitter(u_FrameIndex - 1, u_CameraMoved);
     
@@ -339,7 +358,6 @@ void RunTraceAndDenoise()
     memoryBarrierImage();
 
     vec3 history = vec3(0.0);
-    // FIXED: Used u_CameraMoved (correct uniform)
     if(inBounds && u_CameraMoved < 0.5) {
         history = texture(s_Accumulation, prevUV).rgb;
     } else {
@@ -405,7 +423,7 @@ void RunComposite() {
     
     // We add the bloom, but we do NOT tonemap here.
     // We store this in a temporary buffer or a dedicated "Composition" buffer.
-    // For now, let's assume we store it in img_FinalDisplay
+    // For now, let's assume we store it in img_Output
     vec3 combined = scene + bloom; 
     
     imageStore(img_Output, pos, vec4(combined, 1.0));
