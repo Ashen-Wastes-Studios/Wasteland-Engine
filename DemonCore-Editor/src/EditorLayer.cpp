@@ -58,7 +58,8 @@ namespace Wasteland
 		fbSpec.Height = 720;
 		m_Framebuffer = Framebuffer::Create(fbSpec);
 
-		m_ActiveScene = CreateRef<Scene>();
+		m_EditorScene = CreateRef<Scene>();
+		m_ActiveScene = m_EditorScene;
 
 		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
 
@@ -135,6 +136,13 @@ namespace Wasteland
 		case SceneState::Play:
 		{
 			m_ActiveScene->OnUpdateRuntime(ts);
+			break;
+		}
+		case SceneState::Simulate:
+		{
+			m_EditorCamera.OnUpdate(ts);
+
+			m_ActiveScene->OnUpdateSimulation(ts, m_EditorCamera);
 			break;
 		}
 		}
@@ -471,9 +479,18 @@ namespace Wasteland
 		}
 
 		ImGui::SameLine();
+		if (ImGui::Button("Simulate"))
+		{
+			if (m_SceneState == SceneState::Edit)
+				OnSceneSimulate();
+		}
+
+		ImGui::SameLine();
 		if (ImGui::Button("Stop"))
 		{
 			if (m_SceneState == SceneState::Play)
+				OnSceneStop();
+			else if (m_SceneState == SceneState::Simulate)
 				OnSceneStop();
 		}
 
@@ -622,14 +639,15 @@ namespace Wasteland
 		{
 			Entity camera = m_ActiveScene->GetPrimaryCameraEntity();
 			if (!camera)
-			{
 				return;
-			}
+
 			Renderer2D::BeginScene(camera.GetComponent<CameraComponent>().Camera, camera.GetComponent<TransformComponent>().GetTransform());
+			Renderer3D::BeginScene(camera.GetComponent<CameraComponent>().Camera, camera.GetComponent<TransformComponent>().GetTransform());
 		}
 		else
 		{
 			Renderer2D::BeginScene(m_EditorCamera);
+			Renderer3D::BeginScene(m_EditorCamera);
 		}
 
 		if (m_ShowPhysicsColliders)
@@ -766,6 +784,9 @@ namespace Wasteland
 
 	void EditorLayer::OnScenePlay()
 	{
+		if (m_SceneState == SceneState::Simulate)
+			OnSceneStop();
+
 		m_SceneState = SceneState::Play;
 
 		m_ActiveScene = Scene::Copy(m_EditorScene);
@@ -774,11 +795,30 @@ namespace Wasteland
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 	}
 
+	void EditorLayer::OnSceneSimulate()
+	{
+		if (m_SceneState == SceneState::Play)
+			OnSceneStop();
+
+		m_SceneState = SceneState::Simulate;
+
+		m_ActiveScene = Scene::Copy(m_EditorScene);
+		m_ActiveScene->OnSimulationStart();
+
+		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
+	}
+
 	void EditorLayer::OnSceneStop()
 	{
+		WL_CORE_ASSERT(m_SceneState == SceneState::Play || m_SceneState == SceneState::Simulate, nullptr);
+
+		if (m_SceneState == SceneState::Play)
+			m_ActiveScene->OnRuntimeStop();
+		else if (m_SceneState == SceneState::Simulate)
+			m_ActiveScene->OnSimulationStop();
+
 		m_SceneState = SceneState::Edit;
 
-		m_ActiveScene->OnRuntimeStop();
 		m_ActiveScene = m_EditorScene;
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);

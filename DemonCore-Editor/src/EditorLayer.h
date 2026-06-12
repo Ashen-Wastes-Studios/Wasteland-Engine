@@ -42,6 +42,7 @@ namespace Wasteland
 		void SerializeScene(Ref<Scene> scene, const std::filesystem::path &path);
 
 		void OnScenePlay();
+		void OnSceneSimulate();
 		void OnSceneStop();
 
 		void OnDuplicateEntity();
@@ -99,7 +100,8 @@ namespace Wasteland
 		enum class SceneState
 		{
 			Edit = 0,
-			Play = 1
+			Play = 1,
+			Simulate = 2
 		};
 
 		SceneState m_SceneState = SceneState::Edit;
