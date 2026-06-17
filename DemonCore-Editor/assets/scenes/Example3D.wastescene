@@ -1,76 +1,30 @@
 Scene: Untitled
 Entities:
-  - Entity: 8001134310104323193
+  - Entity: 6484715765271295781
     TagComponent:
-      Tag: Player
+      Tag: Emission Cube
     TransformComponent:
-      Translation: [0, 0, 10]
+      Translation: [0, -1.39999998, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    CameraComponent:
-      Camera:
-        ProjectionType: 0
-        PerspectiveFOV: 0.785398185
-        PerspectiveNear: 0.00999999978
-        PerspectiveFar: 1000
-        OrthographicSize: 10
-        OrthographicNear: -1
-        OrthographicFar: 1
-      Primary: true
-      FixedAspectRatio: false
-    ScriptComponent:
-      ScriptPath: assets/scripts/Player.py
-      ScriptName: Player
-  - Entity: 13026631445708257762
-    TagComponent:
-      Tag: Emission Sphere
-    TransformComponent:
-      Translation: [10.3999996, 7.19999981, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
+    CubeRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 8.39999962
-      Sectors: 20
-      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [0.611764729, 0.294117659, 0.0901960805, 1]
+      Albedo: [1, 1, 1, 1]
       Metallic: 0
       Roughness: 0.5
-      EmissionColor: [0.611764729, 0.294117659, 0.0901960805, 1]
-      EmissionIntensity: 10
-  - Entity: 17094369140636357356
-    TagComponent:
-      Tag: Ground Sphere
-    TransformComponent:
-      Translation: [0, -101, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 100
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 0, 1, 1]
-      Metallic: 0.75
-      Roughness: 0
       EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
+      EmissionIntensity: 10
     Rigidbody2DComponent:
       BodyType: Static
       FixedRotation: false
-    CircleCollider2DComponent:
+    BoxCollider2DComponent:
       Offset: [0, 0]
-      Radius: 100.5
+      Size: [1, 1]
       Density: 1
       Friction: 0.5
       Restitution: 0
@@ -107,32 +61,78 @@ Entities:
       Friction: 0.5
       Restitution: 0
       RestitutionThreshold: 0.5
-  - Entity: 6484715765271295781
+  - Entity: 17094369140636357356
     TagComponent:
-      Tag: Emission Cube
+      Tag: Ground Sphere
     TransformComponent:
-      Translation: [0, -1.39999998, 0]
+      Translation: [0, -101, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    CubeRendererComponent:
+    SphereRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
+      Radius: 100
+      Sectors: 20
+      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      Metallic: 0
-      Roughness: 0.5
+      Albedo: [1, 0, 1, 1]
+      Metallic: 0.75
+      Roughness: 0
       EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 10
+      EmissionIntensity: 0
     Rigidbody2DComponent:
       BodyType: Static
       FixedRotation: false
-    BoxCollider2DComponent:
+    CircleCollider2DComponent:
       Offset: [0, 0]
-      Size: [1, 1]
+      Radius: 100.5
       Density: 1
       Friction: 0.5
       Restitution: 0
       RestitutionThreshold: 0.5
+  - Entity: 13026631445708257762
+    TagComponent:
+      Tag: Emission Sphere
+    TransformComponent:
+      Translation: [89.1789398, 76.5329971, 8.85574877e-07]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 56.7999992
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.611764729, 0.294117659, 0.0901960805, 1]
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.611764729, 0.294117659, 0.0901960805, 1]
+      EmissionIntensity: 10
+  - Entity: 8001134310104323193
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 0, 10]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: assets/scripts/Player.py
+      ScriptName: Player

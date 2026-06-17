@@ -202,6 +202,27 @@ float CalculateBSDFPDF(float NdotL) {
     return max(NdotL / PI, 0.0001);
 }
 
+void GetVarianceClippingBounds(ivec2 center, out vec3 minCol, out vec3 maxCol) 
+{
+    vec3 m1 = vec3(0.0);
+    vec3 m2 = vec3(0.0);
+    float n = 9.0;
+
+    for(int x = -1; x <= 1; x++) {
+        for(int y = -1; y <= 1; y++) {
+            vec3 col = imageLoad(img_Output, center + ivec2(x, y)).rgb;
+            m1 += col;
+            m2 += col * col;
+        }
+    }
+    vec3 mean = m1 / n;
+    vec3 stdDev = sqrt(max(vec3(0.0), (m2 / n) - (mean * mean)));
+    
+    // Gamma controls "tightness". 2.0 is standard.
+    minCol = mean - 2.0 * stdDev;
+    maxCol = mean + 2.0 * stdDev;
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -212,11 +233,12 @@ void RunTraceAndDenoise()
     vec2 frameVelocity = vec2(0.0);
     bool hitAnything = false; 
 
-    for (int s = 0; s < u_SamplesPerPixel; s++) 
-    {
         vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
-        vec2 uv = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
-        Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(uv, 1.0, 1.0)).xyz));
+        vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+        vec2 cleanUV = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
+
+        Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
+
         vec3 throughput = vec3(1.0);
         vec3 incomingLight = vec3(0.0);
         for(int bounce = 0; bounce < 5; bounce++) 
@@ -335,44 +357,26 @@ void RunTraceAndDenoise()
         }
         incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
         accumulatedLight += incomingLight;
-    }
-
-    vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
-    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
     
-    vec2 currentJitter = GetJitter(u_FrameIndex, u_CameraMoved);
-    vec2 prevJitter = GetJitter(u_FrameIndex - 1, u_CameraMoved);
-    
-    vec4 clipPos = vec4(uv * 2.0 - 1.0 - currentJitter, 0.0, 1.0);
+    float depth = texture(s_DepthBuffer, cleanUV).r; 
+    vec4 clipPos = vec4(cleanUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     vec4 worldPos = u_InverseViewProjection * clipPos;
     worldPos /= worldPos.w;
-    
+
     vec4 prevClipPos = u_PrevViewProjection * worldPos;
     prevClipPos.xy /= prevClipPos.w;
-    
-    vec2 prevUV = prevClipPos.xy * 0.5 + 0.5 + (prevJitter / vec2(imgSize));
+    vec2 prevUV = prevClipPos.xy * 0.5 + 0.5;
     
     bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
-    
-    imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
-    memoryBarrierImage();
+    vec3 history = (inBounds && u_CameraMoved < 0.5) ? texture(s_Accumulation, prevUV).rgb : incomingLight;
 
-    vec3 history = vec3(0.0);
-    if(inBounds && u_CameraMoved < 0.5) {
-        history = texture(s_Accumulation, prevUV).rgb;
-    } else {
-        history = currentColor;
-    }
-
-    float diff = distance(history, currentColor);
-    if (diff > 0.3) history = currentColor;
-
+    // Variance Clipping (Fixes emissive smearing)
     vec3 minCol, maxCol;
-    GetNeighborhoodBounds(pixelCoords, minCol, maxCol);
+    GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
     history = clamp(history, minCol, maxCol);
-    
-    float alpha = (u_CameraMoved > 0.5) ? 0.2 : 0.95; 
-    vec3 resultColor = mix(history, currentColor, alpha);
+
+    float alpha = (u_CameraMoved > 0.5) ? 0.3 : (1.0 / float(u_FrameIndex + 1));
+    vec3 resultColor = mix(history, incomingLight, alpha);
 
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
     imageStore(img_Output, pixelCoords, vec4(resultColor, 1.0));
