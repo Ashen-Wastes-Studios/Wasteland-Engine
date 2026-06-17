@@ -357,6 +357,8 @@ void RunTraceAndDenoise()
         }
         incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
         accumulatedLight += incomingLight;
+
+    vec3 currentColor = accumulatedLight / float(u_SamplesPerPixel);
     
     float depth = texture(s_DepthBuffer, cleanUV).r; 
     vec4 clipPos = vec4(cleanUV * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -368,6 +370,10 @@ void RunTraceAndDenoise()
     vec2 prevUV = prevClipPos.xy * 0.5 + 0.5;
     
     bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
+
+    imageStore(img_Output, pixelCoords, vec4(currentColor, 1.0));
+    memoryBarrierImage();
+
     vec3 history = (inBounds && u_CameraMoved < 0.5) ? texture(s_Accumulation, prevUV).rgb : incomingLight;
 
     // Variance Clipping (Fixes emissive smearing)
