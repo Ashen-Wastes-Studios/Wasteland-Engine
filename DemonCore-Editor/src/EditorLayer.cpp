@@ -306,6 +306,7 @@ namespace Wasteland
 			ImGui::Separator();
 			ImGui::Text("Ray Tracing Settings");
 
+			/*
 			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
 			uint32_t minSamples = 1;
 			uint32_t maxSamples = 256;
@@ -313,6 +314,7 @@ namespace Wasteland
 			{
 				Wasteland::Renderer3D::SetSamplesPerPixel(samplesPerPixel);
 			}
+			*/
 
 			float movementThreshold = Wasteland::Renderer3D::GetMovementThreshold();
 			float minThreshold = 0.00001f;
