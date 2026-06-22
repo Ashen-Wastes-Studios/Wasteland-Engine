@@ -59,7 +59,7 @@ namespace Wasteland
                 static py::module_ sys = py::module_::import("sys");
                 py::list sysPath = sys.attr("path").cast<py::list>();
 
-                sysPath.append("bin/Release-windows-x86_64/DemonCore-Editor/assets/scripts");
+                sysPath.append("DemonCore-Editor/assets/scripts");
 
                 std::string scriptDir = scriptFullPath.parent_path().string();
                 std::string engineDir = std::filesystem::current_path().string();
