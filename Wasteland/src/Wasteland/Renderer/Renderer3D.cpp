@@ -30,6 +30,9 @@ namespace Wasteland
         glm::vec4 Min;
         glm::vec4 Max;
         glm::vec4 Emission;
+        float MaxDistance;
+        int LODLevel;
+        float Padding[2];
     };
 
     struct Renderer3DData
@@ -77,11 +80,13 @@ namespace Wasteland
         // Path Tracing state
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
+        int FrameIndexLocation;
         uint32_t SamplesPerPixel = 1;
         uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
         uint32_t SceneInstanceBufferID = 0;
+        int InstanceCountLocation;
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
@@ -171,6 +176,9 @@ namespace Wasteland
         s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight);
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_NovaRenderer.glsl");
 
+        s_Data.InstanceCountLocation = glGetUniformLocation(s_Data.RayTracingShader->GetRendererID(), "u_InstanceCount");
+        s_Data.FrameIndexLocation = glGetUniformLocation(s_Data.RayTracingShader->GetRendererID(), "u_FrameIndex");
+
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
@@ -235,6 +243,9 @@ namespace Wasteland
     void Renderer3D::BeginScene(const Camera &camera, const glm::mat4 &transform)
     {
         WL_PROFILE_FUNCTION();
+
+        s_Data.m_SceneInstances.clear();
+
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
 
         // Helper lambda to extract planes cleanly using glm::vec4
@@ -288,6 +299,9 @@ namespace Wasteland
     void Renderer3D::BeginScene(const EditorCamera &camera)
     {
         WL_PROFILE_FUNCTION();
+
+        s_Data.m_SceneInstances.clear();
+
         glm::mat4 viewProj = camera.GetViewProjection();
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
@@ -337,6 +351,14 @@ namespace Wasteland
                 glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
                                      s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
                                      s_Data.m_SceneInstances.data());
+
+                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+                s_Data.RayTracingShader->Bind();
+
+                glUniform1i(s_Data.InstanceCountLocation, (int)s_Data.m_SceneInstances.size());
+                glUniform1i(s_Data.FrameIndexLocation, (int)s_Data.FrameIndex);
+
                 s_Data.m_SceneDirty = false;
             }
 
@@ -632,21 +654,21 @@ namespace Wasteland
 
         if (s_Data.RayTracingEnabled)
         {
-            RayTracingInstance instance;
-            // Calculate the inverse matrix so the compute shader can trace a local axis-aligned unit cube
+            RayTracingInstance instance = {};
+
             instance.WorldTransform = transform;
             instance.InvTransform = glm::inverse(transform);
-
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
-
-            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
-            instance.Max = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
-
+            instance.Min = glm::vec4(-0.5, -0.5, -0.5, 1.0f);
+            instance.Max = glm::vec4(0.5, 0.5, 0.5, 1.0f);
             instance.Emission = glm::vec4(material.EmissionColor.x,
                                           material.EmissionColor.y,
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
+
+            instance.MaxDistance = 1000.0f;
+            instance.LODLevel = 0;
 
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
@@ -729,21 +751,21 @@ namespace Wasteland
 
         if (s_Data.RayTracingEnabled)
         {
-            RayTracingInstance instance;
-            // Calculate the inverse matrix so the compute shader can trace a local unit sphere at (0,0,0)
+            RayTracingInstance instance = {};
+
             instance.WorldTransform = transform;
             instance.InvTransform = glm::inverse(transform);
-
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
-
             instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);
             instance.Max = glm::vec4(radius, radius, radius, 1.0f);
-
             instance.Emission = glm::vec4(material.EmissionColor.x,
                                           material.EmissionColor.y,
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
+
+            instance.MaxDistance = 1000.0f;
+            instance.LODLevel = 0;
 
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
