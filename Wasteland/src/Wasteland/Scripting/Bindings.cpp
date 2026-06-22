@@ -182,6 +182,9 @@ PYBIND11_MODULE(Wasteland, m)
      m.attr("WL_KEY_MENU") = WL_KEY_MENU;
      m.attr("WL_KEY_LAST") = WL_KEY_LAST;
 
+     m.def("IsKeyPressed", [](int keyCode)
+           { return Wasteland::Input::IsKeyPressed(keyCode); }, py::arg("keyCode"));
+
      m.attr("WL_MOUSE_BUTTON_1") = WL_MOUSE_BUTTON_1;
      m.attr("WL_MOUSE_BUTTON_2") = WL_MOUSE_BUTTON_2;
      m.attr("WL_MOUSE_BUTTON_3") = WL_MOUSE_BUTTON_3;
@@ -193,6 +196,6 @@ PYBIND11_MODULE(Wasteland, m)
      m.attr("WL_MOUSE_BUTTON_RIGHT") = WL_MOUSE_BUTTON_RIGHT;
      m.attr("WL_MOUSE_BUTTON_MIDDLE") = WL_MOUSE_BUTTON_MIDDLE;
 
-     m.def("IsKeyPressed", [](int keyCode)
-           { return Wasteland::Input::IsKeyPressed(keyCode); }, py::arg("keyCode"));
+     m.def("IsMouseButtonPressed", [](int button)
+           { return Wasteland::Input::IsMouseButtonPressed(button); }, py::arg("button"));
 }
