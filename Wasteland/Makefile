@@ -99,7 +99,13 @@ GENERATED += $(OBJDIR)/ImGuiLayer.o
 GENERATED += $(OBJDIR)/ImGuizmo.o
 GENERATED += $(OBJDIR)/Layer.o
 GENERATED += $(OBJDIR)/LayerStack.o
+GENERATED += $(OBJDIR)/LinuxInput.o
+GENERATED += $(OBJDIR)/LinuxPlatformUtils.o
+GENERATED += $(OBJDIR)/LinuxWindow.o
 GENERATED += $(OBJDIR)/Log.o
+GENERATED += $(OBJDIR)/MacInput.o
+GENERATED += $(OBJDIR)/MacPlatformUtils.o
+GENERATED += $(OBJDIR)/MacWindow.o
 GENERATED += $(OBJDIR)/Math.o
 GENERATED += $(OBJDIR)/OpenGLBuffer.o
 GENERATED += $(OBJDIR)/OpenGLContext.o
@@ -140,7 +146,13 @@ OBJECTS += $(OBJDIR)/ImGuiLayer.o
 OBJECTS += $(OBJDIR)/ImGuizmo.o
 OBJECTS += $(OBJDIR)/Layer.o
 OBJECTS += $(OBJDIR)/LayerStack.o
+OBJECTS += $(OBJDIR)/LinuxInput.o
+OBJECTS += $(OBJDIR)/LinuxPlatformUtils.o
+OBJECTS += $(OBJDIR)/LinuxWindow.o
 OBJECTS += $(OBJDIR)/Log.o
+OBJECTS += $(OBJDIR)/MacInput.o
+OBJECTS += $(OBJDIR)/MacPlatformUtils.o
+OBJECTS += $(OBJDIR)/MacWindow.o
 OBJECTS += $(OBJDIR)/Math.o
 OBJECTS += $(OBJDIR)/OpenGLBuffer.o
 OBJECTS += $(OBJDIR)/OpenGLContext.o
@@ -233,6 +245,24 @@ endif
 # File Rules
 # #############################################
 
+$(OBJDIR)/LinuxInput.o: src/Platform/Linux/LinuxInput.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/LinuxPlatformUtils.o: src/Platform/Linux/LinuxPlatformUtils.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/LinuxWindow.o: src/Platform/Linux/LinuxWindow.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/MacInput.o: src/Platform/Mac/MacInput.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/MacPlatformUtils.o: src/Platform/Mac/MacPlatformUtils.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
+$(OBJDIR)/MacWindow.o: src/Platform/Mac/MacWindow.cpp
+	@echo "$(notdir $<)"
+	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
 $(OBJDIR)/OpenGLBuffer.o: src/Platform/OpenGL/OpenGLBuffer.cpp
 	@echo "$(notdir $<)"
 	$(SILENT) $(CXX) -include $(PCH_PLACEHOLDER) $(ALL_CXXFLAGS) $(FORCE_INCLUDE) -o "$@" -MF "$(@:%.o=%.d)" -c "$<"
