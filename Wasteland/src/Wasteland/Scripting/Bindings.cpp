@@ -14,11 +14,23 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(Wasteland, m)
 {
+     py::class_<glm::vec2>(m, "Vec2")
+         .def(py::init<float, float>(), py::arg("x") = 0.0f, py::arg("y") = 0.0f)
+         .def_readwrite("x", &glm::vec2::x)
+         .def_readwrite("y", &glm::vec2::y);
+
      py::class_<glm::vec3>(m, "Vec3")
          .def(py::init<float, float, float>(), py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f)
          .def_readwrite("x", &glm::vec3::x)
          .def_readwrite("y", &glm::vec3::y)
          .def_readwrite("z", &glm::vec3::z);
+
+     py::class_<glm::vec4>(m, "Vec4")
+         .def(py::init<float, float, float, float>(), py::arg("x") = 0.0f, py::arg("y") = 0.0f, py::arg("z") = 0.0f, py::arg("w") = 0.0f)
+         .def_readwrite("x", &glm::vec4::x)
+         .def_readwrite("y", &glm::vec4::y)
+         .def_readwrite("z", &glm::vec4::z)
+         .def_readwrite("w", &glm::vec4::w);
 
      py::class_<Wasteland::TransformComponent>(m, "TransformComponent")
          .def(py::init<>())
