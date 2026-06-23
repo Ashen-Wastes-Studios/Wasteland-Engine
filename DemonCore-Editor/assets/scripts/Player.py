@@ -43,7 +43,7 @@ class Player:
 
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y += self.speed * seconds
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_CONTROL):
+            if not Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y -= self.speed * seconds
 
             transform.Translation = pos

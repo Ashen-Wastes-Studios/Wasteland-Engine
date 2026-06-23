@@ -4,7 +4,7 @@ Entities:
     TagComponent:
       Tag: Player
     TransformComponent:
-      Translation: [0, -4.47522163, 20.4984341]
+      Translation: [0, 0, 10]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     CameraComponent:
@@ -79,7 +79,7 @@ Entities:
     TagComponent:
       Tag: Sphere
     TransformComponent:
-      Translation: [0, 0.104999237, 1.58336846e-08]
+      Translation: [0, 1.30499995, 1.58336846e-08]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
