@@ -52,8 +52,8 @@ class Player:
 
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y += self.speed * seconds
-                if pos.y >= 5:
-                    pos.y = 5
+                if pos.y >= 2:
+                    pos.y = 2
             if not Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y -= self.speed * seconds
                 if pos.y <= 0:
