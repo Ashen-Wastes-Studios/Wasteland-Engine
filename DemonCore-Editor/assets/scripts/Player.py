@@ -41,6 +41,15 @@ class Player:
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_D):
                 pos.x += self.speed * seconds
 
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_W) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
+                pos.z -= self.speed * seconds * 1.25
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_S) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
+                pos.z += self.speed * seconds * 1.25
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_A) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
+                pos.x -= self.speed * seconds * 1.25
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_D) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
+                pos.x += self.speed * seconds * 1.25
+
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y += self.speed * seconds
                 if pos.y >= 5:
