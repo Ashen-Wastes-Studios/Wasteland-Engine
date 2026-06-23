@@ -32,6 +32,10 @@ PYBIND11_MODULE(Wasteland, m)
          .def_readwrite("z", &glm::vec4::z)
          .def_readwrite("w", &glm::vec4::w);
 
+     py::class_<Wasteland::TagComponent>(m, "TagComponent")
+         .def(py::init<const std::string &>())
+         .def_readwrite("Tag", &Wasteland::TagComponent::Tag);
+
      py::class_<Wasteland::TransformComponent>(m, "TransformComponent")
          .def(py::init<>())
          .def_property("Translation", [](Wasteland::TransformComponent &t)
@@ -43,10 +47,6 @@ PYBIND11_MODULE(Wasteland, m)
          .def_property("Scale", [](Wasteland::TransformComponent &t)
                        { return t.Scale; }, [](Wasteland::TransformComponent &t, const glm::vec3 &v)
                        { t.Scale = v; });
-
-     py::class_<Wasteland::TagComponent>(m, "TagComponent")
-         .def(py::init<const std::string &>())
-         .def_readwrite("Tag", &Wasteland::TagComponent::Tag);
 
      py::class_<Wasteland::Entity>(m, "Entity")
          .def(py::init<>())
