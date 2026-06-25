@@ -358,12 +358,22 @@ void RunTraceAndDenoise()
     imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
     memoryBarrierImage();
 
-    vec3 history = incomingLight;
+    vec3 historyColor = vec3(0.0);
+    if (inBounds) {
+        historyColor = texture(s_Accumulation, prevUV).rgb;
+    } else {
+        // If out of bounds (off-screen), use the current frame as the starting point
+        historyColor = incomingLight;
+    }
+
+    // Now, clip this historyColor using your variance bounds
     vec3 minCol, maxCol;
     GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
-    history = clamp(history, minCol, maxCol);
+    historyColor = clamp(historyColor, minCol, maxCol);
 
-    vec3 resultColor = (u_FrameIndex == 0 || u_CameraMoved > 0.5) ? incomingLight : mix(history, incomingLight, 0.2 / float(u_FrameIndex + 1));
+    // Accumulate
+    float alpha = 0.01; // Use a constant or dynamic alpha based on frame count
+    vec3 resultColor = mix(historyColor, incomingLight, alpha);
 
     resultColor = clamp(resultColor, vec3(0.0), vec3(100.0));
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
