@@ -213,113 +213,138 @@ void RunTraceAndDenoise()
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
-    vec3 accumulatedLight = vec3(0.0);
-    vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
-    vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
-    vec2 cleanUV = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
-
-    Ray currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
-
-    vec3 throughput = vec3(1.0);
-    vec3 incomingLight = vec3(0.0);
-    vec3 hitPoint = vec3(0.0);
+    vec3 totalIncomingLight = vec3(0.0);
+    vec3 lastHitPoint = vec3(0.0);
     bool hitAnything = false;
 
-    for(int bounce = 0; bounce < 5; bounce++) 
+    // Declare this outside the loop so it remains in scope for the sky logic later
+    Ray currentRay;
+
+    // Loop through samples
+    for (int s = 0; s < u_SamplesPerPixel; s++) 
     {
-        float closestHit = 1e20;
-        int hitIndex = -1;
-        vec3 hitNormal, hitAlbedo;
+        // Re-seed for this specific sample
+        seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000) + uint(s * 1337);
+        
+        vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
+        vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
 
-        for(int i = 0; i < u_InstanceCount; i++) 
+        currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
+
+        vec3 throughput = vec3(1.0);
+        vec3 sampleIncomingLight = vec3(0.0);
+        bool sampleHitAnything = false;
+
+        for(int bounce = 0; bounce < 5; bounce++) 
         {
-            RayTracingInstance inst = Instances[i];
-            float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
-            if (distToObj > inst.MaxDistance) continue;
+            float closestHit = 1e20;
+            int hitIndex = -1;
+            vec3 hitNormal, hitAlbedo;
+            vec3 localHitPoint = vec3(0.0);
 
-            Ray localRay;
-            localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
-            localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
-            
-            if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
-            vec3 localNormal;
-            float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-            if (tLocal > 0.0) 
-            {
-                vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
-                float tWorld = distance(currentRay.Origin, worldHit);
-                if (tWorld < closestHit) 
-                {
-                    closestHit = tWorld;
-                    hitIndex = i;
-                    hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-                    hitPoint = worldHit; 
-                    hitAlbedo = inst.Albedo.rgb;
-                }
-            }
-        }
-
-        if (hitIndex != -1)
-        {
-            hitAnything = true;
-            vec3 V = normalize(-currentRay.Direction);
-            float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
-            float rough = max(Instances[hitIndex].MaterialParams.y, 0.05);
-            vec3 F0 = mix(vec3(0.04), hitAlbedo, metal);
-            vec3 diffuseColor = hitAlbedo * (1.0 - metal);
-
-            vec3 directLight = vec3(0.0);
             for(int i = 0; i < u_InstanceCount; i++) 
             {
-                if(Instances[i].Emission.w > 0.0) 
+                RayTracingInstance inst = Instances[i];
+                float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
+                if (distToObj > inst.MaxDistance) continue;
+
+                Ray localRay;
+                localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
+                localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
+                
+                if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
+                vec3 localNormal;
+                float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+                if (tLocal > 0.0) 
                 {
-                    vec3 lightPos = Instances[i].WorldTransform[3].xyz;
-                    vec3 dirToLight = normalize(lightPos - hitPoint);
-                    float distToLight = length(lightPos - hitPoint);
-                    Ray shadowRay = Ray(hitPoint + hitNormal * 0.001, dirToLight);
-                    if(!IsOccluded(shadowRay, distToLight)) 
+                    vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
+                    float tWorld = distance(currentRay.Origin, worldHit);
+                    if (tWorld < closestHit) 
                     {
-                        float NdotL = max(dot(hitNormal, dirToLight), 0.0);
-                        vec3 H = normalize(V + dirToLight);
-                        vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-                        float D = DistributionGGX(max(dot(hitNormal, H), 0.0), rough);
-                        float G = GeometrySmith(hitNormal, V, dirToLight, rough);
-                        vec3 brdf = (vec3(1.0) - F) * (1.0 - metal) * hitAlbedo / PI + (D * G * F) / max(4.0 * max(dot(hitNormal, V), 0.0) * NdotL, 0.001);
-                        directLight += (brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL);
+                        closestHit = tWorld;
+                        hitIndex = i;
+                        hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+                        localHitPoint = worldHit; 
+                        hitAlbedo = inst.Albedo.rgb;
                     }
                 }
             }
 
-            incomingLight += throughput * directLight;
-            incomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
-            
-            float specularChance = mix(0.2, 0.95, metal);
-            if (hash() < specularChance)
+            if (hitIndex != -1)
             {
-                vec3 reflection = reflect(currentRay.Direction, hitNormal);
-                currentRay.Direction = normalize(mix(reflection, random_in_hemisphere(hitNormal), rough));
-                throughput *= F0;
+                sampleHitAnything = true;
+                vec3 V = normalize(-currentRay.Direction);
+                float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
+                float rough = max(Instances[hitIndex].MaterialParams.y, 0.05);
+                vec3 F0 = mix(vec3(0.04), hitAlbedo, metal);
+                vec3 diffuseColor = hitAlbedo * (1.0 - metal);
+
+                vec3 directLight = vec3(0.0);
+                for(int i = 0; i < u_InstanceCount; i++) 
+                {
+                    if(Instances[i].Emission.w > 0.0) 
+                    {
+                        vec3 lightPos = Instances[i].WorldTransform[3].xyz;
+                        vec3 dirToLight = normalize(lightPos - localHitPoint);
+                        float distToLight = length(lightPos - localHitPoint);
+                        Ray shadowRay = Ray(localHitPoint + hitNormal * 0.001, dirToLight);
+                        if(!IsOccluded(shadowRay, distToLight)) 
+                        {
+                            float NdotL = max(dot(hitNormal, dirToLight), 0.0);
+                            vec3 H = normalize(V + dirToLight);
+                            vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+                            float D = DistributionGGX(max(dot(hitNormal, H), 0.0), rough);
+                            float G = GeometrySmith(hitNormal, V, dirToLight, rough);
+                            vec3 brdf = (vec3(1.0) - F) * (1.0 - metal) * hitAlbedo / PI + (D * G * F) / max(4.0 * max(dot(hitNormal, V), 0.0) * NdotL, 0.001);
+                            vec3 lightContribution = brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
+
+                            float maxBrightness = 10.0; // Adjust this threshold based on your scene exposure
+                            float brightness = dot(lightContribution, vec3(0.2126, 0.7152, 0.0722));
+                            if (brightness > maxBrightness) {
+                                lightContribution *= (maxBrightness / brightness);
+                            }
+
+                            directLight += lightContribution;
+                        }
+                    }
+                }
+
+                sampleIncomingLight += throughput * directLight;
+                sampleIncomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
+                
+                float specularChance = mix(0.2, 0.95, metal);
+                if (hash() < specularChance)
+                {
+                    vec3 reflection = reflect(currentRay.Direction, hitNormal);
+                    currentRay.Direction = normalize(mix(reflection, random_in_hemisphere(hitNormal), rough));
+                    throughput *= F0;
+                }
+                else
+                {
+                    currentRay.Direction = random_in_hemisphere(hitNormal);
+                    throughput *= diffuseColor;
+                }
+                currentRay.Origin = localHitPoint + hitNormal * 0.001;
+                
+                // Track hit for motion
+                if (bounce == 0) { lastHitPoint = localHitPoint; hitAnything = true; }
             }
             else
             {
-                currentRay.Direction = random_in_hemisphere(hitNormal);
-                throughput *= diffuseColor;
+                float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
+                sampleIncomingLight += throughput * mix(u_SkyBottomColor, u_SkyTopColor, t);
+                break;
             }
-            currentRay.Origin = hitPoint + hitNormal * 0.001;
         }
-        else
-        {
-            float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-            incomingLight += throughput * mix(u_SkyBottomColor, u_SkyTopColor, t);
-            break;
-        }
+        totalIncomingLight += sampleIncomingLight;
     }
 
+    vec3 incomingLight = totalIncomingLight / float(u_SamplesPerPixel);
     incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
     
     vec2 prevUV = vec2(0.0);
     if (hitAnything) {
-        vec4 prevPosNDC = u_PrevViewProjection * vec4(hitPoint, 1.0);
+        vec4 prevPosNDC = u_PrevViewProjection * vec4(lastHitPoint, 1.0);
         prevPosNDC.xy /= prevPosNDC.w;
         prevUV = prevPosNDC.xy * 0.5 + 0.5;
     } else {
@@ -333,19 +358,12 @@ void RunTraceAndDenoise()
     imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
     memoryBarrierImage();
 
-    vec3 history = (inBounds && u_CameraMoved < 0.5) ? texture(s_Accumulation, prevUV).rgb : incomingLight;
-
+    vec3 history = incomingLight;
     vec3 minCol, maxCol;
     GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
     history = clamp(history, minCol, maxCol);
 
-    vec3 resultColor;
-    if (u_FrameIndex == 0 || u_CameraMoved > 0.5) {
-        resultColor = incomingLight;
-    } else {
-        float alpha = 0.2 / float(u_FrameIndex + 1);
-        resultColor = mix(history, incomingLight, alpha);
-    }
+    vec3 resultColor = (u_FrameIndex == 0 || u_CameraMoved > 0.5) ? incomingLight : mix(history, incomingLight, 0.2 / float(u_FrameIndex + 1));
 
     resultColor = clamp(resultColor, vec3(0.0), vec3(100.0));
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
