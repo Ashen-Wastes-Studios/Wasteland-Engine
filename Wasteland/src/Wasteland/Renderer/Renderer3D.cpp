@@ -81,7 +81,7 @@ namespace Wasteland
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
         int FrameIndexLocation;
-        uint32_t SamplesPerPixel = 8;
+        uint32_t SamplesPerPixel = 4;
         uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
