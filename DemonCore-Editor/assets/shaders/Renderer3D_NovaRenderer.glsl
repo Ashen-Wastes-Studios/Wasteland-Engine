@@ -42,6 +42,9 @@ uniform int u_InstanceCount;
 uniform int u_FrameIndex;
 uniform int u_SamplesPerPixel;
 uniform int u_PassID;
+uniform int u_DepthBuffer;
+uniform vec2 u_Jitter;
+uniform vec2 u_PrevJitter;
 uniform float u_CameraMoved;
 uniform mat4 u_ViewProjection;
 uniform vec3 u_SkyBottomColor;
@@ -207,6 +210,33 @@ vec2 GetJitter(int frameIndex, float cameraMoved) {
 float CalculateLightPDF(float dist, float area) { return 1.0 / area; }
 float CalculateBSDFPDF(float NdotL) { return max(NdotL / PI, 0.0001); }
 
+void RunVisibilityAndVelocity() {
+    ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
+    
+    float depth = texture(s_DepthBuffer, uv).r;
+    if (depth >= 1.0) { // Sky/Background
+        imageStore(img_Velocity, pixelCoords, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    // Reconstruct world position from depth
+    vec4 clipPos = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 worldPos = u_InverseViewProjection * clipPos;
+    worldPos /= worldPos.w;
+
+    // Reproject to previous frame
+    vec4 prevClipPos = u_PrevViewProjection * worldPos;
+    prevClipPos /= prevClipPos.w;
+    vec2 prevUV = prevClipPos.xy * 0.5 + 0.5;
+
+    // Calculate motion vector (Delta)
+    vec2 velocity = uv - prevUV;
+    
+    // Store in your Velocity Buffer (binding 5)
+    imageStore(img_Velocity, pixelCoords, vec4(velocity, 0.0, 1.0));
+}
+
 void RunTraceAndDenoise() 
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -341,7 +371,7 @@ void RunTraceAndDenoise()
 
     vec3 incomingLight = totalIncomingLight / float(u_SamplesPerPixel);
     incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
-    
+    /*
     vec2 prevUV = vec2(0.0);
     if (hitAnything) {
         vec4 prevPosNDC = u_PrevViewProjection * vec4(lastHitPoint, 1.0);
@@ -352,32 +382,75 @@ void RunTraceAndDenoise()
         prevClipPosSky.xy /= prevClipPosSky.w;
         prevUV = prevClipPosSky.xy * 0.5 + 0.5;
     }
-    
+
     bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
 
     imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
     memoryBarrierImage();
 
-    vec3 historyColor = vec3(0.0);
-    if (inBounds) {
-        historyColor = texture(s_Accumulation, prevUV).rgb;
-    } else {
-        // If out of bounds (off-screen), use the current frame as the starting point
-        historyColor = incomingLight;
-    }
+    vec3 history = (inBounds && u_FrameIndex > 0) ? texture(s_Accumulation, prevUV).rgb : incomingLight;
 
-    // Now, clip this historyColor using your variance bounds
+    // We clip the history to the neighborhood of the CURRENT raw color to prevent ghosting
     vec3 minCol, maxCol;
     GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
-    historyColor = clamp(historyColor, minCol, maxCol);
+    history = clamp(history, minCol, maxCol);
 
-    // Accumulate
-    float alpha = 0.01; // Use a constant or dynamic alpha based on frame count
-    vec3 resultColor = mix(historyColor, incomingLight, alpha);
+    // We use a blend factor. 0.05 is a good start. For more stability, use: 
+    float alpha = max(0.05, 1.0 / float(u_FrameIndex + 1));
+    //float alpha = 0.05; 
+    
+    // Reset accumulation if camera moved significantly to avoid blur
+    if (u_CameraMoved > 0.01) alpha = 1.0; 
 
+    vec3 resultColor = mix(history, incomingLight, alpha);
     resultColor = clamp(resultColor, vec3(0.0), vec3(100.0));
+
     imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
-    imageStore(img_Output, pixelCoords, vec4(resultColor, 1.0));
+    */
+
+    // TEMPORARY DEBUG VISUALIZATION
+    //vec2 vel = imageLoad(img_Velocity, pixelCoords).rg;
+    // This creates a heatmap of your motion vectors.
+    // If this image "flickers" or looks noisy, your Velocity Buffer is the problem.
+    //imageStore(img_Output, pixelCoords, vec4(vel * 10.0 + 0.5, 0.0, 1.0)); 
+    //return;
+
+    imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
+}
+
+void RunTemporalAccumulation() {
+    ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
+    
+    // 1. Get Velocity (This is your ONLY source of motion)
+    // 2. Fetch Velocity and calculate previous UV
+    vec2 velocity = imageLoad(img_Velocity, pixelCoords).rg;
+    vec2 prevUV = uv - velocity;
+
+    // --- FORCE TO ZERO ---
+    prevUV = uv; // Ignore velocity
+    // ---------------------
+
+    // 4. Sample
+    // Only sample if the UV is in bounds
+    if (prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0) {
+        imageStore(img_Accumulation, pixelCoords, imageLoad(img_Output, pixelCoords));
+        return;
+    }
+
+    vec3 history = texture(s_Accumulation, prevUV).rgb;
+    
+    // 5. Variance Clipping
+    vec3 minCol, maxCol;
+    GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
+    history = clamp(history, minCol, maxCol);
+    
+    // 6. Accumulate
+    vec3 currentLight = imageLoad(img_Output, pixelCoords).rgb;
+    float alpha = max(0.05, 1.0 / float(u_FrameIndex + 1));
+    vec3 result = mix(history, currentLight, alpha);
+    
+    imageStore(img_Accumulation, pixelCoords, vec4(result, 1.0));
 }
 
 void RunBloomThreshold() {
@@ -472,12 +545,14 @@ void main()
 {
     switch(u_PassID) 
     {
-        case 0: RunTraceAndDenoise(); break;
-        case 1: RunBloomThreshold(); break;
-        case 2: RunBloomBlurHorizontal(); break;
-        case 3: RunBloomBlurVertical(); break;
-        case 4: RunComposite(); break;
-        case 5: RunBilateralBlur(); break;
-        case 6: RunResolve(); break;
+        case 0: RunVisibilityAndVelocity(); break;
+        case 1: RunTraceAndDenoise(); break;
+        case 2: RunTemporalAccumulation(); break;
+        case 3: RunBloomThreshold(); break;
+        case 4: RunBloomBlurHorizontal(); break;
+        case 5: RunBloomBlurVertical(); break;
+        case 6: RunComposite(); break;
+        case 7: RunBilateralBlur(); break;
+        case 8: RunResolve(); break;
     }
 }

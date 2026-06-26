@@ -4,7 +4,8 @@
 
 #include <glm/glm.hpp>
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	enum class FramebufferTextureFormat
 	{
@@ -25,7 +26,7 @@ namespace Wasteland {
 	{
 		FramebufferTextureSpecification() = default;
 		FramebufferTextureSpecification(FramebufferTextureFormat format)
-			: TextureFormat(format) { }
+			: TextureFormat(format) {}
 
 		FramebufferTextureFormat TextureFormat = FramebufferTextureFormat::None;
 		// TODO: filtering/wrap
@@ -35,7 +36,7 @@ namespace Wasteland {
 	{
 		FramebufferAttachmentSpecification() = default;
 		FramebufferAttachmentSpecification(std::initializer_list<FramebufferTextureSpecification> attachments)
-			: Attachments(attachments) { }
+			: Attachments(attachments) {}
 
 		std::vector<FramebufferTextureSpecification> Attachments;
 	};
@@ -64,9 +65,9 @@ namespace Wasteland {
 
 		virtual uint32_t GetColorAttachmentRendererID(uint32_t index = 0) const = 0;
 
-		virtual const FramebufferSpecification& GetSpecification() const = 0;
+		virtual const FramebufferSpecification &GetSpecification() const = 0;
 
-		static Ref<Framebuffer> Create(const FramebufferSpecification& spec);
+		static Ref<Framebuffer> Create(const FramebufferSpecification &spec);
 	};
 
 }

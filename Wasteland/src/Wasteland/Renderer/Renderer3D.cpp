@@ -11,7 +11,6 @@
 
 namespace Wasteland
 {
-
     struct Vertex3D
     {
         glm::vec3 Position;
@@ -81,7 +80,7 @@ namespace Wasteland
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
         int FrameIndexLocation;
-        uint32_t SamplesPerPixel = 1;
+        uint32_t SamplesPerPixel = 4;
         uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
@@ -115,12 +114,26 @@ namespace Wasteland
         uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
 
+        uint32_t DepthTextureID = 0;
+        uint32_t VelocityTextureID = 0;
+
         std::array<Plane, 6> FrustumPlanes;
 
         Renderer3D::Statistics Stats;
     };
 
     static Renderer3DData s_Data;
+
+    static void ClearAccumulationBuffers()
+    {
+        float clearColor[] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        // Clear both ping-pong textures
+        for (int i = 0; i < 2; i++)
+        {
+            glClearTexImage(s_Data.AccumulationTextures[i], 0, GL_RGBA, GL_FLOAT, clearColor);
+        }
+    }
 
     void Renderer3D::Init()
     {
@@ -193,6 +206,9 @@ namespace Wasteland
 
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
+        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
@@ -302,13 +318,31 @@ namespace Wasteland
 
         s_Data.m_SceneInstances.clear();
 
+        uint32_t width = 1280;
+        uint32_t height = 720;
+        glm::vec2 viewportSize = glm::vec2(width, height);
+
+        uint32_t jitterX = (Halton(s_Data.FrameIndex, 2) - 0.5f) / (float)viewportSize.x;
+        uint32_t jitterY = (Halton(s_Data.FrameIndex, 2) - 0.5f) / (float)viewportSize.y;
+
         glm::mat4 viewProj = camera.GetViewProjection();
+        glm::vec2 currentJitter = GetCurrentJitter(s_Data.FrameIndex, viewportSize);
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
+
+        glm::mat4 projection = camera.GetProjection();
+        projection[2][0] += jitterX * 2.0f; // Add jitter to the perspective matrix column 2
+        projection[2][1] += jitterY * 2.0f;
+
+        // 3. Store this jittered matrix as your current ViewProjection
+        s_Data.CurrentViewProjection = projection * camera.GetViewMatrix();
+
+        s_Data.RayTracingShader->Bind();
+        s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
 
         if (viewProj != s_Data.LastViewProjection)
         {
@@ -341,9 +375,9 @@ namespace Wasteland
             if (s_Data.m_SceneInstances.empty())
                 return;
 
-            bool moved = (s_Data.CurrentCameraPosition != s_Data.LastCameraPosition) ||
-                         (s_Data.CurrentCameraPitch != s_Data.LastCameraPitch) ||
-                         (s_Data.CurrentCameraYaw != s_Data.LastCameraYaw);
+            bool moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastCameraPosition) > 0.001f ||
+                         glm::abs(s_Data.CurrentCameraPitch - s_Data.LastCameraPitch) > 0.001f ||
+                         glm::abs(s_Data.CurrentCameraYaw - s_Data.LastCameraYaw) > 0.001f;
             float movedValue = moved ? 1.0f : 0.0f;
 
             if (s_Data.m_SceneDirty)
@@ -369,11 +403,19 @@ namespace Wasteland
                     s_Data.LightIndicies.push_back(i);
             }
 
+            uint32_t width = 1280;
+            uint32_t height = 720;
+            glm::vec2 viewportSize = glm::vec2(width, height);
+
+            glm::vec2 currentJitter = GetCurrentJitter(s_Data.FrameIndex, viewportSize);
+
             uint32_t readIdx = s_Data.CurrentAccumulationIndex;
             uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
 
-            glActiveTexture(GL_TEXTURE0 + 3);
+            glActiveTexture(GL_TEXTURE0 + 4);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
+            glBindTexture(GL_TEXTURE_2D, s_Data.DepthTextureID);
+            s_Data.RayTracingShader->SetInt("u_DepthBuffer", 4); // Send the slot index to the shader
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
@@ -391,49 +433,64 @@ namespace Wasteland
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
             s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
+            s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
+
+            s_Data.RayTracingShader->SetInt("u_PassID", 0);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
             // 1. Ray Trace & Denoise
-            s_Data.RayTracingShader->SetInt("u_PassID", 0);
+            s_Data.RayTracingShader->SetInt("u_PassID", 1);
             s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
+            s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(s_Data.CurrentViewProjection));
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
+            s_Data.RayTracingShader->SetInt("u_PassID", 2);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
             // 2. Spatial Bilateral Blur (Added for noise reduction)
-            s_Data.RayTracingShader->SetInt("u_PassID", 5);
+            s_Data.RayTracingShader->SetInt("u_PassID", 7);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 3. Bloom Threshold
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 1);
+            s_Data.RayTracingShader->SetInt("u_PassID", 3);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 4. Bloom Blur
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 2);
+            s_Data.RayTracingShader->SetInt("u_PassID", 4);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 3);
+            s_Data.RayTracingShader->SetInt("u_PassID", 5);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             // 5. Composite
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 4);
+            s_Data.RayTracingShader->SetInt("u_PassID", 6);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
             s_Data.RayTracingShader->Unbind();
 
             if (moved)
+            {
                 s_Data.FrameIndex = 0;
+                ClearAccumulationBuffers();
+            }
             else
+            {
                 s_Data.FrameIndex++;
+            }
 
             s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
             s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
@@ -600,6 +657,31 @@ namespace Wasteland
     {
         s_Data.SkyTopColor = color;
         s_Data.FrameIndex = 0; // Reset accumulation when changing sky
+    }
+
+    float Renderer3D::Halton(int index, int base)
+    {
+        float f = 1.0f;
+        float r = 0.0f;
+        while (index > 0)
+        {
+            f = f / (float)base;
+            r = r + f * (float)(index % base);
+            index = index / base;
+        }
+        return r;
+    }
+
+    glm::vec2 Renderer3D::GetCurrentJitter(int frameIndex, glm::vec2 viewportSize)
+    {
+        // We use a cycle of 16 frames for the Halton sequence
+        int index = (frameIndex % 16) + 1;
+
+        float jitterX = Halton(index, 2) - 0.5f;
+        float jitterY = Halton(index, 3) - 0.5f;
+
+        // Scale by 2.0 / viewportSize to map to NDC range [-1, 1]
+        return glm::vec2(jitterX * 2.0f / viewportSize.x, jitterY * 2.0f / viewportSize.y);
     }
 
     void Renderer3D::FlushAndReset()

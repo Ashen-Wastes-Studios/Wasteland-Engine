@@ -60,6 +60,9 @@ namespace Wasteland
         static glm::vec3 GetSkyTopColor();
         static void SetSkyTopColor(const glm::vec3 &color);
 
+        static float Halton(int index, int base);
+        static glm::vec2 GetCurrentJitter(int frameIndex, glm::vec2 viewportSize);
+
     private:
         static void FlushAndReset();
     };

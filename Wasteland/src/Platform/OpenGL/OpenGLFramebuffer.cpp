@@ -2,16 +2,18 @@
 #include "OpenGLFramebuffer.h"
 #include <glad/glad.h>
 
-namespace Wasteland {
+namespace Wasteland
+{
 
-	namespace Utils {
+	namespace Utils
+	{
 
 		static GLenum TextureTarget(bool multisampled)
 		{
 			return multisampled ? GL_TEXTURE_2D_MULTISAMPLE : GL_TEXTURE_2D;
 		}
 
-		static void CreateTextures(bool multisampled, uint32_t* outID, uint32_t count)
+		static void CreateTextures(bool multisampled, uint32_t *outID, uint32_t count)
 		{
 			glCreateTextures(TextureTarget(multisampled), count, outID);
 		}
@@ -32,8 +34,10 @@ namespace Wasteland {
 			{
 				glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, format, GL_UNSIGNED_BYTE, nullptr);
 
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+				GLenum filter = (internalFormat == GL_R32I) ? GL_NEAREST : GL_LINEAR;
+
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -67,7 +71,8 @@ namespace Wasteland {
 		{
 			switch (format)
 			{
-				case FramebufferTextureFormat::DEPTH24STENCIL8: return true;
+			case FramebufferTextureFormat::DEPTH24STENCIL8:
+				return true;
 			}
 			return false;
 		}
@@ -76,8 +81,10 @@ namespace Wasteland {
 		{
 			switch (format)
 			{
-				case FramebufferTextureFormat::RGBA8: return GL_RGBA8;
-				case FramebufferTextureFormat::RED_INTEGER: return GL_RED_INTEGER;
+			case FramebufferTextureFormat::RGBA8:
+				return GL_RGBA8;
+			case FramebufferTextureFormat::RED_INTEGER:
+				return GL_RED_INTEGER;
 			}
 
 			WL_CORE_ASSERT(false, nullptr);
@@ -88,8 +95,10 @@ namespace Wasteland {
 		{
 			switch (format)
 			{
-			case FramebufferTextureFormat::RGBA8: return GL_UNSIGNED_BYTE;
-			case FramebufferTextureFormat::RED_INTEGER: return GL_RED_INTEGER;
+			case FramebufferTextureFormat::RGBA8:
+				return GL_UNSIGNED_BYTE;
+			case FramebufferTextureFormat::RED_INTEGER:
+				return GL_RED_INTEGER;
 			}
 
 			WL_CORE_ASSERT(false, nullptr);
@@ -98,7 +107,7 @@ namespace Wasteland {
 
 	}
 
-	OpenGLFramebuffer::OpenGLFramebuffer(const FramebufferSpecification& spec)
+	OpenGLFramebuffer::OpenGLFramebuffer(const FramebufferSpecification &spec)
 		: m_Specification(spec)
 	{
 		for (auto format : m_Specification.Attachments.Attachments)
@@ -147,12 +156,12 @@ namespace Wasteland {
 				Utils::BindTextures(multisample, m_ColorAttachments[i]);
 				switch (m_ColorAttachmentSpecifications[i].TextureFormat)
 				{
-					case FramebufferTextureFormat::RGBA8:
-						Utils::AttachColorTexture(m_ColorAttachments[i], m_Specification.Samples, GL_RGBA8, GL_RGBA, m_Specification.Width, m_Specification.Height, (int)i);
-						break;
-					case FramebufferTextureFormat::RED_INTEGER:
-						Utils::AttachColorTexture(m_ColorAttachments[i], m_Specification.Samples, GL_R32I, GL_RED_INTEGER, m_Specification.Width, m_Specification.Height, (int)i);
-						break;
+				case FramebufferTextureFormat::RGBA8:
+					Utils::AttachColorTexture(m_ColorAttachments[i], m_Specification.Samples, GL_RGBA8, GL_RGBA, m_Specification.Width, m_Specification.Height, (int)i);
+					break;
+				case FramebufferTextureFormat::RED_INTEGER:
+					Utils::AttachColorTexture(m_ColorAttachments[i], m_Specification.Samples, GL_R32I, GL_RED_INTEGER, m_Specification.Width, m_Specification.Height, (int)i);
+					break;
 				}
 			}
 		}
@@ -163,16 +172,16 @@ namespace Wasteland {
 			Utils::BindTextures(multisample, m_DepthAttachment);
 			switch (m_DepthAttachmentSpecification.TextureFormat)
 			{
-				case FramebufferTextureFormat::DEPTH24STENCIL8:
-					Utils::AttachDepthTexture(m_DepthAttachment, m_Specification.Samples, GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL_ATTACHMENT, m_Specification.Width, m_Specification.Height);
-					break;
+			case FramebufferTextureFormat::DEPTH24STENCIL8:
+				Utils::AttachDepthTexture(m_DepthAttachment, m_Specification.Samples, GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL_ATTACHMENT, m_Specification.Width, m_Specification.Height);
+				break;
 			}
 		}
 
 		if (m_ColorAttachments.size() > 0)
 		{
 			WL_CORE_ASSERT(m_ColorAttachments.size() <= 4, "Too many color attachments!");
-			GLenum buffers[4] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3 };
+			GLenum buffers[4] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2, GL_COLOR_ATTACHMENT3};
 			glDrawBuffers((GLsizei)m_ColorAttachments.size(), buffers);
 		}
 		else
@@ -223,9 +232,9 @@ namespace Wasteland {
 	{
 		WL_CORE_ASSERT(attachmentIndex < m_ColorAttachments.size(), nullptr);
 
-		auto& spec = m_ColorAttachmentSpecifications[attachmentIndex];
-		glClearTexImage(m_ColorAttachments[attachmentIndex], 0, 
-			Utils::WastelandFBTextureFormatToGL(spec.TextureFormat), GL_INT, &value);
+		auto &spec = m_ColorAttachmentSpecifications[attachmentIndex];
+		glClearTexImage(m_ColorAttachments[attachmentIndex], 0,
+						Utils::WastelandFBTextureFormatToGL(spec.TextureFormat), GL_INT, &value);
 	}
 
 }
