@@ -15,6 +15,7 @@ layout(binding = 3) uniform sampler2D s_Accumulation;
 layout(binding = 4) uniform sampler2D s_DepthBuffer;
 layout(binding = 8) uniform sampler2D s_Output;
 layout(binding = 9) uniform sampler2D s_Bloom;
+layout(binding = 10) uniform sampler2D s_NormalBuffer;
 
 struct RayTracingInstance 
 {
@@ -49,6 +50,7 @@ uniform float u_CameraMoved;
 uniform mat4 u_ViewProjection;
 uniform vec3 u_SkyBottomColor;
 uniform vec3 u_SkyTopColor;
+uniform float u_AccumulationAlpha;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -209,6 +211,13 @@ vec2 GetJitter(int frameIndex, float cameraMoved) {
 
 float CalculateLightPDF(float dist, float area) { return 1.0 / area; }
 float CalculateBSDFPDF(float NdotL) { return max(NdotL / PI, 0.0001); }
+
+vec3 ReconstructWorldPos(vec2 uv, float depth) 
+{
+    vec4 clipPos = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+    vec4 worldPos = u_InverseViewProjection * clipPos;
+    return worldPos.xyz / worldPos.w;
+}
 
 void RunVisibilityAndVelocity() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
@@ -420,36 +429,20 @@ void RunTraceAndDenoise()
 
 void RunTemporalAccumulation() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
-    
-    // 1. Get Velocity (This is your ONLY source of motion)
-    // 2. Fetch Velocity and calculate previous UV
-    vec2 velocity = imageLoad(img_Velocity, pixelCoords).rg;
-    vec2 prevUV = uv - velocity;
+    vec2 uv = vec2(pixelCoords) / vec2(imageSize(img_Accumulation));
 
-    // --- FORCE TO ZERO ---
-    prevUV = uv; // Ignore velocity
-    // ---------------------
+    // 1. Get history from previous frame
+    vec3 history = texture(s_Accumulation, uv).rgb;
+    
+    // 2. Get current noisy trace
+    vec3 current = imageLoad(img_Output, pixelCoords).rgb;
 
-    // 4. Sample
-    // Only sample if the UV is in bounds
-    if (prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0) {
-        imageStore(img_Accumulation, pixelCoords, imageLoad(img_Output, pixelCoords));
-        return;
-    }
+    // 3. Blend: This is what "cleans up" the noise
+    // 0.05 is slow, high quality. 0.2 is fast, low quality.
+    float alpha = 0.2; 
+    vec3 result = mix(history, current, alpha);
 
-    vec3 history = texture(s_Accumulation, prevUV).rgb;
-    
-    // 5. Variance Clipping
-    vec3 minCol, maxCol;
-    GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
-    history = clamp(history, minCol, maxCol);
-    
-    // 6. Accumulate
-    vec3 currentLight = imageLoad(img_Output, pixelCoords).rgb;
-    float alpha = max(0.05, 1.0 / float(u_FrameIndex + 1));
-    vec3 result = mix(history, currentLight, alpha);
-    
+    // 4. Store in accumulation so it becomes the "history" for next frame
     imageStore(img_Accumulation, pixelCoords, vec4(result, 1.0));
 }
 
@@ -506,17 +499,39 @@ void RunComposite() {
 
 void RunBilateralBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Output));
+
+    // Now you can use pos and uv
     vec3 centerColor = imageLoad(img_Output, pos).rgb;
+    vec3 centerNormal = texelFetch(s_NormalBuffer, pos, 0).xyz;
+    float centerDepth = texture(s_DepthBuffer, uv).r;
     
     vec3 totalColor = vec3(0.0);
     float totalWeight = 0.0;
     
+    float depthSigma = 50.0;
+    float normSigma = 20.0;
+    
     for(int x = -2; x <= 2; x++) {
         for(int y = -2; y <= 2; y++) {
             ivec2 samplePos = pos + ivec2(x, y);
-            vec3 sampleColor = imageLoad(img_Output, samplePos).rgb;
-            float weight = exp(-distance(centerColor, sampleColor) * 1.0);
-            totalColor += sampleColor * weight;
+            
+            // Boundary check to prevent reading outside the buffer
+            if(samplePos.x < 0 || samplePos.x >= imageSize(img_Output).x || 
+               samplePos.y < 0 || samplePos.y >= imageSize(img_Output).y) continue;
+
+            vec3 neighborColor = imageLoad(img_Output, samplePos).rgb;
+            vec3 neighborNormal = texelFetch(s_NormalBuffer, samplePos, 0).xyz;
+            vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imageSize(img_Output));
+            float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
+            
+            float d_color = length(centerColor - neighborColor);
+            float d_depth = abs(centerDepth - neighborDepth);
+            float d_norm = 1.0 - dot(centerNormal, neighborNormal);
+            
+            float weight = exp(-(d_color * d_color) - (d_depth * depthSigma) - (d_norm * normSigma));
+            
+            totalColor += neighborColor * weight;
             totalWeight += weight;
         }
     }

@@ -79,6 +79,7 @@ namespace Wasteland
         // Path Tracing state
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
+        bool CameraMoved = false;
         int FrameIndexLocation;
         uint32_t SamplesPerPixel = 4;
         uint32_t StillFrames = 0;
@@ -318,31 +319,13 @@ namespace Wasteland
 
         s_Data.m_SceneInstances.clear();
 
-        uint32_t width = 1280;
-        uint32_t height = 720;
-        glm::vec2 viewportSize = glm::vec2(width, height);
-
-        uint32_t jitterX = (Halton(s_Data.FrameIndex, 2) - 0.5f) / (float)viewportSize.x;
-        uint32_t jitterY = (Halton(s_Data.FrameIndex, 2) - 0.5f) / (float)viewportSize.y;
-
         glm::mat4 viewProj = camera.GetViewProjection();
-        glm::vec2 currentJitter = GetCurrentJitter(s_Data.FrameIndex, viewportSize);
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
-
-        glm::mat4 projection = camera.GetProjection();
-        projection[2][0] += jitterX * 2.0f; // Add jitter to the perspective matrix column 2
-        projection[2][1] += jitterY * 2.0f;
-
-        // 3. Store this jittered matrix as your current ViewProjection
-        s_Data.CurrentViewProjection = projection * camera.GetViewMatrix();
-
-        s_Data.RayTracingShader->Bind();
-        s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
 
         if (viewProj != s_Data.LastViewProjection)
         {
@@ -428,6 +411,18 @@ namespace Wasteland
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
 
+            EditorCamera camera;
+
+            glm::mat4 editorProjection = camera.GetProjection();
+            editorProjection[2][0] += (currentJitter.x * 2.0f - 1.0f) / viewportSize.x; // Add jitter to the perspective matrix column 2
+            editorProjection[2][1] += (currentJitter.y * 2.0f - 1.0f) / viewportSize.y;
+
+            Camera playerCamera;
+
+            glm::mat4 playerProjection = playerCamera.GetProjection();
+            playerProjection[2][0] += (currentJitter.x * 2.0f - 1.0f) / viewportSize.x; // Add jitter to the perspective matrix column 2
+            playerProjection[2][1] += (currentJitter.y * 2.0f - 1.0f) / viewportSize.y;
+
             s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
@@ -482,7 +477,7 @@ namespace Wasteland
 
             s_Data.RayTracingShader->Unbind();
 
-            if (moved)
+            if (s_Data.FrameIndex = 1000)
             {
                 s_Data.FrameIndex = 0;
                 ClearAccumulationBuffers();
@@ -491,6 +486,20 @@ namespace Wasteland
             {
                 s_Data.FrameIndex++;
             }
+
+            // 1. Calculate the blend factor based on movement
+            // If camera moved significantly, blend faster (0.2f), otherwise accumulate smoothly (1.0f / N)
+            float accumulationAlpha = s_Data.CameraMoved ? 0.2f : (1.0f / (float)(s_Data.FrameIndex + 1));
+
+            // 2. Clamp it so it doesn't get too small (prevents extreme ghosting)
+            accumulationAlpha = glm::clamp(accumulationAlpha, 0.05f, 1.0f);
+
+            // 3. Upload to shader
+            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
+
+            // 4. IMPORTANT: Remove the "s_Data.FrameIndex = 0;" hard reset from here.
+            // Only increment the FrameIndex.
+            s_Data.FrameIndex++;
 
             s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
             s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
