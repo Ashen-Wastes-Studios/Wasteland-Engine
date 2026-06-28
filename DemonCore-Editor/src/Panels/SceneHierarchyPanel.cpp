@@ -612,6 +612,17 @@ namespace Wasteland
 				auto &mc = entity.GetComponent<MaterialComponent>();
 
 				ImGui::ColorEdit4("Albedo", glm::value_ptr(mc.Albedo));
+				ImGui::Button("Texture", ImVec2(100.0f, 0.0f));
+				if (ImGui::BeginDragDropTarget())
+				{
+					if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					{
+						const wchar_t *path = (const wchar_t *)payload->Data;
+						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
+						mc.Texture = Texture2D::Create(texturePath.string());
+					}
+					ImGui::EndDragDropTarget();
+				}
 				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
 				ImGui::DragFloat("Roughness", &mc.Roughness, 0.05f, 0.0f, 1.0f);
 				ImGui::ColorEdit4("Emission Color", glm::value_ptr(mc.EmissionColor));

@@ -104,6 +104,7 @@ namespace Wasteland
 	struct MaterialComponent
 	{
 		glm::vec4 Albedo = {1.0f, 1.0f, 1.0f, 1.0f};
+		Ref<Texture2D> Texture;
 		float Metallic = 0.0f;
 		float Roughness = 0.5f;
 		glm::vec4 EmissionColor = {1.0f, 1.0f, 1.0f, 1.0f};

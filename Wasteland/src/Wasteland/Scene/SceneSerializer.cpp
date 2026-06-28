@@ -267,6 +267,8 @@ namespace Wasteland
 
 			auto &materialComponent = entity.GetComponent<MaterialComponent>();
 			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
+			out << YAML::Key << "TextureWidth" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetWidth() : 0);
+			out << YAML::Key << "TextureHeight" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetHeight() : 0);
 			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
 			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
 			out << YAML::Key << "EmissionColor" << YAML::Value << materialComponent.EmissionColor;
@@ -489,6 +491,13 @@ namespace Wasteland
 					// Entities always have transforms
 					auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
 					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
+					if (materialComponent["TextureWidth"] && materialComponent["TextureHeight"])
+					{
+						int width = materialComponent["TextureWidth"].as<int>();
+						int height = materialComponent["TextureHeight"].as<int>();
+						if (width > 0 && height > 0)
+							mc.Texture = Texture2D::Create(width, height);
+					}
 					mc.Metallic = materialComponent["Metallic"].as<float>();
 					mc.Roughness = materialComponent["Roughness"].as<float>();
 					mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
