@@ -620,11 +620,32 @@ namespace Wasteland
 						const wchar_t *path = (const wchar_t *)payload->Data;
 						std::filesystem::path texturePath = std::filesystem::path(g_AssetPath) / path;
 						mc.Texture = Texture2D::Create(texturePath.string());
+						mc.TexturePath = texturePath.string();
 					}
 					ImGui::EndDragDropTarget();
 				}
+
+				ImGui::Text("Auto-Generate Maps");
+
+				if (ImGui::Button("Generate Material Maps", ImVec2(-1.0f, 0.0f)))
+				{
+					if (mc.Texture && !mc.TexturePath.empty())
+					{
+						Renderer3D::GenerateMaterialMaps(mc.TexturePath, mc.NormalStrength, mc.Roughness);
+						mc.HasGeneratedMaps = true; // Flag that we have maps now!
+					}
+				}
+
+				ImGui::Text("Material Intensity Settings");
+
+				std::string normalLabel = mc.HasGeneratedMaps ? "Normal Strength (Map Multiplier)" : "Normal Strength (Base)";
+				ImGui::DragFloat(normalLabel.c_str(), &mc.NormalStrength, 0.05f, 0.0f, 5.0f);
+
 				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
-				ImGui::DragFloat("Roughness", &mc.Roughness, 0.05f, 0.0f, 1.0f);
+
+				std::string roughLabel = mc.HasGeneratedMaps ? "Roughness (Map Multiplier)" : "Roughness (Base)";
+				ImGui::DragFloat(roughLabel.c_str(), &mc.Roughness, 0.05f, 0.0f, 1.0f);
+
 				ImGui::ColorEdit4("Emission Color", glm::value_ptr(mc.EmissionColor));
 				ImGui::DragFloat("Emission Intensity", &mc.EmissionIntensity, 0.05f, 0.0f, FLT_MAX);
 

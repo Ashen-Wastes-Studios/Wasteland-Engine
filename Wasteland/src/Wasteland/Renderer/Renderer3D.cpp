@@ -31,7 +31,8 @@ namespace Wasteland
         glm::vec4 Emission;
         float MaxDistance;
         int LODLevel;
-        float Padding[2];
+        int PackedMaterialMapID;
+        float Padding[1];
     };
 
     struct Renderer3DData
@@ -117,6 +118,8 @@ namespace Wasteland
 
         uint32_t DepthTextureID = 0;
         uint32_t VelocityTextureID = 0;
+
+        uint32_t GeneratedTextureID = 0;
 
         std::array<Plane, 6> FrustumPlanes;
 
@@ -475,6 +478,14 @@ namespace Wasteland
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
+            s_Data.RayTracingShader->SetInt("u_PassID", 8);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            s_Data.RayTracingShader->SetInt("u_PassID", 9);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
             s_Data.RayTracingShader->Unbind();
 
             if (s_Data.FrameIndex = 1000)
@@ -691,6 +702,22 @@ namespace Wasteland
 
         // Scale by 2.0 / viewportSize to map to NDC range [-1, 1]
         return glm::vec2(jitterX * 2.0f / viewportSize.x, jitterY * 2.0f / viewportSize.y);
+    }
+
+    void Renderer3D::GenerateMaterialMaps(const std::string &texturePath, float normalStrength, float roughBias)
+    {
+        s_Data.RayTracingShader->Bind();
+
+        s_Data.RayTracingShader->SetFloat("u_NormalStrength", normalStrength);
+        s_Data.RayTracingShader->SetFloat("u_RoughnessBias", roughBias);
+
+        glBindImageTexture(8, s_Data.GeneratedTextureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+
+        glDispatchCompute(s_Data.RayTracingWidth / 8, s_Data.RayTracingHeight / 8, 1);
+
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+        glBindImageTexture(8, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
     }
 
     void Renderer3D::FlushAndReset()

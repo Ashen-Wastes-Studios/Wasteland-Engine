@@ -269,6 +269,7 @@ namespace Wasteland
 			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
 			out << YAML::Key << "TextureWidth" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetWidth() : 0);
 			out << YAML::Key << "TextureHeight" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetHeight() : 0);
+			out << YAML::Key << "NormalStrength" << YAML::Value << materialComponent.NormalStrength;
 			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
 			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
 			out << YAML::Key << "EmissionColor" << YAML::Value << materialComponent.EmissionColor;
@@ -498,6 +499,7 @@ namespace Wasteland
 						if (width > 0 && height > 0)
 							mc.Texture = Texture2D::Create(width, height);
 					}
+					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
 					mc.Metallic = materialComponent["Metallic"].as<float>();
 					mc.Roughness = materialComponent["Roughness"].as<float>();
 					mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();

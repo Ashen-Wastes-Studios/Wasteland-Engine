@@ -16,6 +16,8 @@ layout(binding = 4) uniform sampler2D s_DepthBuffer;
 layout(binding = 8) uniform sampler2D s_Output;
 layout(binding = 9) uniform sampler2D s_Bloom;
 layout(binding = 10) uniform sampler2D s_NormalBuffer;
+layout(rgba8, binding = 3) uniform writeonly image2D img_MaterialPacked;
+layout(binding = 11) uniform sampler2D s_InputAlbedo;
 
 struct RayTracingInstance 
 {
@@ -28,7 +30,8 @@ struct RayTracingInstance
     vec4 Emission;
     float MaxDistance;
     int LODLevel;
-    float Padding[2];
+    int PackedMaterialMapID;
+    float Padding[1];
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -51,6 +54,9 @@ uniform mat4 u_ViewProjection;
 uniform vec3 u_SkyBottomColor;
 uniform vec3 u_SkyTopColor;
 uniform float u_AccumulationAlpha;
+uniform float u_NormalStrength;
+uniform float u_RoughnessBias;
+uniform float u_AOIntensity;
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -219,6 +225,13 @@ vec3 ReconstructWorldPos(vec2 uv, float depth)
     return worldPos.xyz / worldPos.w;
 }
 
+const mat3 Gx = mat3(-1, 0, 1, -2, 0, 2, -1, 0, 1);
+const mat3 Gy = mat3(-1, -2, -1, 0, 0, 0, 1, 2, 1);
+
+float GetLuminance(vec3 col) {
+    return dot(col, vec3(0.2126, 0.7152, 0.0722));
+}
+
 void RunVisibilityAndVelocity() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
@@ -380,49 +393,6 @@ void RunTraceAndDenoise()
 
     vec3 incomingLight = totalIncomingLight / float(u_SamplesPerPixel);
     incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
-    /*
-    vec2 prevUV = vec2(0.0);
-    if (hitAnything) {
-        vec4 prevPosNDC = u_PrevViewProjection * vec4(lastHitPoint, 1.0);
-        prevPosNDC.xy /= prevPosNDC.w;
-        prevUV = prevPosNDC.xy * 0.5 + 0.5;
-    } else {
-        vec4 prevClipPosSky = u_PrevViewProjection * vec4(normalize(currentRay.Direction) * 1000.0, 1.0);
-        prevClipPosSky.xy /= prevClipPosSky.w;
-        prevUV = prevClipPosSky.xy * 0.5 + 0.5;
-    }
-
-    bool inBounds = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
-
-    imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
-    memoryBarrierImage();
-
-    vec3 history = (inBounds && u_FrameIndex > 0) ? texture(s_Accumulation, prevUV).rgb : incomingLight;
-
-    // We clip the history to the neighborhood of the CURRENT raw color to prevent ghosting
-    vec3 minCol, maxCol;
-    GetVarianceClippingBounds(pixelCoords, minCol, maxCol);
-    history = clamp(history, minCol, maxCol);
-
-    // We use a blend factor. 0.05 is a good start. For more stability, use: 
-    float alpha = max(0.05, 1.0 / float(u_FrameIndex + 1));
-    //float alpha = 0.05; 
-    
-    // Reset accumulation if camera moved significantly to avoid blur
-    if (u_CameraMoved > 0.01) alpha = 1.0; 
-
-    vec3 resultColor = mix(history, incomingLight, alpha);
-    resultColor = clamp(resultColor, vec3(0.0), vec3(100.0));
-
-    imageStore(img_Accumulation, pixelCoords, vec4(resultColor, 1.0));
-    */
-
-    // TEMPORARY DEBUG VISUALIZATION
-    //vec2 vel = imageLoad(img_Velocity, pixelCoords).rg;
-    // This creates a heatmap of your motion vectors.
-    // If this image "flickers" or looks noisy, your Velocity Buffer is the problem.
-    //imageStore(img_Output, pixelCoords, vec4(vel * 10.0 + 0.5, 0.0, 1.0)); 
-    //return;
 
     imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
 }
@@ -556,6 +526,46 @@ void RunResolve()
     imageStore(img_FinalDisplay, displayPos, vec4(finalColor, 1.0));
 }
 
+void GenerateMaterialMaps() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(img_MaterialPacked);
+    
+    // Sample 3x3 grid
+    float I[3][3];
+    for(int i = -1; i <= 1; i++) {
+        for(int j = -1; j <= 1; j++) {
+            ivec2 samplePos = clamp(pos + ivec2(i, j), ivec2(0), size - ivec2(1));
+            vec2 uv = (vec2(samplePos) + 0.5) / vec2(size);
+            I[i+1][j+1] = GetLuminance(texture(s_InputAlbedo, uv).rgb);
+        }
+    }
+
+    // Compute Sobel Gradients
+    float resX = 0.0;
+    float resY = 0.0;
+    for(int i = 0; i < 3; i++) {
+        for(int j = 0; j < 3; j++) {
+            resX += I[i][j] * Gx[i][j];
+            resY += I[i][j] * Gy[i][j];
+        }
+    }
+
+    float normalStrength = u_NormalStrength; 
+    vec3 normal = normalize(vec3(-resX * normalStrength, -resY * normalStrength, 1.0));
+
+    // Pack into 0.0 to 1.0 range
+    vec2 packedNormal = normal.xy * 0.5 + 0.5;
+    
+    // AO and Roughness
+    float ao = 1.0 - (length(vec2(resX, resY)) * 5.0 * u_AOIntensity);
+    float rough = clamp((1.0 - I[1][1]) + u_RoughnessBias, 0.0, 1.0);
+    
+    // PACK: R=NormalX, G=NormalY, B=Roughness, A=AO
+    vec4 packedData = vec4(packedNormal.x, packedNormal.y, rough, ao);
+    
+    imageStore(img_MaterialPacked, pos, packedData);
+}
+
 void main()
 {
     switch(u_PassID) 
@@ -569,5 +579,6 @@ void main()
         case 6: RunComposite(); break;
         case 7: RunBilateralBlur(); break;
         case 8: RunResolve(); break;
+        case 9: GenerateMaterialMaps(); break;
     }
 }

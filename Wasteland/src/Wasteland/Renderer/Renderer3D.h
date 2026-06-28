@@ -63,6 +63,8 @@ namespace Wasteland
         static float Halton(int index, int base);
         static glm::vec2 GetCurrentJitter(int frameIndex, glm::vec2 viewportSize);
 
+        static void GenerateMaterialMaps(const std::string &texturePath, float normalStrength, float roughBias);
+
     private:
         static void FlushAndReset();
     };

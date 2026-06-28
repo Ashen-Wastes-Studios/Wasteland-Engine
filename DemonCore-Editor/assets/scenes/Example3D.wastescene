@@ -1,138 +1,52 @@
 Scene: Untitled
 Entities:
-  - Entity: 6484715765271295781
+  - Entity: 2269583435933960512
     TagComponent:
-      Tag: Emission Cube
+      Tag: Emissive Sphere
     TransformComponent:
-      Translation: [0, -1.39999998, 0]
+      Translation: [0, -2.4000001, -6.69999981]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    CubeRendererComponent:
+    SphereRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
+      Radius: 2.29999995
+      Sectors: 20
+      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
       Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      NormalStrength: 0
       Metallic: 0
       Roughness: 0.5
-      EmissionColor: [1, 1, 1, 1]
+      EmissionColor: [0.737254918, 0.498039216, 0.00784313772, 0.494117647]
       EmissionIntensity: 10
-    Rigidbody2DComponent:
-      BodyType: Static
-      FixedRotation: false
-    BoxCollider2DComponent:
-      Offset: [0, 0]
-      Size: [1, 1]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-      RestitutionThreshold: 0.5
-  - Entity: 2134128865833379018
+  - Entity: 4053067101693099129
     TagComponent:
       Tag: Sphere
     TransformComponent:
-      Translation: [0, 1.30499995, 1.58336846e-08]
+      Translation: [0, 0, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 1
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 0, 1, 1]
-      Metallic: 1
-      Roughness: 0
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-    Rigidbody2DComponent:
-      BodyType: Dynamic
-      FixedRotation: false
-    CircleCollider2DComponent:
-      Offset: [0, 0]
       Radius: 0.5
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-      RestitutionThreshold: 0.5
-  - Entity: 17094369140636357356
-    TagComponent:
-      Tag: Ground Sphere
-    TransformComponent:
-      Translation: [0, -101, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 100
       Sectors: 20
       Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
-      Albedo: [1, 0, 1, 1]
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      NormalStrength: 0
       Metallic: 1
-      Roughness: 0
+      Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-    Rigidbody2DComponent:
-      BodyType: Static
-      FixedRotation: false
-    CircleCollider2DComponent:
-      Offset: [0, 0]
-      Radius: 100.5
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-      RestitutionThreshold: 0.5
-  - Entity: 13026631445708257762
-    TagComponent:
-      Tag: Emission Sphere
-    TransformComponent:
-      Translation: [89.1789398, 76.5329971, 8.85574877e-07]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 56.7999992
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [0.611764729, 0.294117659, 0.0901960805, 1]
-      Metallic: 0
-      Roughness: 0.5
-      EmissionColor: [0.611764729, 0.294117659, 0.0901960805, 1]
-      EmissionIntensity: 10
-  - Entity: 8001134310104323193
-    TagComponent:
-      Tag: Player
-    TransformComponent:
-      Translation: [0, 0, 10]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    CameraComponent:
-      Camera:
-        ProjectionType: 0
-        PerspectiveFOV: 0.785398185
-        PerspectiveNear: 0.00999999978
-        PerspectiveFar: 1000
-        OrthographicSize: 10
-        OrthographicNear: -1
-        OrthographicFar: 1
-      Primary: true
-      FixedAspectRatio: false
-    ScriptComponent:
-      ScriptPath: assets/scripts/Player.py
-      ScriptName: Player
