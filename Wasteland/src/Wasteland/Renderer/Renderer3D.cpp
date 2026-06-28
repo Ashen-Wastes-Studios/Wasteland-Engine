@@ -209,7 +209,7 @@ namespace Wasteland
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
-        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
