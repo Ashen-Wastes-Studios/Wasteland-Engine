@@ -18,6 +18,7 @@ layout(binding = 9) uniform sampler2D s_Bloom;
 layout(binding = 10) uniform sampler2D s_NormalBuffer;
 layout(rgba8, binding = 3) uniform writeonly image2D img_MaterialPacked;
 layout(binding = 11) uniform sampler2D s_InputAlbedo;
+layout(binding = 12) uniform sampler2D s_PackedMaterialMap;
 
 struct RayTracingInstance 
 {
@@ -30,8 +31,9 @@ struct RayTracingInstance
     vec4 Emission;
     float MaxDistance;
     int LODLevel;
+    int TextureID;
     int PackedMaterialMapID;
-    float Padding[1];
+    //float Padding;
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -57,6 +59,7 @@ uniform float u_AccumulationAlpha;
 uniform float u_NormalStrength;
 uniform float u_RoughnessBias;
 uniform float u_AOIntensity;
+uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
@@ -232,6 +235,22 @@ float GetLuminance(vec3 col) {
     return dot(col, vec3(0.2126, 0.7152, 0.0722));
 }
 
+vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
+    // 0 = Cube, 1 = Sphere (based on your logic)
+    if (int(inst.MaterialParams.z) == 0) {
+        // Cube UV logic (approximate mapping)
+        vec3 absPos = abs(localPos);
+        if (absPos.x > absPos.y && absPos.x > absPos.z) return localPos.yz * 0.5 + 0.5; // X-face
+        if (absPos.y > absPos.x && absPos.y > absPos.z) return localPos.xz * 0.5 + 0.5; // Y-face
+        return localPos.xy * 0.5 + 0.5; // Z-face
+    } else {
+        // Sphere UV logic
+        float phi = atan(localPos.z, localPos.x);
+        float theta = asin(localPos.y);
+        return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+    }
+}
+
 void RunVisibilityAndVelocity() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
@@ -265,6 +284,8 @@ void RunTraceAndDenoise()
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
+    vec3 finalColor = vec3(0.0);
+
     vec3 totalIncomingLight = vec3(0.0);
     vec3 lastHitPoint = vec3(0.0);
     bool hitAnything = false;
@@ -289,9 +310,13 @@ void RunTraceAndDenoise()
 
         for(int bounce = 0; bounce < 5; bounce++) 
         {
+            vec3 surfaceNormal = vec3(0.0);
+            float surfaceRough = 0.0;
+            bool hasHit = false;
+
             float closestHit = 1e20;
             int hitIndex = -1;
-            vec3 hitNormal, hitAlbedo;
+            vec3 hitNormal = surfaceNormal, hitAlbedo;
             vec3 localHitPoint = vec3(0.0);
 
             for(int i = 0; i < u_InstanceCount; i++) 
@@ -309,7 +334,27 @@ void RunTraceAndDenoise()
                 float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
                 if (tLocal > 0.0) 
                 {
+                    // Calculate hit point and world normal
                     vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
+                    vec3 worldNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+
+                    // 2. Perform Texture/Material Sampling
+                    vec2 uv = CalculateUV(localRay.Origin + tLocal * localRay.Direction, inst);
+                    vec4 packedData = texture(s_PackedMaterialMap, uv);
+                    
+                    // Unpack and Transform Normal
+                    vec3 localTangentNormal = normalize(packedData.rgb * 2.0 - 1.0);
+                    
+                    // TRANSFORM TO WORLD SPACE:
+                    // Assuming the packed data is in object space, we use the model matrix.
+                    // If it's a normal map, you'd usually need a TBN matrix. 
+                    // For now, this is a basic world-space conversion:
+                    surfaceNormal = normalize((inst.WorldTransform * vec4(localTangentNormal, 0.0)).xyz);
+                    surfaceRough = packedData.b; // Use sampled roughness
+                    
+                    hasHit = true;
+
+                    vec3 albedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
                     float tWorld = distance(currentRay.Origin, worldHit);
                     if (tWorld < closestHit) 
                     {
@@ -319,15 +364,16 @@ void RunTraceAndDenoise()
                         localHitPoint = worldHit; 
                         hitAlbedo = inst.Albedo.rgb;
                     }
+                    finalColor += albedo * hitAlbedo;
                 }
             }
 
-            if (hitIndex != -1)
+            if (hasHit)
             {
                 sampleHitAnything = true;
                 vec3 V = normalize(-currentRay.Direction);
                 float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
-                float rough = max(Instances[hitIndex].MaterialParams.y, 0.05);
+                float rough = surfaceRough;
                 vec3 F0 = mix(vec3(0.04), hitAlbedo, metal);
                 vec3 diffuseColor = hitAlbedo * (1.0 - metal);
 

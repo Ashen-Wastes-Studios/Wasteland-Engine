@@ -31,8 +31,9 @@ namespace Wasteland
         glm::vec4 Emission;
         float MaxDistance;
         int LODLevel;
+        int TextureID;
         int PackedMaterialMapID;
-        float Padding[1];
+        // alignas(16) float Padding;
     };
 
     struct Renderer3DData
@@ -82,7 +83,7 @@ namespace Wasteland
         uint32_t FrameIndex = 0;
         bool CameraMoved = false;
         int FrameIndexLocation;
-        uint32_t SamplesPerPixel = 1;
+        uint32_t SamplesPerPixel = 4;
         uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
@@ -488,7 +489,7 @@ namespace Wasteland
 
             s_Data.RayTracingShader->Unbind();
 
-            if (s_Data.FrameIndex = 1000)
+            if (s_Data.FrameIndex <= 1000)
             {
                 s_Data.FrameIndex = 0;
                 ClearAccumulationBuffers();
@@ -716,8 +717,6 @@ namespace Wasteland
         glDispatchCompute(s_Data.RayTracingWidth / 8, s_Data.RayTracingHeight / 8, 1);
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-        glBindImageTexture(8, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
     }
 
     void Renderer3D::FlushAndReset()
@@ -784,6 +783,8 @@ namespace Wasteland
                                           material.EmissionColor.y,
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
+
+            instance.TextureID = material.Texture ? material.Texture->GetRendererID() : -1;
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
@@ -881,6 +882,8 @@ namespace Wasteland
                                           material.EmissionColor.y,
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
+
+            instance.TextureID = material.Texture ? material.Texture->GetRendererID() : -1;
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;

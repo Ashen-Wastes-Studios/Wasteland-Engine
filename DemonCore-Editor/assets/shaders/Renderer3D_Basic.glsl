@@ -104,8 +104,8 @@ void main()
     vec3 norm = normalize(Input.Normal);
     
     // Combine diffuse lighting element with ambient base factor
-    float diffuseIntensity = max(dot(norm, lightDir), 0.0f);
-    float ambientIntensity = 0.2f;
+    float diffuseIntensity = max(dot(norm, lightDir), 0.0);
+    float ambientIntensity = 0.2;
     float lightFactor = ambientIntensity + diffuseIntensity;
 
     color = vec4(texColor.rgb * lightFactor, texColor.a);
