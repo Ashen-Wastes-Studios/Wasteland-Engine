@@ -777,8 +777,8 @@ namespace Wasteland
             instance.InvTransform = glm::inverse(transform);
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
-            instance.Min = glm::vec4(-0.5, -0.5, -0.5, 1.0f);
-            instance.Max = glm::vec4(0.5, 0.5, 0.5, 1.0f);
+            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
+            instance.Max = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
             instance.Emission = glm::vec4(material.EmissionColor.x,
                                           material.EmissionColor.y,
                                           material.EmissionColor.z,
