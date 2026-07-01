@@ -235,22 +235,22 @@ float GetLuminance(vec3 col) {
 }
 
 vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
+    vec3 size = inst.Max.xyz - inst.Min.xyz;
+    vec3 normalizedPos = (localPos - inst.Min.xyz) / size;
+
     // 0 = Cube, 1 = Sphere (based on your logic)
     if (int(inst.MaterialParams.z) == 0) {
         // Cube UV logic (approximate mapping)
-        vec3 absPos = abs(localPos);
-        if (absPos.x > absPos.y && absPos.x > absPos.z) return localPos.yz * 0.5 + 0.5; // X-face
-        if (absPos.y > absPos.x && absPos.y > absPos.z) return localPos.xz * 0.5 + 0.5; // Y-face
-        return localPos.xy * 0.5 + 0.5; // Z-face
+        vec3 absPos = abs(normalizedPos);
+        if (absPos.x > absPos.y && absPos.x > absPos.z) return normalizedPos.yz * 0.5 + 0.5; // X-face
+        if (absPos.y > absPos.x && absPos.y > absPos.z) return normalizedPos.xz * 0.5 + 0.5; // Y-face
+        return normalizedPos.xy * 0.5 + 0.5; // Z-face
     } else {
         // Sphere UV logic
-        float phi = atan(localPos.z, localPos.x);
-        float theta = asin(localPos.y);
+        float phi = atan(normalizedPos.z, normalizedPos.x);
+        float theta = asin(normalizedPos.y);
         return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
     }
-
-    vec3 size = inst.Max.xyz - inst.Min.xyz;
-    vec3 normalizedPos = (localPos - inst.Min.xyz) / size;
 }
 
 void RunVisibilityAndVelocity() {
