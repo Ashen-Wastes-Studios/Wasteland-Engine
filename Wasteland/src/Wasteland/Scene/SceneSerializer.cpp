@@ -269,6 +269,14 @@ namespace Wasteland
 			out << YAML::Key << "Albedo" << YAML::Value << materialComponent.Albedo;
 			out << YAML::Key << "TextureWidth" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetWidth() : 0);
 			out << YAML::Key << "TextureHeight" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetHeight() : 0);
+			out << YAML::Key << "TextureIndex" << YAML::Value << materialComponent.TextureIndex;
+			std::string pathToSave = materialComponent.TexturePath;
+			if (pathToSave.find("assets/") == std::string::npos)
+			{
+				pathToSave = "assets/" + pathToSave;
+			}
+			out << YAML::Key << "TexturePath" << YAML::Value << pathToSave;
+			out << YAML::Key << "HasGeneratedMaps" << YAML::Value << materialComponent.HasGeneratedMaps;
 			out << YAML::Key << "NormalStrength" << YAML::Value << materialComponent.NormalStrength;
 			out << YAML::Key << "Metallic" << YAML::Value << materialComponent.Metallic;
 			out << YAML::Key << "Roughness" << YAML::Value << materialComponent.Roughness;
@@ -499,6 +507,11 @@ namespace Wasteland
 						if (width > 0 && height > 0)
 							mc.Texture = Texture2D::Create(width, height);
 					}
+					mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
+					std::string rawPath = materialComponent["TexturePath"].as<std::string>();
+					// Always store as a relative path
+					mc.TexturePath = "textures/" + std::filesystem::path(rawPath).filename().string();
+					mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
 					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
 					mc.Metallic = materialComponent["Metallic"].as<float>();
 					mc.Roughness = materialComponent["Roughness"].as<float>();

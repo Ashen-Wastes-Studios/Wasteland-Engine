@@ -105,6 +105,7 @@ namespace Wasteland
 	{
 		glm::vec4 Albedo = {1.0f, 1.0f, 1.0f, 1.0f};
 		Ref<Texture2D> Texture;
+		int TextureIndex = 0;
 		float NormalStrength = 0.0f;
 		float Metallic = 0.0f;
 		float Roughness = 0.5f;

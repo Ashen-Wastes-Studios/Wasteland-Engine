@@ -1,31 +1,6 @@
 Scene: Untitled
 Entities:
-  - Entity: 2269583435933960512
-    TagComponent:
-      Tag: Emissive Sphere
-    TransformComponent:
-      Translation: [0, -2.4000001, -6.69999981]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 2.29999995
-      Sectors: 20
-      Stacks: 20
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
-      EmissionColor: [0.737254918, 0.498039216, 0.00784313772, 0.494117647]
-      EmissionIntensity: 10
-  - Entity: 4053067101693099129
+  - Entity: 13683496762130521316
     TagComponent:
       Tag: Sphere
     TransformComponent:
@@ -43,10 +18,66 @@ Entities:
       TilingFactor: 1
     MaterialComponent:
       Albedo: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
+      TextureWidth: 8
+      TextureHeight: 8
+      TextureIndex: 0
+      TexturePath: assets/textures/Checkerboard.png
+      HasGeneratedMaps: true
       NormalStrength: 0
-      Metallic: 1
-      Roughness: 1
+      Metallic: 0
+      Roughness: 0.5
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+  - Entity: 423499880675714022
+    TagComponent:
+      Tag: Cube
+    TransformComponent:
+      Translation: [-1.5, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+  - Entity: 15254053731791671277
+    TagComponent:
+      Tag: Emissive Sphere
+    TransformComponent:
+      Translation: [3.20000005, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 20
+      Stacks: 20
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 6.05000019

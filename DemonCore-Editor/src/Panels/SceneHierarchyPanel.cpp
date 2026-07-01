@@ -625,6 +625,8 @@ namespace Wasteland
 					ImGui::EndDragDropTarget();
 				}
 
+				ImGui::DragInt("Texture Index", &mc.TextureIndex);
+
 				ImGui::Text("Auto-Generate Maps");
 
 				if (ImGui::Button("Generate Material Maps", ImVec2(-1.0f, 0.0f)))

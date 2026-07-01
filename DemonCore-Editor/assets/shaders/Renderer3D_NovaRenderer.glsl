@@ -33,7 +33,6 @@ struct RayTracingInstance
     int LODLevel;
     int TextureID;
     int PackedMaterialMapID;
-    //float Padding;
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -249,6 +248,9 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
         float theta = asin(localPos.y);
         return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
     }
+
+    vec3 size = inst.Max.xyz - inst.Min.xyz;
+    vec3 normalizedPos = (localPos - inst.Min.xyz) / size;
 }
 
 void RunVisibilityAndVelocity() {
@@ -354,7 +356,7 @@ void RunTraceAndDenoise()
                     
                     hasHit = true;
 
-                    vec3 albedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
+                    vec3 albedo = vec3(uv, 0.0);
                     float tWorld = distance(currentRay.Origin, worldHit);
                     if (tWorld < closestHit) 
                     {
@@ -373,7 +375,7 @@ void RunTraceAndDenoise()
                 sampleHitAnything = true;
                 vec3 V = normalize(-currentRay.Direction);
                 float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
-                float rough = surfaceRough;
+                float rough = (Instances[hitIndex].MaterialParams.y > 0.0) ? Instances[hitIndex].MaterialParams.y : surfaceRough;
                 vec3 F0 = mix(vec3(0.04), hitAlbedo, metal);
                 vec3 diffuseColor = hitAlbedo * (1.0 - metal);
 

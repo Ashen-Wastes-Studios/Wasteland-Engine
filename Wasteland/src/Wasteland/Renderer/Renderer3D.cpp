@@ -20,7 +20,7 @@ namespace Wasteland
         int EntityID;
     };
 
-    struct RayTracingInstance
+    struct alignas(16) RayTracingInstance
     {
         glm::mat4 InvTransform;
         glm::mat4 WorldTransform;
@@ -33,7 +33,6 @@ namespace Wasteland
         int LODLevel;
         int TextureID;
         int PackedMaterialMapID;
-        // alignas(16) float Padding;
     };
 
     struct Renderer3DData
@@ -69,6 +68,9 @@ namespace Wasteland
 
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1;
+
+        std::array<Ref<Texture2D>, MaxTextureSlots> MaterialTextureSlots;
+        uint32_t MaterialTextureSlotIndex = 0;
 
         bool RayTracingEnabled = true;
         Ref<Shader> RayTracingShader;
@@ -433,6 +435,12 @@ namespace Wasteland
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
             s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
             s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
+
+            for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
+            {
+                glActiveTexture(GL_TEXTURE0 + 10 + i);
+                glBindTexture(GL_TEXTURE_2D, s_Data.MaterialTextureSlots[i]->GetRendererID());
+            }
 
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
