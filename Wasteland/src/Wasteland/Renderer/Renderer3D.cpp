@@ -438,7 +438,7 @@ namespace Wasteland
 
             for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
             {
-                glActiveTexture(GL_TEXTURE0 + 10 + i);
+                glActiveTexture(GL_TEXTURE0 + i);
                 glBindTexture(GL_TEXTURE_2D, s_Data.MaterialTextureSlots[i]->GetRendererID());
             }
 
