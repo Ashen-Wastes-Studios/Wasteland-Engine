@@ -414,6 +414,12 @@ namespace Wasteland
             glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
             glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_READ_WRITE, GL_RGBA32F, 0, GL_READ_WRITE);
 
+            for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
+            {
+                glActiveTexture(GL_TEXTURE0 + i);
+                glBindTexture(GL_TEXTURE_2D, s_Data.MaterialTextureSlots[i]->GetRendererID());
+            }
+
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
 
@@ -435,12 +441,6 @@ namespace Wasteland
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
             s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
             s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
-
-            for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
-            {
-                glActiveTexture(GL_TEXTURE0 + i);
-                glBindTexture(GL_TEXTURE_2D, s_Data.MaterialTextureSlots[i]->GetRendererID());
-            }
 
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);

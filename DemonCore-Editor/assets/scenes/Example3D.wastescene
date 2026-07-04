@@ -1,19 +1,16 @@
 Scene: Untitled
 Entities:
-  - Entity: 15254053731791671277
+  - Entity: 17362923555121349107
     TagComponent:
-      Tag: Emissive Sphere
+      Tag: wall1
     TransformComponent:
-      Translation: [3.20000005, 0, 0]
+      Translation: [-10, 9, 0]
       Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
+      Scale: [1, 20, 20]
+    CubeRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 0.5
-      Sectors: 20
-      Stacks: 20
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
@@ -21,13 +18,91 @@ Entities:
       TextureWidth: 0
       TextureHeight: 0
       TextureIndex: 0
-      TexturePath: assets/textures/
+      TexturePath: assets/
       HasGeneratedMaps: false
       NormalStrength: 0
       Metallic: 0
       Roughness: 0.5
       EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 6.05000019
+      EmissionIntensity: 0
+  - Entity: 322465073288679826
+    TagComponent:
+      Tag: wall2
+    TransformComponent:
+      Translation: [10, 9, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 20, 20]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+  - Entity: 10337039146754437154
+    TagComponent:
+      Tag: floor
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [20, 1, 20]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+  - Entity: 13683496762130521316
+    TagComponent:
+      Tag: Sphere
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 8
+      TextureHeight: 8
+      TextureIndex: 1
+      TexturePath: assets/textures/Checkerboard.png
+      HasGeneratedMaps: true
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
   - Entity: 423499880675714022
     TagComponent:
       Tag: Cube
@@ -53,11 +128,11 @@ Entities:
       Roughness: 0.150000006
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-  - Entity: 13683496762130521316
+  - Entity: 15254053731791671277
     TagComponent:
-      Tag: Sphere
+      Tag: Emissive Sphere
     TransformComponent:
-      Translation: [0, 0, 0]
+      Translation: [3.20000005, 0, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
@@ -65,19 +140,40 @@ Entities:
       TextureWidth: 0
       TextureHeight: 0
       Radius: 0.5
-      Sectors: 20
-      Stacks: 20
+      Sectors: 3
+      Stacks: 2
       TextureIndex: 0
       TilingFactor: 1
     MaterialComponent:
       Albedo: [1, 1, 1, 1]
-      TextureWidth: 8
-      TextureHeight: 8
-      TextureIndex: 221
-      TexturePath: assets/assets\textures\Checkerboard.png
-      HasGeneratedMaps: true
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/
+      HasGeneratedMaps: false
       NormalStrength: 0
-      Metallic: 1
+      Metallic: 0
       Roughness: 0.5
       EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
+      EmissionIntensity: 6.05000019
+  - Entity: 9712809077825019640
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 0, 10]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: assets/scripts/Player.py
+      ScriptName: Player
