@@ -213,6 +213,7 @@ Run the Sandbox application to verify everything is working correctly. You shoul
 ## Additional Notes
 
 - **Python Scripting Engine:** The Python scripting engine is a work in progress. Contributions via pull request are welcome!
+- **Nova Rendering Pipeline:** The Nova Rendering Pipeline is a work in progress. Pull requests are welcome!
 - **Supported Configurations:** Debug and Release builds for x86_64 architecture
 - **Editor:** DemonCore-Editor is the main development tool for creating and editing projects
 - **Sandbox:** The Sandbox application is a testing environment for the engine
