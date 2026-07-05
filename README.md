@@ -218,7 +218,3 @@ Run the Sandbox application to verify everything is working correctly. You shoul
 - **Sandbox:** The Sandbox application is a testing environment for the engine
 
 ---
-
-Note: the Python paths are hardcoded for the setup so you might have to change some stuff before having it buildable
-
-Note: the Python scripting engine is a work in progress feel free to contribute via pull request and help with working on it
