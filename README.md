@@ -140,16 +140,6 @@ After a successful build, the executables are in the `bin/` directory.
 .\bin\Release-windows-x86_64\DemonCore-Editor\DemonCore-Editor.exe
 ```
 
-**Sandbox (Debug):**
-```bash
-.\bin\Debug-windows-x86_64\Sandbox\Sandbox.exe
-```
-
-**Sandbox (Release):**
-```bash
-.\bin\Release-windows-x86_64\Sandbox\Sandbox.exe
-```
-
 #### Linux & macOS
 
 **DemonCore Editor (Debug):**
@@ -166,27 +156,13 @@ After a successful build, the executables are in the `bin/` directory.
 ./bin/Release-macosx-x86_64/DemonCore-Editor/DemonCore-Editor
 ```
 
-**Sandbox (Debug):**
-```bash
-./bin/Debug-linux-x86_64/Sandbox/Sandbox
-# or on macOS:
-./bin/Debug-macosx-x86_64/Sandbox/Sandbox
-```
-
-**Sandbox (Release):**
-```bash
-./bin/Release-linux-x86_64/Sandbox/Sandbox
-# or on macOS:
-./bin/Release-macosx-x86_64/Sandbox/Sandbox
-```
-
 ---
 
 ### Step 5: Verify Installation
 
-Run the Sandbox application to verify everything is working correctly. You should see:
+Run the DemonCore-Editor application to verify everything is working correctly. You should see:
 - The Wasteland Engine window opening
-- The editor interface (if running DemonCore-Editor)
+- The editor interface
 - No console errors
 
 ---
@@ -216,6 +192,5 @@ Run the Sandbox application to verify everything is working correctly. You shoul
 - **Nova Rendering Pipeline:** The Nova Rendering Pipeline is a work in progress. Pull requests are welcome!
 - **Supported Configurations:** Debug and Release builds for x86_64 architecture
 - **Editor:** DemonCore-Editor is the main development tool for creating and editing projects
-- **Sandbox:** The Sandbox application is a testing environment for the engine
 
 ---
