@@ -73,6 +73,8 @@ namespace Wasteland
         uint32_t MaterialTextureSlotIndex = 0;
 
         bool RayTracingEnabled = true;
+        bool RayTracingLowQuality = false;
+        bool RayTracingAccumulate = true;
         Ref<Shader> RayTracingShader;
         Ref<Texture2D> RayTracingOutput;
 
@@ -84,6 +86,15 @@ namespace Wasteland
         uint32_t AccumulationTexture = 0;
         uint32_t FrameIndex = 0;
         bool CameraMoved = false;
+        bool EditorCameraMoved = false;
+        bool GameCameraMoved = false;
+        bool ActiveCameraIsEditor = true;
+        glm::vec3 LastEditorCameraPosition = glm::vec3(0.0f);
+        float LastEditorCameraPitch = 0.0f;
+        float LastEditorCameraYaw = 0.0f;
+        glm::vec3 LastGameCameraPosition = glm::vec3(0.0f);
+        float LastGameCameraPitch = 0.0f;
+        float LastGameCameraYaw = 0.0f;
         int FrameIndexLocation;
         uint32_t SamplesPerPixel = 4;
         uint32_t StillFrames = 0;
@@ -270,6 +281,7 @@ namespace Wasteland
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
+        s_Data.ActiveCameraIsEditor = false;
 
         // Helper lambda to extract planes cleanly using glm::vec4
         auto extract = [&](int row, int sign) -> Renderer3DData::Plane
@@ -326,6 +338,7 @@ namespace Wasteland
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetViewProjection();
+        s_Data.ActiveCameraIsEditor = true;
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
@@ -364,10 +377,33 @@ namespace Wasteland
             if (s_Data.m_SceneInstances.empty())
                 return;
 
-            bool moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastCameraPosition) > 0.001f ||
-                         glm::abs(s_Data.CurrentCameraPitch - s_Data.LastCameraPitch) > 0.001f ||
-                         glm::abs(s_Data.CurrentCameraYaw - s_Data.LastCameraYaw) > 0.001f;
+            bool moved = false;
+            if (s_Data.ActiveCameraIsEditor)
+            {
+                moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastEditorCameraPosition) > s_Data.MovementThreshold ||
+                        glm::abs(s_Data.CurrentCameraPitch - s_Data.LastEditorCameraPitch) > s_Data.MovementThreshold ||
+                        glm::abs(s_Data.CurrentCameraYaw - s_Data.LastEditorCameraYaw) > s_Data.MovementThreshold;
+            }
+            else
+            {
+                moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastGameCameraPosition) > s_Data.MovementThreshold ||
+                        glm::abs(s_Data.CurrentCameraPitch - s_Data.LastGameCameraPitch) > s_Data.MovementThreshold ||
+                        glm::abs(s_Data.CurrentCameraYaw - s_Data.LastGameCameraYaw) > s_Data.MovementThreshold;
+            }
             float movedValue = moved ? 1.0f : 0.0f;
+
+            if (s_Data.ActiveCameraIsEditor)
+                s_Data.EditorCameraMoved = moved;
+            else
+                s_Data.GameCameraMoved = moved;
+
+            if (!moved && s_Data.CameraMoved)
+            {
+                // Camera motion just stopped, reset accumulation so the path tracer can converge cleanly on the static view.
+                s_Data.FrameIndex = 0;
+                ClearAccumulationBuffers();
+            }
+            s_Data.CameraMoved = moved;
 
             if (s_Data.m_SceneDirty)
             {
@@ -381,6 +417,8 @@ namespace Wasteland
 
                 glUniform1i(s_Data.InstanceCountLocation, (int)s_Data.m_SceneInstances.size());
                 glUniform1i(s_Data.FrameIndexLocation, (int)s_Data.FrameIndex);
+                s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
+                s_Data.RayTracingShader->SetInt("u_LowQualityMode", s_Data.RayTracingLowQuality ? 1 : 0);
 
                 s_Data.m_SceneDirty = false;
             }
@@ -392,8 +430,8 @@ namespace Wasteland
                     s_Data.LightIndicies.push_back(i);
             }
 
-            uint32_t width = 1280;
-            uint32_t height = 720;
+            uint32_t width = s_Data.RayTracingWidth;
+            uint32_t height = s_Data.RayTracingHeight;
             glm::vec2 viewportSize = glm::vec2(width, height);
 
             glm::vec2 currentJitter = GetCurrentJitter(s_Data.FrameIndex, viewportSize);
@@ -401,18 +439,47 @@ namespace Wasteland
             uint32_t readIdx = s_Data.CurrentAccumulationIndex;
             uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
 
-            glActiveTexture(GL_TEXTURE0 + 4);
+            glActiveTexture(GL_TEXTURE0 + 3);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
+            glActiveTexture(GL_TEXTURE0 + 4);
             glBindTexture(GL_TEXTURE_2D, s_Data.DepthTextureID);
             s_Data.RayTracingShader->SetInt("u_DepthBuffer", 4); // Send the slot index to the shader
 
             s_Data.RayTracingShader->Bind();
             s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
-            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
+            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->SetInt("u_LowQualityMode", s_Data.RayTracingLowQuality ? 1 : 0);
+            s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
+            s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+            s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
+            s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
 
-            glBindImageTexture(0, s_Data.RayTracingTexture, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_READ_WRITE, GL_RGBA32F, 0, GL_READ_WRITE);
+            uint32_t currentFrameIndex = s_Data.FrameIndex;
+            float accumulationAlpha = 1.0f;
+            if (s_Data.RayTracingAccumulate)
+            {
+                bool bothCamerasStationary = !s_Data.EditorCameraMoved && !s_Data.GameCameraMoved;
+                if (s_Data.CameraMoved)
+                {
+                    accumulationAlpha = 0.2f;
+                }
+                else if (bothCamerasStationary && currentFrameIndex > 4)
+                {
+                    accumulationAlpha = 0.02f;
+                }
+                else
+                {
+                    accumulationAlpha = 1.0f / (float)(currentFrameIndex + 1);
+                }
+                accumulationAlpha = glm::clamp(accumulationAlpha, 0.02f, 1.0f);
+            }
+            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
+
+            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
+            GLboolean layered = GL_FALSE;
+            glBindImageTexture(0, s_Data.RayTracingTexture, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, layered, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(2, s_Data.BloomTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
 
             for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
             {
@@ -435,7 +502,7 @@ namespace Wasteland
             playerProjection[2][0] += (currentJitter.x * 2.0f - 1.0f) / viewportSize.x; // Add jitter to the perspective matrix column 2
             playerProjection[2][1] += (currentJitter.y * 2.0f - 1.0f) / viewportSize.y;
 
-            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
             s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
             s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
@@ -457,74 +524,72 @@ namespace Wasteland
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            // 2. Spatial Bilateral Blur (Added for noise reduction)
-            s_Data.RayTracingShader->SetInt("u_PassID", 7);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+            if (!s_Data.RayTracingLowQuality)
+            {
+                // 2. Spatial Bilateral Blur (Added for noise reduction)
+                s_Data.RayTracingShader->SetInt("u_PassID", 7);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
-            // 3. Bloom Threshold
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 3);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+                // 3. Bloom Threshold
+                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                s_Data.RayTracingShader->SetInt("u_PassID", 3);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
-            // 4. Bloom Blur
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 4);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+                // 4. Bloom Blur
+                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                glBindImageTexture(7, s_Data.BloomTempTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                s_Data.RayTracingShader->SetInt("u_PassID", 4);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
-            glBindImageTexture(7, s_Data.BloomTempTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 5);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+                glBindImageTexture(7, s_Data.BloomTempTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                s_Data.RayTracingShader->SetInt("u_PassID", 5);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
 
-            // 5. Composite
-            glBindImageTexture(2, s_Data.BloomTextureID, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            s_Data.RayTracingShader->SetInt("u_PassID", 6);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+                // 5. Composite
+                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
+                s_Data.RayTracingShader->SetInt("u_PassID", 6);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+            }
 
-            s_Data.RayTracingShader->SetInt("u_PassID", 8);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-            s_Data.RayTracingShader->SetInt("u_PassID", 9);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            if (!s_Data.RayTracingLowQuality)
+            {
+                s_Data.RayTracingShader->SetInt("u_PassID", 8);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
 
             s_Data.RayTracingShader->Unbind();
 
-            if (s_Data.FrameIndex <= 1000)
+            if (currentFrameIndex >= 1000)
             {
                 s_Data.FrameIndex = 0;
                 ClearAccumulationBuffers();
             }
             else
             {
-                s_Data.FrameIndex++;
+                s_Data.FrameIndex = currentFrameIndex + 1;
             }
 
-            // 1. Calculate the blend factor based on movement
-            // If camera moved significantly, blend faster (0.2f), otherwise accumulate smoothly (1.0f / N)
-            float accumulationAlpha = s_Data.CameraMoved ? 0.2f : (1.0f / (float)(s_Data.FrameIndex + 1));
+            if (s_Data.ActiveCameraIsEditor)
+            {
+                s_Data.LastEditorCameraPosition = s_Data.CurrentCameraPosition;
+                s_Data.LastEditorCameraPitch = s_Data.CurrentCameraPitch;
+                s_Data.LastEditorCameraYaw = s_Data.CurrentCameraYaw;
+            }
+            else
+            {
+                s_Data.LastGameCameraPosition = s_Data.CurrentCameraPosition;
+                s_Data.LastGameCameraPitch = s_Data.CurrentCameraPitch;
+                s_Data.LastGameCameraYaw = s_Data.CurrentCameraYaw;
+            }
 
-            // 2. Clamp it so it doesn't get too small (prevents extreme ghosting)
-            accumulationAlpha = glm::clamp(accumulationAlpha, 0.05f, 1.0f);
-
-            // 3. Upload to shader
-            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
-
-            // 4. IMPORTANT: Remove the "s_Data.FrameIndex = 0;" hard reset from here.
-            // Only increment the FrameIndex.
-            s_Data.FrameIndex++;
-
-            s_Data.LastCameraPitch = s_Data.CurrentCameraPitch;
-            s_Data.LastCameraYaw = s_Data.CurrentCameraYaw;
             s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
-            s_Data.LastCameraPosition = s_Data.CurrentCameraPosition;
             s_Data.CurrentAccumulationIndex = 1 - s_Data.CurrentAccumulationIndex;
             s_Data.Stats.DrawCalls++;
             return;
@@ -566,6 +631,20 @@ namespace Wasteland
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
     void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
+    bool Renderer3D::IsRayTracingLowQuality() { return s_Data.RayTracingLowQuality; }
+    void Renderer3D::SetRayTracingLowQuality(bool enabled)
+    {
+        s_Data.RayTracingLowQuality = enabled;
+        s_Data.FrameIndex = 0;
+        ClearAccumulationBuffers();
+    }
+    bool Renderer3D::IsRayTracingAccumulate() { return s_Data.RayTracingAccumulate; }
+    void Renderer3D::SetRayTracingAccumulate(bool enabled)
+    {
+        s_Data.RayTracingAccumulate = enabled;
+        s_Data.FrameIndex = 0;
+        ClearAccumulationBuffers();
+    }
     uint32_t Renderer3D::GetRayTraceTargetID() { return s_Data.RayTracingOutput->GetRendererID(); }
     void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
     {

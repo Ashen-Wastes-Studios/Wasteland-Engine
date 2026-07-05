@@ -45,6 +45,10 @@ namespace Wasteland
         static Statistics GetStats();
         static bool IsRayTracingEnabled();
         static void SetRayTracingEnabled(bool enabled);
+        static bool IsRayTracingLowQuality();
+        static void SetRayTracingLowQuality(bool enabled);
+        static bool IsRayTracingAccumulate();
+        static void SetRayTracingAccumulate(bool enabled);
         static uint32_t GetRayTraceTargetID();
         static void ResizeRayTraceTarget(uint32_t width, uint32_t height);
 

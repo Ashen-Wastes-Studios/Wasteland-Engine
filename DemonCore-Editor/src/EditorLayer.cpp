@@ -1,6 +1,15 @@
 #include "EditorLayer.h"
 
 #include <imgui/imgui.h>
+#ifdef _WIN32
+#include <Windows.h>
+#endif
+#include <glad/glad.h>
+
+#include <sstream>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -20,6 +29,249 @@
 
 namespace Wasteland
 {
+
+// Simple system stats helpers (cross-platform)
+#if defined(_WIN32)
+static unsigned long long FileTimeToULL(const FILETIME &ft)
+{
+	return ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+}
+
+static double GetCPUUsagePercent()
+{
+	static unsigned long long lastIdle = 0, lastTotal = 0;
+	FILETIME idleTime, kernelTime, userTime;
+	if (!GetSystemTimes(&idleTime, &kernelTime, &userTime))
+		return 0.0;
+
+	unsigned long long idle = FileTimeToULL(idleTime);
+	unsigned long long kernel = FileTimeToULL(kernelTime);
+	unsigned long long user = FileTimeToULL(userTime);
+
+	unsigned long long total = (kernel + user);
+
+	unsigned long long totalDiff = total - lastTotal;
+	unsigned long long idleDiff = idle - lastIdle;
+
+	double usage = 0.0;
+	if (totalDiff > 0)
+		usage = (double)(totalDiff - idleDiff) * 100.0 / (double)totalDiff;
+
+	lastTotal = total;
+	lastIdle = idle;
+	return usage;
+}
+
+static void GetMemoryUsageMB(double &usedMB, double &totalMB, double &percent)
+{
+	MEMORYSTATUSEX mem;
+	mem.dwLength = sizeof(MEMORYSTATUSEX);
+	if (!GlobalMemoryStatusEx(&mem))
+	{
+		usedMB = totalMB = percent = 0.0;
+		return;
+	}
+	totalMB = (double)mem.ullTotalPhys / (1024.0 * 1024.0);
+	double availMB = (double)mem.ullAvailPhys / (1024.0 * 1024.0);
+	usedMB = totalMB - availMB;
+	percent = (totalMB > 0.0) ? (usedMB * 100.0 / totalMB) : 0.0;
+}
+
+static bool GetGPUVRAMUsagePercent(float &outPercent)
+{
+	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+	if (!ext)
+		return false;
+
+	// Prefer NVIDIA NVX extension
+	if (strstr(ext, "GL_NVX_gpu_memory_info"))
+	{
+		const GLenum GL_GPU_MEM_TOTAL = 0x9048;
+		const GLenum GL_GPU_MEM_CUR = 0x9049;
+		GLint totalKB = 0, availKB = 0;
+		glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
+		glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
+		if (totalKB <= 0)
+			return false;
+		int usedKB = totalKB - availKB;
+		outPercent = (float)usedKB * 100.0f / (float)totalKB;
+		return true;
+	}
+
+	// Fallback: AMD ATI extension returns free memory but no explicit total; skip percent
+	if (strstr(ext, "GL_ATI_meminfo"))
+	{
+		// We won't compute percent here since total isn't provided reliably
+		return false;
+	}
+
+	return false;
+}
+
+#elif defined(__linux__)
+#include <sys/sysinfo.h>
+static double GetCPUUsagePercent()
+{
+	static unsigned long long lastTotal = 0, lastIdle = 0;
+	std::ifstream proc("/proc/stat");
+	if (!proc.is_open())
+		return 0.0;
+	std::string line;
+	std::getline(proc, line);
+	proc.close();
+
+	std::istringstream ss(line);
+	std::string cpu;
+	unsigned long long user, nice, system, idle, iowait, irq, softirq, steal;
+	ss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+	unsigned long long idleAll = idle + iowait;
+	unsigned long long total = user + nice + system + idle + iowait + irq + softirq + steal;
+
+	unsigned long long totalDiff = total - lastTotal;
+	unsigned long long idleDiff = idleAll - lastIdle;
+	double usage = 0.0;
+	if (totalDiff > 0)
+		usage = (double)(totalDiff - idleDiff) * 100.0 / (double)totalDiff;
+
+	lastTotal = total;
+	lastIdle = idleAll;
+	return usage;
+}
+
+static void GetMemoryUsageMB(double &usedMB, double &totalMB, double &percent)
+{
+	struct sysinfo info;
+	if (sysinfo(&info) != 0)
+	{
+		usedMB = totalMB = percent = 0.0;
+		return;
+	}
+	unsigned long long total = info.totalram * (unsigned long long)info.mem_unit;
+	unsigned long long free = (info.freeram + info.bufferram) * (unsigned long long)info.mem_unit;
+	unsigned long long used = total - free;
+	totalMB = (double)total / (1024.0 * 1024.0);
+	usedMB = (double)used / (1024.0 * 1024.0);
+	percent = (totalMB > 0.0) ? (usedMB * 100.0 / totalMB) : 0.0;
+}
+
+static bool GetGPUVRAMUsagePercent(float &outPercent)
+{
+	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+	if (!ext)
+		return false;
+	if (strstr(ext, "GL_NVX_gpu_memory_info"))
+	{
+		const GLenum GL_GPU_MEM_TOTAL = 0x9048;
+		const GLenum GL_GPU_MEM_CUR = 0x9049;
+		GLint totalKB = 0, availKB = 0;
+		glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
+		glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
+		if (totalKB <= 0)
+			return false;
+		int usedKB = totalKB - availKB;
+		outPercent = (float)usedKB * 100.0f / (float)totalKB;
+		return true;
+	}
+	return false;
+}
+
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_host.h>
+#include <sys/sysctl.h>
+static double GetCPUUsagePercent()
+{
+	static natural_t numCPU = 0;
+	static processor_info_array_t cpuInfo = nullptr;
+	static mach_msg_type_number_t cpuInfoCount = 0;
+	static uint64_t lastIdle = 0, lastTotal = 0;
+
+	mach_port_t host = mach_host_self();
+	natural_t cpuCount;
+	processor_info_array_t infoArray;
+	mach_msg_type_number_t infoCount;
+	if (host_processor_info(host, PROCESSOR_CPU_LOAD_INFO, &cpuCount, &infoArray, &infoCount) != KERN_SUCCESS)
+		return 0.0;
+
+	uint64_t idle = 0, total = 0;
+	for (natural_t i = 0; i < cpuCount; ++i)
+	{
+		processor_cpu_load_info_data_t *cpu = (processor_cpu_load_info_data_t *)(infoArray + i * CPU_STATE_MAX);
+		uint64_t user = cpu->cpu_ticks[CPU_STATE_USER];
+		uint64_t nice = cpu->cpu_ticks[CPU_STATE_NICE];
+		uint64_t system = cpu->cpu_ticks[CPU_STATE_SYSTEM];
+		uint64_t idleTicks = cpu->cpu_ticks[CPU_STATE_IDLE];
+		idle += idleTicks;
+		total += user + nice + system + idleTicks;
+	}
+
+	vm_deallocate(mach_task_self(), (vm_address_t)infoArray, infoCount * sizeof(integer_t));
+
+	uint64_t totalDiff = total - lastTotal;
+	uint64_t idleDiff = idle - lastIdle;
+	double usage = 0.0;
+	if (totalDiff > 0)
+		usage = (double)(totalDiff - idleDiff) * 100.0 / (double)totalDiff;
+
+	lastTotal = total;
+	lastIdle = idle;
+	return usage;
+}
+
+static void GetMemoryUsageMB(double &usedMB, double &totalMB, double &percent)
+{
+	uint64_t totalBytes = 0;
+	size_t len = sizeof(totalBytes);
+	if (sysctlbyname("hw.memsize", &totalBytes, &len, NULL, 0) != 0)
+	{
+		usedMB = totalMB = percent = 0.0;
+		return;
+	}
+
+	mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+	vm_statistics64_data_t vmstat;
+	if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vmstat, &count) != KERN_SUCCESS)
+	{
+		usedMB = totalMB = percent = 0.0;
+		return;
+	}
+
+	uint64_t pageSize = sysconf(_SC_PAGESIZE);
+	uint64_t free = (uint64_t)vmstat.free_count * pageSize + (uint64_t)vmstat.inactive_count * pageSize;
+	uint64_t used = totalBytes - free;
+
+	totalMB = (double)totalBytes / (1024.0 * 1024.0);
+	usedMB = (double)used / (1024.0 * 1024.0);
+	percent = (totalMB > 0.0) ? (usedMB * 100.0 / totalMB) : 0.0;
+}
+
+static bool GetGPUVRAMUsagePercent(float &outPercent)
+{
+	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+	if (!ext)
+		return false;
+	if (strstr(ext, "GL_NVX_gpu_memory_info"))
+	{
+		const GLenum GL_GPU_MEM_TOTAL = 0x9048;
+		const GLenum GL_GPU_MEM_CUR = 0x9049;
+		GLint totalKB = 0, availKB = 0;
+		glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
+		glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
+		if (totalKB <= 0)
+			return false;
+		int usedKB = totalKB - availKB;
+		outPercent = (float)usedKB * 100.0f / (float)totalKB;
+		return true;
+	}
+	return false;
+}
+
+#else
+// Unknown platform: provide stubs
+static double GetCPUUsagePercent() { return 0.0; }
+static void GetMemoryUsageMB(double &usedMB, double &totalMB, double &percent) { usedMB = totalMB = percent = 0.0; }
+static bool GetGPUVRAMUsagePercent(float &outPercent) { return false; }
+#endif
 
 	extern const std::filesystem::path g_AssetPath;
 
@@ -278,6 +530,26 @@ namespace Wasteland
 			ImGui::Text("Application FPS: %.1f", io.Framerate);
 			ImGui::Text("Frame Time: %.3f ms", 1000.0f / io.Framerate);
 
+			// System stats
+	#ifdef _WIN32
+			double cpu = GetCPUUsagePercent();
+			double usedMB = 0.0, totalMB = 0.0, memPct = 0.0;
+			GetMemoryUsageMB(usedMB, totalMB, memPct);
+			float gpuPct = 0.0f;
+			bool haveGPU = GetGPUVRAMUsagePercent(gpuPct);
+
+			ImGui::Text("CPU Usage: %.1f%%", cpu);
+			ImGui::Text("RAM: %.0f / %.0f MB (%.0f%%)", usedMB, totalMB, memPct);
+			if (haveGPU)
+				ImGui::Text("GPU VRAM Usage: %.1f%%", gpuPct);
+			else
+				ImGui::Text("GPU VRAM Usage: N/A");
+	#else
+			ImGui::Text("CPU Usage: N/A");
+			ImGui::Text("RAM: N/A");
+			ImGui::Text("GPU VRAM Usage: N/A");
+	#endif
+
 			ImGui::Separator();
 
 			auto stats = Wasteland::Renderer2D::GetStats();
@@ -319,50 +591,54 @@ namespace Wasteland
 				Wasteland::Renderer3D::SetSamplesPerPixel(samplesPerPixel);
 			}
 
-			float movementThreshold = Wasteland::Renderer3D::GetMovementThreshold();
-			float minThreshold = 0.00001f;
-			float maxThreshold = 0.1f;
-			if (ImGui::SliderFloat("Movement Threshold", &movementThreshold, minThreshold, maxThreshold, "%.5f"))
-			{
-				Wasteland::Renderer3D::SetMovementThreshold(movementThreshold);
-			}
+				bool lowQuality = Wasteland::Renderer3D::IsRayTracingLowQuality();
+				if (ImGui::Checkbox("Low Quality Path Tracing", &lowQuality))
+				{
+					Wasteland::Renderer3D::SetRayTracingLowQuality(lowQuality);
+				}
 
-			ImGui::Separator();
-			ImGui::Text("Sky Settings");
+				bool accumulate = Wasteland::Renderer3D::IsRayTracingAccumulate();
+				if (ImGui::Checkbox("Accumulate", &accumulate))
+				{
+					Wasteland::Renderer3D::SetRayTracingAccumulate(accumulate);
+				}
 
-			glm::vec3 skyBottomColor = Wasteland::Renderer3D::GetSkyBottomColor();
-			float bottomColor[3] = {skyBottomColor.r, skyBottomColor.g, skyBottomColor.b};
-			if (ImGui::ColorEdit3("Sky Bottom Color", bottomColor))
-			{
-				Wasteland::Renderer3D::SetSkyBottomColor(glm::vec3(bottomColor[0], bottomColor[1], bottomColor[2]));
-			}
+				ImGui::Separator();
+				ImGui::Text("Sky Settings");
 
-			glm::vec3 skyTopColor = Wasteland::Renderer3D::GetSkyTopColor();
-			float topColor[3] = {skyTopColor.r, skyTopColor.g, skyTopColor.b};
-			if (ImGui::ColorEdit3("Sky Top Color", topColor))
-			{
-				Wasteland::Renderer3D::SetSkyTopColor(glm::vec3(topColor[0], topColor[1], topColor[2]));
-			}
+				glm::vec3 skyBottomColor = Wasteland::Renderer3D::GetSkyBottomColor();
+				float bottomColor[3] = {skyBottomColor.r, skyBottomColor.g, skyBottomColor.b};
+				if (ImGui::ColorEdit3("Sky Bottom Color", bottomColor))
+				{
+					Wasteland::Renderer3D::SetSkyBottomColor(glm::vec3(bottomColor[0], bottomColor[1], bottomColor[2]));
+				}
 
-			ImGui::End();
+				glm::vec3 skyTopColor = Wasteland::Renderer3D::GetSkyTopColor();
+				float topColor[3] = {skyTopColor.r, skyTopColor.g, skyTopColor.b};
+				if (ImGui::ColorEdit3("Sky Top Color", topColor))
+				{
+					Wasteland::Renderer3D::SetSkyTopColor(glm::vec3(topColor[0], topColor[1], topColor[2]));
+				}
 
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});
-			ImGui::Begin("Viewport");
+				ImGui::End();
 
-			ImVec2 minBound = ImGui::GetCursorScreenPos();
+				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});
+				ImGui::Begin("Viewport");
 
-			m_ViewportFocused = ImGui::IsWindowFocused();
-			m_ViewportHovered = ImGui::IsWindowHovered();
-			Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
+				ImVec2 minBound = ImGui::GetCursorScreenPos();
 
-			ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
-			m_ViewportSize = {viewportPanelSize.x, viewportPanelSize.y};
+				m_ViewportFocused = ImGui::IsWindowFocused();
+				m_ViewportHovered = ImGui::IsWindowHovered();
+				Application::Get().GetImGuiLayer()->BlockEvents(!m_ViewportFocused && !m_ViewportHovered);
 
-			ImVec2 maxBound = {minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y};
-			m_ViewportBounds[0] = {minBound.x, minBound.y};
-			m_ViewportBounds[1] = {maxBound.x, maxBound.y};
+				ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
+				m_ViewportSize = {viewportPanelSize.x, viewportPanelSize.y};
 
-			uint32_t textureID = 0;
+				ImVec2 maxBound = {minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y};
+				m_ViewportBounds[0] = {minBound.x, minBound.y};
+				m_ViewportBounds[1] = {maxBound.x, maxBound.y};
+
+				uint32_t textureID = 0;
 			if (Wasteland::Renderer3D::IsRayTracingEnabled())
 			{
 				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();

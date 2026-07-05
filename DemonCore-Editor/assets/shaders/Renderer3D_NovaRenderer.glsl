@@ -58,6 +58,7 @@ uniform float u_AccumulationAlpha;
 uniform float u_NormalStrength;
 uniform float u_RoughnessBias;
 uniform float u_AOIntensity;
+uniform int u_LowQualityMode;
 uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
@@ -211,7 +212,9 @@ float Halton(int index, int base) {
 }
 
 vec2 GetJitter(int frameIndex, float cameraMoved) {
-    int effectiveIndex = (cameraMoved > 0.5) ? frameIndex : 0;
+    // When the camera is stationary, advance the Halton sequence each frame.
+    // When the camera is moving, freeze the jitter so the history does not reproject incorrectly.
+    int effectiveIndex = (cameraMoved > 0.5) ? 0 : frameIndex;
     float x = Halton(effectiveIndex % 16 + 1, 2);
     float y = Halton(effectiveIndex % 16 + 1, 3);
     return vec2(x, y) - 0.5;
@@ -310,7 +313,8 @@ void RunTraceAndDenoise()
         vec3 sampleIncomingLight = vec3(0.0);
         bool sampleHitAnything = false;
 
-        for(int bounce = 0; bounce < 5; bounce++) 
+        int maxBounces = (u_LowQualityMode == 1) ? 2 : 5;
+        for(int bounce = 0; bounce < maxBounces; bounce++) 
         {
             vec3 surfaceNormal = vec3(0.0);
             float surfaceRough = 0.0;
@@ -380,7 +384,8 @@ void RunTraceAndDenoise()
                 vec3 diffuseColor = hitAlbedo * (1.0 - metal);
 
                 vec3 directLight = vec3(0.0);
-                for(int i = 0; i < u_InstanceCount; i++) 
+                int maxLights = (u_LowQualityMode == 1) ? min(u_InstanceCount, 1) : u_InstanceCount;
+                for(int i = 0; i < maxLights; i++) 
                 {
                     if(Instances[i].Emission.w > 0.0) 
                     {
@@ -455,9 +460,8 @@ void RunTemporalAccumulation() {
     // 2. Get current noisy trace
     vec3 current = imageLoad(img_Output, pixelCoords).rgb;
 
-    // 3. Blend: This is what "cleans up" the noise
-    // 0.05 is slow, high quality. 0.2 is fast, low quality.
-    float alpha = 0.2; 
+    // 3. Blend using the current accumulation alpha from the renderer
+    float alpha = u_AccumulationAlpha;
     vec3 result = mix(history, current, alpha);
 
     // 4. Store in accumulation so it becomes the "history" for next frame
