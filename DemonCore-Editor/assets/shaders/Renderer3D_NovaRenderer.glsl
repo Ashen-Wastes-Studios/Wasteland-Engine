@@ -346,7 +346,20 @@ void RunTraceAndDenoise()
 
                     // 2. Perform Texture/Material Sampling
                     vec2 uv = CalculateUV(localRay.Origin + tLocal * localRay.Direction, inst);
-                    vec4 packedData = texture(s_PackedMaterialMap, uv);
+                    vec4 packedData = vec4(0.5, 0.5, 0.0, 1.0);
+                    vec3 sampledAlbedo = vec3(1.0);
+
+                    // Dynamically sample the correct texture for this specific object
+                    if (inst.TextureID >= 0 && inst.TextureID < 32) 
+                    {
+                        sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
+                    }
+
+                    if (inst.PackedMaterialMapID >= 0 && inst.PackedMaterialMapID < 32)
+                    {
+                        // Assuming you have a similar array for material maps, or they share the scene textures pool
+                        packedData = texture(u_SceneTextures[inst.PackedMaterialMapID], uv); 
+                    }
                     
                     // Unpack and Transform Normal
                     vec3 localTangentNormal = normalize(packedData.rgb * 2.0 - 1.0);
@@ -360,7 +373,6 @@ void RunTraceAndDenoise()
                     
                     hasHit = true;
 
-                    vec3 albedo = vec3(uv, 0.0);
                     float tWorld = distance(currentRay.Origin, worldHit);
                     if (tWorld < closestHit) 
                     {
@@ -368,9 +380,8 @@ void RunTraceAndDenoise()
                         hitIndex = i;
                         hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
                         localHitPoint = worldHit; 
-                        hitAlbedo = inst.Albedo.rgb;
+                        hitAlbedo = sampledAlbedo * inst.Albedo.rgb;
                     }
-                    finalColor += albedo * hitAlbedo;
                 }
             }
 

@@ -18,7 +18,7 @@ Entities:
       TextureWidth: 0
       TextureHeight: 0
       TextureIndex: 0
-      TexturePath: assets/
+      TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
       Metallic: 0
@@ -43,7 +43,7 @@ Entities:
       TextureWidth: 0
       TextureHeight: 0
       TextureIndex: 0
-      TexturePath: assets/
+      TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
       Metallic: 0
@@ -68,7 +68,7 @@ Entities:
       TextureWidth: 0
       TextureHeight: 0
       TextureIndex: 0
-      TexturePath: assets/
+      TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
       Metallic: 0
@@ -96,11 +96,11 @@ Entities:
       TextureWidth: 8
       TextureHeight: 8
       TextureIndex: 1
-      TexturePath: assets/textures/Checkerboard.png
+      TexturePath: assets/assets\textures\Checkerboard.png
       HasGeneratedMaps: true
       NormalStrength: 0
-      Metallic: 1
-      Roughness: 0.5
+      Metallic: 0
+      Roughness: 0
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
   - Entity: 423499880675714022

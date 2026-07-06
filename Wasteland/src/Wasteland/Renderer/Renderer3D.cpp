@@ -69,9 +69,6 @@ namespace Wasteland
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1;
 
-        std::array<Ref<Texture2D>, MaxTextureSlots> MaterialTextureSlots;
-        uint32_t MaterialTextureSlotIndex = 0;
-
         bool RayTracingEnabled = true;
         bool RayTracingLowQuality = false;
         bool RayTracingAccumulate = true;
@@ -96,7 +93,7 @@ namespace Wasteland
         float LastGameCameraPitch = 0.0f;
         float LastGameCameraYaw = 0.0f;
         int FrameIndexLocation;
-        uint32_t SamplesPerPixel = 4;
+        uint32_t SamplesPerPixel = 1;
         uint32_t StillFrames = 0;
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
@@ -249,6 +246,12 @@ namespace Wasteland
         s_Data.TextureSlots[0] = whiteTexture;
 
         s_Data.m_SceneInstances.reserve(maxInstances);
+
+        s_Data.RayTracingShader->Bind();
+        int samplers[32];
+        for (int i = 0; i < 32; i++)
+            samplers[i] = i + 15; // Offset by 15 to avoid lower bindings
+        s_Data.RayTracingShader->SetIntArray("u_SceneTextures", samplers, 32);
     }
 
     void Renderer3D::Shutdown()
@@ -481,10 +484,10 @@ namespace Wasteland
             glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, layered, 0, GL_WRITE_ONLY, GL_RGBA32F);
             glBindImageTexture(2, s_Data.BloomTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
 
-            for (uint32_t i = 0; i < s_Data.MaterialTextureSlotIndex; i++)
+            for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
             {
-                glActiveTexture(GL_TEXTURE0 + i);
-                glBindTexture(GL_TEXTURE_2D, s_Data.MaterialTextureSlots[i]->GetRendererID());
+                glActiveTexture(GL_TEXTURE0 + i + 15);
+                glBindTexture(GL_TEXTURE_2D, s_Data.TextureSlots[i]->GetRendererID());
             }
 
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
@@ -799,6 +802,10 @@ namespace Wasteland
         s_Data.RayTracingShader->SetFloat("u_NormalStrength", normalStrength);
         s_Data.RayTracingShader->SetFloat("u_RoughnessBias", roughBias);
 
+        Ref<Texture2D> inputTexture = Texture2D::Create(texturePath);
+        glActiveTexture(GL_TEXTURE0 + 11);
+        inputTexture->Bind();
+
         glBindImageTexture(8, s_Data.GeneratedTextureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
 
         glDispatchCompute(s_Data.RayTracingWidth / 8, s_Data.RayTracingHeight / 8, 1);
@@ -871,7 +878,30 @@ namespace Wasteland
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
 
-            instance.TextureID = material.Texture ? material.Texture->GetRendererID() : -1;
+            int textureSlot = -1;
+            if (material.Texture)
+            {
+                // Check if the texture is already registered in our slots array
+                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                {
+                    if (s_Data.TextureSlots[i]->GetRendererID() == material.Texture->GetRendererID())
+                    {
+                        textureSlot = (int)i;
+                        break;
+                    }
+                }
+
+                // If it's a new texture, add it to an available slot
+                if (textureSlot == -1 && s_Data.TextureSlotIndex < Renderer3DData::MaxTextureSlots)
+                {
+                    textureSlot = (int)s_Data.TextureSlotIndex;
+                    s_Data.TextureSlots[s_Data.TextureSlotIndex] = material.Texture;
+                    s_Data.TextureSlotIndex++;
+                }
+            }
+
+            instance.TextureID = textureSlot;
+            instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
@@ -970,7 +1000,30 @@ namespace Wasteland
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
 
-            instance.TextureID = material.Texture ? material.Texture->GetRendererID() : -1;
+            int textureSlot = -1;
+            if (material.Texture)
+            {
+                // Check if the texture is already registered in our slots array
+                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                {
+                    if (s_Data.TextureSlots[i]->GetRendererID() == material.Texture->GetRendererID())
+                    {
+                        textureSlot = (int)i;
+                        break;
+                    }
+                }
+
+                // If it's a new texture, add it to an available slot
+                if (textureSlot == -1 && s_Data.TextureSlotIndex < Renderer3DData::MaxTextureSlots)
+                {
+                    textureSlot = (int)s_Data.TextureSlotIndex;
+                    s_Data.TextureSlots[s_Data.TextureSlotIndex] = material.Texture;
+                    s_Data.TextureSlotIndex++;
+                }
+            }
+
+            instance.TextureID = textureSlot;
+            instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
