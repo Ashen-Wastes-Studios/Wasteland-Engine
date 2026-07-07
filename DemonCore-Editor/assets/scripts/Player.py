@@ -77,7 +77,7 @@ class Player:
             if mouseDelta is not None and (abs(mouseDelta[0]) > 0.0 or abs(mouseDelta[1]) > 0.0):
                 deltaX = max(min(mouseDelta[0] * self.mouseSensitivity, self.maxTurnSpeed), -self.maxTurnSpeed)
                 deltaY = max(min(mouseDelta[1] * self.mouseSensitivity, self.maxTurnSpeed), -self.maxTurnSpeed)
-                self.targetYaw += deltaX
+                self.targetYaw -= deltaX
                 self.targetPitch -= deltaY
                 self.targetPitch = max(min(self.targetPitch, self.maxPitch), self.minPitch)
 
