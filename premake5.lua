@@ -98,6 +98,7 @@ project "Wasteland"
 		"ImGui",
 		"yaml-cpp",
 		"Box2D",
+		"Box3D",
 		"python314"
 	}
 
