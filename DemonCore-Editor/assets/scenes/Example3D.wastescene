@@ -21,8 +21,8 @@ Entities:
       TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
+      Metallic: 0.349999994
+      Roughness: 0.349999994
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
   - Entity: 322465073288679826
@@ -46,8 +46,8 @@ Entities:
       TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
+      Metallic: 0.25
+      Roughness: 0.449999988
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
   - Entity: 10337039146754437154
@@ -71,8 +71,8 @@ Entities:
       TexturePath: assets/textures/
       HasGeneratedMaps: false
       NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
+      Metallic: 0.5
+      Roughness: 0.550000012
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
   - Entity: 13683496762130521316
@@ -118,14 +118,14 @@ Entities:
       TilingFactor: 1
     MaterialComponent:
       Albedo: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TexturePath: assets/textures/
-      HasGeneratedMaps: false
+      TextureWidth: 8
+      TextureHeight: 8
+      TextureIndex: 1
+      TexturePath: assets/assets\textures\Checkerboard.png
+      HasGeneratedMaps: true
       NormalStrength: 0
       Metallic: 1
-      Roughness: 0.150000006
+      Roughness: 0.25
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
   - Entity: 15254053731791671277
