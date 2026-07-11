@@ -44,7 +44,6 @@ namespace Wasteland
 		void OnScenePlay();
 		void OnSceneSimulate();
 		void OnSceneStop();
-		void OnSceneEditModel();
 
 		void OnDuplicateEntity();
 

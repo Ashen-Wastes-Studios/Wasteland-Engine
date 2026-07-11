@@ -775,13 +775,6 @@ namespace Wasteland
 				OnSceneStop();
 		}
 
-		ImGui::SameLine();
-		if (ImGui::Button("Edit Model"))
-		{
-			if (m_SceneState == SceneState::Edit)
-				OnSceneEditModel();
-		}
-
 		ImGui::PopStyleVar();
 		ImGui::PopStyleVar();
 
@@ -1110,10 +1103,6 @@ namespace Wasteland
 		m_ActiveScene = m_EditorScene;
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
-	}
-
-	void EditorLayer::OnSceneEditModel()
-	{
 	}
 
 	void EditorLayer::OnDuplicateEntity()
