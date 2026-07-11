@@ -22,6 +22,7 @@ IncludeDir["entt"] = "Wasteland/vendor/entt/single_include"
 IncludeDir["yaml_cpp"] = "Wasteland/vendor/yaml-cpp/include"
 IncludeDir["ImGuizmo"] = "Wasteland/vendor/ImGuizmo"
 IncludeDir["Box2D"] = "Wasteland/vendor/Box2D/include"
+IncludeDir["Box3D"] = "Wasteland/vendor/Box3D/include"
 IncludeDir["pybind11"] = "Wasteland/vendor/pybind11/include"
 
 pythonpath = "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64"
@@ -80,6 +81,7 @@ project "Wasteland"
 		"%{IncludeDir.yaml_cpp}",
 		"%{IncludeDir.ImGuizmo}",
 		"%{IncludeDir.Box2D}",
+		"%{IncludeDir.Box3D}",
 		"%{IncludeDir.pybind11}",
 		pythonpath .. "/include"
 	}
