@@ -34,15 +34,6 @@ void Sandbox2D::OnAttach()
 	m_CheckerboardTexture = Wasteland::Texture2D::Create("assets/textures/Checkerboard.png");
 	m_SpriteSheet = Wasteland::Texture2D::Create("assets/game/textures/RPGpack_sheet_2X.png");
 
-	m_TextureStairs = Wasteland::SubTexture2D::CreateFromCoords(m_SpriteSheet, { 0, 11 }, { 128.0f, 128.0f });
-	m_TextureTree = Wasteland::SubTexture2D::CreateFromCoords(m_SpriteSheet, { 2, 1 }, { 128.0f, 128.0f }, { 1, 2 });
-
-	m_MapWidth = s_MapWidth;
-	m_MapHeight = strlen(s_MapTiles) / s_MapWidth;
-
-	s_TextureMap['D'] = Wasteland::SubTexture2D::CreateFromCoords(m_SpriteSheet, { 6, 11 }, { 128.0f, 128.0f });
-	s_TextureMap['W'] = Wasteland::SubTexture2D::CreateFromCoords(m_SpriteSheet, { 11, 11 }, { 128.0f, 128.0f });
-
 	m_Particle.ColorBegin = { 254 / 255.0f, 212 / 255.0f, 123 / 255.0f, 1.0f };
 	m_Particle.ColorEnd = { 254 / 255.0f, 109 / 255.0f, 41 / 255.0f, 1.0f };
 	m_Particle.SizeBegin = 0.5f, m_Particle.SizeVariation = 0.3f, m_Particle.SizeEnd = 0.0f;

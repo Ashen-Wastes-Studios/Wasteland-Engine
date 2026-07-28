@@ -302,7 +302,6 @@ namespace Wasteland
 		WL_PROFILE_FUNCTION();
 
 		m_CheckerboardTexture = nullptr;
-		m_SpriteSheet = nullptr;
 
 		FramebufferSpecification fbSpec;
 		fbSpec.Attachments = {FramebufferTextureFormat::RGBA8, FramebufferTextureFormat::RED_INTEGER, FramebufferTextureFormat::Depth};
@@ -316,15 +315,6 @@ namespace Wasteland
 		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
-
-		m_TextureStairs = nullptr;
-		m_TextureTree = nullptr;
-
-		m_MapWidth = s_MapWidth;
-		m_MapHeight = strlen(s_MapTiles) / s_MapWidth;
-
-		s_TextureMap['D'] = nullptr;
-		s_TextureMap['W'] = nullptr;
 
 		m_CameraController.SetZoomLevel(5.0f);
 	}

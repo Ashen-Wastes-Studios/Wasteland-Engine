@@ -54,27 +54,17 @@ namespace Wasteland
 	private:
 		OrthographicCameraController m_CameraController;
 
-		// Temp
-		Ref<VertexArray> m_SquareVA;
-		Ref<Shader> m_FlatColorShader;
 		Ref<Framebuffer> m_Framebuffer;
 
 		Ref<Scene> m_ActiveScene;
 		Ref<Scene> m_EditorScene;
 		std::filesystem::path m_EditorScenePath;
-		Entity m_SquareEntity;
-		Entity m_CameraEntity;
-		Entity m_SecondCamera;
 
 		Entity m_HoveredEntity;
-
-		bool m_PrimaryCamera = true;
 
 		EditorCamera m_EditorCamera;
 
 		Ref<Texture2D> m_CheckerboardTexture;
-		Ref<Texture2D> m_SpriteSheet;
-		Ref<SubTexture2D> m_TextureStairs, m_TextureBarrel, m_TextureTree;
 
 		glm::vec2 m_ViewportSize = {0.0f, 0.0f};
 		glm::vec2 m_ViewportBounds[2];
@@ -89,9 +79,6 @@ namespace Wasteland
 		int m_GizmoType = -1;
 
 		bool m_ShowPhysicsColliders = false;
-
-		uint32_t m_MapWidth, m_MapHeight;
-		std::unordered_map<char, Ref<SubTexture2D>> s_TextureMap;
 
 		// Panels
 		SceneHierarchyPanel m_SceneHierarchyPanel;
