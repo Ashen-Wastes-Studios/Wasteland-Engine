@@ -243,11 +243,23 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
 
     // 0 = Cube, 1 = Sphere (based on your logic)
     if (int(inst.MaterialParams.z) == 0) {
-        // Cube UV logic (approximate mapping)
-        vec3 absPos = abs(normalizedPos);
-        if (absPos.x > absPos.y && absPos.x > absPos.z) return normalizedPos.yz * 0.5 + 0.5; // X-face
-        if (absPos.y > absPos.x && absPos.y > absPos.z) return normalizedPos.xz * 0.5 + 0.5; // Y-face
-        return normalizedPos.xy * 0.5 + 0.5; // Z-face
+        // Cube UV mapping - use localPos directly (range [-0.5, 0.5]) for proper 1:1 texture mapping
+        vec3 absLocal = abs(localPos);
+        float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
+        
+        if (maxAxis == absLocal.x) {
+            // +/- X face: use Z and Y
+            float signX = sign(localPos.x);
+            return vec2(localPos.z * signX + 0.5, localPos.y + 0.5);
+        } else if (maxAxis == absLocal.y) {
+            // +/- Y face: use X and Z
+            float signY = sign(localPos.y);
+            return vec2(localPos.x * signY + 0.5, localPos.z + 0.5);
+        } else {
+            // +/- Z face: use X and Y
+            float signZ = sign(localPos.z);
+            return vec2(localPos.x * signZ + 0.5, localPos.y + 0.5);
+        }
     } else {
         // Sphere UV logic
         float phi = atan(normalizedPos.z, normalizedPos.x);
