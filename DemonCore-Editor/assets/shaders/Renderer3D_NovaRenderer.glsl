@@ -246,7 +246,7 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
         // Cube UV mapping - use localPos directly (range [-0.5, 0.5]) for proper 1:1 texture mapping
         vec3 absLocal = abs(localPos);
         float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
-        
+
         if (maxAxis == absLocal.x) {
             // +/- X face: use Z and Y
             float signX = sign(localPos.x);
@@ -261,10 +261,16 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
             return vec2(localPos.x * signZ + 0.5, localPos.y + 0.5);
         }
     } else {
-        // Sphere UV logic
-        float phi = atan(normalizedPos.z, normalizedPos.x);
-        float theta = asin(normalizedPos.y);
-        return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+        // Sphere UV logic - FIXED VERSION
+        // For spheres, we need to calculate proper spherical coordinates
+        float phi = atan(localPos.z, localPos.x);  // atan2(z, x)
+        float theta = acos(clamp(localPos.y, -1.0, 1.0));  // acos(y) for latitude
+
+        // Convert to UV coordinates [0,1]
+        float u = phi / (2.0 * PI) + 0.5;
+        float v = theta / PI;
+
+        return vec2(u, v);
     }
 }
 
