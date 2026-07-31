@@ -573,18 +573,19 @@ namespace Wasteland
 			ImGui::Separator();
 			ImGui::Text("Ray Tracing Settings");
 
+			static const char* qualityItems[] = { "Low", "Medium", "High", "Ultra" };
+			int currentQuality = (int)Wasteland::Renderer3D::GetQualityPreset();
+			if (ImGui::Combo("Quality Preset", &currentQuality, qualityItems, IM_ARRAYSIZE(qualityItems)))
+			{
+				Wasteland::Renderer3D::SetQualityPreset((Wasteland::QualityPreset)currentQuality);
+			}
+
 			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
 			uint32_t minSamples = 1;
 			uint32_t maxSamples = 256;
 			if (ImGui::SliderScalar("Samples Per Pixel", ImGuiDataType_U32, &samplesPerPixel, &minSamples, &maxSamples))
 			{
 				Wasteland::Renderer3D::SetSamplesPerPixel(samplesPerPixel);
-			}
-
-			bool lowQuality = Wasteland::Renderer3D::IsRayTracingLowQuality();
-			if (ImGui::Checkbox("Low Quality Path Tracing", &lowQuality))
-			{
-				Wasteland::Renderer3D::SetRayTracingLowQuality(lowQuality);
 			}
 
 			bool accumulate = Wasteland::Renderer3D::IsRayTracingAccumulate();

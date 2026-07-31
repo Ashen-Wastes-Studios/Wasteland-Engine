@@ -70,8 +70,13 @@ namespace Wasteland
         uint32_t TextureSlotIndex = 1;
 
         bool RayTracingEnabled = true;
-        bool RayTracingLowQuality = false;
         bool RayTracingAccumulate = true;
+        QualityPreset CurrentQualityPreset = QualityPreset::Low;
+        int MaxBounces = 1;
+        int MaxLights = 1;
+        int IndirectRays = 0;
+        bool BloomEnabled = false;
+        bool BilateralBlurEnabled = false;
         Ref<Shader> RayTracingShader;
         Ref<Texture2D> RayTracingOutput;
 
@@ -113,6 +118,7 @@ namespace Wasteland
 
         glm::mat4 PrevViewProjection = glm::mat4(1.0f);
         glm::mat4 CurrentViewProjection = glm::mat4(1.0f);
+        glm::mat4 InverseViewProjection = glm::mat4(1.0f);
 
         glm::vec3 CurrentCameraPosition = glm::vec3(0.0f);
         float CurrentCameraPitch = 0.0f;
@@ -138,6 +144,8 @@ namespace Wasteland
     };
 
     static Renderer3DData s_Data;
+
+    static void ApplyQualityPreset();
 
     static void ClearAccumulationBuffers()
     {
@@ -252,6 +260,8 @@ namespace Wasteland
         for (int i = 0; i < 32; i++)
             samplers[i] = i + 15; // Offset by 15 to avoid lower bindings
         s_Data.RayTracingShader->SetIntArray("u_SceneTextures", samplers, 32);
+
+        ApplyQualityPreset();
     }
 
     void Renderer3D::Shutdown()
@@ -311,6 +321,7 @@ namespace Wasteland
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
+        s_Data.InverseViewProjection = glm::inverse(viewProj);
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
@@ -328,7 +339,7 @@ namespace Wasteland
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
+        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
         s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
@@ -345,6 +356,7 @@ namespace Wasteland
 
         s_Data.PrevViewProjection = s_Data.CurrentViewProjection;
         s_Data.CurrentViewProjection = viewProj;
+        s_Data.InverseViewProjection = glm::inverse(viewProj);
 
         s_Data.BasicShader->Bind();
         s_Data.BasicShader->SetMat4("u_ViewProjection", viewProj);
@@ -361,7 +373,7 @@ namespace Wasteland
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(viewProj));
+        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
         s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
@@ -415,14 +427,6 @@ namespace Wasteland
                                      s_Data.m_SceneInstances.data());
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-                s_Data.RayTracingShader->Bind();
-
-                glUniform1i(s_Data.InstanceCountLocation, (int)s_Data.m_SceneInstances.size());
-                glUniform1i(s_Data.FrameIndexLocation, (int)s_Data.FrameIndex);
-                s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
-                s_Data.RayTracingShader->SetInt("u_LowQualityMode", s_Data.RayTracingLowQuality ? 1 : 0);
-
                 s_Data.m_SceneDirty = false;
             }
 
@@ -446,16 +450,6 @@ namespace Wasteland
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
             glActiveTexture(GL_TEXTURE0 + 4);
             glBindTexture(GL_TEXTURE_2D, s_Data.DepthTextureID);
-            s_Data.RayTracingShader->SetInt("u_DepthBuffer", 4); // Send the slot index to the shader
-
-            s_Data.RayTracingShader->Bind();
-            s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
-            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
-            s_Data.RayTracingShader->SetInt("u_LowQualityMode", s_Data.RayTracingLowQuality ? 1 : 0);
-            s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
-            s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
-            s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
-            s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
 
             uint32_t currentFrameIndex = s_Data.FrameIndex;
             float accumulationAlpha = 1.0f;
@@ -476,7 +470,6 @@ namespace Wasteland
                 }
                 accumulationAlpha = glm::clamp(accumulationAlpha, 0.02f, 1.0f);
             }
-            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
 
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
             GLboolean layered = GL_FALSE;
@@ -493,76 +486,61 @@ namespace Wasteland
             uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
             uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
 
-            EditorCamera camera;
-
-            glm::mat4 editorProjection = camera.GetProjection();
-            editorProjection[2][0] += (currentJitter.x * 2.0f - 1.0f) / viewportSize.x; // Add jitter to the perspective matrix column 2
-            editorProjection[2][1] += (currentJitter.y * 2.0f - 1.0f) / viewportSize.y;
-
-            Camera playerCamera;
-
-            glm::mat4 playerProjection = playerCamera.GetProjection();
-            playerProjection[2][0] += (currentJitter.x * 2.0f - 1.0f) / viewportSize.x; // Add jitter to the perspective matrix column 2
-            playerProjection[2][1] += (currentJitter.y * 2.0f - 1.0f) / viewportSize.y;
-
-            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.RayTracingLowQuality ? 1 : s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->Bind();
+            s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
+            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
+            s_Data.RayTracingShader->SetInt("u_QualityLevel", (int)s_Data.CurrentQualityPreset);
+            s_Data.RayTracingShader->SetInt("u_MaxBounces", s_Data.MaxBounces);
+            s_Data.RayTracingShader->SetInt("u_MaxLights", s_Data.MaxLights);
+            s_Data.RayTracingShader->SetInt("u_IndirectRays", s_Data.IndirectRays);
             s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
-            s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
             s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
             s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
             s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
+            s_Data.RayTracingShader->SetInt("u_DepthBuffer", 4);
+            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
+            s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
 
+            // Pass 0: Visibility + Velocity
             s_Data.RayTracingShader->SetInt("u_PassID", 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            // 1. Ray Trace & Denoise
+            // Pass 1: Hybrid Trace (direct + indirect rays)
             s_Data.RayTracingShader->SetInt("u_PassID", 1);
             s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
-            s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", glm::inverse(s_Data.CurrentViewProjection));
+            s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
+            // Pass 7: Spatial Indirect Filter (High/Ultra only)
+            if (s_Data.BilateralBlurEnabled)
+            {
+                s_Data.RayTracingShader->SetInt("u_PassID", 7);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
+
+            // Pass 2: Temporal Indirect Accumulation (velocity-reprojected)
             s_Data.RayTracingShader->SetInt("u_PassID", 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            if (!s_Data.RayTracingLowQuality)
+            // Pass 6: Composite (direct + indirect + tonemap + bloom seeds)
+            s_Data.RayTracingShader->SetInt("u_PassID", 6);
+            glDispatchCompute(workGroupsX, workGroupsY, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            // Bloom passes (Medium+)
+            if (s_Data.BloomEnabled)
             {
-                // 2. Spatial Bilateral Blur (Added for noise reduction)
-                s_Data.RayTracingShader->SetInt("u_PassID", 7);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
-
-                // 3. Bloom Threshold
-                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
-                s_Data.RayTracingShader->SetInt("u_PassID", 3);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
-
-                // 4. Bloom Blur
-                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 glBindImageTexture(7, s_Data.BloomTempTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 s_Data.RayTracingShader->SetInt("u_PassID", 4);
                 glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-                glBindImageTexture(7, s_Data.BloomTempTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 s_Data.RayTracingShader->SetInt("u_PassID", 5);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
-
-                // 5. Composite
-                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
-                s_Data.RayTracingShader->SetInt("u_PassID", 6);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT /*| GL_BUFFER_UPDATE_BARRIER_BIT*/);
-            }
-
-            if (!s_Data.RayTracingLowQuality)
-            {
-                s_Data.RayTracingShader->SetInt("u_PassID", 8);
                 glDispatchCompute(workGroupsX, workGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
@@ -634,12 +612,53 @@ namespace Wasteland
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
     void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
-    bool Renderer3D::IsRayTracingLowQuality() { return s_Data.RayTracingLowQuality; }
-    void Renderer3D::SetRayTracingLowQuality(bool enabled)
+    static void ApplyQualityPreset()
     {
-        s_Data.RayTracingLowQuality = enabled;
+        switch (s_Data.CurrentQualityPreset)
+        {
+            case QualityPreset::Low:
+                s_Data.SamplesPerPixel = 1;
+                s_Data.MaxBounces = 1;
+                s_Data.MaxLights = 1;
+                s_Data.IndirectRays = 1;
+                s_Data.BloomEnabled = false;
+                s_Data.BilateralBlurEnabled = false;
+                break;
+            case QualityPreset::Medium:
+                s_Data.SamplesPerPixel = 1;
+                s_Data.MaxBounces = 3;
+                s_Data.MaxLights = 4;
+                s_Data.IndirectRays = 1;
+                s_Data.BloomEnabled = true;
+                s_Data.BilateralBlurEnabled = false;
+                break;
+            case QualityPreset::High:
+                s_Data.SamplesPerPixel = 2;
+                s_Data.MaxBounces = 5;
+                s_Data.MaxLights = 10000;
+                s_Data.IndirectRays = 2;
+                s_Data.BloomEnabled = true;
+                s_Data.BilateralBlurEnabled = true;
+                break;
+            case QualityPreset::Ultra:
+                s_Data.SamplesPerPixel = 4;
+                s_Data.MaxBounces = 5;
+                s_Data.MaxLights = 10000;
+                s_Data.IndirectRays = 2;
+                s_Data.BloomEnabled = true;
+                s_Data.BilateralBlurEnabled = true;
+                break;
+        }
+
         s_Data.FrameIndex = 0;
         ClearAccumulationBuffers();
+    }
+
+    QualityPreset Renderer3D::GetQualityPreset() { return s_Data.CurrentQualityPreset; }
+    void Renderer3D::SetQualityPreset(QualityPreset preset)
+    {
+        s_Data.CurrentQualityPreset = preset;
+        ApplyQualityPreset();
     }
     bool Renderer3D::IsRayTracingAccumulate() { return s_Data.RayTracingAccumulate; }
     void Renderer3D::SetRayTracingAccumulate(bool enabled)

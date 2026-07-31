@@ -14,6 +14,14 @@
 namespace Wasteland
 {
 
+    enum class QualityPreset : int
+    {
+        Low = 0,
+        Medium = 1,
+        High = 2,
+        Ultra = 3
+    };
+
     class Renderer3D
     {
     public:
@@ -45,8 +53,8 @@ namespace Wasteland
         static Statistics GetStats();
         static bool IsRayTracingEnabled();
         static void SetRayTracingEnabled(bool enabled);
-        static bool IsRayTracingLowQuality();
-        static void SetRayTracingLowQuality(bool enabled);
+        static QualityPreset GetQualityPreset();
+        static void SetQualityPreset(QualityPreset preset);
         static bool IsRayTracingAccumulate();
         static void SetRayTracingAccumulate(bool enabled);
         static uint32_t GetRayTraceTargetID();

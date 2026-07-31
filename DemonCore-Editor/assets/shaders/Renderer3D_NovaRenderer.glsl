@@ -15,6 +15,7 @@ layout(binding = 3) uniform sampler2D s_Accumulation;
 layout(binding = 4) uniform sampler2D s_DepthBuffer;
 layout(binding = 8) uniform sampler2D s_Output;
 layout(binding = 9) uniform sampler2D s_Bloom;
+layout(binding = 2) uniform sampler2D s_Indirect;
 layout(binding = 10) uniform sampler2D s_NormalBuffer;
 layout(rgba8, binding = 3) uniform writeonly image2D img_MaterialPacked;
 layout(binding = 11) uniform sampler2D s_InputAlbedo;
@@ -58,7 +59,10 @@ uniform float u_AccumulationAlpha;
 uniform float u_NormalStrength;
 uniform float u_RoughnessBias;
 uniform float u_AOIntensity;
-uniform int u_LowQualityMode;
+uniform int u_QualityLevel;
+uniform int u_MaxBounces;
+uniform int u_MaxLights;
+uniform int u_IndirectRays;
 uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
@@ -301,199 +305,214 @@ void RunVisibilityAndVelocity() {
     imageStore(img_Velocity, pixelCoords, vec4(velocity, 0.0, 1.0));
 }
 
-void RunTraceAndDenoise() 
+struct HitInfo {
+    bool hit;
+    float t;
+    vec3 worldPos;
+    vec3 normal;
+    vec3 albedo;
+    float metal;
+    float rough;
+    vec3 emission;
+};
+
+HitInfo TraceScene(Ray ray) {
+    HitInfo info;
+    info.hit = false;
+    info.t = 1e20;
+
+    for (int i = 0; i < u_InstanceCount; i++) {
+        RayTracingInstance inst = Instances[i];
+        float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
+        if (distToObj > inst.MaxDistance) continue;
+
+        Ray localRay;
+        localRay.Origin = (inst.InvTransform * vec4(ray.Origin, 1.0)).xyz;
+        localRay.Direction = (inst.InvTransform * vec4(ray.Direction, 0.0)).xyz;
+
+        if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
+        vec3 localNormal;
+        float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+        if (tLocal > 0.0) {
+            vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
+            float tWorld = distance(ray.Origin, worldHit);
+            if (tWorld < info.t) {
+                info.t = tWorld;
+                info.hit = true;
+                info.worldPos = worldHit;
+                info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+
+                vec2 uv = CalculateUV(localRay.Origin + tLocal * localRay.Direction, inst);
+                vec3 sampledAlbedo = vec3(1.0);
+                if (inst.TextureID >= 0 && inst.TextureID < 32)
+                    sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
+
+                info.albedo = sampledAlbedo * inst.Albedo.rgb;
+                info.metal = clamp(inst.MaterialParams.x, 0.0, 1.0);
+                info.rough = inst.MaterialParams.y > 0.0 ? inst.MaterialParams.y : 0.5;
+                info.emission = inst.Emission.xyz * inst.Emission.w;
+            }
+        }
+    }
+    return info;
+}
+
+vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
+    vec3 F0 = mix(vec3(0.04), h.albedo, h.metal);
+    vec3 diffuseColor = h.albedo * (1.0 - h.metal);
+    vec3 directLight = vec3(0.0);
+
+    int lightsSampled = 0;
+    for (int i = 0; i < u_InstanceCount; i++) {
+        if (Instances[i].Emission.w > 0.0) {
+            if (lightsSampled >= u_MaxLights) break;
+            lightsSampled++;
+            vec3 lightPos = Instances[i].WorldTransform[3].xyz;
+            vec3 dirToLight = normalize(lightPos - h.worldPos);
+            float distToLight = length(lightPos - h.worldPos);
+            Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
+            if (!IsOccluded(shadowRay, distToLight)) {
+                float NdotL = max(dot(h.normal, dirToLight), 0.0);
+                vec3 H = normalize(V + dirToLight);
+                vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+                float D = DistributionGGX(max(dot(h.normal, H), 0.0), h.rough);
+                float G = GeometrySmith(h.normal, V, dirToLight, h.rough);
+                vec3 brdf = (vec3(1.0) - F) * (1.0 - h.metal) * h.albedo / PI + (D * G * F) / max(4.0 * max(dot(h.normal, V), 0.0) * NdotL, 0.001);
+                vec3 contrib = brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
+
+                float brightness = dot(contrib, vec3(0.2126, 0.7152, 0.0722));
+                if (brightness > 10.0) contrib *= (10.0 / brightness);
+                directLight += contrib;
+            }
+        }
+    }
+
+    // Emission from the surface itself
+    directLight += h.emission;
+
+    // Ambient sky bounce
+    float skyT = 0.5 * (h.normal.y + 1.0);
+    vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
+    directLight += diffuseColor * skyAmbient;
+
+    return directLight;
+}
+
+vec3 GetSkyColor(vec3 dir) {
+    float t = 0.5 * (normalize(dir).y + 1.0);
+    return mix(u_SkyBottomColor, u_SkyTopColor, t);
+}
+
+void RunTraceAndDenoise()
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
-    vec3 finalColor = vec3(0.0);
+    seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000);
 
-    vec3 totalIncomingLight = vec3(0.0);
-    vec3 lastHitPoint = vec3(0.0);
-    bool hitAnything = false;
+    vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
+    vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+    Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
 
-    // Declare this outside the loop so it remains in scope for the sky logic later
-    Ray currentRay;
+    HitInfo primary = TraceScene(primaryRay);
 
-    // Loop through samples
-    for (int s = 0; s < u_SamplesPerPixel; s++) 
-    {
-        // Re-seed for this specific sample
-        seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000) + uint(s * 1337);
-        
-        vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
-        vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+    vec3 directLight = vec3(0.0);
+    vec3 indirectLight = vec3(0.0);
 
-        currentRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
+    if (primary.hit) {
+        vec3 V = normalize(-primaryRay.Direction);
+        directLight = ComputeDirectLighting(primary, V);
 
-        vec3 throughput = vec3(1.0);
-        vec3 sampleIncomingLight = vec3(0.0);
-        bool sampleHitAnything = false;
+        // Spawn indirect rays from the primary hit point
+        vec3 diffuseColor = primary.albedo * (1.0 - primary.metal);
+        vec3 F0 = mix(vec3(0.04), primary.albedo, primary.metal);
+        // For non-metals: reflect diffusely. For metals: reflect specularly (colored F0)
+        vec3 indirectReflectance = mix(diffuseColor, F0, primary.metal);
+        for (int r = 0; r < u_IndirectRays; r++) {
+            seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
+            vec3 indirectDir = random_in_hemisphere(primary.normal);
+            Ray indirectRay = Ray(primary.worldPos + primary.normal * 0.001, indirectDir);
 
-        int maxBounces = (u_LowQualityMode == 1) ? 2 : 5;
-        for(int bounce = 0; bounce < maxBounces; bounce++) 
-        {
-            vec3 surfaceNormal = vec3(0.0);
-            float surfaceRough = 0.0;
-            bool hasHit = false;
-
-            float closestHit = 1e20;
-            int hitIndex = -1;
-            vec3 hitNormal = surfaceNormal, hitAlbedo;
-            vec3 localHitPoint = vec3(0.0);
-
-            for(int i = 0; i < u_InstanceCount; i++) 
-            {
-                RayTracingInstance inst = Instances[i];
-                float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
-                if (distToObj > inst.MaxDistance) continue;
-
-                Ray localRay;
-                localRay.Origin = (inst.InvTransform * vec4(currentRay.Origin, 1.0)).xyz;
-                localRay.Direction = (inst.InvTransform * vec4(currentRay.Direction, 0.0)).xyz;
-                
-                if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
-                vec3 localNormal;
-                float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-                if (tLocal > 0.0) 
-                {
-                    // Calculate hit point and world normal
-                    vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
-                    vec3 worldNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-
-                    // 2. Perform Texture/Material Sampling
-                    vec2 uv = CalculateUV(localRay.Origin + tLocal * localRay.Direction, inst);
-                    vec4 packedData = vec4(0.5, 0.5, 0.0, 1.0);
-                    vec3 sampledAlbedo = vec3(1.0);
-
-                    // Dynamically sample the correct texture for this specific object
-                    if (inst.TextureID >= 0 && inst.TextureID < 32) 
-                    {
-                        sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
-                    }
-
-                    if (inst.PackedMaterialMapID >= 0 && inst.PackedMaterialMapID < 32)
-                    {
-                        // Assuming you have a similar array for material maps, or they share the scene textures pool
-                        packedData = texture(u_SceneTextures[inst.PackedMaterialMapID], uv); 
-                    }
-                    
-                    // Unpack and Transform Normal
-                    vec3 localTangentNormal = normalize(packedData.rgb * 2.0 - 1.0);
-                    
-                    // TRANSFORM TO WORLD SPACE:
-                    // Assuming the packed data is in object space, we use the model matrix.
-                    // If it's a normal map, you'd usually need a TBN matrix. 
-                    // For now, this is a basic world-space conversion:
-                    surfaceNormal = normalize((inst.WorldTransform * vec4(localTangentNormal, 0.0)).xyz);
-                    surfaceRough = packedData.b; // Use sampled roughness
-                    
-                    hasHit = true;
-
-                    float tWorld = distance(currentRay.Origin, worldHit);
-                    if (tWorld < closestHit) 
-                    {
-                        closestHit = tWorld;
-                        hitIndex = i;
-                        hitNormal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-                        localHitPoint = worldHit; 
-                        hitAlbedo = sampledAlbedo * inst.Albedo.rgb;
-                    }
-                }
-            }
-
-            if (hasHit)
-            {
-                sampleHitAnything = true;
-                vec3 V = normalize(-currentRay.Direction);
-                float metal = clamp(Instances[hitIndex].MaterialParams.x, 0.0, 1.0);
-                float rough = (Instances[hitIndex].MaterialParams.y > 0.0) ? Instances[hitIndex].MaterialParams.y : surfaceRough;
-                vec3 F0 = mix(vec3(0.04), hitAlbedo, metal);
-                vec3 diffuseColor = hitAlbedo * (1.0 - metal);
-
-                vec3 directLight = vec3(0.0);
-                int maxLights = (u_LowQualityMode == 1) ? min(u_InstanceCount, 1) : u_InstanceCount;
-                for(int i = 0; i < maxLights; i++) 
-                {
-                    if(Instances[i].Emission.w > 0.0) 
-                    {
-                        vec3 lightPos = Instances[i].WorldTransform[3].xyz;
-                        vec3 dirToLight = normalize(lightPos - localHitPoint);
-                        float distToLight = length(lightPos - localHitPoint);
-                        Ray shadowRay = Ray(localHitPoint + hitNormal * 0.001, dirToLight);
-                        if(!IsOccluded(shadowRay, distToLight)) 
-                        {
-                            float NdotL = max(dot(hitNormal, dirToLight), 0.0);
-                            vec3 H = normalize(V + dirToLight);
-                            vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-                            float D = DistributionGGX(max(dot(hitNormal, H), 0.0), rough);
-                            float G = GeometrySmith(hitNormal, V, dirToLight, rough);
-                            vec3 brdf = (vec3(1.0) - F) * (1.0 - metal) * hitAlbedo / PI + (D * G * F) / max(4.0 * max(dot(hitNormal, V), 0.0) * NdotL, 0.001);
-                            vec3 lightContribution = brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
-
-                            float maxBrightness = 10.0; // Adjust this threshold based on your scene exposure
-                            float brightness = dot(lightContribution, vec3(0.2126, 0.7152, 0.0722));
-                            if (brightness > maxBrightness) {
-                                lightContribution *= (maxBrightness / brightness);
-                            }
-
-                            directLight += lightContribution;
-                        }
-                    }
-                }
-
-                sampleIncomingLight += throughput * directLight;
-                sampleIncomingLight += throughput * (Instances[hitIndex].Emission.xyz * Instances[hitIndex].Emission.w);
-                
-                float specularChance = mix(0.2, 0.95, metal);
-                if (hash() < specularChance)
-                {
-                    vec3 reflection = reflect(currentRay.Direction, hitNormal);
-                    currentRay.Direction = normalize(mix(reflection, random_in_hemisphere(hitNormal), rough));
-                    throughput *= F0;
-                }
-                else
-                {
-                    currentRay.Direction = random_in_hemisphere(hitNormal);
-                    throughput *= diffuseColor;
-                }
-                currentRay.Origin = localHitPoint + hitNormal * 0.001;
-                
-                // Track hit for motion
-                if (bounce == 0) { lastHitPoint = localHitPoint; hitAnything = true; }
-            }
-            else
-            {
-                float t = 0.5 * (normalize(currentRay.Direction).y + 1.0);
-                sampleIncomingLight += throughput * mix(u_SkyBottomColor, u_SkyTopColor, t);
-                break;
+            HitInfo indirect = TraceScene(indirectRay);
+            if (indirect.hit) {
+                // Gather direct lighting at the indirect hit point (one-bounce indirect)
+                vec3 indirectV = normalize(-indirectDir);
+                vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
+                indirectLight += indirectReflectance * bouncedLight;
+            } else {
+                // Indirect ray hit sky
+                indirectLight += indirectReflectance * GetSkyColor(indirectDir);
             }
         }
-        totalIncomingLight += sampleIncomingLight;
+        if (u_IndirectRays > 0)
+            indirectLight /= float(u_IndirectRays);
+    } else {
+        // Primary ray hit sky — no surface, just sky color as direct
+        directLight = GetSkyColor(primaryRay.Direction);
     }
 
-    vec3 incomingLight = totalIncomingLight / float(u_SamplesPerPixel);
-    incomingLight = clamp(incomingLight, vec3(0.0), vec3(10.0));
+    directLight = clamp(directLight, vec3(0.0), vec3(10.0));
+    indirectLight = clamp(indirectLight, vec3(0.0), vec3(5.0));
 
-    imageStore(img_Output, pixelCoords, vec4(incomingLight, 1.0));
+    imageStore(img_Output, pixelCoords, vec4(directLight, 1.0));
+    imageStore(img_Bloom, pixelCoords, vec4(indirectLight, 1.0));
 }
 
 void RunTemporalAccumulation() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = vec2(pixelCoords) / vec2(imageSize(img_Accumulation));
+    ivec2 imgSize = imageSize(img_Accumulation);
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
 
-    // 1. Get history from previous frame
-    vec3 history = texture(s_Accumulation, uv).rgb;
-    
-    // 2. Get current noisy trace
-    vec3 current = imageLoad(img_Output, pixelCoords).rgb;
+    // Current frame's raw indirect irradiance
+    vec3 currentIndirect = imageLoad(img_Bloom, pixelCoords).rgb;
 
-    // 3. Blend using the current accumulation alpha from the renderer
-    float alpha = u_AccumulationAlpha;
-    vec3 result = mix(history, current, alpha);
+    // Read velocity to find previous frame position
+    vec2 velocity = imageLoad(img_Velocity, pixelCoords).xy;
+    vec2 prevUV = uv - velocity;
 
-    // 4. Store in accumulation so it becomes the "history" for next frame
+    // Reject history if reprojected position is off-screen
+    bool validHistory = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
+
+    // Motion vector magnitude — fast camera motion reduces history weight
+    float motionMag = length(velocity * vec2(imgSize));
+    if (motionMag > 4.0) validHistory = false;
+
+    // Depth-based history validation
+    if (validHistory) {
+        float currentDepth = texture(s_DepthBuffer, uv).r;
+        float prevDepth = texture(s_DepthBuffer, prevUV).r;
+        float depthDiff = abs(currentDepth - prevDepth);
+        if (depthDiff > 0.02) validHistory = false;
+    }
+
+    // Sample history indirect from reprojected position
+    vec3 historyIndirect = texture(s_Accumulation, prevUV).rgb;
+
+    // Variance clipping — reject history that differs too much from current neighborhood
+    if (validHistory) {
+        vec3 m1 = vec3(0.0);
+        vec3 m2 = vec3(0.0);
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                ivec2 sp = clamp(pixelCoords + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
+                vec3 s = imageLoad(img_Bloom, sp).rgb;
+                m1 += s;
+                m2 += s * s;
+            }
+        }
+        vec3 mean = m1 / 9.0;
+        vec3 stddev = sqrt(max(vec3(0.0), m2 / 9.0 - mean * mean));
+        vec3 minCol = mean - 1.25 * stddev;
+        vec3 maxCol = mean + 1.25 * stddev;
+        historyIndirect = clamp(historyIndirect, minCol, maxCol);
+    }
+
+    // Blend: motion-aware alpha — more motion = trust current frame more
+    float motionAlpha = clamp(motionMag * 0.1, 0.0, 0.8);
+    float alpha = validHistory ? max(u_AccumulationAlpha, motionAlpha) : 1.0;
+    vec3 result = mix(historyIndirect, currentIndirect, alpha);
+
     imageStore(img_Accumulation, pixelCoords, vec4(result, 1.0));
 }
 
@@ -527,66 +546,87 @@ void RunBloomBlurVertical()
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     float weights[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
     vec4 sum = imageLoad(img_Bloom_Temp, pos) * weights[0];
-    
+
     for(int i = 1; i < 5; i++) {
         sum += imageLoad(img_Bloom_Temp, pos + ivec2(0, i)) * weights[i];
         sum += imageLoad(img_Bloom_Temp, pos + ivec2(0, -i)) * weights[i];
     }
-    imageStore(img_Bloom, pos, sum);
+
+    // Composite blurred bloom onto the tonemapped output
+    vec3 existing = imageLoad(img_Output, pos).rgb;
+    vec3 finalColor = existing + sum.rgb;
+    imageStore(img_Output, pos, vec4(finalColor, 1.0));
 }
 
 void RunComposite() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec3 scene = imageLoad(img_Output, pos).rgb;
-    vec3 bloom = imageLoad(img_Bloom, pos).rgb;
-    
-    // We add the bloom, but we do NOT tonemap here.
-    // We store this in a temporary buffer or a dedicated "Composition" buffer.
-    // For now, let's assume we store it in img_Output
-    vec3 combined = scene + bloom; 
-    
-    imageStore(img_Output, pos, vec4(combined, 1.0));
+    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Output));
+
+    // Direct lighting from pass 1
+    vec3 direct = imageLoad(img_Output, pos).rgb;
+
+    // Temporally filtered indirect GI from pass 2
+    vec3 indirect = texture(s_Accumulation, uv).rgb;
+
+    vec3 combined = direct + indirect;
+
+    // Tonemap + gamma
+    vec3 mapped = combined / (combined + vec3(1.0));
+    vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
+
+    imageStore(img_Output, pos, vec4(finalColor, 1.0));
+
+    // Extract bloom seeds into img_Bloom (for Medium+ quality bloom passes)
+    if (u_QualityLevel >= 1) {
+        float brightness = dot(combined, vec3(0.2126, 0.7152, 0.0722));
+        float threshold = 0.8;
+        float knee = 0.15;
+        float soft = smoothstep(threshold - knee, threshold + knee, brightness);
+        imageStore(img_Bloom, pos, vec4(combined * soft, 1.0));
+    }
 }
 
 void RunBilateralBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Output));
+    ivec2 imgSize = imageSize(img_Bloom);
+    vec2 uv = (vec2(pos) + 0.5) / vec2(imgSize);
 
-    // Now you can use pos and uv
-    vec3 centerColor = imageLoad(img_Output, pos).rgb;
-    vec3 centerNormal = texelFetch(s_NormalBuffer, pos, 0).xyz;
+    vec3 centerIndirect = imageLoad(img_Bloom, pos).rgb;
     float centerDepth = texture(s_DepthBuffer, uv).r;
-    
+
+    // Skip sky pixels
+    if (centerDepth >= 1.0) {
+        imageStore(img_Bloom_Temp, pos, vec4(centerIndirect, 1.0));
+        return;
+    }
+
     vec3 totalColor = vec3(0.0);
     float totalWeight = 0.0;
-    
-    float depthSigma = 50.0;
-    float normSigma = 20.0;
-    
-    for(int x = -2; x <= 2; x++) {
-        for(int y = -2; y <= 2; y++) {
-            ivec2 samplePos = pos + ivec2(x, y);
-            
-            // Boundary check to prevent reading outside the buffer
-            if(samplePos.x < 0 || samplePos.x >= imageSize(img_Output).x || 
-               samplePos.y < 0 || samplePos.y >= imageSize(img_Output).y) continue;
 
-            vec3 neighborColor = imageLoad(img_Output, samplePos).rgb;
-            vec3 neighborNormal = texelFetch(s_NormalBuffer, samplePos, 0).xyz;
-            vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imageSize(img_Output));
+    // Kernel size based on quality: Medium = 1 (3x3), High/Ultra = 2 (5x5)
+    int radius = (u_QualityLevel >= 2) ? 2 : 1;
+    float depthSigma = 30.0;
+    float colorSigma = 2.0;
+
+    for (int x = -radius; x <= radius; x++) {
+        for (int y = -radius; y <= radius; y++) {
+            ivec2 samplePos = pos + ivec2(x, y);
+            if (samplePos.x < 0 || samplePos.x >= imgSize.x ||
+                samplePos.y < 0 || samplePos.y >= imgSize.y) continue;
+
+            vec3 neighborIndirect = imageLoad(img_Bloom, samplePos).rgb;
+            vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
             float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
-            
-            float d_color = length(centerColor - neighborColor);
+
+            float d_color = length(centerIndirect - neighborIndirect);
             float d_depth = abs(centerDepth - neighborDepth);
-            float d_norm = 1.0 - dot(centerNormal, neighborNormal);
-            
-            float weight = exp(-(d_color * d_color) - (d_depth * depthSigma) - (d_norm * normSigma));
-            
-            totalColor += neighborColor * weight;
+
+            float weight = exp(-(d_color * d_color) / colorSigma - (d_depth * d_depth) * depthSigma);
+            totalColor += neighborIndirect * weight;
             totalWeight += weight;
         }
     }
-    imageStore(img_Output, pos, vec4(totalColor / totalWeight, 1.0));
+    imageStore(img_Bloom_Temp, pos, vec4(totalColor / max(totalWeight, 0.001), 1.0));
 }
 
 void RunResolve() 
@@ -649,17 +689,15 @@ void GenerateMaterialMaps() {
 
 void main()
 {
-    switch(u_PassID) 
+    switch(u_PassID)
     {
         case 0: RunVisibilityAndVelocity(); break;
         case 1: RunTraceAndDenoise(); break;
         case 2: RunTemporalAccumulation(); break;
-        case 3: RunBloomThreshold(); break;
         case 4: RunBloomBlurHorizontal(); break;
         case 5: RunBloomBlurVertical(); break;
         case 6: RunComposite(); break;
         case 7: RunBilateralBlur(); break;
-        case 8: RunResolve(); break;
         case 9: GenerateMaterialMaps(); break;
     }
 }
