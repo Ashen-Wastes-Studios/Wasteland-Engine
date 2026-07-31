@@ -1,5 +1,5 @@
-// Renderer3D Unified Basic Shader
-// Handles textures, coloring, custom tiling, normals, and hardware selection passes.
+// Renderer3D Unified Basic Shader with Global Illumination
+// Handles textures, coloring, custom tiling, normals, ambient occlusion, and global illumination.
 
 #type vertex
 #version 450 core
