@@ -271,6 +271,7 @@ namespace Wasteland
 			out << YAML::Key << "TextureHeight" << YAML::Value << (materialComponent.Texture ? materialComponent.Texture->GetHeight() : 0);
 			out << YAML::Key << "TextureIndex" << YAML::Value << materialComponent.TextureIndex;
 			std::string pathToSave = materialComponent.TexturePath;
+			std::replace(pathToSave.begin(), pathToSave.end(), '\\', '/');
 			if (pathToSave.find("assets/") == std::string::npos)
 			{
 				pathToSave = "assets/" + pathToSave;
@@ -460,16 +461,8 @@ namespace Wasteland
 				auto cubeRendererComponent = entity["CubeRendererComponent"];
 				if (cubeRendererComponent)
 				{
-					// Entities always have transforms
 					auto &crc = deserializedEntity.AddComponent<CubeRendererComponent>();
 					crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
-					if (cubeRendererComponent["TextureWidth"] && cubeRendererComponent["TextureHeight"])
-					{
-						int width = cubeRendererComponent["TextureWidth"].as<int>();
-						int height = cubeRendererComponent["TextureHeight"].as<int>();
-						if (width > 0 && height > 0)
-							crc.Texture = Texture2D::Create(width, height);
-					}
 					crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
 					crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
 				}
@@ -477,16 +470,8 @@ namespace Wasteland
 				auto sphereRendererComponent = entity["SphereRendererComponent"];
 				if (sphereRendererComponent)
 				{
-					// Entities always have transforms
 					auto &src = deserializedEntity.AddComponent<SphereRendererComponent>();
 					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
-					if (sphereRendererComponent["TextureWidth"] && sphereRendererComponent["TextureHeight"])
-					{
-						int width = sphereRendererComponent["TextureWidth"].as<int>();
-						int height = sphereRendererComponent["TextureHeight"].as<int>();
-						if (width > 0 && height > 0)
-							src.Texture = Texture2D::Create(width, height);
-					}
 					src.Radius = sphereRendererComponent["Radius"].as<float>();
 					src.Sectors = sphereRendererComponent["Sectors"].as<int>();
 					src.Stacks = sphereRendererComponent["Stacks"].as<int>();
@@ -497,20 +482,18 @@ namespace Wasteland
 				auto materialComponent = entity["MaterialComponent"];
 				if (materialComponent)
 				{
-					// Entities always have transforms
 					auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
 					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
-					if (materialComponent["TextureWidth"] && materialComponent["TextureHeight"])
-					{
-						int width = materialComponent["TextureWidth"].as<int>();
-						int height = materialComponent["TextureHeight"].as<int>();
-						if (width > 0 && height > 0)
-							mc.Texture = Texture2D::Create(width, height);
-					}
 					mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
 					std::string rawPath = materialComponent["TexturePath"].as<std::string>();
-					// Always store as a relative path
-					mc.TexturePath = "textures/" + std::filesystem::path(rawPath).filename().string();
+					std::replace(rawPath.begin(), rawPath.end(), '\\', '/');
+					// Collapse any duplicate "assets/" prefixes (from old serialization bugs)
+					const std::string prefix = "assets/";
+					while (rawPath.find(prefix + prefix) == 0)
+						rawPath = rawPath.substr(prefix.size());
+					mc.TexturePath = rawPath;
+					if (!rawPath.empty() && rawPath != "assets/textures/" && std::filesystem::exists(rawPath))
+						mc.Texture = Texture2D::Create(rawPath);
 					mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
 					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
 					mc.Metallic = materialComponent["Metallic"].as<float>();

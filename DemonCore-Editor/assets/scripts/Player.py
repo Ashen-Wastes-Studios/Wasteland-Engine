@@ -1,6 +1,7 @@
 # Wasteland Engine Script
 import sys
 import os
+import math
 sys.path.append(os.path.dirname(__file__))
 import Wasteland
 
@@ -48,25 +49,40 @@ class Player:
                 self.yaw = rot.y
                 self.initializedRotation = True
             
-            seconds = dt.GetSeconds() 
+            seconds = dt.GetSeconds()
+
+            forwardX = -math.sin(self.yaw)
+            forwardZ = -math.cos(self.yaw)
+            rightX = math.cos(self.yaw)
+            rightZ = -math.sin(self.yaw)
+
+            moveSpeed = self.speed * seconds
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
+                moveSpeed *= 1.25
+
+            moveX = 0.0
+            moveZ = 0.0
 
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_W):
-                pos.z -= self.speed * seconds
+                moveX += forwardX
+                moveZ += forwardZ
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_S):
-                pos.z += self.speed * seconds
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_A):
-                pos.x -= self.speed * seconds
+                moveX -= forwardX
+                moveZ -= forwardZ
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_D):
-                pos.x += self.speed * seconds
+                moveX += rightX
+                moveZ += rightZ
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_A):
+                moveX -= rightX
+                moveZ -= rightZ
 
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_W) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
-                pos.z -= self.speed * seconds * 1.25
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_S) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
-                pos.z += self.speed * seconds * 1.25
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_A) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
-                pos.x -= self.speed * seconds * 1.25
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_D) and Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
-                pos.x += self.speed * seconds * 1.25
+            length = math.sqrt(moveX * moveX + moveZ * moveZ)
+            if length > 0.0:
+                moveX /= length
+                moveZ /= length
+
+            pos.x += moveX * moveSpeed
+            pos.z += moveZ * moveSpeed
 
             if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
                 pos.y += self.speed * seconds
@@ -88,5 +104,4 @@ class Player:
             rot.y = self.yaw
             rot.z = 0.0
 
-            transform.Translation = pos
-            transform.Rotation = rot
+            transform.SetTransform(pos, rot)

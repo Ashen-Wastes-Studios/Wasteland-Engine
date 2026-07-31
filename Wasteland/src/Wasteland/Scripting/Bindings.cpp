@@ -46,7 +46,12 @@ PYBIND11_MODULE(Wasteland, m)
                       { t.Rotation = v; })
         .def_property("Scale", [](Wasteland::TransformComponent &t)
                       { return t.Scale; }, [](Wasteland::TransformComponent &t, const glm::vec3 &v)
-                      { t.Scale = v; });
+                      { t.Scale = v; })
+        .def("GetTransform", &Wasteland::TransformComponent::GetTransform)
+        .def("SetTransform", &Wasteland::TransformComponent::SetTransform)
+        .def("SetTransform", [](Wasteland::TransformComponent &t, const glm::vec3 &translation, const glm::vec3 &rotation, const glm::vec3 &scale)
+             { t.Translation = translation; t.Rotation = rotation; t.Scale = scale; },
+             py::arg("translation"), py::arg("rotation"), py::arg("scale") = glm::vec3(1.0f));
 
     py::class_<Wasteland::Entity>(m, "Entity")
         .def(py::init<>())

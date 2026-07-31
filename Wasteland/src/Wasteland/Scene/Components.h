@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 
 #include "SceneCamera.h"
@@ -51,6 +52,15 @@ namespace Wasteland
 			glm::mat4 scale = glm::scale(glm::mat4(1.0f), Scale);
 
 			return translation * rotation * scale;
+		}
+
+		void SetTransform(const glm::mat4 &transform)
+		{
+			glm::vec3 skew;
+			glm::vec4 perspective;
+			glm::quat orientation;
+			glm::decompose(transform, Scale, orientation, Translation, skew, perspective);
+			Rotation = glm::eulerAngles(orientation);
 		}
 	};
 
