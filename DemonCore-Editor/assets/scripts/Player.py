@@ -40,6 +40,14 @@ class Player:
             self.proneSpeedMultiplier = 0.25
             self.wasCrouchPressed = False
             self.wasPronePressed = False
+
+            # Head bob
+            self.bobPhase = 0.0
+            self.bobFrequency = 8.0
+            self.bobAmplitude = 0.04
+            self.bobSwayAmplitude = 0.025
+            self.bobCurrentAmount = 0.0
+            self.bobSmoothSpeed = 8.0
         except Exception as e:
             print(f"DEBUG: Error caught in __init__: {e}")
             raise e
@@ -150,6 +158,23 @@ class Player:
 
             pos.x += moveX * moveSpeed
             pos.z += moveZ * moveSpeed
+
+            # --- Head Bob ---
+            isMoving = length > 0.0 and self.isGrounded
+            bobTarget = 1.0 if isMoving else 0.0
+            self.bobCurrentAmount += (bobTarget - self.bobCurrentAmount) * min(1.0, self.bobSmoothSpeed * seconds)
+
+            if isMoving:
+                stanceScale = 1.0 if self.stance == 0 else (0.5 if self.stance == 1 else 0.15)
+                self.bobPhase += self.bobFrequency * seconds * stanceScale
+
+            bobOffsetY = math.sin(self.bobPhase) * self.bobAmplitude * self.bobCurrentAmount
+            bobSway = math.cos(self.bobPhase * 0.5) * self.bobSwayAmplitude * self.bobCurrentAmount
+
+            # Apply bob in camera-aligned local space
+            pos.y += bobOffsetY
+            pos.x += rightX * bobSway
+            pos.z += rightZ * bobSway
 
             # --- Mouse Look ---
             mouseDelta = Wasteland.GetMouseDelta()
