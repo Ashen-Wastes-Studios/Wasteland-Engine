@@ -33,7 +33,7 @@ group "Dependencies"
 	include "Wasteland/vendor/imgui"
 	include "Wasteland/vendor/yaml-cpp"
 	include "Wasteland/vendor/Box2D"
-group ""
+	include "Wasteland/vendor/Box3D"
 
 project "Wasteland"
 	location "Wasteland"
@@ -57,7 +57,6 @@ project "Wasteland"
 		"%{prj.name}/vendor/stb_image/**.cpp",
 		"%{prj.name}/vendor/glm/glm/**.hpp",
 		"%{prj.name}/vendor/glm/glm/**.inl",
-
 		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.h",
 		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.cpp"
 	}
@@ -98,6 +97,7 @@ project "Wasteland"
 		"ImGui",
 		"yaml-cpp",
 		"Box2D",
+		"Box3D",
 		"python314"
 	}
 
@@ -199,18 +199,23 @@ project "WastelandPython"
     includedirs
     {
         "Wasteland/src",
-		"Wasteland/vendor/spdlog/include",
-		"%{IncludeDir.entt}",
-		"%{IncludeDir.glm}",
+        "Wasteland/vendor/spdlog/include",
+        "%{IncludeDir.entt}",
+        "%{IncludeDir.glm}",
+        "%{IncludeDir.Box3D}",
         "%{IncludeDir.pybind11}",
         pythonpath .. "/include"
     }
 
-    libdirs { pythonpath .. "/libs" }
+    libdirs
+    {
+        pythonpath .. "/libs"
+    }
 
     links 
     { 
         "Wasteland",
+        "Box3D",
         "python314" 
     }
 
@@ -313,6 +318,7 @@ project "Sandbox"
 		"%{IncludeDir.glm}",
 		"%{IncludeDir.Glad}",
 		"%{IncludeDir.entt}",
+		"%{IncludeDir.Box3D}",
 		"%{IncludeDir.pybind11}",
 		pythonpath .. "/include"
 	}
@@ -325,6 +331,7 @@ project "Sandbox"
 	links
 	{
 		"Wasteland",
+		"Box3D",
 		"ImGui",
 		"python314"
 	}
@@ -411,6 +418,7 @@ project "DemonCore-Editor"
 		"%{IncludeDir.entt}",
 		"%{IncludeDir.yaml_cpp}",
 		"%{IncludeDir.ImGuizmo}",
+		"%{IncludeDir.Box3D}",
 		"%{IncludeDir.pybind11}",
 		pythonpath .. "/include"
 	}
@@ -423,6 +431,7 @@ project "DemonCore-Editor"
 	links
 	{
 		"Wasteland",
+		"Box3D",
 		"ImGui",
 		"yaml-cpp",
 		"python314"

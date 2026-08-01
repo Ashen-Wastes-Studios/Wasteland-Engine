@@ -226,4 +226,79 @@ namespace Wasteland
 		CircleCollider2DComponent(const CircleCollider2DComponent &other) = default;
 	};
 
+	// --- 3D Physics Components (Box3D) ---
+
+	enum class RigidBody3DType
+	{
+		Static = 0,
+		Dynamic,
+		Kinematic
+	};
+
+	struct RigidBody3DComponent
+	{
+		RigidBody3DType Type = RigidBody3DType::Static;
+		float GravityScale = 1.0f;
+		float LinearDamping = 0.0f;
+		float AngularDamping = 0.0f;
+		bool FixedRotationX = false;
+		bool FixedRotationY = false;
+		bool FixedRotationZ = false;
+
+		// Runtime handle (stores b3BodyId as uint64_t, opaque to this header)
+		uint64_t RuntimeBody = 0;
+
+		RigidBody3DComponent() = default;
+		RigidBody3DComponent(const RigidBody3DComponent &other) = default;
+	};
+
+	struct BoxCollider3DComponent
+	{
+		glm::vec3 HalfExtents = {0.5f, 0.5f, 0.5f};
+		glm::vec3 Offset = {0.0f, 0.0f, 0.0f};
+
+		float Density = 1.0f;
+		float Friction = 0.5f;
+		float Restitution = 0.0f;
+
+		// Runtime handle (stores b3ShapeId as uint64_t)
+		uint64_t RuntimeShape = 0;
+
+		BoxCollider3DComponent() = default;
+		BoxCollider3DComponent(const BoxCollider3DComponent &other) = default;
+	};
+
+	struct SphereCollider3DComponent
+	{
+		float Radius = 0.5f;
+		glm::vec3 Offset = {0.0f, 0.0f, 0.0f};
+
+		float Density = 1.0f;
+		float Friction = 0.5f;
+		float Restitution = 0.0f;
+
+		// Runtime handle (stores b3ShapeId as uint64_t)
+		uint64_t RuntimeShape = 0;
+
+		SphereCollider3DComponent() = default;
+		SphereCollider3DComponent(const SphereCollider3DComponent &other) = default;
+	};
+
+	struct CapsuleCollider3DComponent
+	{
+		float Radius = 0.5f;
+		float Height = 1.0f;
+		glm::vec3 Offset = {0.0f, 0.0f, 0.0f};
+
+		float Density = 1.0f;
+		float Friction = 0.5f;
+		float Restitution = 0.0f;
+
+		// Runtime handle (stores b3ShapeId as uint64_t)
+		uint64_t RuntimeShape = 0;
+
+		CapsuleCollider3DComponent() = default;
+		CapsuleCollider3DComponent(const CapsuleCollider3DComponent &other) = default;
+	};
+
 }

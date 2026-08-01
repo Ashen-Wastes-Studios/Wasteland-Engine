@@ -18,6 +18,21 @@ Entities:
         OrthographicFar: 1
       Primary: true
       FixedAspectRatio: false
+    RigidBody3DComponent:
+      BodyType: Kinematic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    CapsuleCollider3DComponent:
+      Radius: 0.5
+      Height: 1
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
     ScriptComponent:
       ScriptPath: assets/scripts/Player.py
       ScriptName: Player
@@ -49,11 +64,12 @@ Entities:
       Roughness: 0.5
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 6.05000019
+      DisplacementScale: 0
   - Entity: 423499880675714022
     TagComponent:
       Tag: Cube
     TransformComponent:
-      Translation: [-1.5, 0, 0]
+      Translation: [-1.5, 1, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     CubeRendererComponent:
@@ -69,16 +85,31 @@ Entities:
       TextureIndex: 1
       TexturePath: assets/textures/metal floor.jpg
       HasGeneratedMaps: true
-      NormalStrength: 5
+      NormalStrength: 1
       Metallic: 1
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
   - Entity: 13683496762130521316
     TagComponent:
       Tag: Sphere
     TransformComponent:
-      Translation: [0, 0, 0]
+      Translation: [0, 1, 0]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
@@ -97,11 +128,26 @@ Entities:
       TextureIndex: 1
       TexturePath: assets/textures/metal floor.jpg
       HasGeneratedMaps: true
-      NormalStrength: 5
+      NormalStrength: 1
       Metallic: 1
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 1
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
   - Entity: 10337039146754437154
     TagComponent:
       Tag: floor
@@ -122,11 +168,26 @@ Entities:
       TextureIndex: 0
       TexturePath: assets/textures/metal floor.jpg
       HasGeneratedMaps: false
-      NormalStrength: 5
+      NormalStrength: 1
       Metallic: 1
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
   - Entity: 322465073288679826
     TagComponent:
       Tag: wall2
@@ -147,11 +208,26 @@ Entities:
       TextureIndex: 0
       TexturePath: assets/textures/metal floor.jpg
       HasGeneratedMaps: false
-      NormalStrength: 5
+      NormalStrength: 1
       Metallic: 1
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
   - Entity: 17362923555121349107
     TagComponent:
       Tag: wall1
@@ -172,8 +248,23 @@ Entities:
       TextureIndex: 0
       TexturePath: assets/textures/metal floor.jpg
       HasGeneratedMaps: false
-      NormalStrength: 5
+      NormalStrength: 1
       Metallic: 1
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0

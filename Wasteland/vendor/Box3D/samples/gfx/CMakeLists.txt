@@ -10,6 +10,8 @@ set(GFX_FILES
     draw.h
     edges.c
     edges.h
+    fonts.c
+    fonts.h
     geometry_registry.c
     geometry_registry.h
     gtao.c
@@ -40,9 +42,17 @@ set(GFX_FILES
     tone_map.c
     tone_map.h
     utility.h
+    world_text.c
+    world_text.h
 )
 
 add_library(gfx STATIC ${GFX_FILES})
+
+set_target_properties(gfx PROPERTIES
+	C_STANDARD 17
+    C_STANDARD_REQUIRED YES
+    C_EXTENSIONS YES
+)
 
 if(APPLE)
     set_source_files_properties(

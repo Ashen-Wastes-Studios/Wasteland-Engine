@@ -702,6 +702,9 @@
     <ProjectReference Include="vendor\Box2D\Box2D.vcxproj">
       <Project>{A434E80C-1049-10BE-D9CA-B31D459E0CEF}</Project>
     </ProjectReference>
+    <ProjectReference Include="vendor\Box3D\Box3D.vcxproj">
+      <Project>{C534E80C-3149-10BE-FACA-B31D669E0CEF}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

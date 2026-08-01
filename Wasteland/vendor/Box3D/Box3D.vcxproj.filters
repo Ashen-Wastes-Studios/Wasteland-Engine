@@ -1,0 +1,300 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{89AF369E-F58E-B539-FEA6-40106A051C9B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\box3d">
+      <UniqueIdentifier>{B82CF7A4-24ED-72DB-ED27-BC5859A7B7B7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{2DAB880B-99B4-887C-2230-9F7C8E38947C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\box3d\base.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\box3d.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\collision.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\config.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\constants.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\id.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\math_functions.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="include\box3d\types.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="src\aabb.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\algorithm.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\arena_allocator.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\bitset.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\block_allocator.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\body.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\broad_phase.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\compound.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\constraint_graph.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\contact.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\contact_solver.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\container.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\core.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ctz.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\hull.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\id_pool.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\island.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\joint.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\manifold.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\math_internal.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\name_cache.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\parallel_for.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\physics_world.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\platform.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\qsort.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\recording.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\recording_replay.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\scheduler.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\sensor.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\shape.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\simd.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\solver.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\solver_set.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\table.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\verstable.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\world_snapshot.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\aabb.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\arena_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\bitset.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\block_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\body.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\broad_phase.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\capsule.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\compound.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\constraint_graph.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\contact_solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\convex_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\core.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\distance.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\distance_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\dynamic_tree.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\height_field.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\hull.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\id_pool.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\island.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\math_functions.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mesh.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mesh_contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\motor_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\mover.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\name_cache.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\parallel_for.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\parallel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\physics_world.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\prismatic_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\recording.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\recording_replay.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\revolute_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\scheduler.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\sensor.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\shape.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\simd.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\solver_set.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\sphere.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\spherical_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\table.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\timer.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\triangle_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\types.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\weld_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\wheel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\world_snapshot.c">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

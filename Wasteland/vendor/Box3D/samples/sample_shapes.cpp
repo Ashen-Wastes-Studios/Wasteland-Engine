@@ -36,7 +36,7 @@ public:
 		bodyDef.type = b3_dynamicBody;
 		for ( int index = 0; index < m_boxCount; ++index )
 		{
-			bodyDef.position = { -10.0f + 5.0f * index, 15.75f, -10.6f };
+			bodyDef.position = { -10.0f + 5.0f * index, 14.25f, -10.6f };
 			b3BodyId boxBody = b3CreateBody( m_worldId, &bodyDef );
 			shapeDef.baseMaterial.friction = ( index + 1 ) * ( index + 1 ) * 0.04f;
 			b3CreateHullShape( boxBody, &shapeDef, &box.base );
@@ -64,7 +64,7 @@ public:
 			m_camera->SetView( -140.0f, 17.0f, 60.0f, { 0.0f, 7.5f, 0.0f } );
 		}
 
-		AddGroundBox( 50.0f );
+		AddGroundBox( 80.0f );
 
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		b3ShapeDef shapeDef = b3DefaultShapeDef();
@@ -499,9 +499,10 @@ public:
 		AddGroundBox( 20.0f );
 
 		// Mesh
-		{
-			m_meshData = CreateMeshData( "data/meshes/conveyor.obj", 1.0f, false, true, true, true );
+		m_meshData = CreateMeshData( "data/meshes/conveyor.obj", 1.0f, false, true, true, true );
 
+		if ( m_meshData != nullptr )
+		{
 			int triangleCount = m_meshData->triangleCount;
 
 			uint8_t* materialIndices = (uint8_t*)( (intptr_t)m_meshData + m_meshData->materialOffset );
@@ -620,13 +621,18 @@ public:
 
 	~ConveyorMesh() override
 	{
-		b3DestroyMesh( m_meshData );
+		DestroyMeshData( m_meshData );
 		b3DestroyHull( m_cylinderHull );
 	}
 
 	void Render() override
 	{
 		Sample::Render();
+
+		if ( m_meshData == nullptr )
+		{
+			return;
+		}
 
 		int triangleCount = m_meshData->triangleCount;
 		const b3MeshTriangle* triangles = b3GetMeshTriangles( m_meshData );

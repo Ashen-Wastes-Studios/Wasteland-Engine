@@ -6,6 +6,8 @@
 #include "Wasteland/Renderer/EditorCamera.h"
 #include "Wasteland/Core/UUID.h"
 
+#include <box3d/id.h>
+
 class b2World;
 
 namespace Wasteland
@@ -54,6 +56,9 @@ namespace Wasteland
 		void OnPhysics2DStart();
 		void OnPhysics2DStop();
 
+		void OnPhysics3DStart();
+		void OnPhysics3DStop();
+
 		void RenderScene(EditorCamera &camera);
 
 	private:
@@ -61,6 +66,7 @@ namespace Wasteland
 		uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 
 		b2World *m_PhysicsWorld = nullptr;
+		b3WorldId m_Physics3DWorld = B3_NULL_ID;
 
 		friend class Entity;
 		friend class SceneSerializer;

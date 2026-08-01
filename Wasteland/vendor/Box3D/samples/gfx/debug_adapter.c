@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define BOX3D_USER_SHAPE_CAPACITY 65536
 #define BOX3D_FREELIST_END ( -1 )
@@ -107,9 +108,6 @@ typedef struct
 	int firstFree;
 	int allocCount;
 
-	// For the ground grid
-	b3ShapeId groundShapeId;
-
 	// Per-shape PBR overrides
 	MaterialOverride materialOverrides[BOX3D_MATERIAL_OVERRIDE_CAPACITY];
 	int materialOverrideCount;
@@ -122,6 +120,7 @@ typedef struct
 	b3DebugDraw guiDraw;
 
 	bool transparentDynamic;
+	bool transparentKinematic;
 
 	// View box for compound child culling, world space, refreshed once per frame.
 	b3AABB viewBounds;
@@ -154,11 +153,11 @@ void InitAdapter( void )
 	}
 	s_adapter.firstFree = 0;
 	s_adapter.allocCount = 0;
-	s_adapter.groundShapeId = b3_nullShapeId;
 	s_adapter.materialOverrideCount = 0;
 	s_adapter.selectedBodyId = b3_nullBodyId;
 	s_adapter.selectedShapeId = b3_nullShapeId;
 	s_adapter.transparentDynamic = false;
+	s_adapter.transparentKinematic = false;
 
 	s_adapter.hasViewBounds = false;
 	s_adapter.lastCompoundAppended = 0;
@@ -193,11 +192,11 @@ void ResetAdapterPool( void )
 	s_adapter.firstFree = 0;
 	s_adapter.allocCount = 0;
 
-	s_adapter.groundShapeId = b3_nullShapeId;
 	s_adapter.materialOverrideCount = 0;
 	s_adapter.selectedBodyId = b3_nullBodyId;
 	s_adapter.selectedShapeId = b3_nullShapeId;
 	s_adapter.transparentDynamic = false;
+	s_adapter.transparentKinematic = false;
 
 	s_adapter.hasViewBounds = false;
 	s_adapter.lastCompoundAppended = 0;
@@ -227,7 +226,6 @@ void ApplyGuiFlags( b3DebugDraw* out )
 	out->drawContactFeatures = s_adapter.guiDraw.drawContactFeatures;
 	out->drawContactNormals = s_adapter.guiDraw.drawContactNormals;
 	out->drawContactForces = s_adapter.guiDraw.drawContactForces;
-	out->drawFrictionForces = s_adapter.guiDraw.drawFrictionForces;
 	out->drawIslands = s_adapter.guiDraw.drawIslands;
 }
 
@@ -236,9 +234,9 @@ void SetTransparentDynamic( bool enabled )
 	s_adapter.transparentDynamic = enabled;
 }
 
-bool GetTransparentDynamic( void )
+void SetTransparentKinematic( bool enabled )
 {
-	return s_adapter.transparentDynamic;
+	s_adapter.transparentKinematic = enabled;
 }
 
 void SetViewBounds( b3AABB bounds )
@@ -262,7 +260,12 @@ int GetLastCompoundDrawStats( int* outTotal )
 
 void SetGroundShape( b3ShapeId shapeId )
 {
-	s_adapter.groundShapeId = shapeId;
+	if ( b3Shape_IsValid( shapeId ) == false )
+	{
+		return;
+	}
+
+	b3Shape_SetName( shapeId, BOX3D_GROUND_SHAPE_NAME );
 }
 
 void SetShapeMaterial( b3ShapeId shapeId, Vec4 color, float metallic, float roughness )
@@ -452,7 +455,7 @@ static void PopulateCommonFields( DebugShape* us, const b3DebugShape* debugShape
 {
 	const b3BodyId bodyId = b3Shape_GetBody( debugShape->shapeId );
 	us->bodyType = b3Body_GetType( bodyId );
-	us->isGround = B3_ID_EQUALS( debugShape->shapeId, s_adapter.groundShapeId );
+	us->isGround = strcmp( b3Shape_GetName( debugShape->shapeId ), BOX3D_GROUND_SHAPE_NAME ) == 0;
 	us->shapeId = debugShape->shapeId;
 	us->bodyId = bodyId;
 	RefreshMaterialFromOverride( us );
@@ -734,7 +737,7 @@ static void DestroyDebugShape( void* userShape, void* context )
 // origin to the same grid period.
 
 // Alpha applied to non-static shapes when box3dAdapterSetTransparentDynamic is on.
-#define BOX3D_TRANSPARENT_DYNAMIC_ALPHA 0.5f
+#define BOX3D_TRANSPARENT_ALPHA 0.5f
 
 // Emit one resolved primitive at baseTransform. The per-kind offset (sphere
 // center, capsule frame) layers on top of baseTransform, so the same path
@@ -811,12 +814,12 @@ static bool CompoundCullCallback( int proxyId, uint64_t userData, void* context 
 	return true;
 }
 
-static bool DrawShape( void* userShape, b3WorldTransform shapeTransform, b3HexColor color, void* context )
+static void DrawShape( void* userShape, b3WorldTransform shapeTransform, b3HexColor color, void* context )
 {
 	(void)context;
 	if ( userShape == NULL )
 	{
-		return true; // unsupported shape type, skip and continue
+		return;
 	}
 
 	// Shift the world transform into the camera relative frame the primitives render in
@@ -857,7 +860,12 @@ static bool DrawShape( void* userShape, b3WorldTransform shapeTransform, b3HexCo
 
 	if ( s_adapter.transparentDynamic && us->bodyType == b3_dynamicBody )
 	{
-		c.w = BOX3D_TRANSPARENT_DYNAMIC_ALPHA;
+		c.w = BOX3D_TRANSPARENT_ALPHA;
+	}
+
+	if ( s_adapter.transparentKinematic && us->bodyType == b3_kinematicBody )
+	{
+		c.w = BOX3D_TRANSPARENT_ALPHA;
 	}
 
 	TransparentShadowCast shadowCast = TRANSPARENT_SHADOW_NONE;
@@ -913,8 +921,6 @@ static bool DrawShape( void* userShape, b3WorldTransform shapeTransform, b3HexCo
 	{
 		AppendResolvedShape( us, shapeRelative, c, metallic, roughness, shadowCast, hk );
 	}
-
-	return true;
 }
 
 #define BOX3D_LINE_THICKNESS_PX 2.5f

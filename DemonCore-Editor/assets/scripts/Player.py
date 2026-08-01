@@ -12,7 +12,7 @@ class Player:
             print(f"DEBUG: Initializing Entity: {entity}")
 
             # Movement
-            self.speed = 5.0
+            self.speed = 10.0
             self.sprintMultiplier = 1.25
 
             # Mouse look

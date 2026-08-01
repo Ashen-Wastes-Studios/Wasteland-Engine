@@ -60,7 +60,7 @@ struct SampleContext
 	int subStepCount = 4;
 	int workerCount = 1;
 	bool transparentDynamic = false;
-	bool transparent = false;
+	bool transparentKinematic = false;
 	bool enableWarmStarting = true;
 	bool enableContinuous = true;
 	bool enableSleep = true;
@@ -119,7 +119,9 @@ public:
 	// Update and render are split to support pausing the simulation
 	virtual void Step();
 
-	virtual void Render() {}
+	virtual void Render()
+	{
+	}
 
 	// Draw sample controls into the shared info panel. Return true if any widget
 	// was drawn so the panel can add a separator.
@@ -180,6 +182,8 @@ public:
 	virtual void MouseMove( b3Vec2 p );
 
 	void ToggleThirdPerson();
+
+	B3_PRINTF_FORMAT( 2, 3 )
 	void DrawTextLine( const char* text, ... );
 	void ResetProfile();
 
@@ -278,47 +282,3 @@ struct CastClosestContext
 
 float CastClosestCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t materialId, int triangleIndex,
 						   int childIndex, void* context );
-
-struct MoverShapeUserData
-{
-	float maxPush;
-	bool clipVelocity;
-};
-
-struct PlaneExtra
-{
-	b3Pos point;
-	b3ShapeId shapeId;
-};
-
-struct CharacterMover
-{
-	static constexpr int m_planeCapacity = 8;
-	static constexpr float m_jumpSpeed = 5.0f;
-	static constexpr float m_maxSpeed = 6.0f;
-	static constexpr float m_minSpeed = 0.01f;
-	static constexpr float m_stopSpeed = 1.0f;
-	static constexpr float m_accelerate = 30.0f;
-	static constexpr float m_friction = 4.0f;
-	static constexpr float m_gravity = 15.0f;
-
-	void Initialize( Sample* sample, b3Pos position );
-	void SolveMove( float timeStep, b3Vec3 forward, b3Vec3 right, b3Vec2 throttle, bool clipVelocity );
-	void Step( b3ShapeId* ignoreShapes, int ignoreCount, bool clipVelocity );
-
-	Sample* m_sample;
-	b3WorldTransform m_transform;
-	b3Vec3 m_velocity;
-	b3Capsule m_capsule;
-	b3CollisionPlane m_planes[m_planeCapacity] = {};
-	PlaneExtra m_planeExtras[m_planeCapacity] = {};
-	int m_planeCount;
-	int m_totalIterations;
-	float m_pogoVelocity;
-	bool m_onGround;
-	bool m_sprint;
-
-	// Transient
-	b3ShapeId* m_ignoreShapeIds;
-	int m_ignoreCount;
-};

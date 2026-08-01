@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="include">
+      <UniqueIdentifier>{89AF369E-F58E-B539-FEA6-40106A051C9B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="include\box3d">
+      <UniqueIdentifier>{B82CF7A4-24ED-72DB-ED27-BC5859A7B7B7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src">
+      <UniqueIdentifier>{2DAB880B-99B4-887C-2230-9F7C8E38947C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\base.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\box3d.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\collision.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\config.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\constants.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\id.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\math_functions.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+    <ClInclude Include="Wasteland\vendor\Box3D\include\box3d\types.h">
+      <Filter>include\box3d</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\aabb.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\arena_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\bitset.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\block_allocator.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\body.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\broad_phase.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\capsule.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\compound.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\constraint_graph.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\contact_solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\convex_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\core.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\distance.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\distance_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\dynamic_tree.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\height_field.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\hull.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\id_pool.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\island.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\math_functions.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\mesh.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\mesh_contact.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\motor_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\mover.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\name_cache.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\parallel_for.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\parallel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\physics_world.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\prismatic_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\recording.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\recording_replay.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\revolute_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\scheduler.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\sensor.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\shape.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\simd.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\solver.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\solver_set.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\sphere.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\spherical_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\table.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\timer.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\triangle_manifold.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\types.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\weld_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\wheel_joint.c">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="Wasteland\vendor\Box3D\src\world_snapshot.c">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

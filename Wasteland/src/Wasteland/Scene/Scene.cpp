@@ -18,6 +18,10 @@
 #include "box2d/b2_polygon_shape.h"
 #include "box2d/b2_circle_shape.h"
 
+// Box3D
+#include <box3d/box3d.h>
+#include <box3d/collision.h>
+
 namespace Wasteland
 {
 
@@ -35,6 +39,35 @@ namespace Wasteland
 
 		WL_CORE_ASSERT(false, "Unknown body type");
 		return b2_staticBody;
+	}
+
+	static b3BodyType RigidBody3DTypeToBox3D(RigidBody3DType type)
+	{
+		switch (type)
+		{
+		case RigidBody3DType::Static:
+			return b3_staticBody;
+		case RigidBody3DType::Dynamic:
+			return b3_dynamicBody;
+		case RigidBody3DType::Kinematic:
+			return b3_kinematicBody;
+		}
+		return b3_staticBody;
+	}
+
+	static b3Quat EulerToB3Quat(const glm::vec3 &eulerRadians)
+	{
+		glm::quat q(eulerRadians);
+		b3Quat result;
+		result.v = {q.x, q.y, q.z};
+		result.s = q.w;
+		return result;
+	}
+
+	static glm::vec3 B3QuatToEuler(const b3Quat &q)
+	{
+		glm::quat gq(q.s, q.v.x, q.v.y, q.v.z);
+		return glm::eulerAngles(gq);
 	}
 
 	Scene::Scene()
@@ -234,11 +267,13 @@ namespace Wasteland
 	void Scene::OnRuntimeStart()
 	{
 		OnPhysics2DStart();
+		OnPhysics3DStart();
 	}
 
 	void Scene::OnRuntimeStop()
 	{
 		OnPhysics2DStop();
+		OnPhysics3DStop();
 	}
 
 	void Scene::OnUpdateRuntime(Timestep ts)
@@ -285,6 +320,34 @@ namespace Wasteland
 				transform.Translation.x = position.x;
 				transform.Translation.y = position.y;
 				transform.Rotation.z = body->GetAngle();
+			}
+		}
+
+		// 3D Physics (Box3D)
+		if (b3World_IsValid(m_Physics3DWorld))
+		{
+			b3World_Step(m_Physics3DWorld, ts, 4);
+
+			auto view3d = m_Registry.view<RigidBody3DComponent>();
+			for (auto e : view3d)
+			{
+				Entity entity = {e, this};
+				auto &transform = entity.GetComponent<TransformComponent>();
+				auto &rb3d = entity.GetComponent<RigidBody3DComponent>();
+
+				b3BodyId bodyId;
+				std::memcpy(&bodyId, &rb3d.RuntimeBody, sizeof(b3BodyId));
+
+				if (!b3Body_IsValid(bodyId))
+					continue;
+
+				b3Pos pos = b3Body_GetPosition(bodyId);
+				b3Quat rot = b3Body_GetRotation(bodyId);
+
+				transform.Translation.x = (float)pos.x;
+				transform.Translation.y = (float)pos.y;
+				transform.Translation.z = (float)pos.z;
+				transform.Rotation = B3QuatToEuler(rot);
 			}
 		}
 
@@ -378,11 +441,13 @@ namespace Wasteland
 	void Scene::OnSimulationStart()
 	{
 		OnPhysics2DStart();
+		OnPhysics3DStart();
 	}
 
 	void Scene::OnSimulationStop()
 	{
 		OnPhysics2DStop();
+		OnPhysics3DStop();
 	}
 
 	void Scene::OnUpdateSimulation(Timestep ts, EditorCamera &camera)
@@ -532,6 +597,103 @@ namespace Wasteland
 		m_PhysicsWorld = nullptr;
 
 		ScriptEngine::Shutdown();
+	}
+
+	void Scene::OnPhysics3DStart()
+	{
+		b3WorldDef worldDef = b3DefaultWorldDef();
+		worldDef.gravity = {0.0f, -9.81f, 0.0f};
+		m_Physics3DWorld = b3CreateWorld(&worldDef);
+
+		auto view = m_Registry.view<RigidBody3DComponent>();
+		for (auto e : view)
+		{
+			Entity entity = {e, this};
+			auto &transform = entity.GetComponent<TransformComponent>();
+			auto &rb3d = entity.GetComponent<RigidBody3DComponent>();
+
+			b3BodyDef bodyDef = b3DefaultBodyDef();
+			bodyDef.type = RigidBody3DTypeToBox3D(rb3d.Type);
+			bodyDef.position = {(float)transform.Translation.x, (float)transform.Translation.y, (float)transform.Translation.z};
+			bodyDef.rotation = EulerToB3Quat(transform.Rotation);
+			bodyDef.gravityScale = rb3d.GravityScale;
+			bodyDef.linearDamping = rb3d.LinearDamping;
+			bodyDef.angularDamping = rb3d.AngularDamping;
+			bodyDef.motionLocks.angularX = rb3d.FixedRotationX;
+			bodyDef.motionLocks.angularY = rb3d.FixedRotationY;
+			bodyDef.motionLocks.angularZ = rb3d.FixedRotationZ;
+
+			b3BodyId bodyId = b3CreateBody(m_Physics3DWorld, &bodyDef);
+
+			// Store body ID
+			static_assert(sizeof(b3BodyId) == sizeof(uint64_t));
+			std::memcpy(&rb3d.RuntimeBody, &bodyId, sizeof(b3BodyId));
+
+			// Box collider
+			if (entity.HasComponent<BoxCollider3DComponent>())
+			{
+				auto &bc = entity.GetComponent<BoxCollider3DComponent>();
+				b3BoxHull boxHull = b3MakeBoxHull(
+					bc.HalfExtents.x * transform.Scale.x,
+					bc.HalfExtents.y * transform.Scale.y,
+					bc.HalfExtents.z * transform.Scale.z);
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = bc.Density;
+				shapeDef.baseMaterial.friction = bc.Friction;
+				shapeDef.baseMaterial.restitution = bc.Restitution;
+
+				b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &boxHull.base);
+				std::memcpy(&bc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+			}
+
+			// Sphere collider
+			if (entity.HasComponent<SphereCollider3DComponent>())
+			{
+				auto &sc = entity.GetComponent<SphereCollider3DComponent>();
+				b3Sphere sphere;
+				sphere.center = {sc.Offset.x, sc.Offset.y, sc.Offset.z};
+				sphere.radius = sc.Radius * std::max({transform.Scale.x, transform.Scale.y, transform.Scale.z});
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = sc.Density;
+				shapeDef.baseMaterial.friction = sc.Friction;
+				shapeDef.baseMaterial.restitution = sc.Restitution;
+
+				b3ShapeId shapeId = b3CreateSphereShape(bodyId, &shapeDef, &sphere);
+				std::memcpy(&sc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+			}
+
+			// Capsule collider
+			if (entity.HasComponent<CapsuleCollider3DComponent>())
+			{
+				auto &cc = entity.GetComponent<CapsuleCollider3DComponent>();
+				float halfH = cc.Height * 0.5f * transform.Scale.y;
+				float r = cc.Radius * std::max(transform.Scale.x, transform.Scale.z);
+
+				b3Capsule capsule;
+				capsule.center1 = {cc.Offset.x, cc.Offset.y - halfH, cc.Offset.z};
+				capsule.center2 = {cc.Offset.x, cc.Offset.y + halfH, cc.Offset.z};
+				capsule.radius = r;
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = cc.Density;
+				shapeDef.baseMaterial.friction = cc.Friction;
+				shapeDef.baseMaterial.restitution = cc.Restitution;
+
+				b3ShapeId shapeId = b3CreateCapsuleShape(bodyId, &shapeDef, &capsule);
+				std::memcpy(&cc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+			}
+		}
+	}
+
+	void Scene::OnPhysics3DStop()
+	{
+		if (b3World_IsValid(m_Physics3DWorld))
+		{
+			b3DestroyWorld(m_Physics3DWorld);
+			m_Physics3DWorld = B3_NULL_ID;
+		}
 	}
 
 	void Scene::RenderScene(EditorCamera &camera)
@@ -698,6 +860,26 @@ namespace Wasteland
 
 	template <>
 	void Scene::OnComponentAdded<CircleCollider2DComponent>(Entity entity, CircleCollider2DComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<RigidBody3DComponent>(Entity entity, RigidBody3DComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<BoxCollider3DComponent>(Entity entity, BoxCollider3DComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<SphereCollider3DComponent>(Entity entity, SphereCollider3DComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent &component)
 	{
 	}
 

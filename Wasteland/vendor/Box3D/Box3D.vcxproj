@@ -1,0 +1,240 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Dist|x64">
+      <Configuration>Dist</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{C534E80C-3149-10BE-FACA-B31D669E0CEF}</ProjectGuid>
+    <IgnoreWarnCompileDuplicatedFilename>true</IgnoreWarnCompileDuplicatedFilename>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>Box3D</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)bin\Debug-windows-x86_64\Box3D\</OutDir>
+    <IntDir>$(ProjectDir)bin-int\Debug-windows-x86_64\Box3D\</IntDir>
+    <TargetName>Box3D</TargetName>
+    <TargetExt>.lib</TargetExt>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)bin\Release-windows-x86_64\Box3D\</OutDir>
+    <IntDir>$(ProjectDir)bin-int\Release-windows-x86_64\Box3D\</IntDir>
+    <TargetName>Box3D</TargetName>
+    <TargetExt>.lib</TargetExt>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
+    <OutDir>$(ProjectDir)bin\Dist-windows-x86_64\Box3D\</OutDir>
+    <IntDir>$(ProjectDir)bin-int\Dist-windows-x86_64\Box3D\</IntDir>
+    <TargetName>Box3D</TargetName>
+    <TargetExt>.lib</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+    <ProjectReference>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>Full</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <MinimalRebuild>false</MinimalRebuild>
+      <StringPooling>true</StringPooling>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+    <ProjectReference>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level3</WarningLevel>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <Optimization>Full</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <MinimalRebuild>false</MinimalRebuild>
+      <StringPooling>true</StringPooling>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <LanguageStandard_C>stdc11</LanguageStandard_C>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+    <ProjectReference>
+    </ProjectReference>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\box3d\base.h" />
+    <ClInclude Include="include\box3d\box3d.h" />
+    <ClInclude Include="include\box3d\collision.h" />
+    <ClInclude Include="include\box3d\config.h" />
+    <ClInclude Include="include\box3d\constants.h" />
+    <ClInclude Include="include\box3d\id.h" />
+    <ClInclude Include="include\box3d\math_functions.h" />
+    <ClInclude Include="include\box3d\types.h" />
+    <ClInclude Include="src\aabb.h" />
+    <ClInclude Include="src\algorithm.h" />
+    <ClInclude Include="src\arena_allocator.h" />
+    <ClInclude Include="src\bitset.h" />
+    <ClInclude Include="src\block_allocator.h" />
+    <ClInclude Include="src\body.h" />
+    <ClInclude Include="src\broad_phase.h" />
+    <ClInclude Include="src\compound.h" />
+    <ClInclude Include="src\constraint_graph.h" />
+    <ClInclude Include="src\contact.h" />
+    <ClInclude Include="src\contact_solver.h" />
+    <ClInclude Include="src\container.h" />
+    <ClInclude Include="src\core.h" />
+    <ClInclude Include="src\ctz.h" />
+    <ClInclude Include="src\hull.h" />
+    <ClInclude Include="src\id_pool.h" />
+    <ClInclude Include="src\island.h" />
+    <ClInclude Include="src\joint.h" />
+    <ClInclude Include="src\manifold.h" />
+    <ClInclude Include="src\math_internal.h" />
+    <ClInclude Include="src\name_cache.h" />
+    <ClInclude Include="src\parallel_for.h" />
+    <ClInclude Include="src\physics_world.h" />
+    <ClInclude Include="src\platform.h" />
+    <ClInclude Include="src\qsort.h" />
+    <ClInclude Include="src\recording.h" />
+    <ClInclude Include="src\recording_replay.h" />
+    <ClInclude Include="src\scheduler.h" />
+    <ClInclude Include="src\sensor.h" />
+    <ClInclude Include="src\shape.h" />
+    <ClInclude Include="src\simd.h" />
+    <ClInclude Include="src\solver.h" />
+    <ClInclude Include="src\solver_set.h" />
+    <ClInclude Include="src\table.h" />
+    <ClInclude Include="src\verstable.h" />
+    <ClInclude Include="src\world_snapshot.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\aabb.c" />
+    <ClCompile Include="src\arena_allocator.c" />
+    <ClCompile Include="src\bitset.c" />
+    <ClCompile Include="src\block_allocator.c" />
+    <ClCompile Include="src\body.c" />
+    <ClCompile Include="src\broad_phase.c" />
+    <ClCompile Include="src\capsule.c" />
+    <ClCompile Include="src\compound.c" />
+    <ClCompile Include="src\constraint_graph.c" />
+    <ClCompile Include="src\contact.c" />
+    <ClCompile Include="src\contact_solver.c" />
+    <ClCompile Include="src\convex_manifold.c" />
+    <ClCompile Include="src\core.c" />
+    <ClCompile Include="src\distance.c" />
+    <ClCompile Include="src\distance_joint.c" />
+    <ClCompile Include="src\dynamic_tree.c" />
+    <ClCompile Include="src\height_field.c" />
+    <ClCompile Include="src\hull.c" />
+    <ClCompile Include="src\id_pool.c" />
+    <ClCompile Include="src\island.c" />
+    <ClCompile Include="src\joint.c" />
+    <ClCompile Include="src\manifold.c" />
+    <ClCompile Include="src\math_functions.c" />
+    <ClCompile Include="src\mesh.c" />
+    <ClCompile Include="src\mesh_contact.c" />
+    <ClCompile Include="src\motor_joint.c" />
+    <ClCompile Include="src\mover.c" />
+    <ClCompile Include="src\name_cache.c" />
+    <ClCompile Include="src\parallel_for.c" />
+    <ClCompile Include="src\parallel_joint.c" />
+    <ClCompile Include="src\physics_world.c" />
+    <ClCompile Include="src\prismatic_joint.c" />
+    <ClCompile Include="src\recording.c" />
+    <ClCompile Include="src\recording_replay.c" />
+    <ClCompile Include="src\revolute_joint.c" />
+    <ClCompile Include="src\scheduler.c" />
+    <ClCompile Include="src\sensor.c" />
+    <ClCompile Include="src\shape.c" />
+    <ClCompile Include="src\simd.c" />
+    <ClCompile Include="src\solver.c" />
+    <ClCompile Include="src\solver_set.c" />
+    <ClCompile Include="src\sphere.c" />
+    <ClCompile Include="src\spherical_joint.c" />
+    <ClCompile Include="src\table.c" />
+    <ClCompile Include="src\timer.c" />
+    <ClCompile Include="src\triangle_manifold.c" />
+    <ClCompile Include="src\types.c" />
+    <ClCompile Include="src\weld_joint.c" />
+    <ClCompile Include="src\wheel_joint.c" />
+    <ClCompile Include="src\world_snapshot.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

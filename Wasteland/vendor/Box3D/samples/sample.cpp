@@ -15,6 +15,7 @@
 #include "gfx/renderer.h"
 #include "gfx/shadow.h"
 #include "gfx/text.h"
+#include "host/gui.h"
 #include "human.h"
 #include "imgui.h"
 #include "implot.h"
@@ -44,18 +45,34 @@ static char* ReadFile( int& size, const char* filename )
 	}
 
 	fseek( file, 0, SEEK_END );
-	size = static_cast<int>( ftell( file ) );
+	long length = ftell( file );
 	fseek( file, 0, SEEK_SET );
 
-	if ( size == 0 )
+	if ( length <= 0 )
 	{
 		fclose( file );
 		return nullptr;
 	}
 
+	size = static_cast<int>( length );
+
 	char* data = (char*)malloc( size + 1 );
-	fread( data, size, 1, file );
+	if ( data == nullptr )
+	{
+		fclose( file );
+		return nullptr;
+	}
+
+	// Short read means a truncated or racing file, so treat it as no file at all
+	size_t read = fread( data, 1, size, file );
 	fclose( file );
+
+	if ( read != (size_t)size )
+	{
+		free( data );
+		return nullptr;
+	}
+
 	data[size] = 0;
 
 	return data;
@@ -355,7 +372,13 @@ void Sample::FinishRecording()
 	}
 
 	b3World_StopRecording( m_worldId );
-	b3SaveRecordingToFile( m_recording, m_context->recordingFile );
+
+	// The buffer is freed either way, so a failed write has to be said out loud
+	if ( b3SaveRecordingToFile( m_recording, m_context->recordingFile ) == false )
+	{
+		fprintf( stderr, "Failed to write recording '%s'\n", m_context->recordingFile );
+	}
+
 	b3DestroyRecording( m_recording );
 	m_recording = nullptr;
 }
@@ -958,7 +981,7 @@ void Sample::DrawMetrics()
 				int count = s.colorCounts[i];
 				bool isOverflow = ( i == overflowIndex );
 
-				// Skip empty slots, but always show overflow — a non-zero overflow row is the signal we care about.
+				// Skip empty slots, but always show overflow.
 				if ( count == 0 && !isOverflow )
 				{
 					continue;
@@ -1349,13 +1372,20 @@ void OpenReplayFileDialog( SampleContext* context )
 		return;
 	}
 
-	NFD_Init();
+	if ( NFD_Init() != NFD_OKAY )
+	{
+		return;
+	}
+
 	nfdu8char_t* outPath = nullptr;
 	nfdu8filteritem_t filter[1] = { { "Box3D recording", "b3rec" } };
 
-	// Start in the working directory, where recordings are saved by default.
-	std::u8string cwd = std::filesystem::current_path().u8string();
-	const nfdu8char_t* defaultPath = reinterpret_cast<const nfdu8char_t*>( cwd.c_str() );
+	// Start in the working directory, where recordings are saved by default. A
+	// deleted or unreadable working directory just means no starting point.
+	std::error_code ec;
+	std::u8string cwd = std::filesystem::current_path( ec ).u8string();
+	const nfdu8char_t* defaultPath = ec ? nullptr : reinterpret_cast<const nfdu8char_t*>( cwd.c_str() );
+
 	if ( NFD_OpenDialogU8( &outPath, filter, 1, defaultPath ) == NFD_OKAY )
 	{
 		snprintf( context->replayFile, sizeof( context->replayFile ), "%s", outPath );
@@ -1568,7 +1598,7 @@ static void DrawMenuBar( SampleContext* context )
 		if ( ImGui::BeginMenu( "Sim" ) )
 		{
 			ImGui::MenuItem( "Pause", "P", &context->pause );
-			if ( ImGui::MenuItem( "Single Step", "O" ) )
+			if ( ImGui::MenuItem( "Single Step", "." ) )
 			{
 				context->singleStep += 1;
 			}
@@ -1616,7 +1646,12 @@ static void DrawMenuBar( SampleContext* context )
 				cam.Frame( aabb, aspect, 0.75f );
 			}
 			ImGui::MenuItem( "Shapes", nullptr, &gd->drawShapes );
-			ImGui::MenuItem( "Transparent", nullptr, &context->transparentDynamic );
+			if ( ImGui::BeginMenu( "Transparency" ) )
+			{
+				ImGui::MenuItem( "Dynamic", nullptr, &context->transparentDynamic );
+				ImGui::MenuItem( "Kinematic", nullptr, &context->transparentKinematic );
+				ImGui::EndMenu();
+			}
 			ImGui::MenuItem( "Joints", nullptr, &gd->drawJoints );
 			ImGui::MenuItem( "Joint Extras", nullptr, &gd->drawJointExtras );
 			ImGui::MenuItem( "Bounds", nullptr, &gd->drawBounds );
@@ -1630,16 +1665,15 @@ static void DrawMenuBar( SampleContext* context )
 			ImGui::MenuItem( "Contact Normals", nullptr, &gd->drawContactNormals );
 			ImGui::MenuItem( "Contact Features", nullptr, &gd->drawContactFeatures );
 			ImGui::MenuItem( "Contact Forces", nullptr, &gd->drawContactForces );
-			ImGui::MenuItem( "Friction Forces", nullptr, &gd->drawFrictionForces );
 			if ( ImGui::BeginMenu( "Anchor" ) )
 			{
-				if ( ImGui::MenuItem( "Anchor A", nullptr, gd->drawAnchorA != 0 ) )
+				if ( ImGui::MenuItem( "Anchor A", nullptr, gd->drawAnchorA == true ) )
 				{
-					gd->drawAnchorA = 1;
+					gd->drawAnchorA = true;
 				}
-				if ( ImGui::MenuItem( "Anchor B", nullptr, gd->drawAnchorA == 0 ) )
+				if ( ImGui::MenuItem( "Anchor B", nullptr, gd->drawAnchorA == false ) )
 				{
-					gd->drawAnchorA = 0;
+					gd->drawAnchorA = false;
 				}
 				ImGui::EndMenu();
 			}
@@ -1736,7 +1770,8 @@ static void DrawMenuBar( SampleContext* context )
 					DrawRow( "Tab", "Show / hide UI" );
 					DrawRow( "M", "Show / hide diagnostics" );
 					DrawRow( "P", "Pause / resume" );
-					DrawRow( "O", "Single step (Shift: 5)" );
+					DrawRow( ".", "Single step (Shift: 5)" );
+					DrawRow( ",", "Step back, replay only (Shift: 5)" );
 					DrawRow( "R", "Restart sample" );
 					DrawRow( "[  ]", "Previous / next sample" );
 					DrawRow( "Ctrl+O", "Open sample picker" );
@@ -1755,7 +1790,7 @@ static void DrawMenuBar( SampleContext* context )
 					DrawRow( "Alt + left drag", "Orbit camera" );
 					DrawRow( "Alt + middle drag", "Pan camera" );
 					DrawRow( "Alt + right drag", "Zoom (dolly)" );
-					DrawRow( "Right drag", "Fly look (WASD to move)" );
+					DrawRow( "Right drag", "Fly look (WASD, Q / E to move)" );
 					DrawRow( "Scroll", "Zoom" );
 					DrawRow( "Shift + left", "Shoot (Ctrl spin, Alt ragdoll)" );
 					ImGui::EndTable();
@@ -2068,331 +2103,4 @@ float CastClosestCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float 
 	rayContext->triangleIndex = triangleIndex;
 	rayContext->hit = true;
 	return fraction;
-}
-
-static bool MoverFilterCallback( b3ShapeId shapeId, void* context )
-{
-	CharacterMover* self = (CharacterMover*)context;
-	for ( int i = 0; i < self->m_ignoreCount; ++i )
-	{
-		if ( B3_ID_EQUALS( shapeId, self->m_ignoreShapeIds[i] ) )
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-void CharacterMover::Initialize( Sample* sample, b3Pos position )
-{
-	m_sample = sample;
-	m_transform.p = position;
-	m_transform.q = b3Quat_identity;
-	m_velocity = { 0.0f, 0.0f, 0.0f };
-	m_capsule = { { 0.0f, -0.5f, 0.0f }, { 0.0f, 0.5f, 0.0f }, 0.3f };
-
-	m_planeCount = 0;
-	m_totalIterations = 0;
-	m_pogoVelocity = 0.0f;
-	m_onGround = false;
-	m_sprint = false;
-
-	m_ignoreShapeIds = nullptr;
-	m_ignoreCount = 0;
-}
-
-static bool PlaneResultFcn( b3ShapeId shapeId, const b3PlaneResult* planeResults, int planeCount, void* context )
-{
-	if ( MoverFilterCallback( shapeId, context ) == false )
-	{
-		// ignore these planes but continue looking for more
-		return true;
-	}
-
-	CharacterMover* self = static_cast<CharacterMover*>( context );
-	float maxPush = FLT_MAX;
-	bool clipVelocity = true;
-	MoverShapeUserData* userData = static_cast<MoverShapeUserData*>( (void*)b3Shape_GetUserData( shapeId ) );
-	if ( userData != nullptr )
-	{
-		maxPush = userData->maxPush;
-		clipVelocity = userData->clipVelocity;
-	}
-
-	for ( int i = 0; i < planeCount && self->m_planeCount < CharacterMover::m_planeCapacity; ++i )
-	{
-		assert( b3IsValidPlane( planeResults[i].plane ) );
-		self->m_planes[self->m_planeCount] = {
-			.plane = planeResults[i].plane,
-			.pushLimit = maxPush,
-			.push = 0.0f,
-			.clipVelocity = clipVelocity,
-		};
-		self->m_planeExtras[self->m_planeCount] = {
-			.point = b3OffsetPos( self->m_transform.p, planeResults[i].point ),
-			.shapeId = shapeId,
-		};
-		self->m_planeCount += 1;
-	}
-
-	return true;
-}
-
-void CharacterMover::SolveMove( float timeStep, b3Vec3 forward, b3Vec3 right, b3Vec2 throttle, bool clipVelocity )
-{
-	// Friction
-	float speed = b3Length( m_velocity );
-	if ( speed < m_minSpeed )
-	{
-		m_velocity.x = 0.0f;
-		m_velocity.y = 0.0f;
-	}
-	else
-	{
-		// Linear damping above stopSpeed and fixed reduction below stopSpeed
-		float control = speed < m_stopSpeed ? m_stopSpeed : speed;
-
-		// friction has units of 1/time
-		float drop = control * m_friction * timeStep;
-		float newSpeed = b3MaxFloat( 0.0f, speed - drop );
-		m_velocity *= newSpeed / speed;
-	}
-
-	float maxSpeed = m_sprint ? 1.5f * m_maxSpeed : m_maxSpeed;
-
-	b3Vec3 desiredVelocity = maxSpeed * throttle.x * forward + maxSpeed * throttle.y * right;
-	float desiredSpeed;
-	b3Vec3 desiredDirection = b3GetLengthAndNormalize( &desiredSpeed, desiredVelocity );
-
-	if ( desiredSpeed > maxSpeed )
-	{
-		desiredVelocity *= maxSpeed / desiredSpeed;
-		desiredSpeed = maxSpeed;
-	}
-
-	if ( m_onGround )
-	{
-		m_velocity.y = 0.0f;
-	}
-
-	// Accelerate
-	float currentSpeed = b3Dot( m_velocity, desiredDirection );
-	float addSpeed = desiredSpeed - currentSpeed;
-	if ( addSpeed > 0.0f )
-	{
-		float accelSpeed = m_accelerate * maxSpeed * timeStep;
-		if ( accelSpeed > addSpeed )
-		{
-			accelSpeed = addSpeed;
-		}
-
-		m_velocity += accelSpeed * desiredDirection;
-	}
-
-	m_velocity.y -= m_gravity * timeStep;
-
-	b3WorldId worldId = m_sample->m_worldId;
-
-	float pogoRestLength = 3.0f * m_capsule.radius;
-	float rayLength = pogoRestLength + m_capsule.radius;
-	b3Pos rayOrigin = b3TransformWorldPoint( m_transform, m_capsule.center1 );
-	b3Vec3 rayTranslation = -rayLength * b3Vec3_axisY;
-	b3QueryFilter skipTeamFilter = { 1, ~2u };
-	skipTeamFilter.name = "pogo";
-	b3RayResult rayResult = b3World_CastRayClosest( worldId, rayOrigin, rayTranslation, skipTeamFilter );
-
-	if ( rayResult.hit == false )
-	{
-		m_onGround = false;
-		m_pogoVelocity = 0.0f;
-
-		DrawLine( rayOrigin, b3OffsetPos( rayOrigin, rayTranslation ), MakeColor( b3_colorGray ) );
-	}
-	else
-	{
-		m_onGround = true;
-		float pogoCurrentLength = rayResult.fraction * rayLength;
-
-		float zeta = 0.7f;
-		float hertz = 4.0f;
-		float omega = 2.0f * B3_PI * hertz;
-		float omegaH = omega * timeStep;
-
-		m_pogoVelocity = ( m_pogoVelocity - omega * omegaH * ( pogoCurrentLength - pogoRestLength ) ) /
-						 ( 1.0f + 2.0f * zeta * omegaH + omegaH * omegaH );
-		DrawLine( rayOrigin, rayResult.point, MakeColor( b3_colorGreen ) );
-	}
-
-	b3Pos startPosition = m_transform.p;
-	b3Pos target = m_transform.p + timeStep * m_velocity + timeStep * m_pogoVelocity * b3Vec3_axisY;
-
-	// Want the mover to collide with allies
-	b3QueryFilter moverFilter = { .categoryBits = 1, .maskBits = ~0u, .id = 1, .name = "mover_collide" };
-
-	// The cast should ignore allies
-	b3QueryFilter castFilter = { .categoryBits = 1, .maskBits = ~2u, .id = 1, .name = "mover_cast" };
-
-	m_totalIterations = 0;
-	float tolerance = 0.01f;
-
-	for ( int iteration = 0; iteration < 5; ++iteration )
-	{
-		m_planeCount = 0;
-
-		b3Capsule mover;
-		mover.center1 = m_capsule.center1;
-		mover.center2 = m_capsule.center2;
-		mover.radius = m_capsule.radius;
-
-		b3World_CollideMover( worldId, m_transform.p, &mover, moverFilter, PlaneResultFcn, this );
-
-		b3Vec3 targetDelta = target - m_transform.p;
-		b3PlaneSolverResult result = b3SolvePlanes( targetDelta, m_planes, m_planeCount );
-
-		m_totalIterations += result.iterationCount;
-
-		b3Vec3 delta = result.delta;
-
-		float fraction = b3World_CastMover( worldId, m_transform.p, &mover, delta, castFilter, MoverFilterCallback, this );
-
-		delta *= fraction;
-		m_transform.p = m_transform.p + delta;
-
-		if ( b3LengthSquared( delta ) < tolerance * tolerance )
-		{
-			break;
-		}
-	}
-
-	for ( int i = 0; i < m_planeCount; ++i )
-	{
-		b3BodyId bodyId = b3Shape_GetBody( m_planeExtras[i].shapeId );
-		b3BodyType bodyType = b3Body_GetType( bodyId );
-		if ( bodyType != b3_dynamicBody )
-		{
-			continue;
-		}
-
-		b3Pos point = m_planeExtras[i].point;
-		b3Vec3 normal = b3Neg( m_planes[i].plane.normal );
-
-		float invMassA = 0.0f;
-		float invMassB = b3Body_GetInverseMass( bodyId );
-		b3Matrix3 invIB = b3Body_GetWorldInverseRotationalInertia( bodyId );
-
-		b3Pos pB = b3Body_GetWorldCenter( bodyId );
-		b3Vec3 rB = b3SubPos( point, pB );
-
-		b3Vec3 rnB = b3Cross( rB, normal );
-		float kNormal = invMassA + invMassB + b3Dot( rnB, b3MulMV( invIB, rnB ) );
-		float normalMass = kNormal > 0.0f ? 1.0f / kNormal : 0.0f;
-
-		b3Vec3 vB = b3Body_GetLinearVelocity( bodyId );
-		b3Vec3 omegaB = b3Body_GetAngularVelocity( bodyId );
-		b3Vec3 vrB = b3Add( vB, b3Cross( omegaB, rB ) );
-		float vn = b3Dot( b3Sub( vrB, m_velocity ), normal );
-		float impulse = b3MaxFloat( -normalMass * vn, 0.0f );
-
-		b3Vec3 P = b3MulSV( impulse, normal );
-		m_velocity = b3MulSub( m_velocity, invMassA, P );
-
-		b3Body_ApplyLinearImpulse( bodyId, P, point, true );
-	}
-
-	if ( clipVelocity )
-	{
-		// Using the velocity clipper can avoid picking up velocity from depenetration.
-		// This allows the mover to avoid velocity from soft collision depenetration.
-		m_velocity = b3ClipVector( m_velocity, m_planes, m_planeCount );
-	}
-	else if ( timeStep > 0.0f )
-	{
-		// Using the position delta is more holistic and intuitive in some cases.
-		m_velocity = ( 1.0f / timeStep ) * ( m_transform.p - startPosition );
-	}
-}
-
-void CharacterMover::Step( b3ShapeId* ignoreShapes, int ignoreCount, bool clipVelocity )
-{
-	m_ignoreShapeIds = ignoreShapes;
-	m_ignoreCount = ignoreCount;
-
-	b3Vec2 throttle = { 0.0f, 0.0f };
-	b3Vec3 forward = -m_sample->m_camera->GetForward();
-	b3Vec3 right = m_sample->m_camera->GetRight();
-	forward.y = 0.0f;
-
-	if ( m_sample->m_camera->m_thirdPerson )
-	{
-		if ( IsKeyDown( KEY_W ) )
-		{
-			throttle.x += 1.0f;
-		}
-
-		if ( IsKeyDown( KEY_S ) )
-		{
-			throttle.x -= 1.0f;
-		}
-
-		if ( IsKeyDown( KEY_A ) )
-		{
-			throttle.y -= 1.0f;
-		}
-
-		if ( IsKeyDown( KEY_D ) )
-		{
-			throttle.y += 1.0f;
-		}
-
-		if ( IsKeyDown( KEY_SPACE ) && m_onGround == true )
-		{
-			m_velocity.y = m_jumpSpeed;
-			m_onGround = false;
-		}
-
-		if ( m_onGround == true )
-		{
-			m_sprint = IsKeyDown( KEY_LEFT_SHIFT );
-		}
-		else
-		{
-			m_sprint = false;
-		}
-	}
-
-	float hertz = m_sample->m_context->hertz;
-	float timeStep = hertz > 0.0f ? 1.0f / hertz : 0.0f;
-
-	// throttle = { 0.0f, 0.0f, -1.0f };
-
-	SolveMove( timeStep, forward, right, throttle, clipVelocity );
-
-	b3Pos position = m_transform.p;
-
-	// Follow the mover and latch the draw origin before drawing, so the overlays below demote
-	// against the same eye the view renders from.
-	if ( m_sample->m_camera->m_thirdPerson )
-	{
-		m_sample->m_camera->m_pivot = position;
-		m_sample->m_camera->UpdateTransform();
-	}
-
-	SetDrawOrigin( m_sample->m_camera->DrawOrigin() );
-
-	int count = m_planeCount;
-	for ( int i = 0; i < count; ++i )
-	{
-		b3Plane plane = m_planes[i].plane;
-		b3Pos p1 = position + ( plane.offset - m_capsule.radius ) * plane.normal;
-		b3Pos p2 = p1 + 0.1f * plane.normal;
-		DrawPoint( p1, 5.0f, MakeColor( b3_colorYellow ) );
-		DrawLine( p1, p2, MakeColor( b3_colorYellow ) );
-	}
-
-	DrawSolidCapsule( m_transform, m_capsule, MakeColor( b3_colorBlue ) );
-	DrawLine( position, position + m_velocity, MakeColor( b3_colorPurple ) );
-
-	m_ignoreShapeIds = nullptr;
-	m_ignoreCount = 0;
 }

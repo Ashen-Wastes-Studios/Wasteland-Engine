@@ -1,53 +1,14 @@
 // SPDX-FileCopyrightText: 2025 Erin Catto
 // SPDX-License-Identifier: MIT
 
+#include "gfx/draw.h"
 #include "imgui.h"
 #include "mesh_loader.h"
 #include "sample.h"
-#include "gfx/draw.h"
 
 #include "box3d/box3d.h"
 
 #include <vector>
-
-class DumpLoader : public Sample
-{
-public:
-	explicit DumpLoader( SampleContext* context )
-		: Sample( context )
-	{
-		if ( context->restart == false )
-		{
-			m_camera->SetView( 45.0f, 30.0f, 15.0f, { 0.0f, 2.0f, 0.0f } );
-			// m_camera->SetView( 45.0f, 30.0f, 300.0f, { 3910.62109f, 9862.50293f, 875.395081f } );
-		}
-
-		b3SetLengthUnitsPerMeter( 1.0f );
-
-		const char* dumpPrefix = "data/dumps/single_box/";
-
-#include "dumps/single_box/box3d_dump.inl"
-	}
-
-	~DumpLoader() override
-	{
-		for ( b3MeshData* md : m_meshes )
-		{
-			b3DestroyMesh( md );
-		}
-
-		b3SetLengthUnitsPerMeter( 1.0f );
-	}
-
-	static Sample* Create( SampleContext* context )
-	{
-		return new DumpLoader( context );
-	}
-
-	std::vector<b3MeshData*> m_meshes;
-};
-
-static int sampleDumpLoader = RegisterSample( "Issues", "Dump Loader", DumpLoader::Create );
 
 class Crash : public Sample
 {
@@ -281,7 +242,6 @@ public:
 		if ( context->restart == false )
 		{
 			m_camera->SetView( 0.0f, 15.0f, 10.0f, { 0.0f, 2.0f, 0.0f } );
-			
 		}
 
 		AddGroundBox( 10.0f );
@@ -400,11 +360,11 @@ public:
 
 			b3ShapeDef shapeDef = b3DefaultShapeDef();
 			m_heightField = b3CreateGrid( 40, 40, { 0.5f, 1.0f, 0.5f }, false );
-			//m_heightField = b3CreateWave( 40, 40, {1.0f, 2.0f, 1.0f}, 0.02f, 0.04f, false );
+			// m_heightField = b3CreateWave( 40, 40, {1.0f, 2.0f, 1.0f}, 0.02f, 0.04f, false );
 			b3CreateHeightFieldShape( groundId, &shapeDef, m_heightField );
 
 			m_gridMesh = b3CreateGridMesh( 40, 40, 0.5f, 1, true );
-			//b3CreateMeshShape( groundId, &shapeDef, m_gridMesh, b3Vec3_one );
+			// b3CreateMeshShape( groundId, &shapeDef, m_gridMesh, b3Vec3_one );
 		}
 
 		{
@@ -483,6 +443,7 @@ public:
 
 		// --- Building mesh on top of ground ---
 		m_building = CreateMeshData( "data/meshes/building.obj", 1.0f, false, false, true, true );
+		if ( m_building != nullptr )
 		{
 			b3BodyDef bodyDef = b3DefaultBodyDef();
 			bodyDef.position = { 0.0f, 0.1f, 0.0f };
@@ -530,7 +491,6 @@ public:
 };
 
 static int sampleIndex = RegisterSample( "Issues", "Capsule Mesh", CapsuleMeshBug::Create );
-
 
 // Reproduces s&box rigid body character ghost collisions on a FLAT floor.
 //
@@ -603,7 +563,7 @@ public:
 			b3ShapeDef shapeDef = b3DefaultShapeDef();
 			shapeDef.baseMaterial.friction = 0.0f;
 			shapeDef.baseMaterial.restitution = 0.0f;
-			//shapeDef.baseMaterial.customColor = b3_colorLimeGreen;
+			// shapeDef.baseMaterial.customColor = b3_colorLimeGreen;
 
 			float volume = 8.0f * m_bodyHalfWidth * m_bodyHalfHeight * m_bodyHalfWidth;
 			shapeDef.density = m_characterMass / volume;
@@ -867,7 +827,7 @@ public:
 		}
 		else if ( position.z < -m_walkRangeZ )
 		{
-			m_walkDirectionZ= 1.0f;
+			m_walkDirectionZ = 1.0f;
 		}
 
 		b3Vec3 velocity = b3Body_GetLinearVelocity( m_characterId );
@@ -963,3 +923,382 @@ public:
 };
 
 static int sampleSBoxGhostCollisions = RegisterSample( "Issues", "s&box Ghost Collisions", SBoxGhostCollisions::Create );
+
+static const b3Vec3 s_metalWheel1Verts[317] = {
+	{ 0.010279f, 0.086341f, 0.051768f },	{ -0.010314f, -0.084708f, 0.051804f },	{ 0.010279f, -0.084708f, 0.051768f },
+	{ -0.010314f, 0.086341f, 0.051804f },	{ 0.029138f, -0.084708f, -0.043911f },	{ 0.043724f, -0.084708f, -0.029376f },
+	{ 0.010098f, -0.084708f, -0.051759f },	{ -0.010494f, -0.084708f, -0.051723f }, { 0.051638f, -0.084708f, -0.010364f },
+	{ 0.051674f, -0.084708f, 0.010229f },	{ 0.043827f, -0.084708f, 0.029268f },	{ 0.029291f, -0.084708f, 0.043855f },
+	{ -0.029353f, -0.084708f, 0.043957f },	{ -0.051889f, -0.084708f, -0.010183f }, { -0.051853f, -0.084708f, 0.010409f },
+	{ -0.043939f, -0.084708f, 0.029421f },	{ -0.029506f, -0.084708f, -0.043809f }, { -0.044042f, -0.084708f, -0.029222f },
+	{ -0.029353f, 0.086341f, 0.043957f },	{ 0.043724f, 0.086341f, -0.029376f },	{ 0.029138f, 0.086341f, -0.043911f },
+	{ 0.010098f, 0.086341f, -0.051759f },	{ 0.051638f, 0.086341f, -0.010364f },	{ 0.051674f, 0.086341f, 0.010229f },
+	{ -0.044042f, 0.086341f, -0.029222f },	{ 0.043827f, 0.086341f, 0.029268f },	{ -0.051889f, 0.086341f, -0.010183f },
+	{ -0.043939f, 0.086341f, 0.029421f },	{ -0.029506f, 0.086341f, -0.043809f },	{ 0.035354f, 0.070897f, 0.035658f },
+	{ 0.035354f, -0.069397f, 0.035658f },	{ -0.035498f, 0.070897f, 0.035658f },	{ -0.035498f, -0.069397f, 0.035658f },
+	{ 0.035354f, -0.069397f, 0.365503f },	{ 0.035354f, 0.070897f, 0.365503f },	{ -0.035498f, 0.070897f, 0.365503f },
+	{ -0.035498f, -0.069397f, 0.365503f },	{ 0.035354f, 0.070897f, -0.365033f },	{ 0.035354f, -0.069397f, -0.365033f },
+	{ -0.035498f, 0.070897f, -0.365033f },	{ -0.035498f, -0.069397f, -0.365033f }, { 0.035354f, -0.069397f, -0.035187f },
+	{ 0.035354f, 0.070897f, -0.035187f },	{ -0.035498f, 0.070897f, -0.035187f },	{ -0.035498f, -0.069397f, -0.035187f },
+	{ -0.035494f, -0.069397f, -0.035191f }, { -0.365340f, -0.069397f, -0.035191f }, { -0.035494f, 0.070897f, -0.035191f },
+	{ -0.365340f, 0.070897f, -0.035191f },	{ -0.365340f, -0.069397f, 0.035661f },	{ -0.035494f, -0.069397f, 0.035661f },
+	{ -0.035494f, 0.070897f, 0.035661f },	{ -0.365340f, 0.070897f, 0.035661f },	{ 0.035350f, 0.070897f, -0.035191f },
+	{ 0.365196f, 0.070897f, -0.035191f },	{ 0.035350f, -0.069397f, -0.035191f },	{ 0.365196f, -0.069397f, -0.035191f },
+	{ 0.365196f, 0.070897f, 0.035661f },	{ 0.035350f, 0.070897f, 0.035661f },	{ 0.035350f, -0.069397f, 0.035661f },
+	{ 0.365196f, -0.069397f, 0.035661f },	{ -0.070802f, 0.086337f, 0.355420f },	{ -0.070802f, -0.084705f, 0.355420f },
+	{ -0.097081f, 0.086335f, 0.487537f },	{ -0.097081f, -0.084704f, 0.487537f },	{ -0.000108f, 0.086337f, 0.362383f },
+	{ -0.000108f, 0.086335f, 0.497088f },	{ -0.000108f, -0.084704f, 0.497088f },	{ -0.000108f, -0.084705f, 0.362383f },
+	{ -0.138787f, -0.084705f, 0.334799f },	{ -0.138787f, 0.086337f, 0.334799f },	{ -0.070810f, -0.084705f, 0.355419f },
+	{ -0.070810f, 0.086337f, 0.355419f },	{ -0.097090f, 0.086335f, 0.487536f },	{ -0.190336f, 0.086335f, 0.459250f },
+	{ -0.190336f, -0.084704f, 0.459250f },	{ -0.097090f, -0.084704f, 0.487536f },	{ -0.138795f, 0.086337f, 0.334796f },
+	{ -0.138795f, -0.084705f, 0.334796f },	{ -0.201442f, 0.086337f, 0.301310f },	{ -0.201442f, -0.084705f, 0.301310f },
+	{ -0.276280f, -0.084704f, 0.413313f },	{ -0.276280f, 0.086335f, 0.413313f },	{ -0.190344f, 0.086335f, 0.459247f },
+	{ -0.190344f, -0.084704f, 0.459247f },	{ -0.201450f, -0.084705f, 0.301306f },	{ -0.256361f, -0.084705f, 0.256241f },
+	{ -0.201450f, 0.086337f, 0.301306f },	{ -0.256361f, 0.086337f, 0.256241f },	{ -0.351612f, 0.086335f, 0.351492f },
+	{ -0.351612f, -0.084704f, 0.351492f },	{ -0.276288f, 0.086335f, 0.413309f },	{ -0.276288f, -0.084704f, 0.413309f },
+	{ -0.301431f, -0.084705f, 0.201325f },	{ -0.413435f, -0.084704f, 0.276163f },	{ -0.413435f, 0.086335f, 0.276163f },
+	{ -0.301431f, 0.086337f, 0.201325f },	{ -0.256367f, -0.084705f, 0.256236f },	{ -0.256367f, 0.086337f, 0.256236f },
+	{ -0.351618f, 0.086335f, 0.351487f },	{ -0.351618f, -0.084704f, 0.351487f },	{ -0.334922f, -0.084705f, 0.138670f },
+	{ -0.459374f, -0.084704f, 0.190220f },	{ -0.459374f, 0.086335f, 0.190220f },	{ -0.334922f, 0.086337f, 0.138670f },
+	{ -0.301436f, 0.086337f, 0.201318f },	{ -0.301436f, -0.084705f, 0.201318f },	{ -0.413440f, 0.086335f, 0.276156f },
+	{ -0.413440f, -0.084704f, 0.276156f },	{ -0.487663f, -0.084704f, 0.096966f },	{ -0.355546f, -0.084705f, 0.070686f },
+	{ -0.459377f, -0.084704f, 0.190212f },	{ -0.334926f, -0.084705f, 0.138663f },	{ -0.355546f, 0.086337f, 0.070686f },
+	{ -0.334926f, 0.086337f, 0.138663f },	{ -0.487663f, 0.086335f, 0.096966f },	{ -0.459377f, 0.086335f, 0.190212f },
+	{ -0.362511f, -0.084705f, -0.000016f }, { -0.355549f, -0.084705f, 0.070678f },	{ -0.497217f, -0.084704f, -0.000016f },
+	{ -0.487665f, -0.084704f, 0.096957f },	{ -0.497217f, 0.086335f, -0.000016f },	{ -0.362511f, 0.086337f, -0.000016f },
+	{ -0.355549f, 0.086337f, 0.070678f },	{ -0.487665f, 0.086335f, 0.096957f },	{ -0.362512f, 0.086337f, -0.000024f },
+	{ -0.362512f, -0.084705f, -0.000024f }, { -0.355549f, 0.086337f, -0.070717f },	{ -0.355549f, -0.084705f, -0.070717f },
+	{ -0.497217f, -0.084704f, -0.000024f }, { -0.487666f, -0.084704f, -0.096997f }, { -0.497217f, 0.086335f, -0.000024f },
+	{ -0.487666f, 0.086335f, -0.096997f },	{ -0.334927f, -0.084705f, -0.138702f }, { -0.355548f, 0.086337f, -0.070726f },
+	{ -0.355548f, -0.084705f, -0.070726f }, { -0.334927f, 0.086337f, -0.138702f },	{ -0.487665f, -0.084704f, -0.097005f },
+	{ -0.459379f, -0.084704f, -0.190252f }, { -0.487665f, 0.086335f, -0.097005f },	{ -0.459379f, 0.086335f, -0.190252f },
+	{ -0.413442f, -0.084704f, -0.276196f }, { -0.301439f, -0.084705f, -0.201358f }, { -0.334925f, -0.084705f, -0.138710f },
+	{ -0.459376f, -0.084704f, -0.190260f }, { -0.334925f, 0.086337f, -0.138710f },	{ -0.301439f, 0.086337f, -0.201358f },
+	{ -0.459376f, 0.086335f, -0.190260f },	{ -0.413442f, 0.086335f, -0.276196f },	{ -0.256370f, -0.084705f, -0.256276f },
+	{ -0.301434f, 0.086337f, -0.201365f },	{ -0.301434f, -0.084705f, -0.201365f }, { -0.256370f, 0.086337f, -0.256276f },
+	{ -0.413438f, 0.086335f, -0.276203f },	{ -0.351621f, 0.086335f, -0.351527f },	{ -0.413438f, -0.084704f, -0.276203f },
+	{ -0.351621f, -0.084704f, -0.351527f }, { -0.256364f, -0.084705f, -0.256283f }, { -0.201453f, 0.086337f, -0.301347f },
+	{ -0.256364f, 0.086337f, -0.256283f },	{ -0.201453f, -0.084705f, -0.301347f }, { -0.276292f, -0.084704f, -0.413350f },
+	{ -0.351615f, -0.084704f, -0.351534f }, { -0.351615f, 0.086335f, -0.351534f },	{ -0.276292f, 0.086335f, -0.413350f },
+	{ -0.201447f, -0.084705f, -0.301352f }, { -0.276285f, -0.084704f, -0.413355f }, { -0.138799f, -0.084705f, -0.334838f },
+	{ -0.190349f, -0.084704f, -0.459289f }, { -0.276285f, 0.086335f, -0.413355f },	{ -0.201447f, 0.086337f, -0.301352f },
+	{ -0.190349f, 0.086335f, -0.459289f },	{ -0.138799f, 0.086337f, -0.334838f },	{ -0.190341f, 0.086335f, -0.459293f },
+	{ -0.190341f, -0.084704f, -0.459293f }, { -0.138791f, -0.084705f, -0.334842f }, { -0.138791f, 0.086337f, -0.334842f },
+	{ -0.070815f, 0.086337f, -0.355462f },	{ -0.070815f, -0.084705f, -0.355462f }, { -0.097095f, 0.086335f, -0.487579f },
+	{ -0.097095f, -0.084704f, -0.487579f }, { -0.070807f, 0.086337f, -0.355464f },	{ -0.097086f, 0.086335f, -0.487581f },
+	{ -0.097086f, -0.084704f, -0.487581f }, { -0.070807f, -0.084705f, -0.355464f }, { -0.000113f, -0.084705f, -0.362427f },
+	{ -0.000113f, 0.086337f, -0.362427f },	{ -0.000113f, 0.086335f, -0.497132f },	{ -0.000113f, -0.084704f, -0.497132f },
+	{ 0.070588f, 0.086337f, -0.355465f },	{ 0.096868f, -0.084704f, -0.487582f },	{ 0.096868f, 0.086335f, -0.487582f },
+	{ 0.070588f, -0.084705f, -0.355465f },	{ -0.000105f, 0.086337f, -0.362427f },	{ -0.000105f, 0.086335f, -0.497133f },
+	{ -0.000105f, -0.084704f, -0.497133f }, { -0.000105f, -0.084705f, -0.362427f }, { 0.190123f, -0.084704f, -0.459294f },
+	{ 0.190123f, 0.086335f, -0.459294f },	{ 0.138573f, -0.084705f, -0.334843f },	{ 0.138573f, 0.086337f, -0.334843f },
+	{ 0.070597f, 0.086337f, -0.355463f },	{ 0.070597f, -0.084705f, -0.355463f },	{ 0.096876f, -0.084704f, -0.487580f },
+	{ 0.096876f, 0.086335f, -0.487580f },	{ 0.201229f, -0.084705f, -0.301354f },	{ 0.276067f, -0.084704f, -0.413358f },
+	{ 0.201229f, 0.086337f, -0.301354f },	{ 0.138581f, -0.084705f, -0.334840f },	{ 0.138581f, 0.086337f, -0.334840f },
+	{ 0.190131f, 0.086335f, -0.459292f },	{ 0.276067f, 0.086335f, -0.413358f },	{ 0.190131f, -0.084704f, -0.459292f },
+	{ 0.201236f, 0.086337f, -0.301350f },	{ 0.256147f, -0.084705f, -0.256286f },	{ 0.256147f, 0.086337f, -0.256286f },
+	{ 0.201236f, -0.084705f, -0.301350f },	{ 0.351398f, -0.084704f, -0.351537f },	{ 0.351398f, 0.086335f, -0.351537f },
+	{ 0.276074f, -0.084704f, -0.413353f },	{ 0.276074f, 0.086335f, -0.413353f },	{ 0.301218f, -0.084705f, -0.201369f },
+	{ 0.301218f, 0.086337f, -0.201369f },	{ 0.256154f, -0.084705f, -0.256280f },	{ 0.256154f, 0.086337f, -0.256280f },
+	{ 0.413221f, 0.086335f, -0.276207f },	{ 0.413221f, -0.084704f, -0.276207f },	{ 0.351405f, 0.086335f, -0.351531f },
+	{ 0.351405f, -0.084704f, -0.351531f },	{ 0.334709f, 0.086337f, -0.138715f },	{ 0.301223f, 0.086337f, -0.201362f },
+	{ 0.334709f, -0.084705f, -0.138715f },	{ 0.301223f, -0.084705f, -0.201362f },	{ 0.459160f, -0.084704f, -0.190264f },
+	{ 0.459160f, 0.086335f, -0.190264f },	{ 0.413226f, 0.086335f, -0.276200f },	{ 0.413226f, -0.084704f, -0.276200f },
+	{ 0.334713f, -0.084705f, -0.138707f },	{ 0.355333f, -0.084705f, -0.070731f },	{ 0.334713f, 0.086337f, -0.138707f },
+	{ 0.355333f, 0.086337f, -0.070731f },	{ 0.459164f, 0.086335f, -0.190257f },	{ 0.487450f, 0.086335f, -0.097010f },
+	{ 0.487450f, -0.084704f, -0.097010f },	{ 0.459164f, -0.084704f, -0.190257f },	{ 0.355335f, -0.084705f, -0.070722f },
+	{ 0.362298f, -0.084705f, -0.000029f },	{ 0.355335f, 0.086337f, -0.070722f },	{ 0.362298f, 0.086337f, -0.000029f },
+	{ 0.497003f, -0.084704f, -0.000029f },	{ 0.497003f, 0.086335f, -0.000029f },	{ 0.487452f, 0.086335f, -0.097002f },
+	{ 0.487452f, -0.084704f, -0.097002f },	{ 0.362298f, -0.084705f, -0.000021f },	{ 0.497003f, -0.084704f, -0.000021f },
+	{ 0.355336f, -0.084705f, 0.070673f },	{ 0.487453f, -0.084704f, 0.096952f },	{ 0.497003f, 0.086335f, -0.000021f },
+	{ 0.362298f, 0.086337f, -0.000021f },	{ 0.355336f, 0.086337f, 0.070673f },	{ 0.487453f, 0.086335f, 0.096952f },
+	{ 0.355334f, -0.084705f, 0.070681f },	{ 0.355334f, 0.086337f, 0.070681f },	{ 0.487451f, 0.086335f, 0.096961f },
+	{ 0.487451f, -0.084704f, 0.096961f },	{ 0.334714f, -0.084705f, 0.138658f },	{ 0.459165f, -0.084704f, 0.190207f },
+	{ 0.334714f, 0.086337f, 0.138658f },	{ 0.459165f, 0.086335f, 0.190207f },	{ 0.334711f, 0.086337f, 0.138666f },
+	{ 0.301225f, 0.086337f, 0.201313f },	{ 0.459163f, 0.086335f, 0.190215f },	{ 0.413229f, 0.086335f, 0.276151f },
+	{ 0.334711f, -0.084705f, 0.138666f },	{ 0.301225f, -0.084705f, 0.201313f },	{ 0.413229f, -0.084704f, 0.276151f },
+	{ 0.459163f, -0.084704f, 0.190215f },	{ 0.301221f, -0.084705f, 0.201321f },	{ 0.256157f, -0.084705f, 0.256232f },
+	{ 0.301221f, 0.086337f, 0.201321f },	{ 0.256157f, 0.086337f, 0.256232f },	{ 0.413224f, -0.084704f, 0.276159f },
+	{ 0.413224f, 0.086335f, 0.276159f },	{ 0.351408f, 0.086335f, 0.351483f },	{ 0.351408f, -0.084704f, 0.351483f },
+	{ 0.201240f, -0.084705f, 0.301302f },	{ 0.201240f, 0.086337f, 0.301302f },	{ 0.256151f, -0.084705f, 0.256238f },
+	{ 0.256151f, 0.086337f, 0.256238f },	{ 0.351402f, 0.086335f, 0.351489f },	{ 0.351402f, -0.084704f, 0.351489f },
+	{ 0.276078f, 0.086335f, 0.413305f },	{ 0.276078f, -0.084704f, 0.413305f },	{ 0.138586f, -0.084705f, 0.334793f },
+	{ 0.201233f, -0.084705f, 0.301307f },	{ 0.190135f, -0.084704f, 0.459244f },	{ 0.276071f, -0.084704f, 0.413311f },
+	{ 0.201233f, 0.086337f, 0.301307f },	{ 0.138586f, 0.086337f, 0.334793f },	{ 0.276071f, 0.086335f, 0.413311f },
+	{ 0.190135f, 0.086335f, 0.459244f },	{ 0.138578f, -0.084705f, 0.334797f },	{ 0.070602f, -0.084705f, 0.355417f },
+	{ 0.138578f, 0.086337f, 0.334797f },	{ 0.070602f, 0.086337f, 0.355417f },	{ 0.190127f, 0.086335f, 0.459248f },
+	{ 0.190127f, -0.084704f, 0.459248f },	{ 0.096881f, 0.086335f, 0.487534f },	{ 0.096881f, -0.084704f, 0.487534f },
+	{ 0.070593f, -0.084705f, 0.355419f },	{ 0.096873f, 0.086335f, 0.487536f },	{ 0.096873f, -0.084704f, 0.487536f },
+	{ 0.070593f, 0.086337f, 0.355419f },	{ -0.000100f, 0.086337f, 0.362382f },	{ -0.000100f, 0.086335f, 0.497087f },
+	{ -0.000100f, -0.084704f, 0.497087f },	{ -0.000100f, -0.084705f, 0.362382f },
+};
+
+typedef struct WheelHullSpan
+{
+	int offset;
+	int count;
+} WheelHullSpan;
+static const WheelHullSpan s_metalWheel1Hulls[37] = {
+	{ 0, 29 },	{ 29, 8 },	{ 37, 8 },	{ 45, 8 },	{ 53, 8 },	{ 61, 8 },	{ 69, 8 },	{ 77, 8 },	{ 85, 8 },	{ 93, 8 },
+	{ 101, 8 }, { 109, 8 }, { 117, 8 }, { 125, 8 }, { 133, 8 }, { 141, 8 }, { 149, 8 }, { 157, 8 }, { 165, 8 }, { 173, 8 },
+	{ 181, 8 }, { 189, 8 }, { 197, 8 }, { 205, 8 }, { 213, 8 }, { 221, 8 }, { 229, 8 }, { 237, 8 }, { 245, 8 }, { 253, 8 },
+	{ 261, 8 }, { 269, 8 }, { 277, 8 }, { 285, 8 }, { 293, 8 }, { 301, 8 }, { 309, 8 },
+};
+#define s_metalWheel1HullCount 37
+
+// 30 metal_wheel1 props (37-piece convex decompositions) stacked. Body-pair contact merging
+// lets them settle and sleep instead of wobbling.
+class WheelStack : public Sample
+{
+public:
+	explicit WheelStack( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 0.0f, 12.0f, 5.0f, { 0.0f, 0.85f, 0.0f } );
+		}
+
+		AddGroundBox( 10.0f );
+
+		constexpr int N = 512;
+		b3Vec3 buffer[N];
+		int bufferCount = 0;
+		for ( int h = 0; h < s_metalWheel1HullCount; ++h )
+		{
+			const WheelHullSpan& span = s_metalWheel1Hulls[h];
+			m_hulls[h] = b3CreateHull( &s_metalWheel1Verts[span.offset], span.count, span.count );
+
+			const b3Vec3* points = b3GetHullPoints( m_hulls[h] );
+			for ( int j = 0; j < m_hulls[h]->vertexCount && bufferCount < N; ++j )
+			{
+				buffer[bufferCount] = points[j];
+				++bufferCount;
+			}
+		}
+
+		// Create a single hull that wraps the input hulls.
+		b3HullData* wheelHull = b3CreateHull( buffer, bufferCount, bufferCount );
+
+		const float height = 0.171f;
+		const float spacing = height + 0.006f;
+		const float startY = 0.5f * height + 0.004f;
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.baseMaterial.friction = 0.6f;
+
+		for ( int i = 0; i < m_wheelCount; ++i )
+		{
+			b3BodyDef bodyDef = b3DefaultBodyDef();
+			bodyDef.type = b3_dynamicBody;
+			bodyDef.name = "wheel";
+			bodyDef.position = { 0.0f, startY + i * spacing, 0.0f };
+			b3BodyId bodyId = b3CreateBody( m_worldId, &bodyDef );
+
+			// for ( int h = 0; h < s_metalWheel1HullCount; ++h )
+			//{
+			//	b3CreateHullShape( bodyId, &shapeDef, m_hulls[h] );
+			// }
+
+			// Using a single hull improves the simulation.
+			b3CreateHullShape( bodyId, &shapeDef, wheelHull );
+		}
+
+		b3DestroyHull( wheelHull );
+
+		b3World_SetContactTuning( m_worldId, 240.0f, 10.0f, 3.0f );
+	}
+
+	~WheelStack() override
+	{
+		for ( int h = 0; h < s_metalWheel1HullCount; ++h )
+		{
+			b3DestroyHull( m_hulls[h] );
+		}
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		b3Profile p = b3World_GetProfile( m_worldId );
+		float substepRate = m_context->hertz * m_context->subStepCount;
+
+		DrawTextLine( "wheels %d, hull pieces/wheel %d (%d total shapes)", m_wheelCount, s_metalWheel1HullCount,
+					  m_wheelCount * s_metalWheel1HullCount );
+		DrawTextLine( "step %.0f hz, sub-steps %d -> substep rate %.0f hz", m_context->hertz, m_context->subStepCount,
+					  substepRate );
+		DrawTextLine( "eff contact hz = min(240, %.0f) = %.0f", 0.125f * substepRate,
+					  b3MinFloat( 240.0f, 0.125f * substepRate ) );
+		DrawTextLine( "step %.3f ms | collide %.3f ms (%.0f%%) | solve %.3f ms (%.0f%%)", p.step, p.collide,
+					  p.step > 0.0f ? 100.0f * p.collide / p.step : 0.0f, p.solve,
+					  p.step > 0.0f ? 100.0f * p.solve / p.step : 0.0f );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new WheelStack( context );
+	}
+
+	b3HullData* m_hulls[s_metalWheel1HullCount];
+	static constexpr int m_wheelCount = 30;
+};
+
+static int sampleWheelStack = RegisterSample( "Issues", "GMod Wheel Stack", WheelStack::Create );
+
+class RestitutionOvershoot : public Sample
+{
+public:
+	static constexpr float m_boxHalf = 0.5f;
+	static constexpr float m_floorHalfXZ = 0.375f;
+	static constexpr float m_floorHalfY = 0.25f;
+	static constexpr float m_dropHeight = 10.0f;
+	static constexpr float m_tolerance = 0.05f;
+
+	explicit RestitutionOvershoot( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 20.0f, 0.0f, 28.0f, { 0.0f, m_dropHeight + m_boxHalf, 0.0f } );
+		}
+
+		b3BoxHull floor = b3MakeBoxHull( m_floorHalfXZ, m_floorHalfY, m_floorHalfXZ );
+		b3BodyDef floorDef = b3DefaultBodyDef();
+		floorDef.type = b3_staticBody;
+		floorDef.position = { 0.0f, -m_floorHalfY, 0.0f };
+		b3BodyId floorBody = b3CreateBody( m_worldId, &floorDef );
+
+		b3ShapeDef floorShape = b3DefaultShapeDef();
+		b3CreateHullShape( floorBody, &floorShape, &floor.base );
+
+		b3BoxHull box = b3MakeBoxHull( m_boxHalf, m_boxHalf, m_boxHalf );
+		b3BodyDef boxDef = b3DefaultBodyDef();
+		boxDef.type = b3_dynamicBody;
+		boxDef.position = { 0.0f, m_dropHeight, 0.0f };
+		m_boxBody = b3CreateBody( m_worldId, &boxDef );
+
+		b3ShapeDef boxShape = b3DefaultShapeDef();
+		boxShape.baseMaterial.restitution = 1.0f;
+		b3CreateHullShape( m_boxBody, &boxShape, &box.base );
+
+		m_currentY = m_dropHeight;
+		m_maxBounceY = 0.0f;
+		m_bounced = false;
+		m_failed = false;
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		if ( B3_IS_NON_NULL( m_boxBody ) == false )
+		{
+			return;
+		}
+
+		b3Pos position = b3Body_GetPosition( m_boxBody );
+		m_currentY = position.y;
+
+		b3Vec3 velocity = b3Body_GetLinearVelocity( m_boxBody );
+		if ( m_bounced == false && velocity.y > 0.0f )
+		{
+			m_bounced = true;
+		}
+
+		if ( m_bounced )
+		{
+			if ( position.y > m_maxBounceY )
+			{
+				m_maxBounceY = position.y;
+			}
+			if ( position.y > m_dropHeight + m_tolerance )
+			{
+				m_failed = true;
+			}
+		}
+
+		b3Pos markerPoint = { 0.0f, m_dropHeight + m_boxHalf, 0.0f };
+		DrawPlane( b3Vec3_axisY, markerPoint, MakeColor( b3_colorYellow ) );
+
+		DrawTextLine( "drop height = %.2f m", m_dropHeight );
+		DrawTextLine( "current y   = %.2f m", m_currentY );
+		DrawTextLine( "max bounce  = %.2f m", m_maxBounceY );
+
+		if ( m_bounced == false )
+		{
+			DrawTextLine( "waiting for first bounce..." );
+		}
+		else if ( m_failed )
+		{
+			DrawTextLine( "FAIL: box exceeded drop height" );
+		}
+		else
+		{
+			DrawTextLine( "PASS: bounce stays at or below drop height" );
+		}
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new RestitutionOvershoot( context );
+	}
+
+	b3BodyId m_boxBody = {};
+	float m_currentY = 0.0f;
+	float m_maxBounceY = 0.0f;
+	bool m_bounced = false;
+	bool m_failed = false;
+};
+
+static int sampleRestitutionOvershoot = RegisterSample( "Issues", "Restitution Overshoot", RestitutionOvershoot::Create );
+
+class SlideTwistOffCenterShape : public Sample
+{
+public:
+	explicit SlideTwistOffCenterShape( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( -30.0f, 17.0f, 30.0f, { 0.0f, 5.0f, 0.0f } );
+		}
+
+		AddGroundBox( 50.0f );
+
+		b3Quat orientation = b3MakeQuatFromAxisAngle( b3Vec3_axisX, 20.0f * B3_DEG_TO_RAD );
+
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+
+		bodyDef.position = { 0.0f, 4.0f, 0.0f };
+		bodyDef.rotation = orientation;
+		b3BodyId planeBody = b3CreateBody( m_worldId, &bodyDef );
+
+		b3BoxHull plane = b3MakeBoxHull( 10.0f, 0.5f, 10.0f );
+		shapeDef.baseMaterial.friction = 0.6f;
+		b3CreateHullShape( planeBody, &shapeDef, &plane.base );
+
+		b3Vec3 boxLocalCenter = { 1.0f, 0.5f, 1.0f };
+		b3Vec3 boxOffset = b3RotateVector( orientation, boxLocalCenter );
+
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = { -boxOffset.x, 5.0f - boxOffset.y, -boxOffset.z };
+		bodyDef.rotation = orientation;
+		// bodyDef.angularVelocity = 25.0f * b3RotateVector( orientation, b3Vec3_axisY );
+		b3BodyId boxBody = b3CreateBody( m_worldId, &bodyDef );
+		b3BoxHull mBox = b3MakeOffsetBoxHull( 1.0f, 0.5f, 1.0f, boxLocalCenter );
+		shapeDef.baseMaterial.friction = 0.3f;
+		b3CreateHullShape( boxBody, &shapeDef, &mBox.base );
+
+		b3Body_SetAngularVelocity( boxBody, 25.0f * b3RotateVector( orientation, b3Vec3_axisY ) );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new SlideTwistOffCenterShape( context );
+	}
+};
+
+static int sampleSlideTwistOffCenterShape =
+	RegisterSample( "Issues", "Slide Twist Off Center Shape", SlideTwistOffCenterShape::Create );

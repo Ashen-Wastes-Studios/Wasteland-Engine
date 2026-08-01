@@ -5,22 +5,24 @@
     <BuildType Name="Release" />
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="DemonCore-Editor\DemonCore-Editor.vcxproj" Id="5514B101-410D-D053-6A3F-B5D85697AF5F" DefaultStartup="true">
-  </Project>
-  <Project Path="Sandbox\Sandbox.vcxproj" Id="F4C124E3-60A1-A37E-69B9-2E55D5170AE0">
-  </Project>
-  <Project Path="Wasteland\Wasteland.vcxproj" Id="E8DDB8B7-5448-6D2E-9D86-1ED409304B83">
-  </Project>
-  <Project Path="WastelandPython.vcxproj" Id="4A585D2E-B6E3-CAF2-BFF4-4DE72BFF26F3">
-  </Project>
   <Folder Name="/Dependencies/">
     <Project Path="Wasteland\vendor\Box2D\Box2D.vcxproj" Id="A434E80C-1049-10BE-D9CA-B31D459E0CEF">
+    </Project>
+    <Project Path="Wasteland\vendor\Box3D\Box3D.vcxproj" Id="C534E80C-3149-10BE-FACA-B31D669E0CEF">
+    </Project>
+    <Project Path="DemonCore-Editor\DemonCore-Editor.vcxproj" Id="5514B101-410D-D053-6A3F-B5D85697AF5F" DefaultStartup="true">
     </Project>
     <Project Path="Wasteland\vendor\Glad\Glad.vcxproj" Id="BDD6857C-A90D-870D-52FA-6C103E10030F">
     </Project>
     <Project Path="Wasteland\vendor\GLFW\GLFW.vcxproj" Id="154B857C-0182-860D-AA6E-6C109684020F">
     </Project>
     <Project Path="Wasteland\vendor\imgui\ImGui.vcxproj" Id="C0FF640D-2C14-8DBE-F595-301E616989EF">
+    </Project>
+    <Project Path="Sandbox\Sandbox.vcxproj" Id="F4C124E3-60A1-A37E-69B9-2E55D5170AE0">
+    </Project>
+    <Project Path="Wasteland\Wasteland.vcxproj" Id="E8DDB8B7-5448-6D2E-9D86-1ED409304B83">
+    </Project>
+    <Project Path="WastelandPython.vcxproj" Id="4A585D2E-B6E3-CAF2-BFF4-4DE72BFF26F3">
     </Project>
     <Project Path="Wasteland\vendor\yaml-cpp\yaml-cpp.vcxproj" Id="88F1A057-74BE-FB62-9DD7-E90A890331F1">
     </Project>

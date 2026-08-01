@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\Box3D\include;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -102,7 +102,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\Box3D\include;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -129,7 +129,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>Wasteland\src;Wasteland\vendor\spdlog\include;Wasteland\vendor\entt\single_include;Wasteland\vendor\glm;Wasteland\vendor\Box3D\include;Wasteland\vendor\pybind11\include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -157,6 +157,9 @@
   <ItemGroup>
     <ProjectReference Include="Wasteland\Wasteland.vcxproj">
       <Project>{E8DDB8B7-5448-6D2E-9D86-1ED409304B83}</Project>
+    </ProjectReference>
+    <ProjectReference Include="Wasteland\vendor\Box3D\Box3D.vcxproj">
+      <Project>{C534E80C-3149-10BE-FACA-B31D669E0CEF}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

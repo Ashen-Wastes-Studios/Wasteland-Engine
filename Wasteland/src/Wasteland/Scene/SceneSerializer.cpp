@@ -113,6 +113,24 @@ namespace Wasteland
 		return out;
 	}
 
+	static std::string RigidBody3DTypeToString(RigidBody3DType type)
+	{
+		switch (type)
+		{
+		case RigidBody3DType::Static:    return "Static";
+		case RigidBody3DType::Dynamic:   return "Dynamic";
+		case RigidBody3DType::Kinematic: return "Kinematic";
+		}
+		return "Static";
+	}
+
+	static RigidBody3DType RigidBody3DTypeFromString(const std::string &str)
+	{
+		if (str == "Dynamic")   return RigidBody3DType::Dynamic;
+		if (str == "Kinematic") return RigidBody3DType::Kinematic;
+		return RigidBody3DType::Static;
+	}
+
 	static std::string RigidBody2DBodyTypeToString(Rigidbody2DComponent::BodyType bodyType)
 	{
 		switch (bodyType)
@@ -332,6 +350,61 @@ namespace Wasteland
 			out << YAML::EndMap; // CircleCollider2DComponent
 		}
 
+		if (entity.HasComponent<RigidBody3DComponent>())
+		{
+			out << YAML::Key << "RigidBody3DComponent";
+			out << YAML::BeginMap;
+			auto &rb3d = entity.GetComponent<RigidBody3DComponent>();
+			out << YAML::Key << "BodyType" << YAML::Value << RigidBody3DTypeToString(rb3d.Type);
+			out << YAML::Key << "GravityScale" << YAML::Value << rb3d.GravityScale;
+			out << YAML::Key << "LinearDamping" << YAML::Value << rb3d.LinearDamping;
+			out << YAML::Key << "AngularDamping" << YAML::Value << rb3d.AngularDamping;
+			out << YAML::Key << "FixedRotationX" << YAML::Value << rb3d.FixedRotationX;
+			out << YAML::Key << "FixedRotationY" << YAML::Value << rb3d.FixedRotationY;
+			out << YAML::Key << "FixedRotationZ" << YAML::Value << rb3d.FixedRotationZ;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<BoxCollider3DComponent>())
+		{
+			out << YAML::Key << "BoxCollider3DComponent";
+			out << YAML::BeginMap;
+			auto &bc = entity.GetComponent<BoxCollider3DComponent>();
+			out << YAML::Key << "HalfExtents" << YAML::Value << bc.HalfExtents;
+			out << YAML::Key << "Offset" << YAML::Value << bc.Offset;
+			out << YAML::Key << "Density" << YAML::Value << bc.Density;
+			out << YAML::Key << "Friction" << YAML::Value << bc.Friction;
+			out << YAML::Key << "Restitution" << YAML::Value << bc.Restitution;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<SphereCollider3DComponent>())
+		{
+			out << YAML::Key << "SphereCollider3DComponent";
+			out << YAML::BeginMap;
+			auto &sc = entity.GetComponent<SphereCollider3DComponent>();
+			out << YAML::Key << "Radius" << YAML::Value << sc.Radius;
+			out << YAML::Key << "Offset" << YAML::Value << sc.Offset;
+			out << YAML::Key << "Density" << YAML::Value << sc.Density;
+			out << YAML::Key << "Friction" << YAML::Value << sc.Friction;
+			out << YAML::Key << "Restitution" << YAML::Value << sc.Restitution;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<CapsuleCollider3DComponent>())
+		{
+			out << YAML::Key << "CapsuleCollider3DComponent";
+			out << YAML::BeginMap;
+			auto &cc = entity.GetComponent<CapsuleCollider3DComponent>();
+			out << YAML::Key << "Radius" << YAML::Value << cc.Radius;
+			out << YAML::Key << "Height" << YAML::Value << cc.Height;
+			out << YAML::Key << "Offset" << YAML::Value << cc.Offset;
+			out << YAML::Key << "Density" << YAML::Value << cc.Density;
+			out << YAML::Key << "Friction" << YAML::Value << cc.Friction;
+			out << YAML::Key << "Restitution" << YAML::Value << cc.Restitution;
+			out << YAML::EndMap;
+		}
+
 		if (entity.HasComponent<ScriptComponent>())
 		{
 			out << YAML::Key << "ScriptComponent";
@@ -536,6 +609,53 @@ namespace Wasteland
 					circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
 					circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
 					circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
+				}
+
+				auto rigidBody3DComponent = entity["RigidBody3DComponent"];
+				if (rigidBody3DComponent)
+				{
+					auto &rb3d = deserializedEntity.AddComponent<RigidBody3DComponent>();
+					rb3d.Type = RigidBody3DTypeFromString(rigidBody3DComponent["BodyType"].as<std::string>());
+					rb3d.GravityScale = rigidBody3DComponent["GravityScale"].as<float>();
+					rb3d.LinearDamping = rigidBody3DComponent["LinearDamping"].as<float>();
+					rb3d.AngularDamping = rigidBody3DComponent["AngularDamping"].as<float>();
+					if (rigidBody3DComponent["FixedRotationX"]) rb3d.FixedRotationX = rigidBody3DComponent["FixedRotationX"].as<bool>();
+					if (rigidBody3DComponent["FixedRotationY"]) rb3d.FixedRotationY = rigidBody3DComponent["FixedRotationY"].as<bool>();
+					if (rigidBody3DComponent["FixedRotationZ"]) rb3d.FixedRotationZ = rigidBody3DComponent["FixedRotationZ"].as<bool>();
+				}
+
+				auto boxCollider3DComponent = entity["BoxCollider3DComponent"];
+				if (boxCollider3DComponent)
+				{
+					auto &bc = deserializedEntity.AddComponent<BoxCollider3DComponent>();
+					bc.HalfExtents = boxCollider3DComponent["HalfExtents"].as<glm::vec3>();
+					bc.Offset = boxCollider3DComponent["Offset"].as<glm::vec3>();
+					bc.Density = boxCollider3DComponent["Density"].as<float>();
+					bc.Friction = boxCollider3DComponent["Friction"].as<float>();
+					bc.Restitution = boxCollider3DComponent["Restitution"].as<float>();
+				}
+
+				auto sphereCollider3DComponent = entity["SphereCollider3DComponent"];
+				if (sphereCollider3DComponent)
+				{
+					auto &sc = deserializedEntity.AddComponent<SphereCollider3DComponent>();
+					sc.Radius = sphereCollider3DComponent["Radius"].as<float>();
+					sc.Offset = sphereCollider3DComponent["Offset"].as<glm::vec3>();
+					sc.Density = sphereCollider3DComponent["Density"].as<float>();
+					sc.Friction = sphereCollider3DComponent["Friction"].as<float>();
+					sc.Restitution = sphereCollider3DComponent["Restitution"].as<float>();
+				}
+
+				auto capsuleCollider3DComponent = entity["CapsuleCollider3DComponent"];
+				if (capsuleCollider3DComponent)
+				{
+					auto &cc = deserializedEntity.AddComponent<CapsuleCollider3DComponent>();
+					cc.Radius = capsuleCollider3DComponent["Radius"].as<float>();
+					cc.Height = capsuleCollider3DComponent["Height"].as<float>();
+					cc.Offset = capsuleCollider3DComponent["Offset"].as<glm::vec3>();
+					cc.Density = capsuleCollider3DComponent["Density"].as<float>();
+					cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
+					cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
 				}
 
 				auto scriptComponent = entity["ScriptComponent"];

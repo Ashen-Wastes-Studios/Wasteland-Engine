@@ -163,6 +163,42 @@ namespace Wasteland
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<RigidBody3DComponent>())
+				{
+					if (ImGui::MenuItem("Rigidbody 3D"))
+					{
+						m_SelectionContext.AddComponent<RigidBody3DComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<BoxCollider3DComponent>())
+				{
+					if (ImGui::MenuItem("Box Collider 3D"))
+					{
+						m_SelectionContext.AddComponent<BoxCollider3DComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<SphereCollider3DComponent>())
+				{
+					if (ImGui::MenuItem("Sphere Collider 3D"))
+					{
+						m_SelectionContext.AddComponent<SphereCollider3DComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<CapsuleCollider3DComponent>())
+				{
+					if (ImGui::MenuItem("Capsule Collider 3D"))
+					{
+						m_SelectionContext.AddComponent<CapsuleCollider3DComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<ScriptComponent>())
 				{
 					if (ImGui::MenuItem("Script Component"))
@@ -691,7 +727,7 @@ namespace Wasteland
 				const char *currentBodyTypeString = bodyTypeStrings[(int)rigidbody2D.Type];
 				if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
 				{
-					for (int i = 0; i < 2; i++)
+					for (int i = 0; i < 3; i++)
 					{
 						bool isSelected = currentBodyTypeString == bodyTypeStrings[i];
 						if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
@@ -787,6 +823,171 @@ namespace Wasteland
 
 			if (removeComponent)
 				entity.RemoveComponent<CircleCollider2DComponent>();
+		}
+
+		if (entity.HasComponent<RigidBody3DComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(RigidBody3DComponent).hash_code(), treeNodeFlags, "Rigidbody 3D");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &rigidbody3D = entity.GetComponent<RigidBody3DComponent>();
+
+				const char *bodyTypeStrings[] = {"Static", "Dynamic", "Kinematic"};
+				const char *currentBodyTypeString = bodyTypeStrings[(int)rigidbody3D.Type];
+				if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
+				{
+					for (int i = 0; i < 3; i++)
+					{
+						bool isSelected = currentBodyTypeString == bodyTypeStrings[i];
+						if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
+						{
+							currentBodyTypeString = bodyTypeStrings[i];
+							rigidbody3D.Type = (RigidBody3DType)i;
+						}
+						if (isSelected)
+							ImGui::SetItemDefaultFocus();
+					}
+
+					ImGui::EndCombo();
+				}
+
+				ImGui::DragFloat("Gravity Scale", &rigidbody3D.GravityScale, 0.05f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Linear Damping", &rigidbody3D.LinearDamping, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Angular Damping", &rigidbody3D.AngularDamping, 0.01f, 0.0f, FLT_MAX);
+				ImGui::Checkbox("Fixed Rotation X", &rigidbody3D.FixedRotationX);
+				ImGui::Checkbox("Fixed Rotation Y", &rigidbody3D.FixedRotationY);
+				ImGui::Checkbox("Fixed Rotation Z", &rigidbody3D.FixedRotationZ);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<RigidBody3DComponent>();
+		}
+
+		if (entity.HasComponent<BoxCollider3DComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(BoxCollider3DComponent).hash_code(), treeNodeFlags, "Box Collider 3D");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &boxCollider3D = entity.GetComponent<BoxCollider3DComponent>();
+
+				ImGui::DragFloat3("Offset", glm::value_ptr(boxCollider3D.Offset));
+				ImGui::DragFloat3("Half Extents", glm::value_ptr(boxCollider3D.HalfExtents));
+				ImGui::DragFloat("Density", &boxCollider3D.Density, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Friction", &boxCollider3D.Friction, 0.01f, 0.0f, 1.0f);
+				ImGui::DragFloat("Restitution", &boxCollider3D.Restitution, 0.01f, 0.0f, 1.0f);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<BoxCollider3DComponent>();
+		}
+
+		if (entity.HasComponent<SphereCollider3DComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(SphereCollider3DComponent).hash_code(), treeNodeFlags, "Sphere Collider 3D");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &sphereCollider3D = entity.GetComponent<SphereCollider3DComponent>();
+
+				ImGui::DragFloat3("Offset", glm::value_ptr(sphereCollider3D.Offset));
+				ImGui::DragFloat("Radius", &sphereCollider3D.Radius, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Density", &sphereCollider3D.Density, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Friction", &sphereCollider3D.Friction, 0.01f, 0.0f, 1.0f);
+				ImGui::DragFloat("Restitution", &sphereCollider3D.Restitution, 0.01f, 0.0f, 1.0f);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<SphereCollider3DComponent>();
+		}
+
+		if (entity.HasComponent<CapsuleCollider3DComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(CapsuleCollider3DComponent).hash_code(), treeNodeFlags, "Capsule Collider 3D");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &capsuleCollider3D = entity.GetComponent<CapsuleCollider3DComponent>();
+
+				ImGui::DragFloat3("Offset", glm::value_ptr(capsuleCollider3D.Offset));
+				ImGui::DragFloat("Radius", &capsuleCollider3D.Radius, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Height", &capsuleCollider3D.Height, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Density", &capsuleCollider3D.Density, 0.01f, 0.0f, FLT_MAX);
+				ImGui::DragFloat("Friction", &capsuleCollider3D.Friction, 0.01f, 0.0f, 1.0f);
+				ImGui::DragFloat("Restitution", &capsuleCollider3D.Restitution, 0.01f, 0.0f, 1.0f);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<CapsuleCollider3DComponent>();
 		}
 
 		if (entity.HasComponent<ScriptComponent>())
