@@ -330,13 +330,14 @@ struct HitInfo {
 void ApplyDisplacement(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal, inout vec3 worldPos, inout vec3 worldNormal)
 {
     float dispScale = inst.DisplacementParams.x;
-    if (dispScale < 0.001 || inst.TextureID < 0 || inst.TextureID >= 32)
+    float bumpStrength = inst.DisplacementParams.y;
+    if (inst.TextureID < 0 || inst.TextureID >= 32)
+        return;
+    if (dispScale < 0.001 && bumpStrength < 0.001)
         return;
 
     vec2 uv = CalculateUV(localHitPos, inst);
     vec2 uvScale = inst.TextureScale.xy;
-
-    float height = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv).rgb);
 
     vec3 T, B;
     vec3 absN = abs(localNormal);
@@ -366,16 +367,21 @@ void ApplyDisplacement(RayTracingInstance inst, vec3 localHitPos, vec3 localNorm
     }
 
     float eps = 1.0 / 256.0;
+    float height = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv).rgb);
     float hU = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(eps, 0.0) * uvScale).rgb);
     float hV = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(0.0, eps) * uvScale).rgb);
     float dhdu = (hU - height) / eps;
     float dhdv = (hV - height) / eps;
 
-    worldPos += worldNormal * height * dispScale;
+    if (dispScale > 0.001)
+        worldPos += worldNormal * height * dispScale;
 
-    vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * dispScale);
-    mat3 normalMatrix = transpose(mat3(inst.InvTransform));
-    worldNormal = normalize(normalMatrix * localPerturbedNormal);
+    if (bumpStrength > 0.001)
+    {
+        vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
+        mat3 normalMatrix = transpose(mat3(inst.InvTransform));
+        worldNormal = normalize(normalMatrix * localPerturbedNormal);
+    }
 }
 
 HitInfo TraceScene(Ray ray) {

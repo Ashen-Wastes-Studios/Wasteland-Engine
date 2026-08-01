@@ -642,6 +642,8 @@ namespace Wasteland
 
 				std::string normalLabel = mc.HasGeneratedMaps ? "Normal Strength (Map Multiplier)" : "Normal Strength (Base)";
 				ImGui::DragFloat(normalLabel.c_str(), &mc.NormalStrength, 0.05f, 0.0f, 5.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Controls bump mapping strength in the ray tracer.\nPerturbs surface normals based on texture luminance gradients.\n0 = automatic (1.0 when a texture is assigned).\nHigher values = stronger surface detail from bump mapping.");
 
 				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
 
@@ -653,7 +655,7 @@ namespace Wasteland
 
 				ImGui::DragFloat("Displacement Scale", &mc.DisplacementScale, 0.01f, 0.0f, 2.0f);
 				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Displaces the surface geometry based on texture luminance.\n0 = flat, higher values = more displacement.\nRequires a texture to be assigned.");
+					ImGui::SetTooltip("Displaces the surface position along the normal based on\ntexture luminance. This is geometric displacement, separate\nfrom bump mapping (Normal Strength).\n0 = no position displacement.\nRequires a texture to be assigned.");
 
 				ImGui::TreePop();
 			}
