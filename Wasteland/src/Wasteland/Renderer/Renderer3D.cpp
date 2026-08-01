@@ -920,7 +920,8 @@ namespace Wasteland
             {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, -0.0f}};
 
         static const glm::vec2 texCoords[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
-        glm::mat3 normalMatrix = glm::transpose(glm::mat3(FastTRSInverse(transform)));
+        glm::mat4 invTransform = FastTRSInverse(transform);
+        glm::mat3 normalMatrix = glm::transpose(glm::mat3(invTransform));
 
         for (int i = 0; i < 24; i++)
         {
@@ -941,7 +942,7 @@ namespace Wasteland
             RayTracingInstance instance = {};
 
             instance.WorldTransform = transform;
-            instance.InvTransform = FastTRSInverse(transform);
+            instance.InvTransform = invTransform;
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
             instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
@@ -993,7 +994,8 @@ namespace Wasteland
         uint32_t startIndexOffset = s_Data.SphereVertexCount;
         float sectorStep = 2 * glm::pi<float>() / sectors;
         float stackStep = glm::pi<float>() / stacks;
-        glm::mat3 normalMatrix = glm::transpose(glm::mat3(FastTRSInverse(transform)));
+        glm::mat4 invTransform = FastTRSInverse(transform);
+        glm::mat3 normalMatrix = glm::transpose(glm::mat3(invTransform));
 
         for (int i = 0; i <= stacks; ++i)
         {
@@ -1047,7 +1049,7 @@ namespace Wasteland
             RayTracingInstance instance = {};
 
             instance.WorldTransform = transform;
-            instance.InvTransform = FastTRSInverse(transform);
+            instance.InvTransform = invTransform;
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
             instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);

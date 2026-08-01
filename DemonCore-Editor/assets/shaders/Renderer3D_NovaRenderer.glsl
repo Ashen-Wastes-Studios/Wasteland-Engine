@@ -91,13 +91,14 @@ float hash()
     return result / 4294967295.0;
 }
 
-vec3 random_in_hemisphere(vec3 normal) 
+vec3 random_in_hemisphere(vec3 normal)
 {
     float u = hash();
     float v = hash();
-    float theta = 2.0 * 3.14159 * u;
-    float phi = acos(2.0 * v - 1.0);
-    vec3 dir = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
+    float z = 2.0 * v - 1.0;
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    float theta = 2.0 * 3.14159265359 * u;
+    vec3 dir = vec3(r * cos(theta), r * sin(theta), z);
     return dot(dir, normal) > 0.0 ? dir : -dir;
 }
 
@@ -129,7 +130,9 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 
 vec3 FresnelSchlick(float cosTheta, vec3 F0)
 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    float t = 1.0 - cosTheta;
+    float t2 = t * t;
+    return F0 + (1.0 - F0) * t2 * t2 * t;
 }
 
 vec3 GetSkyColor(vec3 dir);
@@ -159,8 +162,9 @@ float HitSphere(Ray localRay, float radius, out vec3 outNormal)
     float c = dot(localRay.Origin, localRay.Origin) - (radius * radius);
     float discriminant = b * b - 4.0 * a * c;
     if (discriminant < 0.0) return -1.0;
-    float t = (-b - sqrt(discriminant)) / (2.0 * a);
-    if (t < 0.0) t = (-b + sqrt(discriminant)) / (2.0 * a);
+    float sqrtD = sqrt(discriminant);
+    float t = (-b - sqrtD) / (2.0 * a);
+    if (t < 0.0) t = (-b + sqrtD) / (2.0 * a);
     if (t > 0.0) 
     {
         outNormal = normalize(localRay.Origin + t * localRay.Direction);
@@ -189,25 +193,6 @@ bool IsOccluded(Ray r, float maxDist) {
     return false;
 }
 
-void GetVarianceClippingBounds(ivec2 center, out vec3 minCol, out vec3 maxCol) 
-{
-    vec3 m1 = vec3(0.0);
-    vec3 m2 = vec3(0.0);
-    float n = 9.0;
-
-    for(int x = -1; x <= 1; x++) {
-        for(int y = -1; y <= 1; y++) {
-            vec3 col = imageLoad(img_Output, center + ivec2(x, y)).rgb;
-            m1 += col;
-            m2 += col * col;
-        }
-    }
-    vec3 mean = m1 / n;
-    vec3 stdDev = sqrt(max(vec3(0.0), (m2 / n) - (mean * mean)));
-    minCol = mean - 2.0 * stdDev;
-    maxCol = mean + 2.0 * stdDev;
-}
-
 float Halton(int index, int base) {
     float f = 1.0;
     float r = 0.0;
@@ -228,15 +213,6 @@ vec2 GetJitter(int frameIndex, float cameraMoved) {
     return vec2(x, y) - 0.5;
 }
 
-float CalculateLightPDF(float dist, float area) { return 1.0 / area; }
-float CalculateBSDFPDF(float NdotL) { return max(NdotL / PI, 0.0001); }
-
-vec3 ReconstructWorldPos(vec2 uv, float depth) 
-{
-    vec4 clipPos = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-    vec4 worldPos = u_InverseViewProjection * clipPos;
-    return worldPos.xyz / worldPos.w;
-}
 
 const mat3 Gx = mat3(-1, 0, 1, -2, 0, 2, -1, 0, 1);
 const mat3 Gy = mat3(-1, -2, -1, 0, 0, 0, 1, 2, 1);
@@ -365,11 +341,28 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     vec3 T, B;
     ComputeTangentFrame(localHitPos, localNormal, shapeType, T, B);
     int texID = inst.TextureID;
-
     float eps = 1.0 / 256.0;
-    float maxDisplacement = max(dispScale, bumpStrength);
+
+    // ---------- Bump-only fast path (no POM march, no displacement) ----------
+    if (dispScale < 0.001)
+    {
+        float h0 = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
+        float hV = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(0.0, eps) * uvScale).rgb);
+        float dhdu = (hU - h0) / eps;
+        float dhdv = (hV - h0) / eps;
+
+        vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
+        mat3 normalMatrix = transpose(mat3(inst.InvTransform));
+        worldNormal = normalize(normalMatrix * localPerturbedNormal);
+
+        float gradMag = length(vec2(dhdu, dhdv));
+        selfOcclusion = clamp(1.0 - max(0.0, h0 - 0.5) * gradMag * 0.004 * bumpStrength, 0.2, 1.0);
+        return;
+    }
 
     // ---------- Parallax Occlusion Mapping ----------
+    float maxDisplacement = max(dispScale, bumpStrength);
     float cosAngle = max(dot(-localViewDir, localNormal), 0.05);
     int baseLayers = int(mix(6.0, 32.0, float(u_QualityLevel) / 3.0));
     int numLayers = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), 96.0));
@@ -523,11 +516,13 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
             Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
             if (!IsOccluded(shadowRay, distToLight)) {
                 float NdotL = max(dot(h.normal, dirToLight), 0.0);
+                if (NdotL <= 0.0) continue;
                 vec3 H = normalize(V + dirToLight);
                 vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
                 float D = DistributionGGX(max(dot(h.normal, H), 0.0), h.rough);
                 float G = GeometrySmith(h.normal, V, dirToLight, h.rough);
-                vec3 brdf = (vec3(1.0) - F) * (1.0 - h.metal) * h.albedo / PI + (D * G * F) / max(4.0 * max(dot(h.normal, V), 0.0) * NdotL, 0.001);
+                float NdotV = max(dot(h.normal, V), 0.0);
+                vec3 brdf = (vec3(1.0) - F) * (1.0 - h.metal) * h.albedo / PI + (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
                 vec3 contrib = brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
 
                 float brightness = dot(contrib, vec3(0.2126, 0.7152, 0.0722));
@@ -550,7 +545,6 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
         vec3 R = reflect(-V, h.normal);
         vec3 envColor = GetSkyColor(R);
         float envGloss = pow(1.0 - h.rough, 2.0);
-        vec3 F0 = mix(vec3(0.04), h.albedo, h.metal);
         directLight += F0 * envColor * envGloss * h.metal;
     }
 
