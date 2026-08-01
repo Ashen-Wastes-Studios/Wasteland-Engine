@@ -12,7 +12,7 @@ class Player:
             print(f"DEBUG: Initializing Entity: {entity}")
 
             # Movement
-            self.speed = 10.0
+            self.speed = 5.0
             self.sprintMultiplier = 1.25
 
             # Mouse look
@@ -44,7 +44,7 @@ class Player:
             # Head bob
             self.bobPhase = 0.0
             self.bobFrequency = 8.0
-            self.bobAmplitude = 0.04
+            self.bobAmplitude = 0.02
             self.bobSwayAmplitude = 0.025
             self.bobCurrentAmount = 0.0
             self.bobSmoothSpeed = 8.0
@@ -130,10 +130,6 @@ class Player:
                 moveSpeed *= self.crouchSpeedMultiplier
             elif self.stance == 2:
                 moveSpeed *= self.proneSpeedMultiplier
-
-            # No movement while airborne
-            if not self.isGrounded:
-                moveSpeed = 0.0
 
             moveX = 0.0
             moveZ = 0.0
