@@ -35,6 +35,7 @@ struct RayTracingInstance
     int TextureID;
     int PackedMaterialMapID;
     vec4 TextureScale;
+    vec4 DisplacementParams;
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -326,6 +327,57 @@ struct HitInfo {
     vec3 emission;
 };
 
+void ApplyDisplacement(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal, inout vec3 worldPos, inout vec3 worldNormal)
+{
+    float dispScale = inst.DisplacementParams.x;
+    if (dispScale < 0.001 || inst.TextureID < 0 || inst.TextureID >= 32)
+        return;
+
+    vec2 uv = CalculateUV(localHitPos, inst);
+    vec2 uvScale = inst.TextureScale.xy;
+
+    float height = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv).rgb);
+
+    vec3 T, B;
+    vec3 absN = abs(localNormal);
+    if (int(inst.MaterialParams.z) == 0)
+    {
+        if (absN.x > absN.y && absN.x > absN.z)
+        {
+            T = vec3(0.0, 0.0, sign(localNormal.x));
+            B = vec3(0.0, 1.0, 0.0);
+        }
+        else if (absN.y > absN.z)
+        {
+            T = vec3(sign(localNormal.y), 0.0, 0.0);
+            B = vec3(0.0, 0.0, 1.0);
+        }
+        else
+        {
+            T = vec3(sign(localNormal.z), 0.0, 0.0);
+            B = vec3(0.0, 1.0, 0.0);
+        }
+    }
+    else
+    {
+        vec3 r = normalize(localHitPos);
+        T = normalize(cross(vec3(0.0, 1.0, 0.0), r));
+        B = cross(r, T);
+    }
+
+    float eps = 1.0 / 256.0;
+    float hU = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(eps, 0.0) * uvScale).rgb);
+    float hV = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(0.0, eps) * uvScale).rgb);
+    float dhdu = (hU - height) / eps;
+    float dhdv = (hV - height) / eps;
+
+    worldPos += worldNormal * height * dispScale;
+
+    vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * dispScale);
+    mat3 normalMatrix = transpose(mat3(inst.InvTransform));
+    worldNormal = normalize(normalMatrix * localPerturbedNormal);
+}
+
 HitInfo TraceScene(Ray ray) {
     HitInfo info;
     info.hit = false;
@@ -350,9 +402,12 @@ HitInfo TraceScene(Ray ray) {
                 info.t = tWorld;
                 info.hit = true;
                 info.worldPos = worldHit;
+                vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
                 info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
 
-                vec2 uv = CalculateUV(localRay.Origin + tLocal * localRay.Direction, inst);
+                ApplyDisplacement(inst, localHitPos, localNormal, info.worldPos, info.normal);
+
+                vec2 uv = CalculateUV(localHitPos, inst);
                 vec3 sampledAlbedo = vec3(1.0);
                 if (inst.TextureID >= 0 && inst.TextureID < 32)
                     sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;

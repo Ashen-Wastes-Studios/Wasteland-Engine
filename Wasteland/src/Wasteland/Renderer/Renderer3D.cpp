@@ -34,6 +34,7 @@ namespace Wasteland
         int TextureID;
         int PackedMaterialMapID;
         glm::vec4 TextureScale;
+        glm::vec4 DisplacementParams;
     };
 
     struct Renderer3DData
@@ -955,6 +956,7 @@ namespace Wasteland
             instance.TextureID = textureSlot;
             instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
             instance.TextureScale = glm::vec4(worldScale.x, worldScale.y, worldScale.z, worldScale.z);
+            instance.DisplacementParams = glm::vec4(material.DisplacementScale, 0.0f, 0.0f, 0.0f);
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
@@ -1064,6 +1066,7 @@ namespace Wasteland
                 glm::pi<float>() * worldRadius,
                 0.0f,
                 0.0f);
+            instance.DisplacementParams = glm::vec4(material.DisplacementScale, 0.0f, 0.0f, 0.0f);
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;

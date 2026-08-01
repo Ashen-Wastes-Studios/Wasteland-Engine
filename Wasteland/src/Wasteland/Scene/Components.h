@@ -122,6 +122,8 @@ namespace Wasteland
 		glm::vec4 EmissionColor = {1.0f, 1.0f, 1.0f, 1.0f};
 		float EmissionIntensity = 0.0f;
 
+		float DisplacementScale = 0.0f;
+
 		bool HasGeneratedMaps = false;
 		std::string TexturePath;
 

@@ -651,6 +651,10 @@ namespace Wasteland
 				ImGui::ColorEdit4("Emission Color", glm::value_ptr(mc.EmissionColor));
 				ImGui::DragFloat("Emission Intensity", &mc.EmissionIntensity, 0.05f, 0.0f, FLT_MAX);
 
+				ImGui::DragFloat("Displacement Scale", &mc.DisplacementScale, 0.01f, 0.0f, 2.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Displaces the surface geometry based on texture luminance.\n0 = flat, higher values = more displacement.\nRequires a texture to be assigned.");
+
 				ImGui::TreePop();
 			}
 
