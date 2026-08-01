@@ -10,7 +10,12 @@ class Player:
         try:
             self.entity = entity
             print(f"DEBUG: Initializing Entity: {entity}")
+
+            # Movement
             self.speed = 10.0
+            self.sprintMultiplier = 1.25
+
+            # Mouse look
             self.mouseSensitivity = 0.01
             self.pitch = 0.0
             self.yaw = 0.0
@@ -21,6 +26,20 @@ class Player:
             self.maxTurnSpeed = 0.35
             self.rotationSmoothing = 0.25
             self.initializedRotation = False
+
+            # Jump
+            self.verticalVelocity = 0.0
+            self.gravity = 25.0
+            self.jumpForce = 9.0
+            self.isGrounded = True
+            self.groundLevel = 0.0
+
+            # Stance (0 = standing, 1 = crouching, 2 = prone)
+            self.stance = 0
+            self.crouchSpeedMultiplier = 0.5
+            self.proneSpeedMultiplier = 0.25
+            self.wasCrouchPressed = False
+            self.wasPronePressed = False
         except Exception as e:
             print(f"DEBUG: Error caught in __init__: {e}")
             raise e
@@ -29,10 +48,9 @@ class Player:
         try:
             if self.entity is None:
                 return
-            
-        except: 
+        except:
             return
-        
+
         if not hasattr(self.entity, 'GetTransform'):
             return
 
@@ -48,17 +66,66 @@ class Player:
                 self.pitch = rot.x
                 self.yaw = rot.y
                 self.initializedRotation = True
-            
+
             seconds = dt.GetSeconds()
 
+            # --- Gravity & Jump ---
+            if not self.isGrounded:
+                self.verticalVelocity -= self.gravity * seconds
+                pos.y += self.verticalVelocity * seconds
+                if pos.y <= self.groundLevel:
+                    pos.y = self.groundLevel
+                    self.verticalVelocity = 0.0
+                    self.isGrounded = True
+
+            # --- Stance Toggle (edge-triggered) ---
+            crouchPressed = Wasteland.IsKeyPressed(Wasteland.WL_KEY_C)
+            pronePressed = Wasteland.IsKeyPressed(Wasteland.WL_KEY_Z)
+
+            if self.isGrounded:
+                if crouchPressed and not self.wasCrouchPressed:
+                    if self.stance == 1:
+                        self.stance = 0  # crouch -> stand
+                    elif self.stance == 2:
+                        self.stance = 1  # prone -> crouch
+                    else:
+                        self.stance = 1  # stand -> crouch
+
+                if pronePressed and not self.wasPronePressed:
+                    if self.stance == 2:
+                        self.stance = 0  # prone -> stand
+                    else:
+                        self.stance = 2  # any -> prone
+
+            self.wasCrouchPressed = crouchPressed
+            self.wasPronePressed = pronePressed
+
+            # Jump (only when grounded and standing)
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE) and self.isGrounded and self.stance == 0:
+                self.verticalVelocity = self.jumpForce
+                self.isGrounded = False
+
+            # --- Movement ---
             forwardX = -math.sin(self.yaw)
             forwardZ = -math.cos(self.yaw)
             rightX = math.cos(self.yaw)
             rightZ = -math.sin(self.yaw)
 
             moveSpeed = self.speed * seconds
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT):
-                moveSpeed *= 1.25
+
+            # Sprint (standing only, grounded only)
+            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_SHIFT) and self.stance == 0 and self.isGrounded:
+                moveSpeed *= self.sprintMultiplier
+
+            # Stance speed reduction
+            if self.stance == 1:
+                moveSpeed *= self.crouchSpeedMultiplier
+            elif self.stance == 2:
+                moveSpeed *= self.proneSpeedMultiplier
+
+            # No movement while airborne
+            if not self.isGrounded:
+                moveSpeed = 0.0
 
             moveX = 0.0
             moveZ = 0.0
@@ -84,11 +151,7 @@ class Player:
             pos.x += moveX * moveSpeed
             pos.z += moveZ * moveSpeed
 
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_SPACE):
-                pos.y += self.speed * seconds
-            if Wasteland.IsKeyPressed(Wasteland.WL_KEY_LEFT_CONTROL):
-                pos.y -= self.speed * seconds
-
+            # --- Mouse Look ---
             mouseDelta = Wasteland.GetMouseDelta()
             if mouseDelta is not None and (abs(mouseDelta[0]) > 0.0 or abs(mouseDelta[1]) > 0.0):
                 deltaX = max(min(mouseDelta[0] * self.mouseSensitivity, self.maxTurnSpeed), -self.maxTurnSpeed)
