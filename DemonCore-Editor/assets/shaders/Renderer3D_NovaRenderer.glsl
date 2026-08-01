@@ -325,39 +325,20 @@ struct HitInfo {
     float metal;
     float rough;
     vec3 emission;
+    float occlusion;
 };
 
-void ApplyDisplacement(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal, inout vec3 worldPos, inout vec3 worldNormal)
+void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, out vec3 T, out vec3 B)
 {
-    float dispScale = inst.DisplacementParams.x;
-    float bumpStrength = inst.DisplacementParams.y;
-    if (inst.TextureID < 0 || inst.TextureID >= 32)
-        return;
-    if (dispScale < 0.001 && bumpStrength < 0.001)
-        return;
-
-    vec2 uv = CalculateUV(localHitPos, inst);
-    vec2 uvScale = inst.TextureScale.xy;
-
-    vec3 T, B;
     vec3 absN = abs(localNormal);
-    if (int(inst.MaterialParams.z) == 0)
+    if (shapeType == 0)
     {
         if (absN.x > absN.y && absN.x > absN.z)
-        {
-            T = vec3(0.0, 0.0, sign(localNormal.x));
-            B = vec3(0.0, 1.0, 0.0);
-        }
+        { T = vec3(0.0, 0.0, sign(localNormal.x)); B = vec3(0.0, 1.0, 0.0); }
         else if (absN.y > absN.z)
-        {
-            T = vec3(sign(localNormal.y), 0.0, 0.0);
-            B = vec3(0.0, 0.0, 1.0);
-        }
+        { T = vec3(sign(localNormal.y), 0.0, 0.0); B = vec3(0.0, 0.0, 1.0); }
         else
-        {
-            T = vec3(sign(localNormal.z), 0.0, 0.0);
-            B = vec3(0.0, 1.0, 0.0);
-        }
+        { T = vec3(sign(localNormal.z), 0.0, 0.0); B = vec3(0.0, 1.0, 0.0); }
     }
     else
     {
@@ -365,19 +346,121 @@ void ApplyDisplacement(RayTracingInstance inst, vec3 localHitPos, vec3 localNorm
         T = normalize(cross(vec3(0.0, 1.0, 0.0), r));
         B = cross(r, T);
     }
+}
+
+void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
+              vec3 localViewDir, inout vec2 uv, inout vec3 worldPos,
+              inout vec3 worldNormal, out float selfOcclusion)
+{
+    selfOcclusion = 1.0;
+    float dispScale = inst.DisplacementParams.x;
+    float bumpStrength = inst.DisplacementParams.y;
+    if (inst.TextureID < 0 || inst.TextureID >= 32)
+        return;
+    if (dispScale < 0.001 && bumpStrength < 0.001)
+        return;
+
+    int shapeType = int(inst.MaterialParams.z);
+    vec2 uvScale = inst.TextureScale.xy;
+    vec3 T, B;
+    ComputeTangentFrame(localHitPos, localNormal, shapeType, T, B);
+    int texID = inst.TextureID;
 
     float eps = 1.0 / 256.0;
-    float height = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv).rgb);
-    float hU = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(eps, 0.0) * uvScale).rgb);
-    float hV = GetLuminance(texture(u_SceneTextures[inst.TextureID], uv + vec2(0.0, eps) * uvScale).rgb);
-    float dhdu = (hU - height) / eps;
-    float dhdv = (hV - height) / eps;
+    float maxDisplacement = max(dispScale, bumpStrength);
 
+    // ---------- Parallax Occlusion Mapping ----------
+    float cosAngle = max(dot(-localViewDir, localNormal), 0.05);
+    int baseLayers = int(mix(6.0, 32.0, float(u_QualityLevel) / 3.0));
+    int numLayers = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), 96.0));
+
+    // UV offset per unit of height displacement (view direction projected onto surface plane)
+    float vnDot = dot(localViewDir, localNormal);
+    vec2 viewUVDir = vec2(dot(localViewDir, T), dot(localViewDir, B));
+    vec2 uvOffsetPerHeight = -viewUVDir / max(abs(vnDot), 0.05) * uvScale;
+
+    // Ray march from top of height volume (h=1) down to bottom (h=0)
+    float dHeight = 1.0 / float(numLayers);
+    vec2 dUV = uvOffsetPerHeight * dHeight * maxDisplacement;
+
+    vec2 prevUV = uv;
+    float prevLayerH = 1.0;
+    float currLayerH = 1.0;
+
+    float prevTexH = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+    vec2 currUV = uv;
+    float currTexH = prevTexH;
+
+    // March through height layers
+    for (int i = 0; i < numLayers; i++)
+    {
+        prevUV = currUV;
+        prevLayerH = currLayerH;
+        prevTexH = currTexH;
+
+        currUV += dUV;
+        currLayerH -= dHeight;
+        currTexH = GetLuminance(texture(u_SceneTextures[texID], currUV).rgb);
+
+        if (currTexH > currLayerH)
+            break;
+    }
+
+    // Linear interpolation refinement between last two layers
+    float d1 = prevLayerH - prevTexH;
+    float d2 = currTexH - currLayerH;
+    float weight = d1 / max(d1 + d2, 0.0001);
+    vec2 pomUV = mix(prevUV, currUV, weight);
+
+    // Silhouette edge: clamp POM offset to prevent UV bleed across faces
+    vec2 uvDelta = pomUV - uv;
+    float maxOffset = 0.15;
+    if (length(uvDelta) > maxOffset)
+        uvDelta = normalize(uvDelta) * maxOffset;
+    pomUV = uv + uvDelta;
+
+    // Apply POM-corrected UV
+    uv = pomUV;
+
+    // Position displacement at POM intersection (optional)
+    float pomHeight = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
     if (dispScale > 0.001)
-        worldPos += worldNormal * height * dispScale;
+        worldPos += worldNormal * pomHeight * dispScale;
 
+    // ---------- Self-Occlusion Shadow March ----------
+    // March from the POM-corrected point toward the surface normal direction
+    // to detect if surrounding higher geometry blocks light
+    if (dispScale > 0.001 || bumpStrength > 0.5)
+    {
+        vec3 shadowDir = localNormal;
+        float shDot = dot(shadowDir, localNormal);
+        vec2 shUVDir = vec2(dot(shadowDir, T), dot(shadowDir, B));
+        vec2 shUVStep = shUVDir / max(abs(shDot), 0.1) * uvScale * eps * 8.0;
+
+        float shadowH = pomHeight;
+        vec2 shUV = uv;
+        float occlusion = 0.0;
+        int shadowSteps = (u_QualityLevel >= 2) ? 8 : 4;
+
+        for (int s = 1; s <= shadowSteps; s++)
+        {
+            shUV += shUVStep * float(s);
+            float sampleH = GetLuminance(texture(u_SceneTextures[texID], shUV).rgb);
+            float expectedH = shadowH - float(s) * 0.1;
+            occlusion += max(sampleH - expectedH, 0.0);
+        }
+        selfOcclusion = clamp(1.0 - occlusion * 3.0, 0.15, 1.0);
+    }
+
+    // ---------- Normal Perturbation at POM-corrected UV ----------
     if (bumpStrength > 0.001)
     {
+        float h0 = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
+        float hV = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(0.0, eps) * uvScale).rgb);
+        float dhdu = (hU - h0) / eps;
+        float dhdv = (hV - h0) / eps;
+
         vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
         mat3 normalMatrix = transpose(mat3(inst.InvTransform));
         worldNormal = normalize(normalMatrix * localPerturbedNormal);
@@ -388,6 +471,7 @@ HitInfo TraceScene(Ray ray) {
     HitInfo info;
     info.hit = false;
     info.t = 1e20;
+    info.occlusion = 1.0;
 
     for (int i = 0; i < u_InstanceCount; i++) {
         RayTracingInstance inst = Instances[i];
@@ -411,9 +495,11 @@ HitInfo TraceScene(Ray ray) {
                 vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
                 info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
 
-                ApplyDisplacement(inst, localHitPos, localNormal, info.worldPos, info.normal);
-
                 vec2 uv = CalculateUV(localHitPos, inst);
+                float pomOcclusion = 1.0;
+                ApplyPOM(inst, localHitPos, localNormal, localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
+                info.occlusion = pomOcclusion;
+
                 vec3 sampledAlbedo = vec3(1.0);
                 if (inst.TextureID >= 0 && inst.TextureID < 32)
                     sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
@@ -461,10 +547,10 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
     // Emission from the surface itself
     directLight += h.emission;
 
-    // Ambient sky bounce (diffuse)
+    // Ambient sky bounce (diffuse) — attenuated by POM self-occlusion
     float skyT = 0.5 * (h.normal.y + 1.0);
     vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
-    directLight += diffuseColor * skyAmbient;
+    directLight += diffuseColor * skyAmbient * h.occlusion;
 
     // Simple environment reflection for metallic materials
     if (h.metal > 0.0) {
@@ -527,6 +613,7 @@ void RunTraceAndDenoise()
         }
         if (u_IndirectRays > 0)
             indirectLight /= float(u_IndirectRays);
+        indirectLight *= primary.occlusion;
     } else {
         // Primary ray hit sky — no surface, just sky color as direct
         directLight = GetSkyColor(primaryRay.Direction);
