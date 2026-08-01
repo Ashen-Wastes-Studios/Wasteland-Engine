@@ -34,6 +34,7 @@ struct RayTracingInstance
     int LODLevel;
     int TextureID;
     int PackedMaterialMapID;
+    vec4 TextureScale;
 };
 
 layout(std430, binding = 1) buffer SceneInstances 
@@ -129,6 +130,8 @@ vec3 FresnelSchlick(float cosTheta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
+
+vec3 GetSkyColor(vec3 dir);
 
 float HitCube(Ray localRay, out vec3 outNormal) 
 {
@@ -251,19 +254,26 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
         vec3 absLocal = abs(localPos);
         float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
 
+        vec2 uv;
+        vec2 uvScale;
         if (maxAxis == absLocal.x) {
             // +/- X face: use Z and Y
             float signX = sign(localPos.x);
-            return vec2(localPos.z * signX + 0.5, localPos.y + 0.5);
+            uv = vec2(localPos.z * signX + 0.5, localPos.y + 0.5);
+            uvScale = vec2(inst.TextureScale.z, inst.TextureScale.y);
         } else if (maxAxis == absLocal.y) {
             // +/- Y face: use X and Z
             float signY = sign(localPos.y);
-            return vec2(localPos.x * signY + 0.5, localPos.z + 0.5);
+            uv = vec2(localPos.x * signY + 0.5, localPos.z + 0.5);
+            uvScale = vec2(inst.TextureScale.x, inst.TextureScale.w);
         } else {
             // +/- Z face: use X and Y
             float signZ = sign(localPos.z);
-            return vec2(localPos.x * signZ + 0.5, localPos.y + 0.5);
+            uv = vec2(localPos.x * signZ + 0.5, localPos.y + 0.5);
+            uvScale = vec2(inst.TextureScale.x, inst.TextureScale.y);
         }
+
+        return uv * uvScale;
     } else {
         // Sphere UV logic - FIXED VERSION
         // For spheres, we need to calculate proper spherical coordinates
@@ -274,7 +284,7 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
         float u = phi / (2.0 * PI) + 0.5;
         float v = theta / PI;
 
-        return vec2(u, v);
+        return vec2(u, v) * inst.TextureScale.xy;
     }
 }
 
@@ -390,10 +400,19 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
     // Emission from the surface itself
     directLight += h.emission;
 
-    // Ambient sky bounce
+    // Ambient sky bounce (diffuse)
     float skyT = 0.5 * (h.normal.y + 1.0);
     vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
     directLight += diffuseColor * skyAmbient;
+
+    // Simple environment reflection for metallic materials
+    if (h.metal > 0.0) {
+        vec3 R = reflect(-V, h.normal);
+        vec3 envColor = GetSkyColor(R);
+        float envGloss = pow(1.0 - h.rough, 2.0);
+        vec3 F0 = mix(vec3(0.04), h.albedo, h.metal);
+        directLight += F0 * envColor * envGloss * h.metal;
+    }
 
     return directLight;
 }

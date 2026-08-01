@@ -11,7 +11,7 @@ class Player:
             self.entity = entity
             print(f"DEBUG: Initializing Entity: {entity}")
             self.speed = 10.0
-            self.mouseSensitivity = 0.04
+            self.mouseSensitivity = 0.01
             self.pitch = 0.0
             self.yaw = 0.0
             self.targetPitch = 0.0

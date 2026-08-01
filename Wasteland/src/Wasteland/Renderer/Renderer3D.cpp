@@ -33,6 +33,7 @@ namespace Wasteland
         int LODLevel;
         int TextureID;
         int PackedMaterialMapID;
+        glm::vec4 TextureScale;
     };
 
     struct Renderer3DData
@@ -129,7 +130,6 @@ namespace Wasteland
         float LastCameraPitch = 0.0f;
         float LastCameraYaw = 0.0f;
 
-
         uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
 
@@ -152,7 +152,8 @@ namespace Wasteland
         float sx = glm::length(glm::vec3(m[0]));
         float sy = glm::length(glm::vec3(m[1]));
         float sz = glm::length(glm::vec3(m[2]));
-        if (sx < 1e-10f || sy < 1e-10f || sz < 1e-10f) return glm::mat4(0.0f);
+        if (sx < 1e-10f || sy < 1e-10f || sz < 1e-10f)
+            return glm::mat4(0.0f);
 
         float rsx = 1.0f / sx, rsy = 1.0f / sy, rsz = 1.0f / sz;
         float r00 = m[0][0] * rsx, r01 = m[0][1] * rsx, r02 = m[0][2] * rsx;
@@ -162,14 +163,31 @@ namespace Wasteland
         float tx = m[3][0], ty = m[3][1], tz = m[3][2];
 
         glm::mat4 result;
-        result[0][0] = r00 * rsx; result[0][1] = r10 * rsy; result[0][2] = r20 * rsz; result[0][3] = 0.0f;
-        result[1][0] = r01 * rsx; result[1][1] = r11 * rsy; result[1][2] = r21 * rsz; result[1][3] = 0.0f;
-        result[2][0] = r02 * rsx; result[2][1] = r12 * rsy; result[2][2] = r22 * rsz; result[2][3] = 0.0f;
+        result[0][0] = r00 * rsx;
+        result[0][1] = r10 * rsy;
+        result[0][2] = r20 * rsz;
+        result[0][3] = 0.0f;
+        result[1][0] = r01 * rsx;
+        result[1][1] = r11 * rsy;
+        result[1][2] = r21 * rsz;
+        result[1][3] = 0.0f;
+        result[2][0] = r02 * rsx;
+        result[2][1] = r12 * rsy;
+        result[2][2] = r22 * rsz;
+        result[2][3] = 0.0f;
         result[3][0] = -(r00 * tx * rsx + r10 * ty * rsy + r20 * tz * rsz);
         result[3][1] = -(r01 * tx * rsx + r11 * ty * rsy + r21 * tz * rsz);
         result[3][2] = -(r02 * tx * rsx + r12 * ty * rsy + r22 * tz * rsz);
         result[3][3] = 1.0f;
         return result;
+    }
+
+    static glm::vec3 GetWorldScale(const glm::mat4 &transform)
+    {
+        return glm::vec3(
+            glm::length(glm::vec3(transform[0])),
+            glm::length(glm::vec3(transform[1])),
+            glm::length(glm::vec3(transform[2])));
     }
 
     static int FindOrAddTextureSlot(const Ref<Texture2D> &texture)
@@ -649,38 +667,38 @@ namespace Wasteland
     {
         switch (s_Data.CurrentQualityPreset)
         {
-            case QualityPreset::Low:
-                s_Data.SamplesPerPixel = 1;
-                s_Data.MaxBounces = 1;
-                s_Data.MaxLights = 1;
-                s_Data.IndirectRays = 1;
-                s_Data.BloomEnabled = false;
-                s_Data.BilateralBlurEnabled = false;
-                break;
-            case QualityPreset::Medium:
-                s_Data.SamplesPerPixel = 1;
-                s_Data.MaxBounces = 3;
-                s_Data.MaxLights = 4;
-                s_Data.IndirectRays = 1;
-                s_Data.BloomEnabled = true;
-                s_Data.BilateralBlurEnabled = false;
-                break;
-            case QualityPreset::High:
-                s_Data.SamplesPerPixel = 2;
-                s_Data.MaxBounces = 5;
-                s_Data.MaxLights = 10000;
-                s_Data.IndirectRays = 2;
-                s_Data.BloomEnabled = true;
-                s_Data.BilateralBlurEnabled = true;
-                break;
-            case QualityPreset::Ultra:
-                s_Data.SamplesPerPixel = 4;
-                s_Data.MaxBounces = 5;
-                s_Data.MaxLights = 10000;
-                s_Data.IndirectRays = 2;
-                s_Data.BloomEnabled = true;
-                s_Data.BilateralBlurEnabled = true;
-                break;
+        case QualityPreset::Low:
+            s_Data.SamplesPerPixel = 1;
+            s_Data.MaxBounces = 1;
+            s_Data.MaxLights = 1;
+            s_Data.IndirectRays = 1;
+            s_Data.BloomEnabled = false;
+            s_Data.BilateralBlurEnabled = false;
+            break;
+        case QualityPreset::Medium:
+            s_Data.SamplesPerPixel = 1;
+            s_Data.MaxBounces = 3;
+            s_Data.MaxLights = 4;
+            s_Data.IndirectRays = 1;
+            s_Data.BloomEnabled = true;
+            s_Data.BilateralBlurEnabled = false;
+            break;
+        case QualityPreset::High:
+            s_Data.SamplesPerPixel = 2;
+            s_Data.MaxBounces = 5;
+            s_Data.MaxLights = 10000;
+            s_Data.IndirectRays = 2;
+            s_Data.BloomEnabled = true;
+            s_Data.BilateralBlurEnabled = true;
+            break;
+        case QualityPreset::Ultra:
+            s_Data.SamplesPerPixel = 4;
+            s_Data.MaxBounces = 5;
+            s_Data.MaxLights = 10000;
+            s_Data.IndirectRays = 2;
+            s_Data.BloomEnabled = true;
+            s_Data.BilateralBlurEnabled = true;
+            break;
         }
 
         s_Data.FrameIndex = 0;
@@ -932,9 +950,11 @@ namespace Wasteland
                                           material.EmissionIntensity);
 
             int textureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : -1;
+            glm::vec3 worldScale = GetWorldScale(transform);
 
             instance.TextureID = textureSlot;
             instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
+            instance.TextureScale = glm::vec4(worldScale.x, worldScale.y, worldScale.z, worldScale.z);
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
@@ -1034,9 +1054,16 @@ namespace Wasteland
                                           material.EmissionIntensity);
 
             int textureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : -1;
+            glm::vec3 worldScale = GetWorldScale(transform);
+            float worldRadius = radius * (worldScale.x + worldScale.y + worldScale.z) / 3.0f;
 
             instance.TextureID = textureSlot;
             instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
+            instance.TextureScale = glm::vec4(
+                2.0f * glm::pi<float>() * worldRadius,
+                glm::pi<float>() * worldRadius,
+                0.0f,
+                0.0f);
 
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;

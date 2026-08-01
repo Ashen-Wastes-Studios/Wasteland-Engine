@@ -377,7 +377,8 @@ namespace Wasteland
 		}
 		case SceneState::Play:
 		{
-			m_ActiveScene->OnUpdateRuntime(ts);
+			if (!m_IsPaused)
+				m_ActiveScene->OnUpdateRuntime(ts);
 			break;
 		}
 		case SceneState::Simulate:
@@ -588,7 +589,7 @@ namespace Wasteland
 			ImGui::Separator();
 			ImGui::Text("Ray Tracing Settings");
 
-			static const char* qualityItems[] = { "Low", "Medium", "High", "Ultra" };
+			static const char *qualityItems[] = {"Low", "Medium", "High", "Ultra"};
 			int currentQuality = (int)Wasteland::Renderer3D::GetQualityPreset();
 			if (ImGui::Combo("Quality Preset", &currentQuality, qualityItems, IM_ARRAYSIZE(qualityItems)))
 			{
@@ -906,6 +907,12 @@ namespace Wasteland
 		case WL_KEY_R:
 			m_GizmoType = ImGuizmo::OPERATION::SCALE;
 			break;
+		case WL_KEY_ESCAPE:
+			if (m_SceneState == SceneState::Play)
+			{
+				m_IsPaused = !m_IsPaused;
+			}
+			break;
 		}
 		return false;
 	}
@@ -914,6 +921,12 @@ namespace Wasteland
 	{
 		if (e.GetMouseButton() == WL_MOUSE_BUTTON_LEFT)
 		{
+			if (m_IsPaused && m_ViewportHovered)
+			{
+				m_IsPaused = false;
+				return false;
+			}
+
 			if (m_ViewportHovered && !ImGuizmo::IsOver() && !Input::IsKeyPressed(WL_KEY_LEFT_ALT))
 				m_SceneHierarchyPanel.SetSelectedEntity(m_HoveredEntity);
 		}
@@ -1074,6 +1087,7 @@ namespace Wasteland
 		if (m_SceneState == SceneState::Simulate)
 			OnSceneStop();
 
+		m_IsPaused = false;
 		m_SceneState = SceneState::Play;
 
 		m_ActiveScene = Scene::Copy(m_EditorScene);
@@ -1087,6 +1101,7 @@ namespace Wasteland
 		if (m_SceneState == SceneState::Play)
 			OnSceneStop();
 
+		m_IsPaused = false;
 		m_SceneState = SceneState::Simulate;
 
 		m_ActiveScene = Scene::Copy(m_EditorScene);
@@ -1098,6 +1113,8 @@ namespace Wasteland
 	void EditorLayer::OnSceneStop()
 	{
 		WL_CORE_ASSERT(m_SceneState == SceneState::Play || m_SceneState == SceneState::Simulate, nullptr);
+
+		m_IsPaused = false;
 
 		if (m_SceneState == SceneState::Play)
 			m_ActiveScene->OnRuntimeStop();
