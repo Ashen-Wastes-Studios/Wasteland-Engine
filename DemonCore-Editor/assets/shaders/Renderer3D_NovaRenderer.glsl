@@ -172,10 +172,10 @@ float HitSphere(Ray localRay, float radius, out vec3 outNormal)
 bool IsOccluded(Ray r, float maxDist) {
     for(int i = 0; i < u_InstanceCount; i++) {
         RayTracingInstance inst = Instances[i];
-        
-        // Ensure distance check here too
-        float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
-        if (distToObj > inst.MaxDistance) continue;
+
+        // Squared distance cull (avoids sqrt)
+        vec3 diff = u_CameraPosition - inst.WorldTransform[3].xyz;
+        if (dot(diff, diff) > inst.MaxDistance * inst.MaxDistance) continue;
 
         Ray localRay;
         localRay.Origin = (inst.InvTransform * vec4(r.Origin, 1.0)).xyz;
@@ -374,7 +374,7 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     int baseLayers = int(mix(6.0, 32.0, float(u_QualityLevel) / 3.0));
     int numLayers = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), 96.0));
 
-    // UV offset per unit of height displacement (view direction projected onto surface plane)
+    // UV offset per unit of height displacement
     float vnDot = dot(localViewDir, localNormal);
     vec2 viewUVDir = vec2(dot(localViewDir, T), dot(localViewDir, B));
     vec2 uvOffsetPerHeight = -viewUVDir / max(abs(vnDot), 0.05) * uvScale;
@@ -386,12 +386,10 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     vec2 prevUV = uv;
     float prevLayerH = 1.0;
     float currLayerH = 1.0;
-
     float prevTexH = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
     vec2 currUV = uv;
     float currTexH = prevTexH;
 
-    // March through height layers
     for (int i = 0; i < numLayers; i++)
     {
         prevUV = currUV;
@@ -406,64 +404,49 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
             break;
     }
 
-    // Linear interpolation refinement between last two layers
+    // Linear interpolation refinement
     float d1 = prevLayerH - prevTexH;
     float d2 = currTexH - currLayerH;
     float weight = d1 / max(d1 + d2, 0.0001);
     vec2 pomUV = mix(prevUV, currUV, weight);
 
-    // Silhouette edge: clamp POM offset to prevent UV bleed across faces
+    // Silhouette edge: clamp POM offset to prevent UV bleed
     vec2 uvDelta = pomUV - uv;
     float maxOffset = 0.15;
     if (length(uvDelta) > maxOffset)
         uvDelta = normalize(uvDelta) * maxOffset;
-    pomUV = uv + uvDelta;
 
-    // Apply POM-corrected UV
-    uv = pomUV;
+    uv += uvDelta;
 
-    // Position displacement at POM intersection (optional)
-    float pomHeight = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+    // Position displacement — reuse currTexH as approximate height (avoids extra sample)
     if (dispScale > 0.001)
-        worldPos += worldNormal * pomHeight * dispScale;
+        worldPos += worldNormal * currTexH * dispScale;
 
-    // ---------- Self-Occlusion Shadow March ----------
-    // March from the POM-corrected point toward the surface normal direction
-    // to detect if surrounding higher geometry blocks light
-    if (dispScale > 0.001 || bumpStrength > 0.5)
-    {
-        vec3 shadowDir = localNormal;
-        float shDot = dot(shadowDir, localNormal);
-        vec2 shUVDir = vec2(dot(shadowDir, T), dot(shadowDir, B));
-        vec2 shUVStep = shUVDir / max(abs(shDot), 0.1) * uvScale * eps * 8.0;
-
-        float shadowH = pomHeight;
-        vec2 shUV = uv;
-        float occlusion = 0.0;
-        int shadowSteps = (u_QualityLevel >= 2) ? 8 : 4;
-
-        for (int s = 1; s <= shadowSteps; s++)
-        {
-            shUV += shUVStep * float(s);
-            float sampleH = GetLuminance(texture(u_SceneTextures[texID], shUV).rgb);
-            float expectedH = shadowH - float(s) * 0.1;
-            occlusion += max(sampleH - expectedH, 0.0);
-        }
-        selfOcclusion = clamp(1.0 - occlusion * 3.0, 0.15, 1.0);
-    }
-
-    // ---------- Normal Perturbation at POM-corrected UV ----------
+    // ---------- Normal Perturbation + Self-Occlusion (shared gradient samples) ----------
     if (bumpStrength > 0.001)
     {
-        float h0 = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+        // These 2 samples + currTexH (already in registers) give us the full gradient
         float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
         float hV = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(0.0, eps) * uvScale).rgb);
-        float dhdu = (hU - h0) / eps;
-        float dhdv = (hV - h0) / eps;
+        float dhdu = (hU - currTexH) / eps;
+        float dhdv = (hV - currTexH) / eps;
 
         vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
         mat3 normalMatrix = transpose(mat3(inst.InvTransform));
         worldNormal = normalize(normalMatrix * localPerturbedNormal);
+
+        // Self-occlusion from the same gradient — ridges facing away from the gradient
+        // direction cast shadow on the current point. No extra texture samples needed.
+        float gradMag = length(vec2(dhdu, dhdv));
+        float ridgeFactor = max(0.0, currTexH - 0.5) * gradMag;
+        selfOcclusion = clamp(1.0 - ridgeFactor * 0.04 * bumpStrength, 0.2, 1.0);
+    }
+    else if (dispScale > 0.001)
+    {
+        // Displacement-only path: minimal gradient for self-occlusion (1 extra sample)
+        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
+        float gradMag = abs(hU - currTexH) / eps;
+        selfOcclusion = clamp(1.0 - max(0.0, currTexH - 0.5) * gradMag * 0.002, 0.3, 1.0);
     }
 }
 
@@ -473,10 +456,15 @@ HitInfo TraceScene(Ray ray) {
     info.t = 1e20;
     info.occlusion = 1.0;
 
+    // Detect if this is a primary ray (from camera) — skip expensive POM on indirect bounces
+    bool isPrimaryRay = length(ray.Origin - u_CameraPosition) < 0.01;
+
     for (int i = 0; i < u_InstanceCount; i++) {
         RayTracingInstance inst = Instances[i];
-        float distToObj = distance(u_CameraPosition, inst.WorldTransform[3].xyz);
-        if (distToObj > inst.MaxDistance) continue;
+
+        // Squared distance cull (avoids sqrt per instance per ray)
+        vec3 camDiff = u_CameraPosition - inst.WorldTransform[3].xyz;
+        if (dot(camDiff, camDiff) > inst.MaxDistance * inst.MaxDistance) continue;
 
         Ray localRay;
         localRay.Origin = (inst.InvTransform * vec4(ray.Origin, 1.0)).xyz;
@@ -486,19 +474,24 @@ HitInfo TraceScene(Ray ray) {
         vec3 localNormal;
         float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
         if (tLocal > 0.0) {
-            vec3 worldHit = (inst.WorldTransform * vec4(localRay.Origin + tLocal * localRay.Direction, 1.0)).xyz;
+            vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
+            vec3 worldHit = (inst.WorldTransform * vec4(localHitPos, 1.0)).xyz;
             float tWorld = distance(ray.Origin, worldHit);
             if (tWorld < info.t) {
                 info.t = tWorld;
                 info.hit = true;
                 info.worldPos = worldHit;
-                vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
                 info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
 
                 vec2 uv = CalculateUV(localHitPos, inst);
-                float pomOcclusion = 1.0;
-                ApplyPOM(inst, localHitPos, localNormal, localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
-                info.occlusion = pomOcclusion;
+
+                // POM + self-occlusion only on primary rays (camera-facing surfaces)
+                if (isPrimaryRay)
+                {
+                    float pomOcclusion = 1.0;
+                    ApplyPOM(inst, localHitPos, localNormal, localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
+                    info.occlusion = pomOcclusion;
+                }
 
                 vec3 sampledAlbedo = vec3(1.0);
                 if (inst.TextureID >= 0 && inst.TextureID < 32)
@@ -524,9 +517,9 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
         if (Instances[i].Emission.w > 0.0) {
             if (lightsSampled >= u_MaxLights) break;
             lightsSampled++;
-            vec3 lightPos = Instances[i].WorldTransform[3].xyz;
-            vec3 dirToLight = normalize(lightPos - h.worldPos);
-            float distToLight = length(lightPos - h.worldPos);
+            vec3 toLight = Instances[i].WorldTransform[3].xyz - h.worldPos;
+            float distToLight = length(toLight);
+            vec3 dirToLight = toLight / distToLight;
             Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
             if (!IsOccluded(shadowRay, distToLight)) {
                 float NdotL = max(dot(h.normal, dirToLight), 0.0);

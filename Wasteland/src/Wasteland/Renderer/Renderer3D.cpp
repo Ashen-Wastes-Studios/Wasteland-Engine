@@ -452,15 +452,16 @@ namespace Wasteland
                 return;
 
             bool moved = false;
+            float sqThreshold = s_Data.MovementThreshold * s_Data.MovementThreshold;
             if (s_Data.ActiveCameraIsEditor)
             {
-                moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastEditorCameraPosition) > s_Data.MovementThreshold ||
+                moved = glm::length2(s_Data.CurrentCameraPosition - s_Data.LastEditorCameraPosition) > sqThreshold ||
                         glm::abs(s_Data.CurrentCameraPitch - s_Data.LastEditorCameraPitch) > s_Data.MovementThreshold ||
                         glm::abs(s_Data.CurrentCameraYaw - s_Data.LastEditorCameraYaw) > s_Data.MovementThreshold;
             }
             else
             {
-                moved = glm::length(s_Data.CurrentCameraPosition - s_Data.LastGameCameraPosition) > s_Data.MovementThreshold ||
+                moved = glm::length2(s_Data.CurrentCameraPosition - s_Data.LastGameCameraPosition) > sqThreshold ||
                         glm::abs(s_Data.CurrentCameraPitch - s_Data.LastGameCameraPitch) > s_Data.MovementThreshold ||
                         glm::abs(s_Data.CurrentCameraYaw - s_Data.LastGameCameraYaw) > s_Data.MovementThreshold;
             }
