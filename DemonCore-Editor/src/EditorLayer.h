@@ -61,6 +61,8 @@ namespace Wasteland
 		std::filesystem::path m_EditorScenePath;
 
 		Entity m_HoveredEntity;
+		glm::ivec2 m_LastMousePixelPos = {-1, -1};
+		int m_PickFrameCounter = 0;
 
 		EditorCamera m_EditorCamera;
 

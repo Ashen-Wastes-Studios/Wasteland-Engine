@@ -68,6 +68,7 @@ namespace Wasteland
 
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1;
+        std::unordered_map<uint32_t, int> TextureSlotMap;
 
         bool RayTracingEnabled = true;
         bool RayTracingAccumulate = true;
@@ -128,7 +129,6 @@ namespace Wasteland
         float LastCameraPitch = 0.0f;
         float LastCameraYaw = 0.0f;
 
-        std::vector<uint32_t> LightIndicies;
 
         uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
@@ -146,6 +146,48 @@ namespace Wasteland
     static Renderer3DData s_Data;
 
     static void ApplyQualityPreset();
+
+    static glm::mat4 FastTRSInverse(const glm::mat4 &m)
+    {
+        float sx = glm::length(glm::vec3(m[0]));
+        float sy = glm::length(glm::vec3(m[1]));
+        float sz = glm::length(glm::vec3(m[2]));
+        if (sx < 1e-10f || sy < 1e-10f || sz < 1e-10f) return glm::mat4(0.0f);
+
+        float rsx = 1.0f / sx, rsy = 1.0f / sy, rsz = 1.0f / sz;
+        float r00 = m[0][0] * rsx, r01 = m[0][1] * rsx, r02 = m[0][2] * rsx;
+        float r10 = m[1][0] * rsy, r11 = m[1][1] * rsy, r12 = m[1][2] * rsy;
+        float r20 = m[2][0] * rsz, r21 = m[2][1] * rsz, r22 = m[2][2] * rsz;
+
+        float tx = m[3][0], ty = m[3][1], tz = m[3][2];
+
+        glm::mat4 result;
+        result[0][0] = r00 * rsx; result[0][1] = r10 * rsy; result[0][2] = r20 * rsz; result[0][3] = 0.0f;
+        result[1][0] = r01 * rsx; result[1][1] = r11 * rsy; result[1][2] = r21 * rsz; result[1][3] = 0.0f;
+        result[2][0] = r02 * rsx; result[2][1] = r12 * rsy; result[2][2] = r22 * rsz; result[2][3] = 0.0f;
+        result[3][0] = -(r00 * tx * rsx + r10 * ty * rsy + r20 * tz * rsz);
+        result[3][1] = -(r01 * tx * rsx + r11 * ty * rsy + r21 * tz * rsz);
+        result[3][2] = -(r02 * tx * rsx + r12 * ty * rsy + r22 * tz * rsz);
+        result[3][3] = 1.0f;
+        return result;
+    }
+
+    static int FindOrAddTextureSlot(const Ref<Texture2D> &texture)
+    {
+        uint32_t id = texture->GetRendererID();
+        auto it = s_Data.TextureSlotMap.find(id);
+        if (it != s_Data.TextureSlotMap.end())
+            return it->second;
+
+        if (s_Data.TextureSlotIndex >= Renderer3DData::MaxTextureSlots)
+            return -1;
+
+        int slot = (int)s_Data.TextureSlotIndex;
+        s_Data.TextureSlots[slot] = texture;
+        s_Data.TextureSlotMap[id] = slot;
+        s_Data.TextureSlotIndex++;
+        return slot;
+    }
 
     static void ClearAccumulationBuffers()
     {
@@ -339,7 +381,6 @@ namespace Wasteland
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
         s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
@@ -373,7 +414,6 @@ namespace Wasteland
 
         s_Data.RayTracingShader->Bind();
         s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
         s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
 
         FlushAndReset();
@@ -428,13 +468,6 @@ namespace Wasteland
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
                 s_Data.m_SceneDirty = false;
-            }
-
-            s_Data.LightIndicies.clear();
-            for (uint32_t i = 0; i < s_Data.m_SceneInstances.size(); i++)
-            {
-                if (s_Data.m_SceneInstances[i].Emission.w > 0.0f)
-                    s_Data.LightIndicies.push_back(i);
             }
 
             uint32_t width = s_Data.RayTracingWidth;
@@ -846,6 +879,7 @@ namespace Wasteland
         s_Data.SphereIndexBufferPtr = s_Data.SphereIndexBufferBase;
 
         s_Data.TextureSlotIndex = 1;
+        s_Data.TextureSlotMap.clear();
     }
 
     void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, MaterialComponent &material, int entityID)
@@ -866,7 +900,7 @@ namespace Wasteland
             {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {-0.0f, 0.0f, -1.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {-1.0f, 0.0f, -0.0f}};
 
         static const glm::vec2 texCoords[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
-        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+        glm::mat3 normalMatrix = glm::transpose(glm::mat3(FastTRSInverse(transform)));
 
         for (int i = 0; i < 24; i++)
         {
@@ -887,7 +921,7 @@ namespace Wasteland
             RayTracingInstance instance = {};
 
             instance.WorldTransform = transform;
-            instance.InvTransform = glm::inverse(transform);
+            instance.InvTransform = FastTRSInverse(transform);
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 0.0f, 0.0f);
             instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
@@ -897,27 +931,7 @@ namespace Wasteland
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
 
-            int textureSlot = -1;
-            if (material.Texture)
-            {
-                // Check if the texture is already registered in our slots array
-                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
-                {
-                    if (s_Data.TextureSlots[i]->GetRendererID() == material.Texture->GetRendererID())
-                    {
-                        textureSlot = (int)i;
-                        break;
-                    }
-                }
-
-                // If it's a new texture, add it to an available slot
-                if (textureSlot == -1 && s_Data.TextureSlotIndex < Renderer3DData::MaxTextureSlots)
-                {
-                    textureSlot = (int)s_Data.TextureSlotIndex;
-                    s_Data.TextureSlots[s_Data.TextureSlotIndex] = material.Texture;
-                    s_Data.TextureSlotIndex++;
-                }
-            }
+            int textureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : -1;
 
             instance.TextureID = textureSlot;
             instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
@@ -955,7 +969,7 @@ namespace Wasteland
         uint32_t startIndexOffset = s_Data.SphereVertexCount;
         float sectorStep = 2 * glm::pi<float>() / sectors;
         float stackStep = glm::pi<float>() / stacks;
-        glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(transform)));
+        glm::mat3 normalMatrix = glm::transpose(glm::mat3(FastTRSInverse(transform)));
 
         for (int i = 0; i <= stacks; ++i)
         {
@@ -1009,7 +1023,7 @@ namespace Wasteland
             RayTracingInstance instance = {};
 
             instance.WorldTransform = transform;
-            instance.InvTransform = glm::inverse(transform);
+            instance.InvTransform = FastTRSInverse(transform);
             instance.Albedo = material.Albedo;
             instance.MaterialParams = glm::vec4(material.Metallic, material.Roughness, 1.0f, radius);
             instance.Min = glm::vec4(-radius, -radius, -radius, 1.0f);
@@ -1019,27 +1033,7 @@ namespace Wasteland
                                           material.EmissionColor.z,
                                           material.EmissionIntensity);
 
-            int textureSlot = -1;
-            if (material.Texture)
-            {
-                // Check if the texture is already registered in our slots array
-                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
-                {
-                    if (s_Data.TextureSlots[i]->GetRendererID() == material.Texture->GetRendererID())
-                    {
-                        textureSlot = (int)i;
-                        break;
-                    }
-                }
-
-                // If it's a new texture, add it to an available slot
-                if (textureSlot == -1 && s_Data.TextureSlotIndex < Renderer3DData::MaxTextureSlots)
-                {
-                    textureSlot = (int)s_Data.TextureSlotIndex;
-                    s_Data.TextureSlots[s_Data.TextureSlotIndex] = material.Texture;
-                    s_Data.TextureSlotIndex++;
-                }
-            }
+            int textureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : -1;
 
             instance.TextureID = textureSlot;
             instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0

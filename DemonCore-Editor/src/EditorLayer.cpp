@@ -402,8 +402,16 @@ namespace Wasteland
 
 			if (mouseX >= 0 && mouseY >= 0 && mouseX < (int)viewportSize.x && mouseY < (int)viewportSize.y)
 			{
-				int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
-				m_HoveredEntity = pixelData == -1 ? Entity() : Entity((entt::entity)pixelData, m_ActiveScene.get());
+				glm::ivec2 currentPos = {mouseX, mouseY};
+				bool mouseMoved = currentPos != m_LastMousePixelPos;
+				m_PickFrameCounter++;
+				if (mouseMoved || m_PickFrameCounter >= 15)
+				{
+					int pixelData = m_Framebuffer->ReadPixel(1, mouseX, mouseY);
+					m_HoveredEntity = pixelData == -1 ? Entity() : Entity((entt::entity)pixelData, m_ActiveScene.get());
+					m_LastMousePixelPos = currentPos;
+					m_PickFrameCounter = 0;
+				}
 			}
 
 			OnOverlayRender();
@@ -520,13 +528,20 @@ namespace Wasteland
 			ImGui::Text("Application FPS: %.1f", io.Framerate);
 			ImGui::Text("Frame Time: %.3f ms", 1000.0f / io.Framerate);
 
-			// System stats
+			// System stats (throttled to ~4Hz to avoid per-frame driver/OS calls)
 #ifdef _WIN32
-			double cpu = GetCPUUsagePercent();
-			double usedMB = 0.0, totalMB = 0.0, memPct = 0.0;
-			GetMemoryUsageMB(usedMB, totalMB, memPct);
-			float gpuPct = 0.0f;
-			bool haveGPU = GetGPUVRAMUsagePercent(gpuPct);
+			static double cpu = 0.0;
+			static double usedMB = 0.0, totalMB = 0.0, memPct = 0.0;
+			static float gpuPct = 0.0f;
+			static bool haveGPU = false;
+			static int statsFrameCounter = 0;
+			if (++statsFrameCounter >= 15)
+			{
+				statsFrameCounter = 0;
+				cpu = GetCPUUsagePercent();
+				GetMemoryUsageMB(usedMB, totalMB, memPct);
+				haveGPU = GetGPUVRAMUsagePercent(gpuPct);
+			}
 
 			ImGui::Text("CPU Usage: %.1f%%", cpu);
 			ImGui::Text("RAM: %.0f / %.0f MB (%.0f%%)", usedMB, totalMB, memPct);
