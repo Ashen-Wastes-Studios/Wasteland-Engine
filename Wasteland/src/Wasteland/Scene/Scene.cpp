@@ -41,6 +41,9 @@ namespace Wasteland
 		return b2_staticBody;
 	}
 
+	static_assert(sizeof(b3BodyId) == sizeof(uint64_t));
+	static_assert(sizeof(b3ShapeId) == sizeof(uint64_t));
+
 	static b3BodyType RigidBody3DTypeToBox3D(RigidBody3DType type)
 	{
 		switch (type)
@@ -223,6 +226,11 @@ namespace Wasteland
 		CopyComponent<BoxCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CircleCollider2DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
+		CopyComponent<RigidBody3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<BoxCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<SphereCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<CapsuleCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
@@ -335,8 +343,7 @@ namespace Wasteland
 				auto &transform = entity.GetComponent<TransformComponent>();
 				auto &rb3d = entity.GetComponent<RigidBody3DComponent>();
 
-				b3BodyId bodyId;
-				std::memcpy(&bodyId, &rb3d.RuntimeBody, sizeof(b3BodyId));
+				b3BodyId bodyId = b3LoadBodyId(rb3d.RuntimeBody);
 
 				if (!b3Body_IsValid(bodyId))
 					continue;
@@ -474,6 +481,33 @@ namespace Wasteland
 			}
 		}
 
+		// 3D Physics (Box3D)
+		if (b3World_IsValid(m_Physics3DWorld))
+		{
+			b3World_Step(m_Physics3DWorld, ts, 4);
+
+			auto view3d = m_Registry.view<RigidBody3DComponent>();
+			for (auto e : view3d)
+			{
+				Entity entity = {e, this};
+				auto &transform = entity.GetComponent<TransformComponent>();
+				auto &rb3d = entity.GetComponent<RigidBody3DComponent>();
+
+				b3BodyId bodyId = b3LoadBodyId(rb3d.RuntimeBody);
+
+				if (!b3Body_IsValid(bodyId))
+					continue;
+
+				b3Pos pos = b3Body_GetPosition(bodyId);
+				b3Quat rot = b3Body_GetRotation(bodyId);
+
+				transform.Translation.x = (float)pos.x;
+				transform.Translation.y = (float)pos.y;
+				transform.Translation.z = (float)pos.z;
+				transform.Rotation = B3QuatToEuler(rot);
+			}
+		}
+
 		// Render
 		RenderScene(camera);
 	}
@@ -514,6 +548,11 @@ namespace Wasteland
 		CopyComponentIfExists<Rigidbody2DComponent>(newEntity, entity);
 		CopyComponentIfExists<BoxCollider2DComponent>(newEntity, entity);
 		CopyComponentIfExists<CircleCollider2DComponent>(newEntity, entity);
+
+		CopyComponentIfExists<RigidBody3DComponent>(newEntity, entity);
+		CopyComponentIfExists<BoxCollider3DComponent>(newEntity, entity);
+		CopyComponentIfExists<SphereCollider3DComponent>(newEntity, entity);
+		CopyComponentIfExists<CapsuleCollider3DComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
 		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
@@ -626,17 +665,17 @@ namespace Wasteland
 			b3BodyId bodyId = b3CreateBody(m_Physics3DWorld, &bodyDef);
 
 			// Store body ID
-			static_assert(sizeof(b3BodyId) == sizeof(uint64_t));
-			std::memcpy(&rb3d.RuntimeBody, &bodyId, sizeof(b3BodyId));
+			rb3d.RuntimeBody = b3StoreBodyId(bodyId);
 
 			// Box collider
 			if (entity.HasComponent<BoxCollider3DComponent>())
 			{
 				auto &bc = entity.GetComponent<BoxCollider3DComponent>();
-				b3BoxHull boxHull = b3MakeBoxHull(
+				b3BoxHull boxHull = b3MakeOffsetBoxHull(
 					bc.HalfExtents.x * transform.Scale.x,
 					bc.HalfExtents.y * transform.Scale.y,
-					bc.HalfExtents.z * transform.Scale.z);
+					bc.HalfExtents.z * transform.Scale.z,
+					{bc.Offset.x, bc.Offset.y, bc.Offset.z});
 
 				b3ShapeDef shapeDef = b3DefaultShapeDef();
 				shapeDef.density = bc.Density;
@@ -644,7 +683,7 @@ namespace Wasteland
 				shapeDef.baseMaterial.restitution = bc.Restitution;
 
 				b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &boxHull.base);
-				std::memcpy(&bc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+				bc.RuntimeShape = b3StoreShapeId(shapeId);
 			}
 
 			// Sphere collider
@@ -661,7 +700,7 @@ namespace Wasteland
 				shapeDef.baseMaterial.restitution = sc.Restitution;
 
 				b3ShapeId shapeId = b3CreateSphereShape(bodyId, &shapeDef, &sphere);
-				std::memcpy(&sc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+				sc.RuntimeShape = b3StoreShapeId(shapeId);
 			}
 
 			// Capsule collider
@@ -682,7 +721,7 @@ namespace Wasteland
 				shapeDef.baseMaterial.restitution = cc.Restitution;
 
 				b3ShapeId shapeId = b3CreateCapsuleShape(bodyId, &shapeDef, &capsule);
-				std::memcpy(&cc.RuntimeShape, &shapeId, sizeof(b3ShapeId));
+				cc.RuntimeShape = b3StoreShapeId(shapeId);
 			}
 		}
 	}

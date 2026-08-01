@@ -58,7 +58,9 @@ project "Wasteland"
 		"%{prj.name}/vendor/glm/glm/**.hpp",
 		"%{prj.name}/vendor/glm/glm/**.inl",
 		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.h",
-		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.cpp"
+		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.cpp",
+		"%{prj.name}/vendor/imgui/TextEditor.h",
+		"%{prj.name}/vendor/imgui/TextEditor.cpp"
 	}
 
 	defines
@@ -102,7 +104,13 @@ project "Wasteland"
 	}
 
 	filter "files:vendor/ImGuizmo/**.cpp"
-		flags 
+		flags
+		{
+			"NoPCH"
+		}
+
+	filter "files:vendor/imgui/TextEditor.cpp"
+		flags
 		{
 			"NoPCH"
 		}

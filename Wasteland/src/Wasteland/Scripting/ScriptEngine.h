@@ -18,6 +18,8 @@ namespace Wasteland
 
         static void Shutdown();
 
+        static py::object* GetInstance(UUID id);
+
     private:
         static std::unordered_map<UUID, py::object> s_EntityInstances;
     };

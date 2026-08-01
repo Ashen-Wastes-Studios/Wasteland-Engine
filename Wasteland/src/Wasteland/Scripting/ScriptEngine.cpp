@@ -136,4 +136,12 @@ namespace Wasteland
 
         WL_CORE_INFO("ScriptEngine: Cleaned up instance cache.");
     }
+
+    py::object* ScriptEngine::GetInstance(UUID id)
+    {
+        auto it = s_EntityInstances.find(id);
+        if (it != s_EntityInstances.end())
+            return &it->second;
+        return nullptr;
+    }
 }

@@ -503,6 +503,14 @@ namespace Wasteland
 					if (ImGui::MenuItem("Open"))
 						OpenScript();
 
+					if (ImGui::MenuItem("Save", "Ctrl+S", false, m_ScriptEditorPanel.IsOpen()))
+						m_ScriptEditorPanel.SaveFile();
+
+					ImGui::Separator();
+
+					if (ImGui::MenuItem("Close Script", nullptr, false, m_ScriptEditorPanel.IsOpen()))
+						m_ScriptEditorPanel.CloseFile();
+
 					ImGui::EndMenu();
 				}
 
@@ -511,6 +519,10 @@ namespace Wasteland
 
 			m_SceneHierarchyPanel.OnImGuiRender();
 			m_ContentBrowserPanel.OnImGuiRender();
+
+			m_ScriptInspectorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());
+			m_ScriptInspectorPanel.OnImGuiRender();
+			m_ScriptEditorPanel.OnImGuiRender();
 
 			ImGui::Begin("Stats");
 
@@ -830,6 +842,7 @@ namespace Wasteland
 						outFile << "\n";
 						outFile.close();
 						WL_CORE_INFO("Created new script at: {0}", scriptPath.string());
+						m_ScriptEditorPanel.OpenFile(scriptPath);
 					}
 				}
 				m_ShowNewScriptModal = false;
@@ -1055,24 +1068,12 @@ namespace Wasteland
 
 	void EditorLayer::OpenScript()
 	{
-		// Open file dialog
 		std::string filepath = FileDialogs::OpenFile("Python Script (*.py)\0*.py\0");
 
 		if (!filepath.empty())
 		{
-			// Construct the command.
-			std::string command = "code \"" + filepath + "\"";
-
-			int result = std::system(command.c_str());
-
-			if (result != 0)
-			{
-				WL_CORE_ERROR("Failed to open script. Ensure 'code' (VS Code) is added to your system PATH. Attempted: {0}", command);
-			}
-			else
-			{
-				WL_CORE_INFO("Opened script in VS Code: {0}", filepath);
-			}
+			m_ScriptEditorPanel.OpenFile(filepath);
+			WL_CORE_INFO("Opened script in editor: {0}", filepath);
 		}
 	}
 

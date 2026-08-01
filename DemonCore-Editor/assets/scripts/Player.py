@@ -45,7 +45,7 @@ class Player:
             self.bobPhase = 0.0
             self.bobFrequency = 8.0
             self.bobAmplitude = 0.02
-            self.bobSwayAmplitude = 0.025
+            self.bobSwayAmplitude = 0.01
             self.bobCurrentAmount = 0.0
             self.bobSmoothSpeed = 8.0
         except Exception as e:
@@ -189,3 +189,4 @@ class Player:
             rot.z = 0.0
 
             transform.SetTransform(pos, rot)
+

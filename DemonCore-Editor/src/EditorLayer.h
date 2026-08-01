@@ -3,6 +3,8 @@
 #include "Wasteland.h"
 #include "Panels/SceneHierarchyPanel.h"
 #include "Panels/ContentBrowserPanel.h"
+#include "Panels/ScriptEditorPanel.h"
+#include "Panels/ScriptInspectorPanel.h"
 
 #include <Wasteland/Renderer/Texture.h>
 
@@ -86,6 +88,8 @@ namespace Wasteland
 		// Panels
 		SceneHierarchyPanel m_SceneHierarchyPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;
+		ScriptEditorPanel m_ScriptEditorPanel;
+		ScriptInspectorPanel m_ScriptInspectorPanel;
 
 		enum class SceneState
 		{
