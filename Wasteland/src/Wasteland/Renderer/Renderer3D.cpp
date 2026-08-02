@@ -600,7 +600,7 @@ namespace Wasteland
 
             s_Data.RayTracingShader->Unbind();
 
-            if (currentFrameIndex >= 1000)
+            if (currentFrameIndex >= UINT32_MAX - 1)
             {
                 s_Data.FrameIndex = 0;
                 ClearAccumulationBuffers();

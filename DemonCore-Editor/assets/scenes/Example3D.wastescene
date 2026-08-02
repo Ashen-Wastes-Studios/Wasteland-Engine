@@ -1,6 +1,115 @@
 Scene: Untitled
 Entities:
-  - Entity: 9712809077825019640
+  - Entity: 3308840676256262708
+    TagComponent:
+      Tag: Emissive Sphere
+    TransformComponent:
+      Translation: [52.2999992, 41.5999985, -47.5999985]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 49.5
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 10
+      DisplacementScale: 0
+  - Entity: 7087185800274467715
+    TagComponent:
+      Tag: Cube
+    TransformComponent:
+      Translation: [0, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/metal floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 1
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 11202436623447093941
+    TagComponent:
+      Tag: Floor
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [50, 1, 50]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/metal floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 1
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 1
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 4023313775802900017
     TagComponent:
       Tag: Player
     TransformComponent:
@@ -21,235 +130,3 @@ Entities:
     ScriptComponent:
       ScriptPath: assets/scripts/Player.py
       ScriptName: Player
-  - Entity: 15254053731791671277
-    TagComponent:
-      Tag: Emissive Sphere
-    TransformComponent:
-      Translation: [3.20000005, 0, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 0.5
-      Sectors: 3
-      Stacks: 2
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TexturePath: assets/textures/
-      HasGeneratedMaps: false
-      NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 6.05000019
-      DisplacementScale: 0
-  - Entity: 423499880675714022
-    TagComponent:
-      Tag: Cube
-    TransformComponent:
-      Translation: [-1.5, 2, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 1
-      TexturePath: assets/textures/metal floor.jpg
-      HasGeneratedMaps: true
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 1
-    RigidBody3DComponent:
-      BodyType: Dynamic
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-  - Entity: 13683496762130521316
-    TagComponent:
-      Tag: Sphere
-    TransformComponent:
-      Translation: [0, 2, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 0.5
-      Sectors: 3
-      Stacks: 2
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 1
-      TexturePath: assets/textures/metal floor.jpg
-      HasGeneratedMaps: true
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 1
-    RigidBody3DComponent:
-      BodyType: Dynamic
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    SphereCollider3DComponent:
-      Radius: 0.5
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-  - Entity: 10337039146754437154
-    TagComponent:
-      Tag: floor
-    TransformComponent:
-      Translation: [0, -1, 0]
-      Rotation: [0, 0, 0]
-      Scale: [20, 1, 20]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/metal floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 1
-    RigidBody3DComponent:
-      BodyType: Static
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-  - Entity: 322465073288679826
-    TagComponent:
-      Tag: wall2
-    TransformComponent:
-      Translation: [10, 9, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 20, 20]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/metal floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 1
-    RigidBody3DComponent:
-      BodyType: Static
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-  - Entity: 17362923555121349107
-    TagComponent:
-      Tag: wall1
-    TransformComponent:
-      Translation: [-10, 9, 0]
-      Rotation: [0, 0, 0]
-      Scale: [1, 20, 20]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/metal floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 1
-    RigidBody3DComponent:
-      BodyType: Static
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
