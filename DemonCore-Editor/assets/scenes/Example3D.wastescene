@@ -47,7 +47,7 @@ Entities:
       TextureWidth: 225
       TextureHeight: 225
       TextureIndex: 0
-      TexturePath: assets/textures/metal floor.jpg
+      TexturePath: assets/textures/metal_floor.jpg
       HasGeneratedMaps: false
       NormalStrength: 1
       Metallic: 1
@@ -87,7 +87,7 @@ Entities:
       TextureWidth: 225
       TextureHeight: 225
       TextureIndex: 0
-      TexturePath: assets/textures/metal floor.jpg
+      TexturePath: assets/textures/metal_floor.jpg
       HasGeneratedMaps: false
       NormalStrength: 1
       Metallic: 1

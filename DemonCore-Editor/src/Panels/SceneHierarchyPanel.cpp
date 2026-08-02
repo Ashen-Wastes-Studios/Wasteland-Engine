@@ -1032,7 +1032,15 @@ namespace Wasteland
 						std::filesystem::path scriptPath = path;
 
 						scriptComponent.ScriptName = scriptPath.stem().string();
-						scriptComponent.ScriptPath = std::filesystem::absolute(scriptPath).string();
+
+						std::string pathStr = scriptPath.string();
+						std::replace(pathStr.begin(), pathStr.end(), '\\', '/');
+						const std::string prefix = "assets/";
+						auto pos = pathStr.find(prefix);
+						if (pos != std::string::npos)
+							scriptComponent.ScriptPath = pathStr.substr(pos + prefix.size());
+						else
+							scriptComponent.ScriptPath = pathStr;
 					}
 					ImGui::EndDragDropTarget();
 				}

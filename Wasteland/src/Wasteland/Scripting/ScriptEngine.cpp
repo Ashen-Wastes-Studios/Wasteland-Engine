@@ -44,7 +44,25 @@ namespace Wasteland
             WL_CORE_INFO("ScriptEngine: Initializing Entity ID {0} with Path: {1}, Class: {2}", id, cleanedPath, sc.ScriptName);
 
             std::filesystem::path assetRoot = std::filesystem::current_path() / "assets";
-            std::filesystem::path scriptFullPath = assetRoot / cleanedPath;
+            std::filesystem::path scriptFullPath;
+
+            std::filesystem::path testPath(cleanedPath);
+            if (testPath.is_absolute() && std::filesystem::exists(testPath))
+            {
+                scriptFullPath = testPath;
+            }
+            else
+            {
+                std::string relativePath = cleanedPath;
+                std::replace(relativePath.begin(), relativePath.end(), '\\', '/');
+
+                const std::string marker = "/assets/";
+                auto pos = relativePath.find(marker);
+                if (pos != std::string::npos)
+                    relativePath = relativePath.substr(pos + marker.size());
+
+                scriptFullPath = assetRoot / relativePath;
+            }
             scriptFullPath.make_preferred();
 
             if (!std::filesystem::exists(scriptFullPath))

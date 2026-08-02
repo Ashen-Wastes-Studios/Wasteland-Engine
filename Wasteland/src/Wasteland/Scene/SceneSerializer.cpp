@@ -412,10 +412,22 @@ namespace Wasteland
 
 			auto &sc = entity.GetComponent<ScriptComponent>();
 			std::string pathToSave = sc.ScriptPath;
-			if (pathToSave.find("assets/") == std::string::npos)
+			std::replace(pathToSave.begin(), pathToSave.end(), '\\', '/');
+
+			if (std::filesystem::path(pathToSave).is_absolute())
+			{
+				const std::string marker = "/assets/";
+				auto pos = pathToSave.find(marker);
+				if (pos != std::string::npos)
+					pathToSave = "assets/" + pathToSave.substr(pos + marker.size());
+				else
+					pathToSave = "assets/scripts/" + std::filesystem::path(pathToSave).filename().string();
+			}
+			else if (pathToSave.find("assets/") == std::string::npos)
 			{
 				pathToSave = "assets/" + pathToSave;
 			}
+
 			out << YAML::Key << "ScriptPath" << YAML::Value << pathToSave;
 			out << YAML::Key << "ScriptName" << YAML::Value << sc.ScriptName;
 
@@ -566,7 +578,7 @@ namespace Wasteland
 					while (rawPath.find(prefix + prefix) == 0)
 						rawPath = rawPath.substr(prefix.size());
 					mc.TexturePath = rawPath;
-					if (!rawPath.empty() && rawPath != "assets/textures/" && std::filesystem::exists(rawPath))
+					if (!rawPath.empty() && std::filesystem::is_regular_file(rawPath))
 						mc.Texture = Texture2D::Create(rawPath);
 					mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
 					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();

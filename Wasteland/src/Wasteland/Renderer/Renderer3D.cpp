@@ -511,7 +511,7 @@ namespace Wasteland
                 bool bothCamerasStationary = !s_Data.EditorCameraMoved && !s_Data.GameCameraMoved;
                 if (s_Data.CameraMoved)
                 {
-                    accumulationAlpha = 0.2f;
+                    accumulationAlpha = 0.5f;
                 }
                 else if (bothCamerasStationary && currentFrameIndex > 4)
                 {
