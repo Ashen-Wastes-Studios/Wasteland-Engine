@@ -13,7 +13,7 @@ class Player:
 
             # Movement
             self.speed = 10.0
-            self.sprintMultiplier = 1.25
+            self.sprintMultiplier = 2.0
 
             # Mouse look
             self.mouseSensitivity = 0.01
@@ -189,5 +189,6 @@ class Player:
             rot.z = 0.0
 
             transform.SetTransform(pos, rot)
+
 
 
