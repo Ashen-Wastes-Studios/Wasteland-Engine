@@ -4,8 +4,8 @@ Entities:
     TagComponent:
       Tag: Wood Cube
     TransformComponent:
-      Translation: [0.116006956, 1, -0.0530502498]
-      Rotation: [2.66561233e-06, -0.00412277831, 5.79604603e-06]
+      Translation: [0.237203613, -0.000111911962, -0.147077918]
+      Rotation: [3.63579673e-08, -0.00826054718, -3.15140795e-07]
       Scale: [1, 1, 1]
     CubeRendererComponent:
       Color: [1, 1, 1, 1]
@@ -73,8 +73,8 @@ Entities:
     TagComponent:
       Tag: Metal Cube
     TransformComponent:
-      Translation: [-0.578270793, 1, -5.18109798]
-      Rotation: [-1.62639412e-06, 0.00606992189, -2.06736331e-06]
+      Translation: [-0.441972792, -9.74291688e-05, -5.30278301]
+      Rotation: [-5.10092491e-07, -0.000426632963, -9.06187438e-07]
       Scale: [1, 1, 1]
     CubeRendererComponent:
       Color: [1, 1, 1, 1]
@@ -153,8 +153,8 @@ Entities:
     TagComponent:
       Tag: Player
     TransformComponent:
-      Translation: [0, 0, 10]
-      Rotation: [0, 0, 0]
+      Translation: [-0.359508485, -0.0311172046, -0.981384337]
+      Rotation: [0.00751534104, 3.49648833, 0]
       Scale: [1, 1, 1]
     CameraComponent:
       Camera:
@@ -200,8 +200,8 @@ Entities:
     TagComponent:
       Tag: Sphere
     TransformComponent:
-      Translation: [0.000318250037, 1, 2.09772468]
-      Rotation: [0.00170743396, -5.36353582e-06, 0.00535500655]
+      Translation: [-0.000851213699, -0.000110402667, 2.09722614]
+      Rotation: [0.000751255138, 1.24595726e-06, 0.00765432045]
       Scale: [1, 1, 1]
     SphereRendererComponent:
       Color: [1, 1, 1, 1]
