@@ -1,0 +1,3 @@
+[submodule "Wasteland/vendor/nvrhi"]
+	path = Wasteland/vendor/nvrhi
+	url = https://github.com/NVIDIAGameWorks/nvrhi
