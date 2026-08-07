@@ -3,6 +3,7 @@
 
 #include "Renderer.h"
 #include "Platform/OpenGL/OpenGLShader.h"
+#include "Platform/NVRHI/NVRHIShader.h"
 
 namespace Wasteland {
 
@@ -10,8 +11,12 @@ namespace Wasteland {
 	{
 		switch (Renderer::GetAPI())
 		{
-			case RendererAPI::API::None: WL_CORE_ASSERT(false, "RendererAPI::None is currently not supported!"); return nullptr;
+			case RendererAPI::API::None: WL_CORE_ASSERT(false, "RendererApi::None is currently not supported!"); return nullptr;
 			case RendererAPI::API::OpenGL: return std::make_shared<OpenGLShader>(filepath);
+			case RendererAPI::API::NVRHI_DX11:
+			case RendererAPI::API::NVRHI_DX12:
+			case RendererAPI::API::NVRHI_Vulkan:
+				return std::make_shared<NVRHIShader>(filepath);
 		}
 
 		WL_CORE_ASSERT(false, "Unknown RendererAPI!");
@@ -22,8 +27,12 @@ namespace Wasteland {
 	{
 		switch (Renderer::GetAPI())
 		{
-			case RendererAPI::API::None: WL_CORE_ASSERT(false, "RendererAPI::None is currently not supported!"); return nullptr;
+			case RendererAPI::API::None: WL_CORE_ASSERT(false, "RendererApi::None is currently not supported!"); return nullptr;
 			case RendererAPI::API::OpenGL: return std::make_shared<OpenGLShader>(name, vertexSrc, fragmentSrc);
+			case RendererAPI::API::NVRHI_DX11:
+			case RendererAPI::API::NVRHI_DX12:
+			case RendererAPI::API::NVRHI_Vulkan:
+				return std::make_shared<NVRHIShader>(name, vertexSrc, fragmentSrc);
 		}
 
 		WL_CORE_ASSERT(false, "Unknown RendererAPI!");

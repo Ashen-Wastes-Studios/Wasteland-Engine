@@ -6,12 +6,18 @@
 
 namespace Wasteland {
 
+	class RenderCommand; // Forward declaration
+
 	class RendererAPI
 	{
 	public:
 		enum class API
 		{
-			None = 0, OpenGL = 1
+			None = 0,
+			OpenGL = 1,
+			NVRHI_DX11 = 2,
+			NVRHI_DX12 = 3,
+			NVRHI_Vulkan = 4
 		};
 	public:
 		virtual ~RendererAPI() = default;
@@ -28,6 +34,7 @@ namespace Wasteland {
 
 		inline static API GetAPI() { return s_API; }
 	private:
+		friend class RenderCommand;
 		static API s_API;
 	};
 

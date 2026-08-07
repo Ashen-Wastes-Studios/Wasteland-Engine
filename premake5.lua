@@ -24,6 +24,9 @@ IncludeDir["ImGuizmo"] = "Wasteland/vendor/ImGuizmo"
 IncludeDir["Box2D"] = "Wasteland/vendor/Box2D/include"
 IncludeDir["Box3D"] = "Wasteland/vendor/Box3D/include"
 IncludeDir["pybind11"] = "Wasteland/vendor/pybind11/include"
+IncludeDir["NVRHI"] = "Wasteland/vendor/nvrhi/include"
+IncludeDir["DirectXHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/directx_headers-src/include"
+IncludeDir["VulkanHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/vulkan_headers-src/include"
 
 pythonpath = "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64"
 
@@ -84,15 +87,19 @@ project "Wasteland"
 		"%{IncludeDir.Box2D}",
 		"%{IncludeDir.Box3D}",
 		"%{IncludeDir.pybind11}",
+		"%{IncludeDir.NVRHI}",
+		"%{IncludeDir.DirectXHeaders}",
+		"%{IncludeDir.VulkanHeaders}",
 		pythonpath .. "/include"
 	}
 
 	libdirs
 	{
-		pythonpath .. "/libs"
+		pythonpath .. "/libs",
+		"Wasteland/vendor/nvrhi/build/%{cfg.buildcfg}"
 	}
 
-	links 
+	links
 	{
 		"GLFW",
 		"Glad",
@@ -100,7 +107,10 @@ project "Wasteland"
 		"yaml-cpp",
 		"Box2D",
 		"Box3D",
-		"python314"
+		"python314",
+		"nvrhi",
+		"nvrhi_d3d11",
+		"nvrhi_d3d12"
 	}
 
 	filter "files:vendor/ImGuizmo/**.cpp"
@@ -132,7 +142,12 @@ project "Wasteland"
 
 		links
 		{
-			"opengl32.lib"
+			"opengl32.lib",
+			"d3d11.lib",
+			"d3d12.lib",
+			"dxgi.lib",
+			"d3dcompiler.lib",
+			"dxguid.lib"
 		}
 
 	filter "system:linux"

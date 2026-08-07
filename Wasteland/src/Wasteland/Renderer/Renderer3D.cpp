@@ -7,6 +7,7 @@
 #include "Renderer.h"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <glad/glad.h>
 
 namespace Wasteland
@@ -36,6 +37,162 @@ namespace Wasteland
         glm::vec4 TextureScale;
         glm::vec4 DisplacementParams;
     };
+
+    // BVH node layout for GPU (std430 SSBO, 32 bytes per node)
+    struct alignas(16) BVHNodeGPU
+    {
+        glm::vec4 MinBounds; // xyz = AABB min, w = leftChild (inner) or firstInstance (leaf)
+        glm::vec4 MaxBounds; // xyz = AABB max, w = rightChild (inner) or instanceCount (leaf)
+    };
+
+    // CPU-side BVH build helper
+    struct BVHBuildNode
+    {
+        glm::vec3 minBounds;
+        glm::vec3 maxBounds;
+        int leftChild;     // -1 for leaf
+        int rightChild;    // -1 for leaf
+        int firstInstance; // leaf only
+        int instanceCount; // leaf only
+    };
+
+    struct BVHPrim
+    {
+        glm::vec3 centroid;
+        glm::vec3 minBounds;
+        glm::vec3 maxBounds;
+        int index; // index into m_SceneInstances
+    };
+
+    static const int BVH_LEAF_SIZE = 4;
+
+    static glm::vec3 ComputeWorldAABBMin(const RayTracingInstance &inst)
+    {
+        glm::vec3 center = glm::vec3(inst.WorldTransform[3]);
+        glm::vec3 halfExtents = (glm::vec3(inst.Max) - glm::vec3(inst.Min)) * 0.5f;
+        glm::vec3 axisX = glm::abs(glm::vec3(inst.WorldTransform[0])) * halfExtents.x;
+        glm::vec3 axisY = glm::abs(glm::vec3(inst.WorldTransform[1])) * halfExtents.y;
+        glm::vec3 axisZ = glm::abs(glm::vec3(inst.WorldTransform[2])) * halfExtents.z;
+        return center - axisX - axisY - axisZ;
+    }
+
+    static glm::vec3 ComputeWorldAABBMax(const RayTracingInstance &inst)
+    {
+        glm::vec3 center = glm::vec3(inst.WorldTransform[3]);
+        glm::vec3 halfExtents = (glm::vec3(inst.Max) - glm::vec3(inst.Min)) * 0.5f;
+        glm::vec3 axisX = glm::abs(glm::vec3(inst.WorldTransform[0])) * halfExtents.x;
+        glm::vec3 axisY = glm::abs(glm::vec3(inst.WorldTransform[1])) * halfExtents.y;
+        glm::vec3 axisZ = glm::abs(glm::vec3(inst.WorldTransform[2])) * halfExtents.z;
+        return center + axisX + axisY + axisZ;
+    }
+
+    static int BuildBVHRecursive(std::vector<BVHBuildNode> &nodes,
+                                 std::vector<BVHPrim> &prims,
+                                 int start, int end)
+    {
+        int nodeIdx = (int)nodes.size();
+        nodes.push_back({});
+
+        // Compute bounds for this node
+        glm::vec3 nodeMin(1e30f);
+        glm::vec3 nodeMax(-1e30f);
+        for (int i = start; i < end; i++)
+        {
+            nodeMin = glm::min(nodeMin, prims[i].minBounds);
+            nodeMax = glm::max(nodeMax, prims[i].maxBounds);
+        }
+
+        int count = end - start;
+        if (count <= BVH_LEAF_SIZE)
+        {
+            nodes[nodeIdx].minBounds = nodeMin;
+            nodes[nodeIdx].maxBounds = nodeMax;
+            nodes[nodeIdx].leftChild = -1;
+            nodes[nodeIdx].rightChild = -1;
+            nodes[nodeIdx].firstInstance = start;
+            nodes[nodeIdx].instanceCount = count;
+            return nodeIdx;
+        }
+
+        // Split on longest axis using median centroid
+        glm::vec3 centroidMin(1e30f), centroidMax(-1e30f);
+        for (int i = start; i < end; i++)
+        {
+            centroidMin = glm::min(centroidMin, prims[i].centroid);
+            centroidMax = glm::max(centroidMax, prims[i].centroid);
+        }
+        glm::vec3 extent = centroidMax - centroidMin;
+        int axis = 0;
+        if (extent.y > extent.x)
+            axis = 1;
+        if (extent.z > extent[axis])
+            axis = 2;
+
+        int mid = (start + end) / 2;
+        std::nth_element(prims.begin() + start, prims.begin() + mid, prims.begin() + end,
+                         [axis](const BVHPrim &a, const BVHPrim &b)
+                         {
+                             return a.centroid[axis] < b.centroid[axis];
+                         });
+
+        nodes[nodeIdx].minBounds = nodeMin;
+        nodes[nodeIdx].maxBounds = nodeMax;
+        nodes[nodeIdx].leftChild = BuildBVHRecursive(nodes, prims, start, mid);
+        nodes[nodeIdx].rightChild = BuildBVHRecursive(nodes, prims, mid, end);
+        nodes[nodeIdx].firstInstance = 0;
+        nodes[nodeIdx].instanceCount = 0;
+
+        return nodeIdx;
+    }
+
+    static void BuildAndFlattenBVH(const std::vector<RayTracingInstance> &instances,
+                                   std::vector<BVHNodeGPU> &outNodes,
+                                   std::vector<int> &outPrimOrder)
+    {
+        outNodes.clear();
+        outPrimOrder.clear();
+
+        if (instances.empty())
+            return;
+
+        // Prepare primitives with world-space AABBs
+        std::vector<BVHPrim> prims(instances.size());
+        for (size_t i = 0; i < instances.size(); i++)
+        {
+            prims[i].minBounds = ComputeWorldAABBMin(instances[i]);
+            prims[i].maxBounds = ComputeWorldAABBMax(instances[i]);
+            prims[i].centroid = (prims[i].minBounds + prims[i].maxBounds) * 0.5f;
+            prims[i].index = (int)i;
+        }
+
+        // Build tree
+        std::vector<BVHBuildNode> buildNodes;
+        buildNodes.reserve(instances.size() * 2);
+        BuildBVHRecursive(buildNodes, prims, 0, (int)prims.size());
+
+        // Flatten to GPU layout and compute reordered instance indices
+        outNodes.resize(buildNodes.size());
+        outPrimOrder.resize(prims.size());
+        for (size_t i = 0; i < prims.size(); i++)
+            outPrimOrder[i] = prims[i].index;
+
+        for (size_t i = 0; i < buildNodes.size(); i++)
+        {
+            const auto &bn = buildNodes[i];
+            if (bn.leftChild >= 0)
+            {
+                // Inner node: w = child indices
+                outNodes[i].MinBounds = glm::vec4(bn.minBounds, (float)bn.leftChild);
+                outNodes[i].MaxBounds = glm::vec4(bn.maxBounds, (float)bn.rightChild);
+            }
+            else
+            {
+                // Leaf node: encode firstInstance as negative to distinguish from inner
+                outNodes[i].MinBounds = glm::vec4(bn.minBounds, (float)(-(bn.firstInstance + 1)));
+                outNodes[i].MaxBounds = glm::vec4(bn.maxBounds, (float)bn.instanceCount);
+            }
+        }
+    }
 
     struct Renderer3DData
     {
@@ -75,11 +232,15 @@ namespace Wasteland
         bool RayTracingEnabled = true;
         bool RayTracingAccumulate = true;
         QualityPreset CurrentQualityPreset = QualityPreset::Low;
+        uint32_t ComputeWidth = 1280;
+        uint32_t ComputeHeight = 720;
+        float RenderScale = 1.0f;
         int MaxBounces = 1;
         int MaxLights = 1;
         int IndirectRays = 0;
         bool BloomEnabled = false;
         bool BilateralBlurEnabled = false;
+        int BilateralBlurPasses = 4;
         Ref<Shader> RayTracingShader;
         Ref<Texture2D> RayTracingOutput;
 
@@ -107,7 +268,32 @@ namespace Wasteland
         glm::mat4 LastViewProjection = glm::mat4(1.0f);
 
         uint32_t SceneInstanceBufferID = 0;
+        uint32_t BVHBufferID = 0;
+        uint32_t LightListBufferID = 0;
+        std::vector<BVHNodeGPU> m_BVHNodes;
+        std::vector<int> m_BVHPrimOrder;
+        std::vector<RayTracingInstance> m_ReorderedInstances;
+        std::vector<int> m_LightIndices;
         int InstanceCountLocation;
+        int Loc_PassID;
+        int Loc_SamplesPerPixel;
+        int Loc_QualityLevel;
+        int Loc_MaxBounces;
+        int Loc_MaxLights;
+        int Loc_IndirectRays;
+        int Loc_CameraMoved;
+        int Loc_SkyBottomColor;
+        int Loc_SkyTopColor;
+        int Loc_Jitter;
+        int Loc_DepthBuffer;
+        int Loc_AccumulationAlpha;
+        int Loc_StepSize;
+        int Loc_PrevViewProjection;
+        int Loc_InverseViewProjection;
+        int Loc_ViewProjection;
+        int Loc_CameraPosition;
+        int Loc_RenderScale;
+        int Loc_LightCount;
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
@@ -137,6 +323,7 @@ namespace Wasteland
 
         uint32_t DepthTextureID = 0;
         uint32_t VelocityTextureID = 0;
+        uint32_t AlbedoTextureID = 0;
 
         uint32_t GeneratedTextureID = 0;
 
@@ -273,8 +460,28 @@ namespace Wasteland
         s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight);
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_NovaRenderer.glsl");
 
-        s_Data.InstanceCountLocation = glGetUniformLocation(s_Data.RayTracingShader->GetRendererID(), "u_InstanceCount");
-        s_Data.FrameIndexLocation = glGetUniformLocation(s_Data.RayTracingShader->GetRendererID(), "u_FrameIndex");
+        GLuint rtProg = s_Data.RayTracingShader->GetRendererID();
+        s_Data.InstanceCountLocation = glGetUniformLocation(rtProg, "u_InstanceCount");
+        s_Data.FrameIndexLocation = glGetUniformLocation(rtProg, "u_FrameIndex");
+        s_Data.Loc_PassID = glGetUniformLocation(rtProg, "u_PassID");
+        s_Data.Loc_SamplesPerPixel = glGetUniformLocation(rtProg, "u_SamplesPerPixel");
+        s_Data.Loc_QualityLevel = glGetUniformLocation(rtProg, "u_QualityLevel");
+        s_Data.Loc_MaxBounces = glGetUniformLocation(rtProg, "u_MaxBounces");
+        s_Data.Loc_MaxLights = glGetUniformLocation(rtProg, "u_MaxLights");
+        s_Data.Loc_IndirectRays = glGetUniformLocation(rtProg, "u_IndirectRays");
+        s_Data.Loc_CameraMoved = glGetUniformLocation(rtProg, "u_CameraMoved");
+        s_Data.Loc_SkyBottomColor = glGetUniformLocation(rtProg, "u_SkyBottomColor");
+        s_Data.Loc_SkyTopColor = glGetUniformLocation(rtProg, "u_SkyTopColor");
+        s_Data.Loc_Jitter = glGetUniformLocation(rtProg, "u_Jitter");
+        s_Data.Loc_DepthBuffer = glGetUniformLocation(rtProg, "u_DepthBuffer");
+        s_Data.Loc_AccumulationAlpha = glGetUniformLocation(rtProg, "u_AccumulationAlpha");
+        s_Data.Loc_StepSize = glGetUniformLocation(rtProg, "u_StepSize");
+        s_Data.Loc_PrevViewProjection = glGetUniformLocation(rtProg, "u_PrevViewProjection");
+        s_Data.Loc_InverseViewProjection = glGetUniformLocation(rtProg, "u_InverseViewProjection");
+        s_Data.Loc_ViewProjection = glGetUniformLocation(rtProg, "u_ViewProjection");
+        s_Data.Loc_CameraPosition = glGetUniformLocation(rtProg, "u_CameraPosition");
+        s_Data.Loc_RenderScale = glGetUniformLocation(rtProg, "u_RenderScale");
+        s_Data.Loc_LightCount = glGetUniformLocation(rtProg, "u_LightCount");
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
@@ -294,6 +501,11 @@ namespace Wasteland
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
         glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AlbedoTextureID);
+        glTextureStorage2D(s_Data.AlbedoTextureID, 1, GL_RGBA8, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
         {
@@ -305,9 +517,18 @@ namespace Wasteland
         }
 
         uint32_t maxInstances = 10000;
+        uint32_t maxBVHNodes = maxInstances * 2;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
         glNamedBufferData(s_Data.SceneInstanceBufferID, maxInstances * sizeof(RayTracingInstance), nullptr, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s_Data.SceneInstanceBufferID);
+
+        glCreateBuffers(1, &s_Data.BVHBufferID);
+        glNamedBufferData(s_Data.BVHBufferID, maxBVHNodes * sizeof(BVHNodeGPU), nullptr, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s_Data.BVHBufferID);
+
+        glCreateBuffers(1, &s_Data.LightListBufferID);
+        glNamedBufferData(s_Data.LightListBufferID, maxInstances * sizeof(int), nullptr, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, s_Data.LightListBufferID);
 
         uint32_t whiteTextureData = 0xffffffff;
         Ref<Texture2D> whiteTexture = Texture2D::Create(1, 1);
@@ -333,10 +554,13 @@ namespace Wasteland
         delete[] s_Data.SphereIndexBufferBase;
 
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
+        glDeleteBuffers(1, &s_Data.BVHBufferID);
+        glDeleteBuffers(1, &s_Data.LightListBufferID);
         glDeleteTextures(1, &s_Data.AccumulationTexture);
         glDeleteTextures(1, &s_Data.BloomTextureID);
         glDeleteTextures(1, &s_Data.BloomTempTextureID);
         glDeleteTextures(1, &s_Data.VelocityTextureID);
+        glDeleteTextures(1, &s_Data.AlbedoTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
 
         s_Data.CubeVertexArray = nullptr;
@@ -394,8 +618,8 @@ namespace Wasteland
         s_Data.CurrentCameraYaw = 0.0f;
 
         s_Data.RayTracingShader->Bind();
-        s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+        glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
 
         FlushAndReset();
     }
@@ -427,8 +651,8 @@ namespace Wasteland
         s_Data.CurrentCameraYaw = camera.GetYaw();
 
         s_Data.RayTracingShader->Bind();
-        s_Data.RayTracingShader->SetMat4("u_ViewProjection", viewProj);
-        s_Data.RayTracingShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+        glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
 
         FlushAndReset();
     }
@@ -476,9 +700,45 @@ namespace Wasteland
 
             if (s_Data.m_SceneDirty)
             {
-                glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
-                                     s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance),
-                                     s_Data.m_SceneInstances.data());
+                // Build BVH for acceleration
+                BuildAndFlattenBVH(s_Data.m_SceneInstances, s_Data.m_BVHNodes, s_Data.m_BVHPrimOrder);
+
+                // Reorder instances to match BVH leaf order
+                s_Data.m_ReorderedInstances.resize(s_Data.m_BVHPrimOrder.size());
+                for (size_t i = 0; i < s_Data.m_BVHPrimOrder.size(); i++)
+                    s_Data.m_ReorderedInstances[i] = s_Data.m_SceneInstances[s_Data.m_BVHPrimOrder[i]];
+
+                // Build compact light index list (avoids scanning all instances in shader)
+                s_Data.m_LightIndices.clear();
+                for (size_t i = 0; i < s_Data.m_ReorderedInstances.size(); i++)
+                {
+                    if (s_Data.m_ReorderedInstances[i].Emission.w > 0.0f)
+                        s_Data.m_LightIndices.push_back((int)i);
+                }
+
+                // Upload BVH nodes
+                if (!s_Data.m_BVHNodes.empty())
+                {
+                    glNamedBufferSubData(s_Data.BVHBufferID, 0,
+                                         s_Data.m_BVHNodes.size() * sizeof(BVHNodeGPU),
+                                         s_Data.m_BVHNodes.data());
+                }
+
+                // Upload reordered instances (binding 1 is read by shader)
+                if (!s_Data.m_ReorderedInstances.empty())
+                {
+                    glNamedBufferSubData(s_Data.SceneInstanceBufferID, 0,
+                                         s_Data.m_ReorderedInstances.size() * sizeof(RayTracingInstance),
+                                         s_Data.m_ReorderedInstances.data());
+                }
+
+                // Upload light index list
+                if (!s_Data.m_LightIndices.empty())
+                {
+                    glNamedBufferSubData(s_Data.LightListBufferID, 0,
+                                         s_Data.m_LightIndices.size() * sizeof(int),
+                                         s_Data.m_LightIndices.data());
+                }
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
                 s_Data.m_SceneDirty = false;
@@ -527,6 +787,7 @@ namespace Wasteland
             glBindImageTexture(2, s_Data.BloomTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(5, s_Data.VelocityTextureID, 0, layered, 0, GL_READ_WRITE, GL_RG16F);
             glBindImageTexture(7, s_Data.BloomTempTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(4, s_Data.AlbedoTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA8);
 
             for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
             {
@@ -534,68 +795,79 @@ namespace Wasteland
                 glBindTexture(GL_TEXTURE_2D, s_Data.TextureSlots[i]->GetRendererID());
             }
 
-            uint32_t workGroupsX = (s_Data.RayTracingWidth + 7) / 8;
-            uint32_t workGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+            uint32_t workGroupsX = (s_Data.ComputeWidth + 7) / 8;
+            uint32_t workGroupsY = (s_Data.ComputeHeight + 7) / 8;
 
             s_Data.RayTracingShader->Bind();
-            s_Data.RayTracingShader->SetInt("u_InstanceCount", (int)s_Data.m_SceneInstances.size());
-            s_Data.RayTracingShader->SetInt("u_SamplesPerPixel", s_Data.SamplesPerPixel);
-            s_Data.RayTracingShader->SetInt("u_QualityLevel", (int)s_Data.CurrentQualityPreset);
-            s_Data.RayTracingShader->SetInt("u_MaxBounces", s_Data.MaxBounces);
-            s_Data.RayTracingShader->SetInt("u_MaxLights", s_Data.MaxLights);
-            s_Data.RayTracingShader->SetInt("u_IndirectRays", s_Data.IndirectRays);
-            s_Data.RayTracingShader->SetFloat("u_CameraMoved", movedValue);
-            s_Data.RayTracingShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
-            s_Data.RayTracingShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
-            s_Data.RayTracingShader->SetFloat2("u_Jitter", currentJitter);
-            s_Data.RayTracingShader->SetInt("u_DepthBuffer", 4);
-            s_Data.RayTracingShader->SetFloat("u_AccumulationAlpha", accumulationAlpha);
-            s_Data.RayTracingShader->SetInt("u_FrameIndex", s_Data.FrameIndex);
+
+            // Upload all per-frame uniforms using pre-cached locations (no string lookups)
+            glUniform1i(s_Data.InstanceCountLocation, (int)s_Data.m_SceneInstances.size());
+            glUniform1i(s_Data.Loc_SamplesPerPixel, s_Data.SamplesPerPixel);
+            glUniform1i(s_Data.Loc_QualityLevel, (int)s_Data.CurrentQualityPreset);
+            glUniform1i(s_Data.Loc_MaxBounces, s_Data.MaxBounces);
+            glUniform1i(s_Data.Loc_MaxLights, s_Data.MaxLights);
+            glUniform1i(s_Data.Loc_IndirectRays, s_Data.IndirectRays);
+            glUniform1f(s_Data.Loc_CameraMoved, movedValue);
+            glUniform3f(s_Data.Loc_SkyBottomColor, s_Data.SkyBottomColor.x, s_Data.SkyBottomColor.y, s_Data.SkyBottomColor.z);
+            glUniform3f(s_Data.Loc_SkyTopColor, s_Data.SkyTopColor.x, s_Data.SkyTopColor.y, s_Data.SkyTopColor.z);
+            glUniform2f(s_Data.Loc_Jitter, currentJitter.x, currentJitter.y);
+            glUniform1i(s_Data.Loc_DepthBuffer, 4);
+            glUniform1f(s_Data.Loc_AccumulationAlpha, accumulationAlpha);
+            glUniform1i(s_Data.FrameIndexLocation, s_Data.FrameIndex);
+            glUniform1f(s_Data.Loc_RenderScale, s_Data.RenderScale);
+            glUniform1i(s_Data.Loc_LightCount, (int)s_Data.m_LightIndices.size());
 
             // Pass 0: Visibility + Velocity
-            s_Data.RayTracingShader->SetInt("u_PassID", 0);
+            glUniform1i(s_Data.Loc_PassID, 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
             // Pass 1: Hybrid Trace (direct + indirect rays)
-            s_Data.RayTracingShader->SetInt("u_PassID", 1);
-            s_Data.RayTracingShader->SetMat4("u_PrevViewProjection", s_Data.PrevViewProjection);
-            s_Data.RayTracingShader->SetMat4("u_InverseViewProjection", s_Data.InverseViewProjection);
+            glUniform1i(s_Data.Loc_PassID, 1);
+            glUniformMatrix4fv(s_Data.Loc_PrevViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.PrevViewProjection));
+            glUniformMatrix4fv(s_Data.Loc_InverseViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.InverseViewProjection));
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
             // Pass 2: Temporal Indirect Accumulation (velocity-reprojected)
-            s_Data.RayTracingShader->SetInt("u_PassID", 2);
+            glUniform1i(s_Data.Loc_PassID, 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            int stepSizes[] = {1, 2, 4, 8};
-            for (int step : stepSizes)
+            if (s_Data.BilateralBlurEnabled)
             {
-                s_Data.RayTracingShader->SetInt("u_StepSize", step);
-                // Bind img_Accumulation and img_Bloom_Temp (ping-ponging between passes)
-                if (s_Data.BilateralBlurEnabled)
+                int stepSizes[] = {1, 2, 4, 8};
+                int blurCount = (s_Data.BilateralBlurPasses < 4) ? s_Data.BilateralBlurPasses : 4;
+                for (int bi = 0; bi < blurCount; bi++)
                 {
-                    s_Data.RayTracingShader->SetInt("u_PassID", 7);
+                    glUniform1i(s_Data.Loc_StepSize, stepSizes[bi]);
+                    glUniform1i(s_Data.Loc_PassID, 7);
                     glDispatchCompute(workGroupsX, workGroupsY, 1);
                     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
                 }
             }
 
-            // Pass 6: Composite (direct + indirect + tonemap + bloom seeds)
-            s_Data.RayTracingShader->SetInt("u_PassID", 6);
-            glDispatchCompute(workGroupsX, workGroupsY, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            // Pass 6: Composite — always dispatches at FULL resolution
+            // When RenderScale < 1.0, the composite upscales inline from the reduced-res accumulation buffer
+            {
+                uint32_t compositeGroupsX = (s_Data.RayTracingWidth + 7) / 8;
+                uint32_t compositeGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+                glUniform1i(s_Data.Loc_PassID, 6);
+                glDispatchCompute(compositeGroupsX, compositeGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
 
-            // Bloom passes (Medium+)
+            // Bloom passes (High/Ultra only)
             if (s_Data.BloomEnabled)
             {
-                s_Data.RayTracingShader->SetInt("u_PassID", 4);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                uint32_t bloomGroupsX = (s_Data.RayTracingWidth + 7) / 8;
+                uint32_t bloomGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+                glUniform1i(s_Data.Loc_PassID, 4);
+                glDispatchCompute(bloomGroupsX, bloomGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-                s_Data.RayTracingShader->SetInt("u_PassID", 5);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glUniform1i(s_Data.Loc_PassID, 5);
+                glDispatchCompute(bloomGroupsX, bloomGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
 
@@ -666,6 +938,16 @@ namespace Wasteland
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
     void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
+    static void UpdateComputeResolution()
+    {
+        s_Data.ComputeWidth = (uint32_t)(s_Data.RayTracingWidth * s_Data.RenderScale);
+        s_Data.ComputeHeight = (uint32_t)(s_Data.RayTracingHeight * s_Data.RenderScale);
+        if (s_Data.ComputeWidth < 1)
+            s_Data.ComputeWidth = 1;
+        if (s_Data.ComputeHeight < 1)
+            s_Data.ComputeHeight = 1;
+    }
+
     static void ApplyQualityPreset()
     {
         switch (s_Data.CurrentQualityPreset)
@@ -674,36 +956,43 @@ namespace Wasteland
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 1;
-            s_Data.IndirectRays = 1;
+            s_Data.IndirectRays = 0;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
+            s_Data.RenderScale = 1.0f;
             break;
         case QualityPreset::Medium:
             s_Data.SamplesPerPixel = 1;
+            s_Data.MaxBounces = 2;
+            s_Data.MaxLights = 8;
+            s_Data.IndirectRays = 1;
+            s_Data.BloomEnabled = false;
+            s_Data.BilateralBlurEnabled = false;
+            s_Data.RenderScale = 1.0f;
+            break;
+        case QualityPreset::High:
+            s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 3;
-            s_Data.MaxLights = 4;
+            s_Data.MaxLights = 16;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = false;
-            break;
-        case QualityPreset::High:
-            s_Data.SamplesPerPixel = 2;
-            s_Data.MaxBounces = 5;
-            s_Data.MaxLights = 10000;
-            s_Data.IndirectRays = 2;
-            s_Data.BloomEnabled = true;
-            s_Data.BilateralBlurEnabled = true;
+            s_Data.BilateralBlurPasses = 0;
+            s_Data.RenderScale = 1.0f;
             break;
         case QualityPreset::Ultra:
-            s_Data.SamplesPerPixel = 4;
+            s_Data.SamplesPerPixel = 2;
             s_Data.MaxBounces = 5;
-            s_Data.MaxLights = 10000;
+            s_Data.MaxLights = 32;
             s_Data.IndirectRays = 2;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
+            s_Data.BilateralBlurPasses = 4;
+            s_Data.RenderScale = 1.0f;
             break;
         }
 
+        UpdateComputeResolution();
         s_Data.FrameIndex = 0;
         ClearAccumulationBuffers();
     }
@@ -780,6 +1069,14 @@ namespace Wasteland
         glTextureParameteri(s_Data.VelocityTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.VelocityTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+        // Resize Albedo Texture
+        if (s_Data.AlbedoTextureID)
+            glDeleteTextures(1, &s_Data.AlbedoTextureID);
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AlbedoTextureID);
+        glTextureStorage2D(s_Data.AlbedoTextureID, 1, GL_RGBA8, width, height);
+        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
         // Resize Accumulation Textures
         if (s_Data.AccumulationTextures[0])
             glDeleteTextures(2, s_Data.AccumulationTextures);
@@ -794,6 +1091,7 @@ namespace Wasteland
 
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;
+        UpdateComputeResolution();
         s_Data.FrameIndex = 0;
     }
 

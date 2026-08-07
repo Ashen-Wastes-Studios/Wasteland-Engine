@@ -6,6 +6,10 @@
 #include <Wasteland/Events/ApplicationEvent.h>
 
 #include "Platform/OpenGL/OpenGLContext.h"
+#include "Platform/NVRHI/NVRHIContext.h"
+#include "Platform/NVRHI/NVRHIRendererAPI.h"
+
+#include <Wasteland/Renderer/RenderCommand.h>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -67,7 +71,27 @@ namespace Wasteland
 			m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
 		}
 
-		m_Context = new OpenGLContext(m_Window);
+		// Create appropriate context based on current renderer API
+		RendererAPI::API currentAPI = RendererAPI::GetAPI();
+		if (currentAPI == RendererAPI::API::NVRHI_DX11 || 
+		    currentAPI == RendererAPI::API::NVRHI_DX12 || 
+		    currentAPI == RendererAPI::API::NVRHI_Vulkan)
+		{
+			NVRHIContext* nvrhiContext = new NVRHIContext(m_Window, currentAPI);
+			m_Context = nvrhiContext;
+			
+			// Set the context on the renderer API
+			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+			if (nvrhiAPI)
+			{
+				nvrhiAPI->SetContext(nvrhiContext);
+			}
+		}
+		else
+		{
+			m_Context = new OpenGLContext(m_Window);
+		}
+		
 		m_Context->Init();
 
 		glfwSetWindowUserPointer(m_Window, &m_Data);

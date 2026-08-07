@@ -22,6 +22,7 @@ layout(binding = 10) uniform sampler2D s_NormalBuffer;
 layout(rgba8, binding = 3) uniform writeonly image2D img_MaterialPacked;
 layout(binding = 11) uniform sampler2D s_InputAlbedo;
 layout(binding = 12) uniform sampler2D s_PackedMaterialMap;
+layout(rgba8, binding = 4) uniform image2D img_AlbedoHit; // RGB = albedo, A = hitMask
 
 struct RayTracingInstance 
 {
@@ -40,9 +41,24 @@ struct RayTracingInstance
     vec4 DisplacementParams;
 };
 
-layout(std430, binding = 1) buffer SceneInstances 
+layout(std430, binding = 1) buffer SceneInstances
 {
     RayTracingInstance Instances[];
+};
+
+struct BVHNode {
+    vec4 MinBounds; // xyz = AABB min, w = leftChild (inner) or -(firstInstance+1) (leaf)
+    vec4 MaxBounds; // xyz = AABB max, w = rightChild (inner) or instanceCount (leaf)
+};
+
+layout(std430, binding = 2) buffer BVHBuffer
+{
+    BVHNode BVHNodes[];
+};
+
+layout(std430, binding = 3) buffer LightListBuffer
+{
+    int LightIndices[];
 };
 
 uniform vec3 u_CameraPosition;
@@ -68,6 +84,8 @@ uniform int u_MaxBounces;
 uniform int u_MaxLights;
 uniform int u_IndirectRays;
 uniform int u_StepSize;
+uniform float u_RenderScale;
+uniform int u_LightCount;
 uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
@@ -176,20 +194,58 @@ float HitSphere(Ray localRay, float radius, out vec3 outNormal)
     return -1.0;
 }
 
+bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
+    RayTracingInstance inst = Instances[instIdx];
+
+    vec3 diff = u_CameraPosition - inst.WorldTransform[3].xyz;
+    if (dot(diff, diff) > inst.MaxDistance * inst.MaxDistance) return false;
+
+    Ray localRay;
+    localRay.Origin = (inst.InvTransform * vec4(r.Origin, 1.0)).xyz;
+    localRay.Direction = (inst.InvTransform * vec4(r.Direction, 0.0)).xyz;
+    if (RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) {
+        vec3 localNormal;
+        float t = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+        if (t > 0.0 && t < maxDist) return true;
+    }
+    return false;
+}
+
 bool IsOccluded(Ray r, float maxDist) {
-    for(int i = 0; i < u_InstanceCount; i++) {
-        RayTracingInstance inst = Instances[i];
+    if (u_InstanceCount == 0) return false;
 
-        vec3 diff = u_CameraPosition - inst.WorldTransform[3].xyz;
-        if (dot(diff, diff) > inst.MaxDistance * inst.MaxDistance) continue;
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
 
-        Ray localRay;
-        localRay.Origin = (inst.InvTransform * vec4(r.Origin, 1.0)).xyz;
-        localRay.Direction = (inst.InvTransform * vec4(r.Direction, 0.0)).xyz;
-        if (RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) {
-            vec3 localNormal;
-            float t = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-            if (t > 0.0 && t < maxDist) return true;
+    while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        BVHNode node = BVHNodes[nodeIdx];
+
+        // AABB test
+        vec3 invDir = 1.0 / r.Direction;
+        vec3 t0 = (node.MinBounds.xyz - r.Origin) * invDir;
+        vec3 t1 = (node.MaxBounds.xyz - r.Origin) * invDir;
+        vec3 tMin = min(t0, t1);
+        vec3 tMax = max(t0, t1);
+        float tNear = max(max(tMin.x, tMin.y), tMin.z);
+        float tFar = min(min(tMax.x, tMax.y), tMax.z);
+        if (tNear > tFar || tFar < 0.0 || tNear > maxDist) continue;
+
+        int encoded = int(node.MinBounds.w);
+        if (encoded < 0) {
+            // Leaf node
+            int first = -encoded - 1;
+            int count = int(node.MaxBounds.w);
+            for (int i = first; i < first + count; i++) {
+                if (TestInstanceOcclusion(r, maxDist, i)) return true;
+            }
+        } else {
+            // Inner node
+            if (stackPtr < 62) {
+                stack[stackPtr++] = int(node.MaxBounds.w);
+                stack[stackPtr++] = encoded;
+            }
         }
     }
     return false;
@@ -355,6 +411,10 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 {
     selfOcclusion = 1.0;
 
+    // Skip POM entirely on Low quality
+    if (u_QualityLevel <= 0)
+        return;
+
     vec3 V = normalize(localViewDir);
     float distToCam = length(worldPos - u_CameraPosition);
     float cosView = abs(dot(V, localNormal));
@@ -450,58 +510,96 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     }
 }
 
+void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info) {
+    RayTracingInstance inst = Instances[instIdx];
+
+    vec3 camDiff = u_CameraPosition - inst.WorldTransform[3].xyz;
+    if (dot(camDiff, camDiff) > inst.MaxDistance * inst.MaxDistance) return;
+
+    Ray localRay;
+    localRay.Origin = (inst.InvTransform * vec4(ray.Origin, 1.0)).xyz;
+    localRay.Direction = (inst.InvTransform * vec4(ray.Direction, 0.0)).xyz;
+
+    if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) return;
+    vec3 localNormal;
+    float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+    if (tLocal > 0.0) {
+        vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
+        vec3 worldHit = (inst.WorldTransform * vec4(localHitPos, 1.0)).xyz;
+        float tWorld = distance(ray.Origin, worldHit);
+        if (tWorld < info.t) {
+            info.t = tWorld;
+            info.hit = true;
+            info.worldPos = worldHit;
+            info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
+
+            vec2 uv = CalculateUV(localHitPos, inst);
+
+            if (isPrimaryRay)
+            {
+                float pomOcclusion = 1.0;
+                ApplyPOM(inst, localHitPos, localNormal, -localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
+                info.occlusion = pomOcclusion;
+            }
+
+            float dist = distance(worldHit, u_CameraPosition);
+            float scaleLen = max(length(inst.TextureScale.xy), 0.0001);
+            float mipLevel = clamp(log2(max(dist * scaleLen * 0.02, 0.0001)), 0.0, 5.0);
+
+            vec3 sampledAlbedo = vec3(1.0);
+            if (inst.TextureID >= 0 && inst.TextureID < 32)
+                sampledAlbedo = textureLod(u_SceneTextures[inst.TextureID], uv, mipLevel).rgb;
+
+            info.albedo = sampledAlbedo * inst.Albedo.rgb;
+            info.metal = clamp(inst.MaterialParams.x, 0.0, 1.0);
+            info.rough = inst.MaterialParams.y > 0.0 ? inst.MaterialParams.y : 0.5;
+            info.emission = inst.Emission.xyz * inst.Emission.w;
+        }
+    }
+}
+
 HitInfo TraceScene(Ray ray) {
     HitInfo info;
     info.hit = false;
     info.t = 1e20;
     info.occlusion = 1.0;
 
+    if (u_InstanceCount == 0) return info;
+
     bool isPrimaryRay = length(ray.Origin - u_CameraPosition) < 0.01;
 
-    for (int i = 0; i < u_InstanceCount; i++) {
-        RayTracingInstance inst = Instances[i];
+    // BVH stack-based traversal
+    int stack[64];
+    int stackPtr = 0;
+    stack[stackPtr++] = 0;
 
-        vec3 camDiff = u_CameraPosition - inst.WorldTransform[3].xyz;
-        if (dot(camDiff, camDiff) > inst.MaxDistance * inst.MaxDistance) continue;
+    while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        BVHNode node = BVHNodes[nodeIdx];
 
-        Ray localRay;
-        localRay.Origin = (inst.InvTransform * vec4(ray.Origin, 1.0)).xyz;
-        localRay.Direction = (inst.InvTransform * vec4(ray.Direction, 0.0)).xyz;
+        // AABB test with early-out against current closest hit
+        vec3 invDir = 1.0 / ray.Direction;
+        vec3 t0 = (node.MinBounds.xyz - ray.Origin) * invDir;
+        vec3 t1 = (node.MaxBounds.xyz - ray.Origin) * invDir;
+        vec3 tMin = min(t0, t1);
+        vec3 tMax = max(t0, t1);
+        float tNear = max(max(tMin.x, tMin.y), tMin.z);
+        float tFar = min(min(tMax.x, tMax.y), tMax.z);
+        if (tNear > tFar || tFar < 0.0 || tNear > info.t) continue;
 
-        if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) continue;
-        vec3 localNormal;
-        float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-        if (tLocal > 0.0) {
-            vec3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
-            vec3 worldHit = (inst.WorldTransform * vec4(localHitPos, 1.0)).xyz;
-            float tWorld = distance(ray.Origin, worldHit);
-            if (tWorld < info.t) {
-                info.t = tWorld;
-                info.hit = true;
-                info.worldPos = worldHit;
-                info.normal = normalize((vec4(localNormal, 0.0) * inst.InvTransform).xyz);
-
-                vec2 uv = CalculateUV(localHitPos, inst);
-
-                if (isPrimaryRay)
-                {
-                    float pomOcclusion = 1.0;
-                    ApplyPOM(inst, localHitPos, localNormal, -localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
-                    info.occlusion = pomOcclusion;
-                }
-
-                float dist = distance(worldHit, u_CameraPosition);
-                float scaleLen = max(length(inst.TextureScale.xy), 0.0001);
-                float mipLevel = clamp(log2(max(dist * scaleLen * 0.02, 0.0001)), 0.0, 5.0);
-
-                vec3 sampledAlbedo = vec3(1.0);
-                if (inst.TextureID >= 0 && inst.TextureID < 32)
-                    sampledAlbedo = textureLod(u_SceneTextures[inst.TextureID], uv, mipLevel).rgb;
-
-                info.albedo = sampledAlbedo * inst.Albedo.rgb;
-                info.metal = clamp(inst.MaterialParams.x, 0.0, 1.0);
-                info.rough = inst.MaterialParams.y > 0.0 ? inst.MaterialParams.y : 0.5;
-                info.emission = inst.Emission.xyz * inst.Emission.w;
+        int encoded = int(node.MinBounds.w);
+        if (encoded < 0) {
+            // Leaf node
+            int first = -encoded - 1;
+            int count = int(node.MaxBounds.w);
+            for (int i = first; i < first + count; i++) {
+                TestInstanceHit(ray, i, isPrimaryRay, info);
+            }
+        } else {
+            // Inner node - push far child first so near child is popped first
+            if (stackPtr < 62) {
+                stack[stackPtr++] = int(node.MaxBounds.w);
+                stack[stackPtr++] = encoded;
             }
         }
     }
@@ -513,30 +611,28 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
 
-    int lightsSampled = 0;
-    for (int i = 0; i < u_InstanceCount; i++) {
-        if (Instances[i].Emission.w > 0.0) {
-            if (lightsSampled >= u_MaxLights) break;
-            lightsSampled++;
-            vec3 toLight = Instances[i].WorldTransform[3].xyz - h.worldPos;
-            float distToLight = length(toLight);
-            vec3 dirToLight = toLight / distToLight;
-            Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
-            if (!IsOccluded(shadowRay, distToLight)) {
-                float NdotL = max(dot(h.normal, dirToLight), 0.0);
-                if (NdotL <= 0.0) continue;
-                vec3 H = normalize(V + dirToLight);
-                vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-                float D = DistributionGGX(max(dot(h.normal, H), 0.0), h.rough);
-                float G = GeometrySmith(h.normal, V, dirToLight, h.rough);
-                float NdotV = max(dot(h.normal, V), 0.0);
-                vec3 brdf = (vec3(1.0) - F) * (1.0 - h.metal) * h.albedo / PI + (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
-                vec3 contrib = brdf * Instances[i].Emission.xyz * Instances[i].Emission.w * NdotL;
+    int lightsToSample = min(u_LightCount, u_MaxLights);
+    for (int li = 0; li < lightsToSample; li++) {
+        int i = LightIndices[li];
+        RayTracingInstance light = Instances[i];
+        vec3 toLight = light.WorldTransform[3].xyz - h.worldPos;
+        float distToLight = length(toLight);
+        vec3 dirToLight = toLight / distToLight;
+        Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
+        if (!IsOccluded(shadowRay, distToLight)) {
+            float NdotL = max(dot(h.normal, dirToLight), 0.0);
+            if (NdotL <= 0.0) continue;
+            vec3 H = normalize(V + dirToLight);
+            vec3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+            float D = DistributionGGX(max(dot(h.normal, H), 0.0), h.rough);
+            float G = GeometrySmith(h.normal, V, dirToLight, h.rough);
+            float NdotV = max(dot(h.normal, V), 0.0);
+            vec3 brdf = (vec3(1.0) - F) * (1.0 - h.metal) * h.albedo / PI + (D * G * F) / max(4.0 * NdotV * NdotL, 0.001);
+            vec3 contrib = brdf * light.Emission.xyz * light.Emission.w * NdotL;
 
-                float brightness = dot(contrib, vec3(0.2126, 0.7152, 0.0722));
-                if (brightness > 10.0) contrib *= (10.0 / brightness);
-                directLight += contrib;
-            }
+            float brightness = dot(contrib, vec3(0.2126, 0.7152, 0.0722));
+            if (brightness > 10.0) contrib *= (10.0 / brightness);
+            directLight += contrib;
         }
     }
 
@@ -625,6 +721,9 @@ void RunTraceAndDenoise()
     vec3 totalRawIrradiance = directLight + demodulatedIndirect;
 
     imageStore(img_Bloom, pixelCoords, vec4(totalRawIrradiance, 1.0));
+
+    // Store albedo + hit mask packed in single image (avoids re-tracing in composite)
+    imageStore(img_AlbedoHit, pixelCoords, vec4(primary.hit ? primary.albedo : vec3(1.0), primary.hit ? 1.0 : 0.0));
 }
 
 void RunTemporalAccumulation() {
@@ -648,27 +747,28 @@ void RunTemporalAccumulation() {
     vec3 historyLight = texture(s_Accumulation, prevUV).rgb;
 
     if (validHistory) {
-        // Calculate 3x3 neighborhood statistics in YCoCg space
-        vec3 m1 = vec3(0.0);
-        vec3 m2 = vec3(0.0);
-        for (int x = -1; x <= 1; x++) {
-            for (int y = -1; y <= 1; y++) {
-                ivec2 sp = clamp(pixelCoords + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
-                vec3 s = RGB2YCoCg(imageLoad(img_Bloom, sp).rgb);
-                m1 += s;
-                m2 += s * s;
+        if (u_QualityLevel >= 2) {
+            // High/Ultra: full 3x3 neighborhood variance clamping in YCoCg space
+            vec3 m1 = vec3(0.0);
+            vec3 m2 = vec3(0.0);
+            for (int x = -1; x <= 1; x++) {
+                for (int y = -1; y <= 1; y++) {
+                    ivec2 sp = clamp(pixelCoords + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
+                    vec3 s = RGB2YCoCg(imageLoad(img_Bloom, sp).rgb);
+                    m1 += s;
+                    m2 += s * s;
+                }
             }
+            vec3 mean = m1 / 9.0;
+            vec3 stddev = sqrt(max(vec3(0.0), m2 / 9.0 - mean * mean));
+
+            vec3 historyYCoCg = RGB2YCoCg(historyLight);
+            vec3 minCol = mean - 1.25 * stddev;
+            vec3 maxCol = mean + 1.25 * stddev;
+            historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
+            historyLight = YCoCg2RGB(historyYCoCg);
         }
-        vec3 mean = m1 / 9.0;
-        vec3 stddev = sqrt(max(vec3(0.0), m2 / 9.0 - mean * mean));
-
-        // Clamp history sample in YCoCg space
-        vec3 historyYCoCg = RGB2YCoCg(historyLight);
-        vec3 minCol = mean - 1.25 * stddev;
-        vec3 maxCol = mean + 1.25 * stddev;
-        historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
-
-        historyLight = YCoCg2RGB(historyYCoCg);
+        // Medium/Low: skip neighborhood analysis, use history directly (saves 9 imageLoads)
     }
 
     float motionFactor = clamp(motionMag / 8.0, 0.0, 1.0);
@@ -721,18 +821,49 @@ void RunBloomBlurVertical()
 
 void RunComposite() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Accumulation));
+    ivec2 fullSize = imageSize(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
 
-    vec3 denoisedIrradiance = (u_QualityLevel >= 2) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
+    vec3 denoisedIrradiance;
+    vec3 albedo;
+    float hitMask;
 
-    // Trace primary ray hit to recover surface albedo for remodulation
-    vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
-    vec2 jitteredUV = ((vec2(pos) + jitter) / vec2(imageSize(img_Accumulation))) * 2.0 - 1.0;
-    Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
-    HitInfo primary = TraceScene(primaryRay);
+    if (u_RenderScale < 1.0) {
+        // Sub-native resolution: upscale from reduced-res accumulation buffer
+        ivec2 srcSize = ivec2(vec2(fullSize) * u_RenderScale);
+        if (srcSize.x < 1) srcSize.x = 1;
+        if (srcSize.y < 1) srcSize.y = 1;
 
-    vec3 albedo = primary.hit ? primary.albedo : vec3(1.0);
-    vec3 combined = primary.hit ? (denoisedIrradiance * albedo) : denoisedIrradiance;
+        vec2 srcCoord = (vec2(pos) + 0.5) * u_RenderScale;
+        vec2 srcPixel = srcCoord - vec2(0.5);
+        ivec2 s0 = clamp(ivec2(floor(srcPixel)), ivec2(0), srcSize - ivec2(1));
+        ivec2 s1 = clamp(s0 + ivec2(1), ivec2(0), srcSize - ivec2(1));
+        vec2 f = srcPixel - vec2(s0);
+
+        // Bilinear sample from accumulation buffer
+        vec3 c00 = imageLoad(img_Accumulation, s0).rgb;
+        vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
+        vec3 c01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
+        vec3 c11 = imageLoad(img_Accumulation, s1).rgb;
+        denoisedIrradiance = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+
+        // Bilinear sample from albedo/hit buffer
+        vec4 a00 = imageLoad(img_AlbedoHit, s0);
+        vec4 a10 = imageLoad(img_AlbedoHit, ivec2(s1.x, s0.y));
+        vec4 a01 = imageLoad(img_AlbedoHit, ivec2(s0.x, s1.y));
+        vec4 a11 = imageLoad(img_AlbedoHit, s1);
+        vec4 albedoHit = mix(mix(a00, a10, f.x), mix(a01, a11, f.x), f.y);
+        albedo = albedoHit.rgb;
+        hitMask = albedoHit.a;
+    } else {
+        // Native resolution: read from bilateral blur output (Ultra only) or accumulation
+        denoisedIrradiance = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
+        vec4 albedoHit = imageLoad(img_AlbedoHit, pos);
+        albedo = albedoHit.rgb;
+        hitMask = albedoHit.a;
+    }
+
+    vec3 combined = hitMask > 0.5 ? (denoisedIrradiance * albedo) : denoisedIrradiance;
 
     // Tonemap + gamma
     vec3 mapped = combined / (combined + vec3(1.0));
@@ -740,8 +871,8 @@ void RunComposite() {
 
     imageStore(img_Output, pos, vec4(finalColor, 1.0));
 
-    // Extract bloom seeds if enabled
-    if (u_QualityLevel >= 1) {
+    // Extract bloom seeds if enabled (only at native res)
+    if (u_QualityLevel >= 1 && u_RenderScale >= 1.0) {
         float brightness = dot(combined, vec3(0.2126, 0.7152, 0.0722));
         float threshold = 0.8;
         float knee = 0.15;
@@ -880,6 +1011,39 @@ void GenerateMaterialMaps() {
     imageStore(img_MaterialPacked, pos, packedData);
 }
 
+void RunUpscale() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 fullSize = imageSize(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
+
+    ivec2 srcSize = ivec2(vec2(fullSize) * u_RenderScale);
+    if (srcSize.x < 1) srcSize.x = 1;
+    if (srcSize.y < 1) srcSize.y = 1;
+
+    // Map full-res pixel to low-res coordinate
+    vec2 srcCoord = (vec2(pos) + 0.5) * u_RenderScale;
+
+    // Bilinear interpolation from low-res source
+    vec2 srcPixel = srcCoord - vec2(0.5);
+    ivec2 src0 = ivec2(floor(srcPixel));
+    ivec2 src1 = src0 + ivec2(1);
+    vec2 frac_ = srcPixel - vec2(src0);
+
+    src0 = clamp(src0, ivec2(0), srcSize - ivec2(1));
+    src1 = clamp(src1, ivec2(0), srcSize - ivec2(1));
+
+    vec3 c00 = imageLoad(img_Bloom_Temp, src0).rgb;
+    vec3 c10 = imageLoad(img_Bloom_Temp, ivec2(src1.x, src0.y)).rgb;
+    vec3 c01 = imageLoad(img_Bloom_Temp, ivec2(src0.x, src1.y)).rgb;
+    vec3 c11 = imageLoad(img_Bloom_Temp, src1).rgb;
+
+    vec3 c0 = mix(c00, c10, frac_.x);
+    vec3 c1 = mix(c01, c11, frac_.x);
+    vec3 color = mix(c0, c1, frac_.y);
+
+    imageStore(img_Output, pos, vec4(color, 1.0));
+}
+
 void main()
 {
     switch(u_PassID)
@@ -891,6 +1055,7 @@ void main()
         case 5: RunBloomBlurVertical(); break;
         case 6: RunComposite(); break;
         case 7: RunBilateralBlur(); break;
+        case 8: RunUpscale(); break;
         case 9: GenerateMaterialMaps(); break;
     }
 }

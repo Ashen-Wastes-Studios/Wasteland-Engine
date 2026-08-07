@@ -41,6 +41,13 @@ namespace Wasteland {
 		{
 			s_RendererAPI->SetLineWidth(width);
 		}
+
+		static void SetAPI(RendererAPI::API api);
+		
+		inline static RendererAPI* GetRendererAPI()
+		{
+			return s_RendererAPI;
+		}
 	private:
 		static RendererAPI* s_RendererAPI;
 	};
