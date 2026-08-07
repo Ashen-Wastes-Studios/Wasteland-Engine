@@ -84,8 +84,9 @@ namespace Wasteland
         Ref<Texture2D> RayTracingOutput;
 
         uint32_t RayTracingTexture = 0;
-        uint32_t RayTracingWidth = 0;
-        uint32_t RayTracingHeight = 0;
+        // FIX: Default dimensions to prevent 0x0 allocation on startup
+        uint32_t RayTracingWidth = 1280;
+        uint32_t RayTracingHeight = 720;
 
         // Path Tracing state
         uint32_t AccumulationTexture = 0;
@@ -212,7 +213,6 @@ namespace Wasteland
     {
         float clearColor[] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-        // Clear both ping-pong textures
         for (int i = 0; i < 2; i++)
         {
             glClearTexImage(s_Data.AccumulationTextures[i], 0, GL_RGBA, GL_FLOAT, clearColor);
@@ -292,7 +292,7 @@ namespace Wasteland
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
-        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
@@ -319,7 +319,7 @@ namespace Wasteland
         s_Data.RayTracingShader->Bind();
         int samplers[32];
         for (int i = 0; i < 32; i++)
-            samplers[i] = i + 15; // Offset by 15 to avoid lower bindings
+            samplers[i] = i + 15;
         s_Data.RayTracingShader->SetIntArray("u_SceneTextures", samplers, 32);
 
         ApplyQualityPreset();
@@ -336,6 +336,7 @@ namespace Wasteland
         glDeleteTextures(1, &s_Data.AccumulationTexture);
         glDeleteTextures(1, &s_Data.BloomTextureID);
         glDeleteTextures(1, &s_Data.BloomTempTextureID);
+        glDeleteTextures(1, &s_Data.VelocityTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
 
         s_Data.CubeVertexArray = nullptr;
@@ -357,19 +358,14 @@ namespace Wasteland
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
         s_Data.ActiveCameraIsEditor = false;
 
-        // Helper lambda to extract planes cleanly using glm::vec4
         auto extract = [&](int row, int sign) -> Renderer3DData::Plane
         {
             glm::vec4 planeEq;
-            // Calculate the plane equation (Ax + By + Cz + D = 0)
-            // Row 3 is column 3 of the matrix (index 3), Row 0/1/2 are the components
             for (int i = 0; i < 4; ++i)
                 planeEq[i] = viewProj[i][3] + sign * viewProj[i][row];
 
-            // The length of the normal (A, B, C)
             float length = glm::length(glm::vec3(planeEq));
 
-            // Return normalized Plane struct
             return Renderer3DData::Plane{glm::vec3(planeEq) / length, planeEq.w / length};
         };
 
@@ -391,7 +387,6 @@ namespace Wasteland
         {
             s_Data.FrameIndex = 0;
             s_Data.LastViewProjection = viewProj;
-            // Optionally clear the texture here if you have a clear function
         }
 
         s_Data.CurrentCameraPosition = glm::vec3(transform[3]);
@@ -474,7 +469,6 @@ namespace Wasteland
 
             if (!moved && s_Data.CameraMoved)
             {
-                // Camera motion just stopped, reset accumulation so the path tracer can converge cleanly on the static view.
                 s_Data.FrameIndex = 0;
                 ClearAccumulationBuffers();
             }
@@ -526,9 +520,13 @@ namespace Wasteland
 
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
             GLboolean layered = GL_FALSE;
+
+            // FIX: Bind missing velocity (unit 5) and bloom temp (unit 7) image units
             glBindImageTexture(0, s_Data.RayTracingTexture, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
-            glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, layered, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            glBindImageTexture(1, s_Data.AccumulationTextures[writeIdx], 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(2, s_Data.BloomTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
+            glBindImageTexture(5, s_Data.VelocityTextureID, 0, layered, 0, GL_READ_WRITE, GL_RG16F);
+            glBindImageTexture(7, s_Data.BloomTempTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
 
             for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
             {
@@ -566,18 +564,23 @@ namespace Wasteland
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            // Pass 7: Spatial Indirect Filter (High/Ultra only)
-            if (s_Data.BilateralBlurEnabled)
-            {
-                s_Data.RayTracingShader->SetInt("u_PassID", 7);
-                glDispatchCompute(workGroupsX, workGroupsY, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-            }
-
             // Pass 2: Temporal Indirect Accumulation (velocity-reprojected)
             s_Data.RayTracingShader->SetInt("u_PassID", 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            int stepSizes[] = {1, 2, 4, 8};
+            for (int step : stepSizes)
+            {
+                s_Data.RayTracingShader->SetInt("u_StepSize", step);
+                // Bind img_Accumulation and img_Bloom_Temp (ping-ponging between passes)
+                if (s_Data.BilateralBlurEnabled)
+                {
+                    s_Data.RayTracingShader->SetInt("u_PassID", 7);
+                    glDispatchCompute(workGroupsX, workGroupsY, 1);
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+                }
+            }
 
             // Pass 6: Composite (direct + indirect + tonemap + bloom seeds)
             s_Data.RayTracingShader->SetInt("u_PassID", 6);
@@ -587,12 +590,10 @@ namespace Wasteland
             // Bloom passes (Medium+)
             if (s_Data.BloomEnabled)
             {
-                glBindImageTexture(7, s_Data.BloomTempTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 s_Data.RayTracingShader->SetInt("u_PassID", 4);
                 glDispatchCompute(workGroupsX, workGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-                glBindImageTexture(2, s_Data.BloomTextureID, 0, (GLboolean)0, 0, GL_READ_WRITE, GL_RGBA32F);
                 s_Data.RayTracingShader->SetInt("u_PassID", 5);
                 glDispatchCompute(workGroupsX, workGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
@@ -727,7 +728,7 @@ namespace Wasteland
             return;
 
         // Resize Output Texture
-        s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID(); // Assuming your Texture2D handles this
+        s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
         if (s_Data.RayTracingTexture)
         {
@@ -769,6 +770,16 @@ namespace Wasteland
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+        // FIX: Reallocate Velocity Texture on resize
+        if (s_Data.VelocityTextureID)
+            glDeleteTextures(1, &s_Data.VelocityTextureID);
+
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
+        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, width, height);
+
+        glTextureParameteri(s_Data.VelocityTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.VelocityTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
         // Resize Accumulation Textures
         if (s_Data.AccumulationTextures[0])
             glDeleteTextures(2, s_Data.AccumulationTextures);
@@ -783,35 +794,28 @@ namespace Wasteland
 
         s_Data.RayTracingWidth = width;
         s_Data.RayTracingHeight = height;
-        s_Data.FrameIndex = 0; // Reset accumulation on resize
+        s_Data.FrameIndex = 0;
     }
+
     static bool IsAABBInFrustum(const std::array<Renderer3DData::Plane, 6> &planes, const glm::vec3 &min, const glm::vec3 &max, const glm::mat4 &transform)
     {
-        // 1. Calculate local extents
         glm::vec3 localCenter = (min + max) * 0.5f;
         glm::vec3 localExtents = (max - min) * 0.5f;
 
-        // 2. Transform the center to world space
         glm::vec3 worldCenter = glm::vec3(transform * glm::vec4(localCenter, 1.0f));
 
-        // 3. Transform the basis vectors (columns of the matrix) to get world-space axes
-        // We use these to project the local extents onto the plane normals
         glm::vec3 worldAxisX = glm::vec3(transform[0]);
         glm::vec3 worldAxisY = glm::vec3(transform[1]);
         glm::vec3 worldAxisZ = glm::vec3(transform[2]);
 
         for (const auto &plane : planes)
         {
-            // Calculate the "radius" of the box projected onto the plane normal
-            // Radius = sum(|N dot Axis_i| * extent_i)
             float r = localExtents.x * glm::abs(glm::dot(plane.normal, worldAxisX)) +
                       localExtents.y * glm::abs(glm::dot(plane.normal, worldAxisY)) +
                       localExtents.z * glm::abs(glm::dot(plane.normal, worldAxisZ));
 
-            // Distance from center to plane
             float dist = glm::dot(plane.normal, worldCenter) + plane.distance;
 
-            // If the box is completely behind the plane, cull it
             if (dist < -r)
                 return false;
         }
@@ -822,7 +826,7 @@ namespace Wasteland
     void Renderer3D::SetSamplesPerPixel(uint32_t samples)
     {
         s_Data.SamplesPerPixel = glm::max(1u, samples);
-        s_Data.FrameIndex = 0; // Reset accumulation when changing samples
+        s_Data.FrameIndex = 0;
     }
 
     float Renderer3D::GetMovementThreshold() { return s_Data.MovementThreshold; }
@@ -832,14 +836,14 @@ namespace Wasteland
     void Renderer3D::SetSkyBottomColor(const glm::vec3 &color)
     {
         s_Data.SkyBottomColor = color;
-        s_Data.FrameIndex = 0; // Reset accumulation when changing sky
+        s_Data.FrameIndex = 0;
     }
 
     glm::vec3 Renderer3D::GetSkyTopColor() { return s_Data.SkyTopColor; }
     void Renderer3D::SetSkyTopColor(const glm::vec3 &color)
     {
         s_Data.SkyTopColor = color;
-        s_Data.FrameIndex = 0; // Reset accumulation when changing sky
+        s_Data.FrameIndex = 0;
     }
 
     float Renderer3D::Halton(int index, int base)
@@ -857,13 +861,11 @@ namespace Wasteland
 
     glm::vec2 Renderer3D::GetCurrentJitter(int frameIndex, glm::vec2 viewportSize)
     {
-        // We use a cycle of 16 frames for the Halton sequence
         int index = (frameIndex % 16) + 1;
 
         float jitterX = Halton(index, 2) - 0.5f;
         float jitterY = Halton(index, 3) - 0.5f;
 
-        // Scale by 2.0 / viewportSize to map to NDC range [-1, 1]
         return glm::vec2(jitterX * 2.0f / viewportSize.x, jitterY * 2.0f / viewportSize.y);
     }
 
@@ -956,7 +958,7 @@ namespace Wasteland
             glm::vec3 worldScale = GetWorldScale(transform);
 
             instance.TextureID = textureSlot;
-            instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
+            instance.PackedMaterialMapID = -1;
             instance.TextureScale = glm::vec4(worldScale.x, worldScale.y, worldScale.z, worldScale.z);
             float bumpStrength = material.NormalStrength > 0.0f ? material.NormalStrength : (material.Texture ? 1.0f : 0.0f);
             instance.DisplacementParams = glm::vec4(material.DisplacementScale, bumpStrength, 0.0f, 0.0f);
@@ -1064,7 +1066,7 @@ namespace Wasteland
             float worldRadius = radius * (worldScale.x + worldScale.y + worldScale.z) / 3.0f;
 
             instance.TextureID = textureSlot;
-            instance.PackedMaterialMapID = -1; // CRITICAL: Prevent defaulting to 0
+            instance.PackedMaterialMapID = -1;
             instance.TextureScale = glm::vec4(
                 2.0f * glm::pi<float>() * worldRadius,
                 glm::pi<float>() * worldRadius,

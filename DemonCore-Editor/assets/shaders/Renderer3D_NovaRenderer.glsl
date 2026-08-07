@@ -3,6 +3,8 @@
 #type compute
 #version 430 core
 
+#extension GL_EXT_gpu_shader5 : enable
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(rgba32f, binding = 0) uniform image2D img_Output;
@@ -65,6 +67,7 @@ uniform int u_QualityLevel;
 uniform int u_MaxBounces;
 uniform int u_MaxLights;
 uniform int u_IndirectRays;
+uniform int u_StepSize;
 uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
@@ -177,7 +180,6 @@ bool IsOccluded(Ray r, float maxDist) {
     for(int i = 0; i < u_InstanceCount; i++) {
         RayTracingInstance inst = Instances[i];
 
-        // Squared distance cull (avoids sqrt)
         vec3 diff = u_CameraPosition - inst.WorldTransform[3].xyz;
         if (dot(diff, diff) > inst.MaxDistance * inst.MaxDistance) continue;
 
@@ -205,14 +207,11 @@ float Halton(int index, int base) {
 }
 
 vec2 GetJitter(int frameIndex, float cameraMoved) {
-    // When the camera is stationary, advance the Halton sequence each frame.
-    // When the camera is moving, freeze the jitter so the history does not reproject incorrectly.
     int effectiveIndex = (cameraMoved > 0.5) ? 0 : frameIndex;
     float x = Halton(effectiveIndex % 16 + 1, 2);
     float y = Halton(effectiveIndex % 16 + 1, 3);
     return vec2(x, y) - 0.5;
 }
-
 
 const mat3 Gx = mat3(-1, 0, 1, -2, 0, 2, -1, 0, 1);
 const mat3 Gy = mat3(-1, -2, -1, 0, 0, 0, 1, 2, 1);
@@ -221,30 +220,42 @@ float GetLuminance(vec3 col) {
     return dot(col, vec3(0.2126, 0.7152, 0.0722));
 }
 
+vec3 RGB2YCoCg(vec3 rgb) {
+    float Y  = 0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b;
+    float Co = 0.5  * rgb.r - 0.5 * rgb.b;
+    float Cg = -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b;
+    return vec3(Y, Co, Cg);
+}
+
+vec3 YCoCg2RGB(vec3 ycocg) {
+    float Y  = ycocg.x;
+    float Co = ycocg.y;
+    float Cg = ycocg.z;
+    return vec3(
+        Y + Co - Cg,
+        Y + Cg,
+        Y - Co - Cg
+    );
+}
+
 vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
     vec3 size = inst.Max.xyz - inst.Min.xyz;
-    vec3 normalizedPos = (localPos - inst.Min.xyz) / size;
 
-    // 0 = Cube, 1 = Sphere (based on your logic)
     if (int(inst.MaterialParams.z) == 0) {
-        // Cube UV mapping - use localPos directly (range [-0.5, 0.5]) for proper 1:1 texture mapping
         vec3 absLocal = abs(localPos);
         float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
 
         vec2 uv;
         vec2 uvScale;
         if (maxAxis == absLocal.x) {
-            // +/- X face: use Z and Y
             float signX = sign(localPos.x);
             uv = vec2(localPos.z * signX + 0.5, localPos.y + 0.5);
             uvScale = vec2(inst.TextureScale.z, inst.TextureScale.y);
         } else if (maxAxis == absLocal.y) {
-            // +/- Y face: use X and Z
             float signY = sign(localPos.y);
             uv = vec2(localPos.x * signY + 0.5, localPos.z + 0.5);
             uvScale = vec2(inst.TextureScale.x, inst.TextureScale.w);
         } else {
-            // +/- Z face: use X and Y
             float signZ = sign(localPos.z);
             uv = vec2(localPos.x * signZ + 0.5, localPos.y + 0.5);
             uvScale = vec2(inst.TextureScale.x, inst.TextureScale.y);
@@ -252,12 +263,9 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
 
         return uv * uvScale;
     } else {
-        // Sphere UV logic - FIXED VERSION
-        // For spheres, we need to calculate proper spherical coordinates
-        float phi = atan(localPos.z, localPos.x);  // atan2(z, x)
-        float theta = acos(clamp(localPos.y, -1.0, 1.0));  // acos(y) for latitude
+        float phi = atan(localPos.z, localPos.x);
+        float theta = acos(clamp(localPos.y, -1.0, 1.0));
 
-        // Convert to UV coordinates [0,1]
         float u = phi / (2.0 * PI) + 0.5;
         float v = theta / PI;
 
@@ -270,25 +278,20 @@ void RunVisibilityAndVelocity() {
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
     
     float depth = texture(s_DepthBuffer, uv).r;
-    if (depth >= 1.0) { // Sky/Background
+    if (depth >= 1.0) { 
         imageStore(img_Velocity, pixelCoords, vec4(0.0, 0.0, 0.0, 1.0));
         return;
     }
 
-    // Reconstruct world position from depth
     vec4 clipPos = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
     vec4 worldPos = u_InverseViewProjection * clipPos;
     worldPos /= worldPos.w;
 
-    // Reproject to previous frame
     vec4 prevClipPos = u_PrevViewProjection * worldPos;
     prevClipPos /= prevClipPos.w;
     vec2 prevUV = prevClipPos.xy * 0.5 + 0.5;
 
-    // Calculate motion vector (Delta)
     vec2 velocity = uv - prevUV;
-    
-    // Store in your Velocity Buffer (binding 5)
     imageStore(img_Velocity, pixelCoords, vec4(velocity, 0.0, 1.0));
 }
 
@@ -304,23 +307,45 @@ struct HitInfo {
     float occlusion;
 };
 
-void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, out vec3 T, out vec3 B)
+void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec2 texScale,
+                         out vec3 T, out vec3 B, out vec2 uvScale)
 {
-    vec3 absN = abs(localNormal);
-    if (shapeType == 0)
+    const float PI = 3.14159265359;
+
+    if (shapeType == 1) 
     {
-        if (absN.x > absN.y && absN.x > absN.z)
-        { T = vec3(0.0, 0.0, sign(localNormal.x)); B = vec3(0.0, 1.0, 0.0); }
-        else if (absN.y > absN.z)
-        { T = vec3(sign(localNormal.y), 0.0, 0.0); B = vec3(0.0, 0.0, 1.0); }
+        T = vec3(-localNormal.z, 0.0, localNormal.x);
+        float lenT = length(T);
+        if (lenT < 0.0001)
+            T = vec3(1.0, 0.0, 0.0);
         else
-        { T = vec3(sign(localNormal.z), 0.0, 0.0); B = vec3(0.0, 1.0, 0.0); }
+            T /= lenT;
+
+        B = cross(localNormal, T);
+
+        float radius = max(length(localHitPos), 0.0001);
+        float radiusXZ = length(localHitPos.xz);
+        radiusXZ = max(radiusXZ, 0.05 * radius);
+
+        uvScale.x = (1.0 / (2.0 * PI * radiusXZ)) * texScale.x;
+        uvScale.y = (1.0 / (PI * radius)) * texScale.y;
     }
-    else
+    else 
     {
-        vec3 r = normalize(localHitPos);
-        T = normalize(cross(vec3(0.0, 1.0, 0.0), r));
-        B = cross(r, T);
+        vec3 absN = abs(localNormal);
+
+        if (absN.x > absN.y && absN.x > absN.z) {
+            T = vec3(0.0, 0.0, sign(localNormal.x));
+            B = vec3(0.0, 1.0, 0.0);
+        } else if (absN.y > absN.x && absN.y > absN.z) {
+            T = vec3(1.0, 0.0, 0.0);
+            B = vec3(0.0, 0.0, -sign(localNormal.y));
+        } else {
+            T = vec3(-sign(localNormal.z), 0.0, 0.0);
+            B = vec3(0.0, 1.0, 0.0);
+        }
+
+        uvScale = texScale;
     }
 }
 
@@ -329,6 +354,14 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
               inout vec3 worldNormal, out float selfOcclusion)
 {
     selfOcclusion = 1.0;
+
+    vec3 V = normalize(localViewDir);
+    float distToCam = length(worldPos - u_CameraPosition);
+    float cosView = abs(dot(V, localNormal));
+
+    if (cosView < 0.15 || distToCam > 50.0)
+        return;
+
     float dispScale = inst.DisplacementParams.x;
     float bumpStrength = inst.DisplacementParams.y;
     if (inst.TextureID < 0 || inst.TextureID >= 32)
@@ -337,49 +370,33 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
         return;
 
     int shapeType = int(inst.MaterialParams.z);
-    vec2 uvScale = inst.TextureScale.xy;
     vec3 T, B;
-    ComputeTangentFrame(localHitPos, localNormal, shapeType, T, B);
+    vec2 uvScale;
+    ComputeTangentFrame(localHitPos, localNormal, shapeType, inst.TextureScale.xy, T, B, uvScale);
+
     int texID = inst.TextureID;
     float eps = 1.0 / 256.0;
 
-    // ---------- Bump-only fast path (no POM march, no displacement) ----------
-    if (dispScale < 0.001)
-    {
-        float h0 = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
-        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
-        float hV = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(0.0, eps) * uvScale).rgb);
-        float dhdu = (hU - h0) / eps;
-        float dhdv = (hV - h0) / eps;
-
-        vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
-        mat3 normalMatrix = transpose(mat3(inst.InvTransform));
-        worldNormal = normalize(normalMatrix * localPerturbedNormal);
-
-        float gradMag = length(vec2(dhdu, dhdv));
-        selfOcclusion = clamp(1.0 - max(0.0, h0 - 0.5) * gradMag * 0.004 * bumpStrength, 0.2, 1.0);
-        return;
-    }
-
-    // ---------- Parallax Occlusion Mapping ----------
     float maxDisplacement = max(dispScale, bumpStrength);
-    float cosAngle = max(dot(-localViewDir, localNormal), 0.05);
+    float cosAngle = max(dot(V, localNormal), 0.05);
     int baseLayers = int(mix(6.0, 32.0, float(u_QualityLevel) / 3.0));
     int numLayers = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), 96.0));
 
-    // UV offset per unit of height displacement
-    float vnDot = dot(localViewDir, localNormal);
-    vec2 viewUVDir = vec2(dot(localViewDir, T), dot(localViewDir, B));
-    vec2 uvOffsetPerHeight = -viewUVDir / max(abs(vnDot), 0.05) * uvScale;
+    float vnDot = dot(V, localNormal);
+    vec2 viewUVDir = vec2(dot(V, T), dot(V, B));
+    vec2 uvOffsetPerHeight = -viewUVDir / max(abs(vnDot), 0.05);
 
-    // Ray march from top of height volume (h=1) down to bottom (h=0)
+    float distFade = clamp(1.0 - (distToCam - 30.0) / 20.0, 0.0, 1.0);
+    dispScale *= distFade;
+    bumpStrength *= distFade;
+
     float dHeight = 1.0 / float(numLayers);
-    vec2 dUV = uvOffsetPerHeight * dHeight * maxDisplacement;
+    vec2 dUV = (uvOffsetPerHeight * uvScale) * dHeight * maxDisplacement;
 
     vec2 prevUV = uv;
     float prevLayerH = 1.0;
     float currLayerH = 1.0;
-    float prevTexH = GetLuminance(texture(u_SceneTextures[texID], uv).rgb);
+    float prevTexH = GetLuminance(textureLod(u_SceneTextures[texID], uv, 0.0).rgb);
     vec2 currUV = uv;
     float currTexH = prevTexH;
 
@@ -391,19 +408,17 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 
         currUV += dUV;
         currLayerH -= dHeight;
-        currTexH = GetLuminance(texture(u_SceneTextures[texID], currUV).rgb);
+        currTexH = GetLuminance(textureLod(u_SceneTextures[texID], currUV, 0.0).rgb);
 
         if (currTexH > currLayerH)
             break;
     }
 
-    // Linear interpolation refinement
     float d1 = prevLayerH - prevTexH;
     float d2 = currTexH - currLayerH;
     float weight = d1 / max(d1 + d2, 0.0001);
     vec2 pomUV = mix(prevUV, currUV, weight);
 
-    // Silhouette edge: clamp POM offset to prevent UV bleed
     vec2 uvDelta = pomUV - uv;
     float maxOffset = 0.15;
     if (length(uvDelta) > maxOffset)
@@ -411,35 +426,27 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 
     uv += uvDelta;
 
-    // Position displacement — reuse currTexH as approximate height (avoids extra sample)
+    float finalHeight = mix(prevTexH, currTexH, weight);
     if (dispScale > 0.001)
-        worldPos += worldNormal * currTexH * dispScale;
+        worldPos += worldNormal * finalHeight * dispScale;
 
-    // ---------- Normal Perturbation + Self-Occlusion (shared gradient samples) ----------
     if (bumpStrength > 0.001)
     {
-        // These 2 samples + currTexH (already in registers) give us the full gradient
-        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
-        float hV = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(0.0, eps) * uvScale).rgb);
-        float dhdu = (hU - currTexH) / eps;
-        float dhdv = (hV - currTexH) / eps;
+        float hU = GetLuminance(textureLod(u_SceneTextures[texID], uv + vec2(eps, 0.0), 0.0).rgb);
+        float hV = GetLuminance(textureLod(u_SceneTextures[texID], uv + vec2(0.0, eps), 0.0).rgb);
+        float dhdu = (hU - finalHeight) / eps;
+        float dhdv = (hV - finalHeight) / eps;
 
-        vec3 localPerturbedNormal = normalize(localNormal - (dhdu * T + dhdv * B) * bumpStrength);
+        float dh_dsT = dhdu * uvScale.x;
+        float dh_dsB = dhdv * uvScale.y;
+
+        vec3 localPerturbedNormal = normalize(localNormal - (dh_dsT * T + dh_dsB * B) * bumpStrength);
         mat3 normalMatrix = transpose(mat3(inst.InvTransform));
         worldNormal = normalize(normalMatrix * localPerturbedNormal);
 
-        // Self-occlusion from the same gradient — ridges facing away from the gradient
-        // direction cast shadow on the current point. No extra texture samples needed.
-        float gradMag = length(vec2(dhdu, dhdv));
-        float ridgeFactor = max(0.0, currTexH - 0.5) * gradMag;
+        float gradMag = length(vec2(dh_dsT, dh_dsB));
+        float ridgeFactor = max(0.0, finalHeight - 0.5) * gradMag;
         selfOcclusion = clamp(1.0 - ridgeFactor * 0.04 * bumpStrength, 0.2, 1.0);
-    }
-    else if (dispScale > 0.001)
-    {
-        // Displacement-only path: minimal gradient for self-occlusion (1 extra sample)
-        float hU = GetLuminance(texture(u_SceneTextures[texID], uv + vec2(eps, 0.0) * uvScale).rgb);
-        float gradMag = abs(hU - currTexH) / eps;
-        selfOcclusion = clamp(1.0 - max(0.0, currTexH - 0.5) * gradMag * 0.002, 0.3, 1.0);
     }
 }
 
@@ -449,13 +456,11 @@ HitInfo TraceScene(Ray ray) {
     info.t = 1e20;
     info.occlusion = 1.0;
 
-    // Detect if this is a primary ray (from camera) — skip expensive POM on indirect bounces
     bool isPrimaryRay = length(ray.Origin - u_CameraPosition) < 0.01;
 
     for (int i = 0; i < u_InstanceCount; i++) {
         RayTracingInstance inst = Instances[i];
 
-        // Squared distance cull (avoids sqrt per instance per ray)
         vec3 camDiff = u_CameraPosition - inst.WorldTransform[3].xyz;
         if (dot(camDiff, camDiff) > inst.MaxDistance * inst.MaxDistance) continue;
 
@@ -478,17 +483,20 @@ HitInfo TraceScene(Ray ray) {
 
                 vec2 uv = CalculateUV(localHitPos, inst);
 
-                // POM + self-occlusion only on primary rays (camera-facing surfaces)
                 if (isPrimaryRay)
                 {
                     float pomOcclusion = 1.0;
-                    ApplyPOM(inst, localHitPos, localNormal, localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
+                    ApplyPOM(inst, localHitPos, localNormal, -localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
                     info.occlusion = pomOcclusion;
                 }
 
+                float dist = distance(worldHit, u_CameraPosition);
+                float scaleLen = max(length(inst.TextureScale.xy), 0.0001);
+                float mipLevel = clamp(log2(max(dist * scaleLen * 0.02, 0.0001)), 0.0, 5.0);
+
                 vec3 sampledAlbedo = vec3(1.0);
                 if (inst.TextureID >= 0 && inst.TextureID < 32)
-                    sampledAlbedo = texture(u_SceneTextures[inst.TextureID], uv).rgb;
+                    sampledAlbedo = textureLod(u_SceneTextures[inst.TextureID], uv, mipLevel).rgb;
 
                 info.albedo = sampledAlbedo * inst.Albedo.rgb;
                 info.metal = clamp(inst.MaterialParams.x, 0.0, 1.0);
@@ -501,7 +509,7 @@ HitInfo TraceScene(Ray ray) {
 }
 
 vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
-    vec3 F0 = mix(vec3(0.04), h.albedo, h.metal);
+    vec3 F0 = mix(vec3(0.04), max(h.albedo, vec3(0.04)), h.metal);
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
 
@@ -532,20 +540,18 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
         }
     }
 
-    // Emission from the surface itself
     directLight += h.emission;
 
-    // Ambient sky bounce (diffuse) — attenuated by POM self-occlusion
     float skyT = 0.5 * (h.normal.y + 1.0);
     vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
     directLight += diffuseColor * skyAmbient * h.occlusion;
 
-    // Simple environment reflection for metallic materials
     if (h.metal > 0.0) {
         vec3 R = reflect(-V, h.normal);
-        vec3 envColor = GetSkyColor(R);
-        float envGloss = pow(1.0 - h.rough, 2.0);
-        directLight += F0 * envColor * envGloss * h.metal;
+        vec3 specSky = GetSkyColor(R);
+        vec3 diffSky = skyAmbient / 0.15; 
+        vec3 envColor = mix(specSky, diffSky, h.rough * h.rough);
+        directLight += F0 * envColor * h.metal * h.occlusion;
     }
 
     return directLight;
@@ -577,24 +583,30 @@ void RunTraceAndDenoise()
         vec3 V = normalize(-primaryRay.Direction);
         directLight = ComputeDirectLighting(primary, V);
 
-        // Spawn indirect rays from the primary hit point
         vec3 diffuseColor = primary.albedo * (1.0 - primary.metal);
-        vec3 F0 = mix(vec3(0.04), primary.albedo, primary.metal);
-        // For non-metals: reflect diffusely. For metals: reflect specularly (colored F0)
+        vec3 F0 = mix(vec3(0.04), max(primary.albedo, vec3(0.04)), primary.metal);
         vec3 indirectReflectance = mix(diffuseColor, F0, primary.metal);
+
         for (int r = 0; r < u_IndirectRays; r++) {
             seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
-            vec3 indirectDir = random_in_hemisphere(primary.normal);
+            
+            vec3 indirectDir;
+            if (hash() < primary.metal) {
+                vec3 specDir = reflect(-V, primary.normal);
+                vec3 randHem = random_in_hemisphere(primary.normal);
+                indirectDir = normalize(mix(specDir, randHem, primary.rough * primary.rough));
+            } else {
+                indirectDir = random_in_hemisphere(primary.normal);
+            }
+
             Ray indirectRay = Ray(primary.worldPos + primary.normal * 0.001, indirectDir);
 
             HitInfo indirect = TraceScene(indirectRay);
             if (indirect.hit) {
-                // Gather direct lighting at the indirect hit point (one-bounce indirect)
                 vec3 indirectV = normalize(-indirectDir);
                 vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
                 indirectLight += indirectReflectance * bouncedLight;
             } else {
-                // Indirect ray hit sky
                 indirectLight += indirectReflectance * GetSkyColor(indirectDir);
             }
         }
@@ -602,15 +614,17 @@ void RunTraceAndDenoise()
             indirectLight /= float(u_IndirectRays);
         indirectLight *= primary.occlusion;
     } else {
-        // Primary ray hit sky — no surface, just sky color as direct
         directLight = GetSkyColor(primaryRay.Direction);
     }
 
     directLight = clamp(directLight, vec3(0.0), vec3(10.0));
     indirectLight = clamp(indirectLight, vec3(0.0), vec3(5.0));
 
-    imageStore(img_Output, pixelCoords, vec4(directLight, 1.0));
-    imageStore(img_Bloom, pixelCoords, vec4(indirectLight, 1.0));
+    // Demodulate indirect light by primary surface albedo before outputting
+    vec3 demodulatedIndirect = indirectLight / max(primary.albedo, vec3(0.01));
+    vec3 totalRawIrradiance = directLight + demodulatedIndirect;
+
+    imageStore(img_Bloom, pixelCoords, vec4(totalRawIrradiance, 1.0));
 }
 
 void RunTemporalAccumulation() {
@@ -618,55 +632,49 @@ void RunTemporalAccumulation() {
     ivec2 imgSize = imageSize(img_Accumulation);
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
 
-    // Current frame's raw indirect irradiance
-    vec3 currentIndirect = imageLoad(img_Bloom, pixelCoords).rgb;
-
-    // Read velocity to find previous frame position
+    vec3 currentLight = imageLoad(img_Bloom, pixelCoords).rgb;
     vec2 velocity = imageLoad(img_Velocity, pixelCoords).xy;
     vec2 prevUV = uv - velocity;
 
-    // Reject history if reprojected position is off-screen
     bool validHistory = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
-
-    // Motion vector magnitude — fast camera motion reduces history weight
     float motionMag = length(velocity * vec2(imgSize));
-    if (motionMag > 4.0) validHistory = false;
 
-    // Depth-based history validation
     if (validHistory) {
         float currentDepth = texture(s_DepthBuffer, uv).r;
         float prevDepth = texture(s_DepthBuffer, prevUV).r;
-        float depthDiff = abs(currentDepth - prevDepth);
-        if (depthDiff > 0.02) validHistory = false;
+        if (abs(currentDepth - prevDepth) > 0.02) validHistory = false;
     }
 
-    // Sample history indirect from reprojected position
-    vec3 historyIndirect = texture(s_Accumulation, prevUV).rgb;
+    vec3 historyLight = texture(s_Accumulation, prevUV).rgb;
 
-    // Variance clipping — reject history that differs too much from current neighborhood
     if (validHistory) {
+        // Calculate 3x3 neighborhood statistics in YCoCg space
         vec3 m1 = vec3(0.0);
         vec3 m2 = vec3(0.0);
         for (int x = -1; x <= 1; x++) {
             for (int y = -1; y <= 1; y++) {
                 ivec2 sp = clamp(pixelCoords + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
-                vec3 s = imageLoad(img_Bloom, sp).rgb;
+                vec3 s = RGB2YCoCg(imageLoad(img_Bloom, sp).rgb);
                 m1 += s;
                 m2 += s * s;
             }
         }
         vec3 mean = m1 / 9.0;
         vec3 stddev = sqrt(max(vec3(0.0), m2 / 9.0 - mean * mean));
+
+        // Clamp history sample in YCoCg space
+        vec3 historyYCoCg = RGB2YCoCg(historyLight);
         vec3 minCol = mean - 1.25 * stddev;
         vec3 maxCol = mean + 1.25 * stddev;
-        historyIndirect = clamp(historyIndirect, minCol, maxCol);
+        historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
+
+        historyLight = YCoCg2RGB(historyYCoCg);
     }
 
-    // Blend: motion-aware alpha — more motion = trust current frame more
-    float motionAlpha = clamp(motionMag * 0.1, 0.0, 0.8);
-    float alpha = validHistory ? max(u_AccumulationAlpha, motionAlpha) : 1.0;
-    vec3 result = mix(historyIndirect, currentIndirect, alpha);
+    float motionFactor = clamp(motionMag / 8.0, 0.0, 1.0);
+    float alpha = validHistory ? mix(u_AccumulationAlpha, 0.8, motionFactor) : 1.0;
 
+    vec3 result = mix(historyLight, currentLight, alpha);
     imageStore(img_Accumulation, pixelCoords, vec4(result, 1.0));
 }
 
@@ -706,7 +714,6 @@ void RunBloomBlurVertical()
         sum += imageLoad(img_Bloom_Temp, pos + ivec2(0, -i)) * weights[i];
     }
 
-    // Composite blurred bloom onto the tonemapped output
     vec3 existing = imageLoad(img_Output, pos).rgb;
     vec3 finalColor = existing + sum.rgb;
     imageStore(img_Output, pos, vec4(finalColor, 1.0));
@@ -714,15 +721,18 @@ void RunBloomBlurVertical()
 
 void RunComposite() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Output));
+    vec2 uv = (vec2(pos) + 0.5) / vec2(imageSize(img_Accumulation));
 
-    // Direct lighting from pass 1
-    vec3 direct = imageLoad(img_Output, pos).rgb;
+    vec3 denoisedIrradiance = (u_QualityLevel >= 2) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
 
-    // Temporally filtered indirect GI from pass 2
-    vec3 indirect = texture(s_Accumulation, uv).rgb;
+    // Trace primary ray hit to recover surface albedo for remodulation
+    vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
+    vec2 jitteredUV = ((vec2(pos) + jitter) / vec2(imageSize(img_Accumulation))) * 2.0 - 1.0;
+    Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
+    HitInfo primary = TraceScene(primaryRay);
 
-    vec3 combined = direct + indirect;
+    vec3 albedo = primary.hit ? primary.albedo : vec3(1.0);
+    vec3 combined = primary.hit ? (denoisedIrradiance * albedo) : denoisedIrradiance;
 
     // Tonemap + gamma
     vec3 mapped = combined / (combined + vec3(1.0));
@@ -730,7 +740,7 @@ void RunComposite() {
 
     imageStore(img_Output, pos, vec4(finalColor, 1.0));
 
-    // Extract bloom seeds into img_Bloom (for Medium+ quality bloom passes)
+    // Extract bloom seeds if enabled
     if (u_QualityLevel >= 1) {
         float brightness = dot(combined, vec3(0.2126, 0.7152, 0.0722));
         float threshold = 0.8;
@@ -742,45 +752,80 @@ void RunComposite() {
 
 void RunBilateralBlur() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imgSize = imageSize(img_Bloom);
-    vec2 uv = (vec2(pos) + 0.5) / vec2(imgSize);
+    ivec2 imgSize = imageSize(img_Bloom_Temp);
+    if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
 
-    vec3 centerIndirect = imageLoad(img_Bloom, pos).rgb;
-    float centerDepth = texture(s_DepthBuffer, uv).r;
-
-    // Skip sky pixels
-    if (centerDepth >= 1.0) {
-        imageStore(img_Bloom_Temp, pos, vec4(centerIndirect, 1.0));
+    vec3 centerColor = imageLoad(img_Accumulation, pos).rgb;
+    
+    if (isnan(centerColor.r) || isinf(centerColor.r)) {
+        imageStore(img_Bloom_Temp, pos, vec4(0.0, 0.0, 0.0, 1.0));
         return;
     }
 
+    vec2 uv = (vec2(pos) + 0.5) / vec2(imgSize);
+    float centerDepth = texture(s_DepthBuffer, uv).r;
+    if (centerDepth >= 1.0) { 
+        imageStore(img_Bloom_Temp, pos, vec4(centerColor, 1.0));
+        return;
+    }
+
+    vec3 centerNormal = texture(s_NormalBuffer, uv).rgb * 2.0 - 1.0;
+    float centerLuma = GetLuminance(centerColor);
+
+    // Compute local luminance variance across a 3x3 window for edge stopping
+    float lumaSum = 0.0;
+    float lumaSqSum = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            ivec2 sp = clamp(pos + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
+            float l = GetLuminance(imageLoad(img_Accumulation, sp).rgb);
+            lumaSum += l;
+            lumaSqSum += l * l;
+        }
+    }
+    float lumaMean = lumaSum / 9.0;
+    float lumaVar = sqrt(max(0.0, (lumaSqSum / 9.0) - (lumaMean * lumaMean)));
+
+    // 5x5 À-Trous kernel weights [0.0625, 0.25, 0.375, 0.25, 0.0625]
+    const float kernel[3] = float[](0.375, 0.25, 0.0625);
     vec3 totalColor = vec3(0.0);
     float totalWeight = 0.0;
+    int step = max(1, u_StepSize);
 
-    // Kernel size based on quality: Medium = 1 (3x3), High/Ultra = 2 (5x5)
-    int radius = (u_QualityLevel >= 2) ? 2 : 1;
-    float depthSigma = 30.0;
-    float colorSigma = 2.0;
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            ivec2 samplePos = clamp(pos + ivec2(x, y) * step, ivec2(0), imgSize - ivec2(1));
 
-    for (int x = -radius; x <= radius; x++) {
-        for (int y = -radius; y <= radius; y++) {
-            ivec2 samplePos = pos + ivec2(x, y);
-            if (samplePos.x < 0 || samplePos.x >= imgSize.x ||
-                samplePos.y < 0 || samplePos.y >= imgSize.y) continue;
-
-            vec3 neighborIndirect = imageLoad(img_Bloom, samplePos).rgb;
+            vec3 neighborColor = imageLoad(img_Accumulation, samplePos).rgb;
             vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
+
             float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
+            vec3 neighborNormal = texture(s_NormalBuffer, sampleUV).rgb * 2.0 - 1.0;
+            float neighborLuma = GetLuminance(neighborColor);
 
-            float d_color = length(centerIndirect - neighborIndirect);
-            float d_depth = abs(centerDepth - neighborDepth);
+            // 1. Spatial weight (B-spline filter)
+            float spatialWeight = kernel[abs(x)] * kernel[abs(y)];
 
-            float weight = exp(-(d_color * d_color) / colorSigma - (d_depth * d_depth) * depthSigma);
-            totalColor += neighborIndirect * weight;
+            // 2. Normal weight
+            float normalWeight = pow(max(0.0, dot(centerNormal, neighborNormal)), 32.0);
+
+            // 3. Depth weight
+            float depthDiff = abs(centerDepth - neighborDepth);
+            float depthWeight = exp(-depthDiff * 100.0);
+
+            // 4. Luminance Variance Weight (Edge-stopping weight)
+            float lumaDiff = abs(centerLuma - neighborLuma);
+            float lumaWeight = exp(-lumaDiff / (lumaVar * 4.0 + 0.001));
+
+            float weight = spatialWeight * normalWeight * depthWeight * lumaWeight;
+
+            totalColor += neighborColor * weight;
             totalWeight += weight;
         }
     }
-    imageStore(img_Bloom_Temp, pos, vec4(totalColor / max(totalWeight, 0.001), 1.0));
+
+    vec3 finalFiltered = (totalWeight > 0.0001) ? (totalColor / totalWeight) : centerColor;
+    imageStore(img_Bloom_Temp, pos, vec4(finalFiltered, 1.0));
 }
 
 void RunResolve() 
@@ -789,12 +834,11 @@ void RunResolve()
     vec2 displaySize = vec2(imageSize(img_FinalDisplay));
     vec2 uv = vec2(displayPos) / displaySize;
 
-    vec3 color = texture(s_Output, uv).rgb; // Raw, un-bloomed, accumulated path trace
-    vec3 bloom = texture(s_Bloom, uv).rgb;  // Sample your bloom texture separately
+    vec3 color = texture(s_Output, uv).rgb;
+    vec3 bloom = texture(s_Bloom, uv).rgb;
     
-    vec3 combined = color + bloom; // Combine them here at the very end
+    vec3 combined = color + bloom;
     
-    // Tonemapping
     vec3 mapped = combined / (combined + vec3(1.0));
     vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
 
@@ -805,7 +849,6 @@ void GenerateMaterialMaps() {
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(img_MaterialPacked);
     
-    // Sample 3x3 grid
     float I[3][3];
     for(int i = -1; i <= 1; i++) {
         for(int j = -1; j <= 1; j++) {
@@ -815,7 +858,6 @@ void GenerateMaterialMaps() {
         }
     }
 
-    // Compute Sobel Gradients
     float resX = 0.0;
     float resY = 0.0;
     for(int i = 0; i < 3; i++) {
@@ -828,14 +870,11 @@ void GenerateMaterialMaps() {
     float normalStrength = u_NormalStrength; 
     vec3 normal = normalize(vec3(-resX * normalStrength, -resY * normalStrength, 1.0));
 
-    // Pack into 0.0 to 1.0 range
     vec2 packedNormal = normal.xy * 0.5 + 0.5;
     
-    // AO and Roughness
     float ao = 1.0 - (length(vec2(resX, resY)) * 5.0 * u_AOIntensity);
     float rough = clamp((1.0 - I[1][1]) + u_RoughnessBias, 0.0, 1.0);
     
-    // PACK: R=NormalX, G=NormalY, B=Roughness, A=AO
     vec4 packedData = vec4(packedNormal.x, packedNormal.y, rough, ao);
     
     imageStore(img_MaterialPacked, pos, packedData);
