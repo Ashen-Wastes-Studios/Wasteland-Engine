@@ -44,14 +44,14 @@ Entities:
     TagComponent:
       Tag: Emissive Sphere
     TransformComponent:
-      Translation: [52.2999992, 41.5999985, -47.5999985]
+      Translation: [52.2999992, 18.7999992, -37.2999992]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     SphereRendererComponent:
       Color: [1, 1, 1, 1]
       TextureWidth: 0
       TextureHeight: 0
-      Radius: 49.5
+      Radius: 20
       Sectors: 3
       Stacks: 2
       TextureIndex: 0
@@ -153,8 +153,8 @@ Entities:
     TagComponent:
       Tag: Player
     TransformComponent:
-      Translation: [-0.359508485, -0.0311172046, -0.981384337]
-      Rotation: [0.00751534104, 3.49648833, 0]
+      Translation: [0, 0, 10]
+      Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
     CameraComponent:
       Camera:

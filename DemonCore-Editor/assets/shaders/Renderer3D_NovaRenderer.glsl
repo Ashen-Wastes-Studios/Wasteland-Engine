@@ -664,40 +664,68 @@ void RunTraceAndDenoise()
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
-    seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000);
+    // 1. Determine tile step size based on Quality Preset
+    ivec2 stepSize = ivec2(1, 1);
+    if (u_QualityLevel == 0)      stepSize = ivec2(4, 4); // Low: 1/16th lighting rays per pixel
+    else if (u_QualityLevel == 1) stepSize = ivec2(4, 4); // Medium: 1/16th lighting rays per pixel
+    else if (u_QualityLevel == 2) stepSize = ivec2(2, 2); // High: 1/4th lighting rays per pixel
+    else if (u_QualityLevel == 3) stepSize = ivec2(2, 2); // Ultra: 1/4th ray per pixel
 
+    // 2. Crisp Primary Ray (Executed per-pixel to eliminate blocky geometry edges)
+    seed = uint(pixelCoords.y * 1024 + pixelCoords.x) + uint(u_FrameIndex * 1000);
     vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
     vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+    
     Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
-
     HitInfo primary = TraceScene(primaryRay);
+
+    // Write full-resolution primary albedo and hit state
+    imageStore(img_AlbedoHit, pixelCoords, vec4(primary.hit ? primary.albedo : vec3(1.0), primary.hit ? 1.0 : 0.0));
+
+    if (!primary.hit) {
+        imageStore(img_Bloom, pixelCoords, vec4(GetSkyColor(primaryRay.Direction), 1.0));
+        return;
+    }
+
+    // 3. Sub-sampled Irradiance / Lighting Calculation
+    ivec2 tileOrigin = (pixelCoords / stepSize) * stepSize;
+    int tileSize = stepSize.x * stepSize.y;
+    int activeIndex = (u_CameraMoved > 0.5) ? 0 : (u_FrameIndex % tileSize);
+    ivec2 activeOffset = ivec2(activeIndex % stepSize.x, activeIndex / stepSize.x);
+    ivec2 rayPixelCoords = clamp(tileOrigin + activeOffset, ivec2(0), imgSize - ivec2(1));
+
+    // Calculate light sample origin for this tile
+    seed = uint(rayPixelCoords.y * 1024 + rayPixelCoords.x) + uint(u_FrameIndex * 1000);
+    vec2 lightJitteredUV = ((vec2(rayPixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+    Ray tilePrimaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(lightJitteredUV, 1.0, 1.0)).xyz));
+    HitInfo tileHit = TraceScene(tilePrimaryRay);
 
     vec3 directLight = vec3(0.0);
     vec3 indirectLight = vec3(0.0);
 
-    if (primary.hit) {
-        vec3 V = normalize(-primaryRay.Direction);
-        directLight = ComputeDirectLighting(primary, V);
+    if (tileHit.hit) {
+        vec3 V = normalize(-tilePrimaryRay.Direction);
+        directLight = ComputeDirectLighting(tileHit, V);
 
-        vec3 diffuseColor = primary.albedo * (1.0 - primary.metal);
-        vec3 F0 = mix(vec3(0.04), max(primary.albedo, vec3(0.04)), primary.metal);
-        vec3 indirectReflectance = mix(diffuseColor, F0, primary.metal);
+        vec3 diffuseColor = tileHit.albedo * (1.0 - tileHit.metal);
+        vec3 F0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal);
+        vec3 indirectReflectance = mix(diffuseColor, F0, tileHit.metal);
 
         for (int r = 0; r < u_IndirectRays; r++) {
-            seed = uint(gl_GlobalInvocationID.y * 1024 + gl_GlobalInvocationID.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
+            seed = uint(rayPixelCoords.y * 1024 + rayPixelCoords.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
             
             vec3 indirectDir;
-            if (hash() < primary.metal) {
-                vec3 specDir = reflect(-V, primary.normal);
-                vec3 randHem = random_in_hemisphere(primary.normal);
-                indirectDir = normalize(mix(specDir, randHem, primary.rough * primary.rough));
+            if (hash() < tileHit.metal) {
+                vec3 specDir = reflect(-V, tileHit.normal);
+                vec3 randHem = random_in_hemisphere(tileHit.normal);
+                indirectDir = normalize(mix(specDir, randHem, tileHit.rough * tileHit.rough));
             } else {
-                indirectDir = random_in_hemisphere(primary.normal);
+                indirectDir = random_in_hemisphere(tileHit.normal);
             }
 
-            Ray indirectRay = Ray(primary.worldPos + primary.normal * 0.001, indirectDir);
-
+            Ray indirectRay = Ray(tileHit.worldPos + tileHit.normal * 0.001, indirectDir);
             HitInfo indirect = TraceScene(indirectRay);
+
             if (indirect.hit) {
                 vec3 indirectV = normalize(-indirectDir);
                 vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
@@ -706,24 +734,23 @@ void RunTraceAndDenoise()
                 indirectLight += indirectReflectance * GetSkyColor(indirectDir);
             }
         }
+
         if (u_IndirectRays > 0)
             indirectLight /= float(u_IndirectRays);
-        indirectLight *= primary.occlusion;
+
+        indirectLight *= tileHit.occlusion;
     } else {
-        directLight = GetSkyColor(primaryRay.Direction);
+        directLight = GetSkyColor(tilePrimaryRay.Direction);
     }
 
     directLight = clamp(directLight, vec3(0.0), vec3(10.0));
     indirectLight = clamp(indirectLight, vec3(0.0), vec3(5.0));
 
-    // Demodulate indirect light by primary surface albedo before outputting
-    vec3 demodulatedIndirect = indirectLight / max(primary.albedo, vec3(0.01));
-    vec3 totalRawIrradiance = directLight + demodulatedIndirect;
+    // Modulate the shared tile irradiance with the pixel's local surface properties
+    vec3 localV = normalize(-primaryRay.Direction);
+    vec3 finalPixelColor = (primary.albedo * directLight) + indirectLight;
 
-    imageStore(img_Bloom, pixelCoords, vec4(totalRawIrradiance, 1.0));
-
-    // Store albedo + hit mask packed in single image (avoids re-tracing in composite)
-    imageStore(img_AlbedoHit, pixelCoords, vec4(primary.hit ? primary.albedo : vec3(1.0), primary.hit ? 1.0 : 0.0));
+    imageStore(img_Bloom, pixelCoords, vec4(finalPixelColor, 1.0));
 }
 
 void RunTemporalAccumulation() {
