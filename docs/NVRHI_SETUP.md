@@ -184,14 +184,14 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [ ] Convert basic shaders to HLSL
 - [ ] Get Renderer2D working
 
-### Phase 3: Advanced Features ✅
+### Phase 3: Advanced Features (TODO)
 - [ ] Compute shader support
 - [ ] Convert NovaRenderer to HLSL
 - [ ] Port Renderer3D
 - [ ] SSBO/structured buffer support
 - [ ] Image load/store/UAV support
 
-### Phase 4: API Switching & Polish ✅
+### Phase 4: API Switching & Polish (TODO)
 - [ ] Editor UI dropdown for API selection
 - [ ] Persistent API selection (config file)
 - [ ] Runtime API switching with state preservation
