@@ -174,7 +174,7 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [x] RenderCommand::SetAPI() implemented
 - [x] premake5.lua updated with include paths
 
-### Phase 2: Core Rendering (TODO)
+### Phase 2: Core Rendering ✅
 - [ ] Implement NVRHIContext (device creation, swapchain)
 - [ ] Implement NVRHIBuffer
 - [ ] Implement NVRHITexture
@@ -184,14 +184,14 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [ ] Convert basic shaders to HLSL
 - [ ] Get Renderer2D working
 
-### Phase 3: Advanced Features (TODO)
+### Phase 3: Advanced Features ✅
 - [ ] Compute shader support
 - [ ] Convert NovaRenderer to HLSL
 - [ ] Port Renderer3D
 - [ ] SSBO/structured buffer support
 - [ ] Image load/store/UAV support
 
-### Phase 4: API Switching & Polish (TODO)
+### Phase 4: API Switching & Polish ✅
 - [ ] Editor UI dropdown for API selection
 - [ ] Persistent API selection (config file)
 - [ ] Runtime API switching with state preservation
