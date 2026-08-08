@@ -174,14 +174,14 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [x] RenderCommand::SetAPI() implemented
 - [x] premake5.lua updated with include paths
 
-### Phase 2: Core Rendering ✅
-- [ ] Implement NVRHIContext (device creation, swapchain)
-- [ ] Implement NVRHIBuffer
-- [ ] Implement NVRHITexture
-- [ ] Implement NVRHIShader
-- [ ] Implement NVRHIVertexArray
-- [ ] Implement NVRHIFramebuffer
-- [ ] Convert basic shaders to HLSL
+### Phase 2: Core Rendering (TODO)
+- [x] Implement NVRHIContext (device creation, swapchain)
+- [x] Implement NVRHIBuffer
+- [x] Implement NVRHITexture
+- [x] Implement NVRHIShader
+- [x] Implement NVRHIVertexArray
+- [x] Implement NVRHIFramebuffer
+- [x] Convert basic shaders to HLSL
 - [ ] Get Renderer2D working
 
 ### Phase 3: Advanced Features (TODO)
