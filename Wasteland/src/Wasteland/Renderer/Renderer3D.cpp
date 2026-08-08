@@ -956,7 +956,7 @@ namespace Wasteland
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 1;
-            s_Data.IndirectRays = 0;
+            s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
             s_Data.RenderScale = 1.0f;
