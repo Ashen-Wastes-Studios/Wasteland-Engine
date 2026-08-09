@@ -966,7 +966,7 @@ namespace Wasteland
             // 1/16th rays per pixel (4x4 tile)
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
-            s_Data.MaxLights = 8;
+            s_Data.MaxLights = 2;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
@@ -976,7 +976,7 @@ namespace Wasteland
             // 1/4th rays per pixel (2x2 tile)
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
-            s_Data.MaxLights = 16;
+            s_Data.MaxLights = 4;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
@@ -987,7 +987,7 @@ namespace Wasteland
             // 1 ray per pixel (1x1 tile)
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 4;
-            s_Data.MaxLights = 32;
+            s_Data.MaxLights = 8;
             s_Data.IndirectRays = 4;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
