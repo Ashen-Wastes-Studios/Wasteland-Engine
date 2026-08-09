@@ -986,9 +986,9 @@ namespace Wasteland
         case QualityPreset::Ultra:
             // 1 ray per pixel (1x1 tile)
             s_Data.SamplesPerPixel = 1;
-            s_Data.MaxBounces = 4;
+            s_Data.MaxBounces = 1;
             s_Data.MaxLights = 8;
-            s_Data.IndirectRays = 4;
+            s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 4;
