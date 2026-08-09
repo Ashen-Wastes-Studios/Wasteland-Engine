@@ -957,7 +957,7 @@ namespace Wasteland
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 1;
-            s_Data.IndirectRays = 1;
+            s_Data.IndirectRays = 0;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
             s_Data.RenderScale = 1.0f; // Kept at 1.0f
@@ -965,7 +965,7 @@ namespace Wasteland
         case QualityPreset::Medium:
             // 1/16th rays per pixel (4x4 tile)
             s_Data.SamplesPerPixel = 1;
-            s_Data.MaxBounces = 2;
+            s_Data.MaxBounces = 1;
             s_Data.MaxLights = 8;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = false;
@@ -975,7 +975,7 @@ namespace Wasteland
         case QualityPreset::High:
             // 1/4th rays per pixel (2x2 tile)
             s_Data.SamplesPerPixel = 1;
-            s_Data.MaxBounces = 3;
+            s_Data.MaxBounces = 1;
             s_Data.MaxLights = 16;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
@@ -984,11 +984,11 @@ namespace Wasteland
             s_Data.RenderScale = 1.0f; // Kept at 1.0f
             break;
         case QualityPreset::Ultra:
-            // 1/4th ray per pixel (2x2 tile)
-            s_Data.SamplesPerPixel = 2;
-            s_Data.MaxBounces = 5;
+            // 1 ray per pixel (1x1 tile)
+            s_Data.SamplesPerPixel = 1;
+            s_Data.MaxBounces = 4;
             s_Data.MaxLights = 32;
-            s_Data.IndirectRays = 1;
+            s_Data.IndirectRays = 4;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 4;

@@ -79,7 +79,7 @@ uniform float u_AccumulationAlpha;
 uniform float u_NormalStrength;
 uniform float u_RoughnessBias;
 uniform float u_AOIntensity;
-uniform int u_QualityLevel;
+uniform int u_QualityLevel; // 0 = Low, 1 = Medium, 2 = High, 3 = Ultra
 uniform int u_MaxBounces;
 uniform int u_MaxLights;
 uniform int u_IndirectRays;
@@ -90,9 +90,8 @@ uniform sampler2D u_SceneTextures[32];
 
 struct Ray { vec3 Origin; vec3 Direction; };
 
-bool RayAABB(Ray r, vec3 minB, vec3 maxB) 
+bool RayAABB(Ray r, vec3 invDir, vec3 minB, vec3 maxB) 
 {
-    vec3 invDir = 1.0 / r.Direction;
     vec3 t0 = (minB - r.Origin) * invDir;
     vec3 t1 = (maxB - r.Origin) * invDir;
     vec3 tMin = min(t0, t1);
@@ -160,19 +159,24 @@ vec3 GetSkyColor(vec3 dir);
 
 float HitCube(Ray localRay, out vec3 outNormal) 
 {
-    vec3 tMin = (vec3(-0.5) - localRay.Origin) / localRay.Direction;
-    vec3 tMax = (vec3(0.5) - localRay.Origin) / localRay.Direction;
+    vec3 safeDir = sign(localRay.Direction) * max(abs(localRay.Direction), vec3(0.00001));
+    vec3 invDir = 1.0 / safeDir;
+
+    vec3 tMin = (vec3(-0.5) - localRay.Origin) * invDir;
+    vec3 tMax = (vec3(0.5) - localRay.Origin) * invDir;
+    
     vec3 t1 = min(tMin, tMax);
     vec3 t2 = max(tMin, tMax);
+    
     float tNear = max(max(t1.x, t1.y), t1.z);
-    float tFar = min(min(t2.x, t2.y), t2.z);
+    float tFar  = min(min(t2.x, t2.y), t2.z);
+    
     if (tNear > tFar || tFar < 0.0) return -1.0;
     
-    vec3 hitPoint = localRay.Origin + tNear * localRay.Direction;
-    vec3 absHit = abs(hitPoint);
-    if (absHit.x > 0.499) outNormal = vec3(sign(hitPoint.x), 0.0, 0.0);
-    else if (absHit.y > 0.499) outNormal = vec3(0.0, sign(hitPoint.y), 0.0);
-    else outNormal = vec3(0.0, 0.0, sign(hitPoint.z));
+    if (tNear == t1.x)      outNormal = vec3(-sign(localRay.Direction.x), 0.0, 0.0);
+    else if (tNear == t1.y) outNormal = vec3(0.0, -sign(localRay.Direction.y), 0.0);
+    else                    outNormal = vec3(0.0, 0.0, -sign(localRay.Direction.z));
+
     return tNear;
 }
 
@@ -202,11 +206,18 @@ bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
 
     Ray localRay;
     localRay.Origin = (inst.InvTransform * vec4(r.Origin, 1.0)).xyz;
-    localRay.Direction = (inst.InvTransform * vec4(r.Direction, 0.0)).xyz;
-    if (RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) {
+    localRay.Direction = normalize((inst.InvTransform * vec4(r.Direction, 0.0)).xyz);
+    vec3 safeDir = sign(localRay.Direction) * max(abs(localRay.Direction), vec3(0.00001));
+    vec3 localInvDir = 1.0 / safeDir;
+
+    if (RayAABB(localRay, localInvDir, inst.Min.xyz, inst.Max.xyz)) {
         vec3 localNormal;
         float t = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
-        if (t > 0.0 && t < maxDist) return true;
+        if (t > 0.0) {
+            vec3 localHit = localRay.Origin + t * localRay.Direction;
+            vec3 worldHit = (inst.WorldTransform * vec4(localHit, 1.0)).xyz;
+            if (distance(r.Origin, worldHit) < maxDist) return true;
+        }
     }
     return false;
 }
@@ -214,7 +225,9 @@ bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
 bool IsOccluded(Ray r, float maxDist) {
     if (u_InstanceCount == 0) return false;
 
-    int stack[64];
+    vec3 safeDir = sign(r.Direction) * max(abs(r.Direction), vec3(0.00001));
+    vec3 invDir = 1.0 / safeDir;
+    int stack[32];
     int stackPtr = 0;
     stack[stackPtr++] = 0;
 
@@ -222,8 +235,6 @@ bool IsOccluded(Ray r, float maxDist) {
         int nodeIdx = stack[--stackPtr];
         BVHNode node = BVHNodes[nodeIdx];
 
-        // AABB test
-        vec3 invDir = 1.0 / r.Direction;
         vec3 t0 = (node.MinBounds.xyz - r.Origin) * invDir;
         vec3 t1 = (node.MaxBounds.xyz - r.Origin) * invDir;
         vec3 tMin = min(t0, t1);
@@ -234,15 +245,13 @@ bool IsOccluded(Ray r, float maxDist) {
 
         int encoded = int(node.MinBounds.w);
         if (encoded < 0) {
-            // Leaf node
             int first = -encoded - 1;
             int count = int(node.MaxBounds.w);
             for (int i = first; i < first + count; i++) {
                 if (TestInstanceOcclusion(r, maxDist, i)) return true;
             }
         } else {
-            // Inner node
-            if (stackPtr < 62) {
+            if (stackPtr < 30) {
                 stack[stackPtr++] = int(node.MaxBounds.w);
                 stack[stackPtr++] = encoded;
             }
@@ -295,8 +304,6 @@ vec3 YCoCg2RGB(vec3 ycocg) {
 }
 
 vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
-    vec3 size = inst.Max.xyz - inst.Min.xyz;
-
     if (int(inst.MaterialParams.z) == 0) {
         vec3 absLocal = abs(localPos);
         float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
@@ -366,8 +373,6 @@ struct HitInfo {
 void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec2 texScale,
                          out vec3 T, out vec3 B, out vec2 uvScale)
 {
-    const float PI = 3.14159265359;
-
     if (shapeType == 1) 
     {
         T = vec3(-localNormal.z, 0.0, localNormal.x);
@@ -411,15 +416,15 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 {
     selfOcclusion = 1.0;
 
-    // Skip POM entirely on Low quality
-    if (u_QualityLevel <= 0)
+    if (u_QualityLevel <= 1)
         return;
 
     vec3 V = normalize(localViewDir);
     float distToCam = length(worldPos - u_CameraPosition);
     float cosView = abs(dot(V, localNormal));
 
-    if (cosView < 0.15 || distToCam > 50.0)
+    float maxDist = (u_QualityLevel == 2) ? 25.0 : 50.0;
+    if (cosView < 0.15 || distToCam > maxDist)
         return;
 
     float dispScale = inst.DisplacementParams.x;
@@ -439,14 +444,16 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 
     float maxDisplacement = max(dispScale, bumpStrength);
     float cosAngle = max(dot(V, localNormal), 0.05);
-    int baseLayers = int(mix(6.0, 32.0, float(u_QualityLevel) / 3.0));
-    int numLayers = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), 96.0));
+    
+    int baseLayers = (u_QualityLevel == 2) ? 6 : 16;
+    int maxLayers  = (u_QualityLevel == 2) ? 16 : 32;
+    int numLayers  = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), float(maxLayers)));
 
     float vnDot = dot(V, localNormal);
     vec2 viewUVDir = vec2(dot(V, T), dot(V, B));
     vec2 uvOffsetPerHeight = -viewUVDir / max(abs(vnDot), 0.05);
 
-    float distFade = clamp(1.0 - (distToCam - 30.0) / 20.0, 0.0, 1.0);
+    float distFade = clamp(1.0 - (distToCam - (maxDist - 15.0)) / 15.0, 0.0, 1.0);
     dispScale *= distFade;
     bumpStrength *= distFade;
 
@@ -518,9 +525,12 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
 
     Ray localRay;
     localRay.Origin = (inst.InvTransform * vec4(ray.Origin, 1.0)).xyz;
-    localRay.Direction = (inst.InvTransform * vec4(ray.Direction, 0.0)).xyz;
+    localRay.Direction = normalize((inst.InvTransform * vec4(ray.Direction, 0.0)).xyz);
+    
+    vec3 safeDir = sign(localRay.Direction) * max(abs(localRay.Direction), vec3(0.00001));
+    vec3 localInvDir = 1.0 / safeDir;
 
-    if (!RayAABB(localRay, inst.Min.xyz, inst.Max.xyz)) return;
+    if (!RayAABB(localRay, localInvDir, inst.Min.xyz, inst.Max.xyz)) return;
     vec3 localNormal;
     float tLocal = (uint(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
     if (tLocal > 0.0) {
@@ -567,9 +577,10 @@ HitInfo TraceScene(Ray ray) {
     if (u_InstanceCount == 0) return info;
 
     bool isPrimaryRay = length(ray.Origin - u_CameraPosition) < 0.01;
+    vec3 safeDir = sign(ray.Direction) * max(abs(ray.Direction), vec3(0.00001));
+    vec3 invDir = 1.0 / safeDir;
 
-    // BVH stack-based traversal
-    int stack[64];
+    int stack[32];
     int stackPtr = 0;
     stack[stackPtr++] = 0;
 
@@ -577,8 +588,6 @@ HitInfo TraceScene(Ray ray) {
         int nodeIdx = stack[--stackPtr];
         BVHNode node = BVHNodes[nodeIdx];
 
-        // AABB test with early-out against current closest hit
-        vec3 invDir = 1.0 / ray.Direction;
         vec3 t0 = (node.MinBounds.xyz - ray.Origin) * invDir;
         vec3 t1 = (node.MaxBounds.xyz - ray.Origin) * invDir;
         vec3 tMin = min(t0, t1);
@@ -589,15 +598,13 @@ HitInfo TraceScene(Ray ray) {
 
         int encoded = int(node.MinBounds.w);
         if (encoded < 0) {
-            // Leaf node
             int first = -encoded - 1;
             int count = int(node.MaxBounds.w);
             for (int i = first; i < first + count; i++) {
                 TestInstanceHit(ray, i, isPrimaryRay, info);
             }
         } else {
-            // Inner node - push far child first so near child is popped first
-            if (stackPtr < 62) {
+            if (stackPtr < 30) {
                 stack[stackPtr++] = int(node.MaxBounds.w);
                 stack[stackPtr++] = encoded;
             }
@@ -611,7 +618,11 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
 
-    int lightsToSample = min(u_LightCount, u_MaxLights);
+    int maxLightsCap = (u_QualityLevel == 0) ? 1 :
+                       ((u_QualityLevel == 1) ? 2 :
+                       ((u_QualityLevel == 2) ? 4 : u_MaxLights));
+    int lightsToSample = min(u_LightCount, maxLightsCap);
+
     for (int li = 0; li < lightsToSample; li++) {
         int i = LightIndices[li];
         RayTracingInstance light = Instances[i];
@@ -664,14 +675,6 @@ void RunTraceAndDenoise()
     ivec2 imgSize = imageSize(img_Output);
     if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
 
-    // 1. Determine tile step size based on Quality Preset
-    ivec2 stepSize = ivec2(1, 1);
-    if (u_QualityLevel == 0)      stepSize = ivec2(4, 4); // Low: 1/16th lighting rays per pixel
-    else if (u_QualityLevel == 1) stepSize = ivec2(4, 4); // Medium: 1/16th lighting rays per pixel
-    else if (u_QualityLevel == 2) stepSize = ivec2(2, 2); // High: 1/4th lighting rays per pixel
-    else if (u_QualityLevel == 3) stepSize = ivec2(2, 2); // Ultra: 1/4th ray per pixel
-
-    // 2. Crisp Primary Ray (Executed per-pixel to eliminate blocky geometry edges)
     seed = uint(pixelCoords.y * 1024 + pixelCoords.x) + uint(u_FrameIndex * 1000);
     vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
     vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
@@ -679,7 +682,6 @@ void RunTraceAndDenoise()
     Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
     HitInfo primary = TraceScene(primaryRay);
 
-    // Write full-resolution primary albedo and hit state
     imageStore(img_AlbedoHit, pixelCoords, vec4(primary.hit ? primary.albedo : vec3(1.0), primary.hit ? 1.0 : 0.0));
 
     if (!primary.hit) {
@@ -687,69 +689,58 @@ void RunTraceAndDenoise()
         return;
     }
 
-    // 3. Sub-sampled Irradiance / Lighting Calculation
-    ivec2 tileOrigin = (pixelCoords / stepSize) * stepSize;
-    int tileSize = stepSize.x * stepSize.y;
-    int activeIndex = (u_CameraMoved > 0.5) ? 0 : (u_FrameIndex % tileSize);
-    ivec2 activeOffset = ivec2(activeIndex % stepSize.x, activeIndex / stepSize.x);
-    ivec2 rayPixelCoords = clamp(tileOrigin + activeOffset, ivec2(0), imgSize - ivec2(1));
-
-    // Calculate light sample origin for this tile
-    seed = uint(rayPixelCoords.y * 1024 + rayPixelCoords.x) + uint(u_FrameIndex * 1000);
-    vec2 lightJitteredUV = ((vec2(rayPixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
-    Ray tilePrimaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(lightJitteredUV, 1.0, 1.0)).xyz));
-    HitInfo tileHit = TraceScene(tilePrimaryRay);
+    HitInfo tileHit = primary;
+    Ray lightRay = primaryRay;
 
     vec3 directLight = vec3(0.0);
     vec3 indirectLight = vec3(0.0);
 
     if (tileHit.hit) {
-        vec3 V = normalize(-tilePrimaryRay.Direction);
+        vec3 V = normalize(-lightRay.Direction);
         directLight = ComputeDirectLighting(tileHit, V);
 
-        vec3 diffuseColor = tileHit.albedo * (1.0 - tileHit.metal);
-        vec3 F0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal);
-        vec3 indirectReflectance = mix(diffuseColor, F0, tileHit.metal);
+        int maxIndirectRays = (u_QualityLevel == 0) ? 0 : 
+                              ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
 
-        for (int r = 0; r < u_IndirectRays; r++) {
-            seed = uint(rayPixelCoords.y * 1024 + rayPixelCoords.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
-            
-            vec3 indirectDir;
-            if (hash() < tileHit.metal) {
-                vec3 specDir = reflect(-V, tileHit.normal);
-                vec3 randHem = random_in_hemisphere(tileHit.normal);
-                indirectDir = normalize(mix(specDir, randHem, tileHit.rough * tileHit.rough));
-            } else {
-                indirectDir = random_in_hemisphere(tileHit.normal);
+        if (maxIndirectRays > 0) {
+            vec3 diffuseColor = tileHit.albedo * (1.0 - tileHit.metal);
+            vec3 F0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal);
+            vec3 indirectReflectance = mix(diffuseColor, F0, tileHit.metal);
+
+            for (int r = 0; r < maxIndirectRays; r++) {
+                seed = uint(pixelCoords.y * 1024 + pixelCoords.x) + uint(u_FrameIndex * 1000) + uint((r + 1) * 7919);
+                
+                vec3 indirectDir;
+                if (hash() < tileHit.metal) {
+                    vec3 specDir = reflect(-V, tileHit.normal);
+                    vec3 randHem = random_in_hemisphere(tileHit.normal);
+                    indirectDir = normalize(mix(specDir, randHem, tileHit.rough * tileHit.rough));
+                } else {
+                    indirectDir = random_in_hemisphere(tileHit.normal);
+                }
+
+                Ray indirectRay = Ray(tileHit.worldPos + tileHit.normal * 0.001, indirectDir);
+                HitInfo indirect = TraceScene(indirectRay);
+
+                if (indirect.hit) {
+                    vec3 indirectV = normalize(-indirectDir);
+                    vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
+                    indirectLight += indirectReflectance * bouncedLight;
+                } else {
+                    indirectLight += indirectReflectance * GetSkyColor(indirectDir);
+                }
             }
-
-            Ray indirectRay = Ray(tileHit.worldPos + tileHit.normal * 0.001, indirectDir);
-            HitInfo indirect = TraceScene(indirectRay);
-
-            if (indirect.hit) {
-                vec3 indirectV = normalize(-indirectDir);
-                vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
-                indirectLight += indirectReflectance * bouncedLight;
-            } else {
-                indirectLight += indirectReflectance * GetSkyColor(indirectDir);
-            }
+            indirectLight /= float(maxIndirectRays);
+            indirectLight *= tileHit.occlusion;
         }
-
-        if (u_IndirectRays > 0)
-            indirectLight /= float(u_IndirectRays);
-
-        indirectLight *= tileHit.occlusion;
     } else {
-        directLight = GetSkyColor(tilePrimaryRay.Direction);
+        directLight = GetSkyColor(lightRay.Direction);
     }
 
     directLight = clamp(directLight, vec3(0.0), vec3(10.0));
     indirectLight = clamp(indirectLight, vec3(0.0), vec3(5.0));
 
-    // Modulate the shared tile irradiance with the pixel's local surface properties
-    vec3 localV = normalize(-primaryRay.Direction);
     vec3 finalPixelColor = (primary.albedo * directLight) + indirectLight;
-
     imageStore(img_Bloom, pixelCoords, vec4(finalPixelColor, 1.0));
 }
 
@@ -774,8 +765,7 @@ void RunTemporalAccumulation() {
     vec3 historyLight = texture(s_Accumulation, prevUV).rgb;
 
     if (validHistory) {
-        if (u_QualityLevel >= 2) {
-            // High/Ultra: full 3x3 neighborhood variance clamping in YCoCg space
+        if (u_QualityLevel >= 3) {
             vec3 m1 = vec3(0.0);
             vec3 m2 = vec3(0.0);
             for (int x = -1; x <= 1; x++) {
@@ -794,8 +784,25 @@ void RunTemporalAccumulation() {
             vec3 maxCol = mean + 1.25 * stddev;
             historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
             historyLight = YCoCg2RGB(historyYCoCg);
+        } else if (u_QualityLevel == 2) {
+            ivec2 offsets[5] = ivec2[](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+            vec3 m1 = vec3(0.0);
+            vec3 m2 = vec3(0.0);
+            for (int i = 0; i < 5; i++) {
+                ivec2 sp = clamp(pixelCoords + offsets[i], ivec2(0), imgSize - ivec2(1));
+                vec3 s = RGB2YCoCg(imageLoad(img_Bloom, sp).rgb);
+                m1 += s;
+                m2 += s * s;
+            }
+            vec3 mean = m1 / 5.0;
+            vec3 stddev = sqrt(max(vec3(0.0), m2 / 5.0 - mean * mean));
+
+            vec3 historyYCoCg = RGB2YCoCg(historyLight);
+            vec3 minCol = mean - 1.25 * stddev;
+            vec3 maxCol = mean + 1.25 * stddev;
+            historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
+            historyLight = YCoCg2RGB(historyYCoCg);
         }
-        // Medium/Low: skip neighborhood analysis, use history directly (saves 9 imageLoads)
     }
 
     float motionFactor = clamp(motionMag / 8.0, 0.0, 1.0);
@@ -856,7 +863,6 @@ void RunComposite() {
     float hitMask;
 
     if (u_RenderScale < 1.0) {
-        // Sub-native resolution: upscale from reduced-res accumulation buffer
         ivec2 srcSize = ivec2(vec2(fullSize) * u_RenderScale);
         if (srcSize.x < 1) srcSize.x = 1;
         if (srcSize.y < 1) srcSize.y = 1;
@@ -867,14 +873,12 @@ void RunComposite() {
         ivec2 s1 = clamp(s0 + ivec2(1), ivec2(0), srcSize - ivec2(1));
         vec2 f = srcPixel - vec2(s0);
 
-        // Bilinear sample from accumulation buffer
         vec3 c00 = imageLoad(img_Accumulation, s0).rgb;
         vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
         vec3 c01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
         vec3 c11 = imageLoad(img_Accumulation, s1).rgb;
         denoisedIrradiance = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 
-        // Bilinear sample from albedo/hit buffer
         vec4 a00 = imageLoad(img_AlbedoHit, s0);
         vec4 a10 = imageLoad(img_AlbedoHit, ivec2(s1.x, s0.y));
         vec4 a01 = imageLoad(img_AlbedoHit, ivec2(s0.x, s1.y));
@@ -883,7 +887,6 @@ void RunComposite() {
         albedo = albedoHit.rgb;
         hitMask = albedoHit.a;
     } else {
-        // Native resolution: read from bilateral blur output (Ultra only) or accumulation
         denoisedIrradiance = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
         vec4 albedoHit = imageLoad(img_AlbedoHit, pos);
         albedo = albedoHit.rgb;
@@ -892,13 +895,11 @@ void RunComposite() {
 
     vec3 combined = hitMask > 0.5 ? (denoisedIrradiance * albedo) : denoisedIrradiance;
 
-    // Tonemap + gamma
     vec3 mapped = combined / (combined + vec3(1.0));
     vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
 
     imageStore(img_Output, pos, vec4(finalColor, 1.0));
 
-    // Extract bloom seeds if enabled (only at native res)
     if (u_QualityLevel >= 1 && u_RenderScale >= 1.0) {
         float brightness = dot(combined, vec3(0.2126, 0.7152, 0.0722));
         float threshold = 0.8;
@@ -909,6 +910,8 @@ void RunComposite() {
 }
 
 void RunBilateralBlur() {
+    if (u_QualityLevel <= 1) return;
+
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(img_Bloom_Temp);
     if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
@@ -930,29 +933,18 @@ void RunBilateralBlur() {
     vec3 centerNormal = texture(s_NormalBuffer, uv).rgb * 2.0 - 1.0;
     float centerLuma = GetLuminance(centerColor);
 
-    // Compute local luminance variance across a 3x3 window for edge stopping
-    float lumaSum = 0.0;
-    float lumaSqSum = 0.0;
-    for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-            ivec2 sp = clamp(pos + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
-            float l = GetLuminance(imageLoad(img_Accumulation, sp).rgb);
-            lumaSum += l;
-            lumaSqSum += l * l;
-        }
-    }
-    float lumaMean = lumaSum / 9.0;
-    float lumaVar = sqrt(max(0.0, (lumaSqSum / 9.0) - (lumaMean * lumaMean)));
-
-    // 5x5 À-Trous kernel weights [0.0625, 0.25, 0.375, 0.25, 0.0625]
-    const float kernel[3] = float[](0.375, 0.25, 0.0625);
+    int step = max(1, u_StepSize);
     vec3 totalColor = vec3(0.0);
     float totalWeight = 0.0;
-    int step = max(1, u_StepSize);
 
-    for (int x = -2; x <= 2; x++) {
-        for (int y = -2; y <= 2; y++) {
-            ivec2 samplePos = clamp(pos + ivec2(x, y) * step, ivec2(0), imgSize - ivec2(1));
+    if (u_QualityLevel == 2) {
+        ivec2 offsets[9] = ivec2[](
+            ivec2(0, 0), 
+            ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1),
+            ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2)
+        );
+        for (int i = 0; i < 9; i++) {
+            ivec2 samplePos = clamp(pos + offsets[i] * step, ivec2(0), imgSize - ivec2(1));
 
             vec3 neighborColor = imageLoad(img_Accumulation, samplePos).rgb;
             vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
@@ -961,24 +953,57 @@ void RunBilateralBlur() {
             vec3 neighborNormal = texture(s_NormalBuffer, sampleUV).rgb * 2.0 - 1.0;
             float neighborLuma = GetLuminance(neighborColor);
 
-            // 1. Spatial weight (B-spline filter)
-            float spatialWeight = kernel[abs(x)] * kernel[abs(y)];
-
-            // 2. Normal weight
-            float normalWeight = pow(max(0.0, dot(centerNormal, neighborNormal)), 32.0);
-
-            // 3. Depth weight
+            float spatialWeight = (i == 0) ? 0.375 : ((i <= 4) ? 0.125 : 0.03125);
+            float normalWeight = pow(max(0.0, dot(centerNormal, neighborNormal)), 16.0);
             float depthDiff = abs(centerDepth - neighborDepth);
             float depthWeight = exp(-depthDiff * 100.0);
-
-            // 4. Luminance Variance Weight (Edge-stopping weight)
             float lumaDiff = abs(centerLuma - neighborLuma);
-            float lumaWeight = exp(-lumaDiff / (lumaVar * 4.0 + 0.001));
+            float lumaWeight = exp(-lumaDiff * 4.0);
 
             float weight = spatialWeight * normalWeight * depthWeight * lumaWeight;
 
             totalColor += neighborColor * weight;
             totalWeight += weight;
+        }
+    } else if (u_QualityLevel >= 3) {
+        float lumaSum = 0.0;
+        float lumaSqSum = 0.0;
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                ivec2 sp = clamp(pos + ivec2(x, y), ivec2(0), imgSize - ivec2(1));
+                float l = GetLuminance(imageLoad(img_Accumulation, sp).rgb);
+                lumaSum += l;
+                lumaSqSum += l * l;
+            }
+        }
+        float lumaMean = lumaSum / 9.0;
+        float lumaVar = sqrt(max(0.0, (lumaSqSum / 9.0) - (lumaMean * lumaMean)));
+
+        const float kernel[3] = float[](0.375, 0.25, 0.0625);
+
+        for (int x = -2; x <= 2; x++) {
+            for (int y = -2; y <= 2; y++) {
+                ivec2 samplePos = clamp(pos + ivec2(x, y) * step, ivec2(0), imgSize - ivec2(1));
+
+                vec3 neighborColor = imageLoad(img_Accumulation, samplePos).rgb;
+                vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
+
+                float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
+                vec3 neighborNormal = texture(s_NormalBuffer, sampleUV).rgb * 2.0 - 1.0;
+                float neighborLuma = GetLuminance(neighborColor);
+
+                float spatialWeight = kernel[abs(x)] * kernel[abs(y)];
+                float normalWeight = pow(max(0.0, dot(centerNormal, neighborNormal)), 32.0);
+                float depthDiff = abs(centerDepth - neighborDepth);
+                float depthWeight = exp(-depthDiff * 100.0);
+                float lumaDiff = abs(centerLuma - neighborLuma);
+                float lumaWeight = exp(-lumaDiff / (lumaVar * 4.0 + 0.001));
+
+                float weight = spatialWeight * normalWeight * depthWeight * lumaWeight;
+
+                totalColor += neighborColor * weight;
+                totalWeight += weight;
+            }
         }
     }
 
@@ -1047,10 +1072,7 @@ void RunUpscale() {
     if (srcSize.x < 1) srcSize.x = 1;
     if (srcSize.y < 1) srcSize.y = 1;
 
-    // Map full-res pixel to low-res coordinate
     vec2 srcCoord = (vec2(pos) + 0.5) * u_RenderScale;
-
-    // Bilinear interpolation from low-res source
     vec2 srcPixel = srcCoord - vec2(0.5);
     ivec2 src0 = ivec2(floor(srcPixel));
     ivec2 src1 = src0 + ivec2(1);
