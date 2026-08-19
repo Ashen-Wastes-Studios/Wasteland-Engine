@@ -2,6 +2,7 @@
 
 #include "Wasteland/Core/Window.h"
 #include "Wasteland/Renderer/GraphicsContext.h"
+#include "Wasteland/Renderer/RendererAPI.h"
 
 #include <GLFW/glfw3.h>
 
@@ -26,13 +27,24 @@ namespace Wasteland
 
 		inline virtual void *GetNativeWindow() const { return m_Window; }
 
+		// Multi-backend support
+		void SwitchRendererAPI(RendererAPI::API api) override;
+		GraphicsContext* GetCurrentContext() const override { return m_CurrentContext; }
+
 	private:
 		virtual void Init(const WindowProps &props);
 		virtual void Shutdown();
+		void CreateContexts();
+		void DestroyContexts();
 
 	private:
 		GLFWwindow *m_Window;
-		GraphicsContext *m_Context;
+		
+		// Multiple contexts for different backends
+		GraphicsContext *m_OpenGLContext = nullptr;
+		GraphicsContext *m_NVRHIContext = nullptr;
+		GraphicsContext *m_CurrentContext = nullptr;
+		RendererAPI::API m_CurrentAPI = RendererAPI::API::None;
 
 		struct WindowData
 		{

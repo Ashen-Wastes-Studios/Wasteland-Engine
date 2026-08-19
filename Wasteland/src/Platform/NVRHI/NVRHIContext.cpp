@@ -186,6 +186,34 @@ namespace Wasteland {
 		deviceDesc.pGraphicsCommandQueue = commandQueue;
 		m_Device = nvrhi::d3d12::createDevice(deviceDesc);
 
+		// Create descriptor heap for ImGui (SRV heap for font texture)
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		heapDesc.NumDescriptors = 1; // Only need 1 for font texture
+		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		heapDesc.NodeMask = 0;
+		
+		ID3D12DescriptorHeap* srvHeap = nullptr;
+		hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&srvHeap));
+		if (SUCCEEDED(hr) && srvHeap)
+		{
+			m_D3D12ImGuiSRVHeap = srvHeap;
+			
+			// Get CPU and GPU handles
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = srvHeap->GetCPUDescriptorHandleForHeapStart();
+			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = srvHeap->GetGPUDescriptorHandleForHeapStart();
+			
+			// Store handles (we'll use void* to avoid exposing D3D12 types in header)
+			m_D3D12ImGuiSRVHeapCPU = new D3D12_CPU_DESCRIPTOR_HANDLE(cpuHandle);
+			m_D3D12ImGuiSRVHeapGPU = new D3D12_GPU_DESCRIPTOR_HANDLE(gpuHandle);
+			
+			WL_CORE_INFO("D3D12 ImGui SRV descriptor heap created");
+		}
+		else
+		{
+			WL_CORE_ERROR("Failed to create D3D12 ImGui SRV descriptor heap");
+		}
+
 		WL_CORE_INFO("D3D12 device created successfully");
 	}
 
@@ -194,11 +222,20 @@ namespace Wasteland {
 		WL_PROFILE_FUNCTION();
 
 		HWND hwnd = glfwGetWin32Window(m_WindowHandle);
+		if (!hwnd)
+		{
+			WL_CORE_ERROR("CreateSwapChain: Failed to get HWND from GLFW window");
+			return;
+		}
 
 		// Create DXGI factory
 		IDXGIFactory4* factory = nullptr;
 		HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-		WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to create DXGI factory");
+		if (FAILED(hr) || !factory)
+		{
+			WL_CORE_ERROR("CreateSwapChain: Failed to create DXGI factory (HRESULT: {0})", hr);
+			return;
+		}
 
 		// Describe swap chain
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
@@ -211,27 +248,56 @@ namespace Wasteland {
 		swapChainDesc.SampleDesc.Count = 1;
 
 		IDXGISwapChain1* swapChain1 = nullptr;
-		hr = factory->CreateSwapChainForHwnd(
-			m_API == RendererAPI::API::NVRHI_DX12 ? static_cast<IUnknown*>(m_D3D12CommandQueue) : static_cast<IUnknown*>(m_D3D11Context),
-			hwnd,
-			&swapChainDesc,
-			nullptr,
-			nullptr,
-			&swapChain1
-		);
-		WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to create swap chain");
+		
+		if (m_API == RendererAPI::API::NVRHI_DX12)
+		{
+			hr = factory->CreateSwapChainForHwnd(
+				static_cast<IUnknown*>(m_D3D12CommandQueue),
+				hwnd,
+				&swapChainDesc,
+				nullptr,
+				nullptr,
+				&swapChain1
+			);
+		}
+		else if (m_API == RendererAPI::API::NVRHI_DX11)
+		{
+			hr = factory->CreateSwapChainForHwnd(
+				static_cast<IUnknown*>(m_D3D11Device),  // Pass device, not context
+				hwnd,
+				&swapChainDesc,
+				nullptr,
+				nullptr,
+				&swapChain1
+			);
+		}
+		
+		if (FAILED(hr) || !swapChain1)
+		{
+			WL_CORE_ERROR("CreateSwapChain: Failed to create swap chain (HRESULT: {0})", hr);
+			factory->Release();
+			return;
+		}
 
 		if (m_API == RendererAPI::API::NVRHI_DX12)
 		{
 			IDXGISwapChain3* swapChain3 = nullptr;
 			hr = swapChain1->QueryInterface(IID_PPV_ARGS(&swapChain3));
-			WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to query IDXGISwapChain3");
+			if (FAILED(hr) || !swapChain3)
+			{
+				WL_CORE_ERROR("CreateSwapChain: Failed to query IDXGISwapChain3 (HRESULT: {0})", hr);
+				swapChain1->Release();
+				factory->Release();
+				return;
+			}
 			swapChain1->Release();
 			m_DXGISwapChain3 = swapChain3;
+			WL_CORE_INFO("Created DX12 swap chain");
 		}
-		else
+		else if (m_API == RendererAPI::API::NVRHI_DX11)
 		{
 			m_DXGISwapChain = swapChain1;
+			WL_CORE_INFO("Created DX11 swap chain");
 		}
 
 		factory->Release();
@@ -249,6 +315,18 @@ namespace Wasteland {
 		m_BackBuffers.clear();
 		m_BackBufferFramebuffers.clear();
 
+		// Check if swap chain exists
+		if (m_API == RendererAPI::API::NVRHI_DX11 && !m_DXGISwapChain)
+		{
+			WL_CORE_ERROR("CreateBackBufferFramebuffers: DX11 swap chain is null");
+			return;
+		}
+		else if (m_API == RendererAPI::API::NVRHI_DX12 && !m_DXGISwapChain3)
+		{
+			WL_CORE_ERROR("CreateBackBufferFramebuffers: DX12 swap chain is null");
+			return;
+		}
+
 		// Get backbuffers from swapchain
 		const uint32_t bufferCount = 2;
 		m_BackBuffers.resize(bufferCount);
@@ -257,12 +335,28 @@ namespace Wasteland {
 		if (m_API == RendererAPI::API::NVRHI_DX11)
 		{
 			IDXGISwapChain* swapChain = static_cast<IDXGISwapChain*>(m_DXGISwapChain);
+			
+			// Get all backbuffers first
+			std::vector<ID3D11Texture2D*> nativeBuffers(bufferCount, nullptr);
 			for (uint32_t i = 0; i < bufferCount; i++)
 			{
-				ID3D11Texture2D* backBuffer = nullptr;
-				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
-				WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to get backbuffer");
-
+				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&nativeBuffers[i]));
+				if (FAILED(hr) || !nativeBuffers[i])
+				{
+					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX11 backbuffer {0} (HRESULT: {1})", i, hr);
+					// Clean up already acquired buffers
+					for (uint32_t j = 0; j < i; j++)
+					{
+						if (nativeBuffers[j])
+							nativeBuffers[j]->Release();
+					}
+					return;
+				}
+			}
+			
+			// Now create NVRHI textures and framebuffers
+			for (uint32_t i = 0; i < bufferCount; i++)
+			{
 				// Create NVRHI texture from D3D11 texture
 				nvrhi::TextureDesc desc;
 				desc.width = m_Width;
@@ -270,11 +364,13 @@ namespace Wasteland {
 				desc.format = nvrhi::Format::SRGBA8_UNORM;
 				desc.isRenderTarget = true;
 
+				// AddRef for NVRHI, then release our reference
+				nativeBuffers[i]->AddRef();
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
 					nvrhi::ObjectTypes::D3D11_Resource, 
-					backBuffer, 
+					nativeBuffers[i], 
 					desc);
-				backBuffer->Release();
+				nativeBuffers[i]->Release();
 
 				// Create framebuffer
 				nvrhi::FramebufferDesc fbDesc;
@@ -285,12 +381,28 @@ namespace Wasteland {
 		else if (m_API == RendererAPI::API::NVRHI_DX12)
 		{
 			IDXGISwapChain3* swapChain = static_cast<IDXGISwapChain3*>(m_DXGISwapChain3);
+			
+			// Get all backbuffers first
+			std::vector<ID3D12Resource*> nativeBuffers(bufferCount, nullptr);
 			for (uint32_t i = 0; i < bufferCount; i++)
 			{
-				ID3D12Resource* backBuffer = nullptr;
-				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer));
-				WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to get backbuffer");
-
+				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&nativeBuffers[i]));
+				if (FAILED(hr) || !nativeBuffers[i])
+				{
+					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX12 backbuffer {0} (HRESULT: {1})", i, hr);
+					// Clean up already acquired buffers
+					for (uint32_t j = 0; j < i; j++)
+					{
+						if (nativeBuffers[j])
+							nativeBuffers[j]->Release();
+					}
+					return;
+				}
+			}
+			
+			// Now create NVRHI textures and framebuffers
+			for (uint32_t i = 0; i < bufferCount; i++)
+			{
 				// Create NVRHI texture from D3D12 resource
 				nvrhi::TextureDesc desc;
 				desc.width = m_Width;
@@ -298,11 +410,13 @@ namespace Wasteland {
 				desc.format = nvrhi::Format::SRGBA8_UNORM;
 				desc.isRenderTarget = true;
 
+				// AddRef for NVRHI, then release our reference
+				nativeBuffers[i]->AddRef();
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
 					nvrhi::ObjectTypes::D3D12_Resource, 
-					backBuffer, 
+					nativeBuffers[i], 
 					desc);
-				backBuffer->Release();
+				nativeBuffers[i]->Release();
 
 				// Create framebuffer
 				nvrhi::FramebufferDesc fbDesc;

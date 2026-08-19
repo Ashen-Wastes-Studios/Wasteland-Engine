@@ -4,6 +4,8 @@
 #include <Wasteland/Events/KeyEvent.h>
 #include <Wasteland/Events/MouseEvent.h>
 #include <Wasteland/Events/ApplicationEvent.h>
+#include <Wasteland/Core/Application.h>
+#include <Wasteland/ImGui/ImGuiLayer.h>
 
 #include "Platform/OpenGL/OpenGLContext.h"
 #include "Platform/NVRHI/NVRHIContext.h"
@@ -71,28 +73,12 @@ namespace Wasteland
 			m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
 		}
 
-		// Create appropriate context based on current renderer API
+		// Create all contexts
+		CreateContexts();
+
+		// Initialize the current API context
 		RendererAPI::API currentAPI = RendererAPI::GetAPI();
-		if (currentAPI == RendererAPI::API::NVRHI_DX11 || 
-		    currentAPI == RendererAPI::API::NVRHI_DX12 || 
-		    currentAPI == RendererAPI::API::NVRHI_Vulkan)
-		{
-			NVRHIContext* nvrhiContext = new NVRHIContext(m_Window, currentAPI);
-			m_Context = nvrhiContext;
-			
-			// Set the context on the renderer API
-			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
-			if (nvrhiAPI)
-			{
-				nvrhiAPI->SetContext(nvrhiContext);
-			}
-		}
-		else
-		{
-			m_Context = new OpenGLContext(m_Window);
-		}
-		
-		m_Context->Init();
+		SwitchRendererAPI(currentAPI);
 
 		glfwSetWindowUserPointer(m_Window, &m_Data);
 		SetVSync(true);
@@ -182,10 +168,127 @@ namespace Wasteland
 				data.EventCallback(event); });
 	}
 
+	void WindowsWindow::CreateContexts()
+	{
+		WL_PROFILE_FUNCTION();
+
+		// Create OpenGL context
+		m_OpenGLContext = new OpenGLContext(m_Window);
+		m_OpenGLContext->Init();
+
+		// Create NVRHI context (will be initialized on first switch)
+		// We don't initialize it here to avoid creating DX device when not needed
+		m_NVRHIContext = nullptr;
+
+		WL_CORE_INFO("Created OpenGL context");
+	}
+
+	void WindowsWindow::DestroyContexts()
+	{
+		WL_PROFILE_FUNCTION();
+
+		if (m_OpenGLContext)
+		{
+			delete m_OpenGLContext;
+			m_OpenGLContext = nullptr;
+		}
+
+		if (m_NVRHIContext)
+		{
+			delete m_NVRHIContext;
+			m_NVRHIContext = nullptr;
+		}
+
+		m_CurrentContext = nullptr;
+	}
+
+	void WindowsWindow::SwitchRendererAPI(RendererAPI::API api)
+	{
+		WL_PROFILE_FUNCTION();
+
+		if (api == m_CurrentAPI && m_CurrentContext)
+			return;
+
+		WL_CORE_INFO("Switching renderer API to {0}", (int)api);
+
+		// Clear cached resources when switching away from NVRHI
+		if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+		    m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+		    m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+		{
+			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+			if (nvrhiAPI)
+			{
+				nvrhiAPI->ClearCachedResources();
+			}
+		}
+
+		// Create NVRHI context if needed and not already created
+		if ((api == RendererAPI::API::NVRHI_DX11 ||
+		     api == RendererAPI::API::NVRHI_DX12 ||
+		     api == RendererAPI::API::NVRHI_Vulkan) && !m_NVRHIContext)
+		{
+			m_NVRHIContext = new NVRHIContext(m_Window, api);
+			m_NVRHIContext->Init();
+
+			// Set the context on the renderer API
+			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+			if (nvrhiAPI)
+			{
+				nvrhiAPI->SetContext(static_cast<NVRHIContext*>(m_NVRHIContext));
+			}
+
+			WL_CORE_INFO("Created NVRHI context");
+		}
+		else if (api == RendererAPI::API::NVRHI_DX11 ||
+		         api == RendererAPI::API::NVRHI_DX12 ||
+		         api == RendererAPI::API::NVRHI_Vulkan)
+		{
+			// Switching between NVRHI APIs - need to recreate context
+			if (m_NVRHIContext)
+			{
+				delete m_NVRHIContext;
+				m_NVRHIContext = new NVRHIContext(m_Window, api);
+				m_NVRHIContext->Init();
+
+				NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+				if (nvrhiAPI)
+				{
+					nvrhiAPI->SetContext(static_cast<NVRHIContext*>(m_NVRHIContext));
+				}
+			}
+		}
+
+		// Switch to the appropriate context
+		if (api == RendererAPI::API::OpenGL)
+		{
+			m_CurrentContext = m_OpenGLContext;
+		}
+		else if (api == RendererAPI::API::NVRHI_DX11 ||
+		         api == RendererAPI::API::NVRHI_DX12 ||
+		         api == RendererAPI::API::NVRHI_Vulkan)
+		{
+			m_CurrentContext = m_NVRHIContext;
+		}
+
+		m_CurrentAPI = api;
+
+		// Switch ImGui backend to match the new renderer API
+		if (Application::IsInitialized())
+		{
+			ImGuiLayer* imguiLayer = Application::Get().GetImGuiLayer();
+			if (imguiLayer)
+			{
+				imguiLayer->SwitchBackend(api);
+			}
+		}
+	}
+
 	void WindowsWindow::Shutdown()
 	{
 		WL_PROFILE_FUNCTION();
 
+		DestroyContexts();
 		glfwDestroyWindow(m_Window);
 	}
 
@@ -194,7 +297,8 @@ namespace Wasteland
 		WL_PROFILE_FUNCTION();
 
 		glfwPollEvents();
-		m_Context->SwapBuffers();
+		if (m_CurrentContext)
+			m_CurrentContext->SwapBuffers();
 	}
 
 	void WindowsWindow::SetVSync(bool enabled)

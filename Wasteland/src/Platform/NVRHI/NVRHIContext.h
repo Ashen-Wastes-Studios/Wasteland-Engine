@@ -28,6 +28,17 @@ namespace Wasteland {
 		uint32_t GetWidth() const { return m_Width; }
 		uint32_t GetHeight() const { return m_Height; }
 
+		// Native DirectX object accessors (for ImGui and other integrations)
+		void* GetD3D11Device() const { return m_D3D11Device; }
+		void* GetD3D11Context() const { return m_D3D11Context; }
+		void* GetD3D12Device() const { return m_D3D12Device; }
+		void* GetD3D12CommandQueue() const { return m_D3D12CommandQueue; }
+		
+		// DX12 ImGui descriptor heap
+		void* GetD3D12ImGuiSRVHeap() const { return m_D3D12ImGuiSRVHeap; }
+		void* GetD3D12ImGuiSRVHeapCPU() const { return m_D3D12ImGuiSRVHeapCPU; }
+		void* GetD3D12ImGuiSRVHeapGPU() const { return m_D3D12ImGuiSRVHeapGPU; }
+
 		void Resize(uint32_t width, uint32_t height);
 
 	private:
@@ -57,6 +68,11 @@ namespace Wasteland {
 		void* m_D3D12Device = nullptr;
 		void* m_D3D12CommandQueue = nullptr;
 		void* m_DXGISwapChain3 = nullptr;
+		
+		// DX12 ImGui SRV descriptor heap
+		void* m_D3D12ImGuiSRVHeap = nullptr;
+		void* m_D3D12ImGuiSRVHeapCPU = nullptr;
+		void* m_D3D12ImGuiSRVHeapGPU = nullptr;
 
 		uint32_t m_Width = 0;
 		uint32_t m_Height = 0;

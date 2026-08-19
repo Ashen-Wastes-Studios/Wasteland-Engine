@@ -4,8 +4,11 @@
 
 #include "Wasteland/Core/Core.h"
 #include "Wasteland/Events/Event.h"
+#include "Wasteland/Renderer/RendererAPI.h"
 
 namespace Wasteland {
+
+	class GraphicsContext; // Forward declaration
 
 	struct WindowProps
 	{
@@ -40,6 +43,10 @@ namespace Wasteland {
 		virtual bool IsVSync() const = 0;
 
 		virtual void* GetNativeWindow() const = 0;
+
+		// Multi-backend support
+		virtual void SwitchRendererAPI(RendererAPI::API api) = 0;
+		virtual GraphicsContext* GetCurrentContext() const = 0;
 
 		static Window* Create(const WindowProps& props = WindowProps());
 	};

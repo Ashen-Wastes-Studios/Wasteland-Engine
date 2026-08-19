@@ -87,8 +87,11 @@ namespace Wasteland {
 			return;
 		}
 
-		// Clear color attachment
-		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources, nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
+		// Open command list, clear, and close
+		cmd->open();
+		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources, 
+			nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
+		cmd->close();
 	}
 
 	nvrhi::GraphicsPipelineHandle NVRHIRendererAPI::GetOrCreatePipeline(const Ref<Shader>& shader, const Ref<VertexArray>& vertexArray)
@@ -246,6 +249,21 @@ namespace Wasteland {
 			return;
 		}
 
+		// Get index buffer to determine count
+		auto indexBuffer = nvrhiVA->GetIndexBuffer();
+		if (!indexBuffer)
+		{
+			WL_CORE_ERROR("DrawIndexed: No index buffer");
+			return;
+		}
+
+		auto nvrhiIB = std::dynamic_pointer_cast<NVRHIIndexBuffer>(indexBuffer);
+		if (!nvrhiIB)
+		{
+			WL_CORE_ERROR("DrawIndexed: Invalid index buffer");
+			return;
+		}
+
 		// Set up graphics state
 		nvrhi::GraphicsState state;
 		state.pipeline = pipeline;
@@ -271,27 +289,22 @@ namespace Wasteland {
 		}
 
 		// Bind index buffer
-		auto indexBuffer = nvrhiVA->GetIndexBuffer();
-		if (indexBuffer)
-		{
-			auto nvrhiIB = std::dynamic_pointer_cast<NVRHIIndexBuffer>(indexBuffer);
-			if (nvrhiIB)
-			{
-				state.indexBuffer = nvrhi::IndexBufferBinding()
-					.setBuffer(nvrhiIB->GetBuffer())
-					.setOffset(0)
-					.setFormat(nvrhi::Format::R32_UINT);
-			}
-		}
+		state.indexBuffer = nvrhi::IndexBufferBinding()
+			.setBuffer(nvrhiIB->GetBuffer())
+			.setOffset(0)
+			.setFormat(nvrhi::Format::R32_UINT);
 
 		// Set viewport
 		state.viewport.addViewport(nvrhi::Viewport(static_cast<float>(m_Context->GetWidth()), static_cast<float>(m_Context->GetHeight())));
 		state.viewport.addScissorRect(nvrhi::Rect(m_Context->GetWidth(), m_Context->GetHeight()));
 
+		// Open command list if not already open
+		cmd->open();
 		cmd->setGraphicsState(state);
 		
-		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiVA->GetIndexBuffer()->GetCount();
+		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
+		cmd->close();
 	}
 
 	void NVRHIRendererAPI::DrawLines(const Ref<VertexArray>& vertexArray, uint32_t vertexCount)
@@ -310,6 +323,25 @@ namespace Wasteland {
 		// Note: DirectX does not support variable line width
 		// This is a no-op for DX11/DX12
 		WL_CORE_TRACE("SetLineWidth({0}) - not supported on DirectX", width);
+	}
+
+	void NVRHIRendererAPI::ClearCachedResources()
+	{
+		WL_PROFILE_FUNCTION();
+
+		WL_CORE_INFO("Clearing cached NVRHI resources");
+
+		// Clear pipeline cache
+		m_PipelineCache.clear();
+
+		// Clear binding set cache
+		m_BindingSetCache.clear();
+
+		// Reset current shader
+		m_CurrentShader = nullptr;
+
+		WL_CORE_INFO("Cleared {0} pipelines and {1} binding sets", 
+			m_PipelineCache.size(), m_BindingSetCache.size());
 	}
 
 }

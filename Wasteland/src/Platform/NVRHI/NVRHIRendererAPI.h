@@ -35,6 +35,9 @@ namespace Wasteland {
 		// Track current shader for pipeline creation
 		void SetCurrentShader(const Ref<Shader>& shader) { m_CurrentShader = shader; }
 
+		// Resource cleanup
+		void ClearCachedResources();
+
 	private:
 		// Pipeline cache key (use pointer addresses)
 		struct PipelineKey

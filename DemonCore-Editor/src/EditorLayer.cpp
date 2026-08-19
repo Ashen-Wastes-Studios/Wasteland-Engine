@@ -592,6 +592,30 @@ namespace Wasteland
 
 			ImGui::Checkbox("Show physics colliders", &m_ShowPhysicsColliders);
 
+			// Rendering API Selection
+			ImGui::Separator();
+			ImGui::Text("Rendering Backend");
+
+			static const char* apiItems[] = {"OpenGL", "DirectX 11", "DirectX 12", "Vulkan"};
+			int currentAPI = (int)Wasteland::RendererAPI::GetAPI() - 1; // -1 because None = 0
+			if (currentAPI < 0) currentAPI = 0;
+			
+			if (ImGui::Combo("Rendering API", &currentAPI, apiItems, IM_ARRAYSIZE(apiItems)))
+			{
+				Wasteland::RendererAPI::API newAPI = (Wasteland::RendererAPI::API)(currentAPI + 1);
+				
+				// Switch renderer API
+				Wasteland::RenderCommand::SetAPI(newAPI);
+				
+				// Switch window context
+				Wasteland::Application::Get().GetWindow().SwitchRendererAPI(newAPI);
+				
+				WL_CORE_INFO("Switched to rendering API: {0}", apiItems[currentAPI]);
+			}
+
+			ImGui::Separator();
+			ImGui::Text("Ray Tracing Settings");
+
 			bool rtEnabled = Wasteland::Renderer3D::IsRayTracingEnabled();
 			if (ImGui::Checkbox("Nova Rendering Pipeline", &rtEnabled))
 			{
