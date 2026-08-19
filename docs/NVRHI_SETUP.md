@@ -192,7 +192,7 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [ ] Image load/store/UAV support
 
 ### Phase 4: API Switching & Polish (TODO)
-- [ ] Editor UI dropdown for API selection
+- [x] Editor UI dropdown for API selection
 - [ ] Persistent API selection (config file)
 - [ ] Runtime API switching with state preservation
 - [ ] Testing and bug fixes
