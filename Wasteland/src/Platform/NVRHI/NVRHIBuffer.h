@@ -49,4 +49,19 @@ namespace Wasteland {
 		uint32_t m_Count;
 	};
 
+	class NVRHIStructuredBuffer
+	{
+	public:
+		NVRHIStructuredBuffer(uint32_t size, uint32_t stride);
+		virtual ~NVRHIStructuredBuffer();
+
+		void SetData(const void* data, uint32_t size);
+		nvrhi::BufferHandle GetBuffer() const { return m_Buffer; }
+
+	private:
+		nvrhi::BufferHandle m_Buffer;
+		uint32_t m_Size;
+		uint32_t m_Stride;
+	};
+
 }

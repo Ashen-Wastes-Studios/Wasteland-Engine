@@ -903,8 +903,18 @@ namespace Wasteland
         }
 
         s_Data.BasicShader->Bind();
-        for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
-            s_Data.TextureSlots[i]->Bind(i);
+        if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
+        {
+            std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
+            for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                activeTexs[i] = s_Data.TextureSlots[i];
+            RenderCommand::SetActiveTextures(activeTexs);
+        }
+        else
+        {
+            for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                s_Data.TextureSlots[i]->Bind(i);
+        }
 
         // Draw Cubes
         if (s_Data.CubeIndexCount)

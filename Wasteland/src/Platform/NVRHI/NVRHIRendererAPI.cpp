@@ -4,6 +4,7 @@
 #include "NVRHIShader.h"
 #include "NVRHIVertexArray.h"
 #include "NVRHIBuffer.h"
+#include "NVRHITexture.h"
 #include "Wasteland/Core/Log.h"
 namespace Wasteland {
 
@@ -61,6 +62,13 @@ namespace Wasteland {
 	{
 		WL_PROFILE_FUNCTION();
 		m_ClearColor = color;
+	}
+
+	void NVRHIRendererAPI::SetActiveTextures(const std::vector<Ref<Texture2D>>& textures)
+	{
+		WL_PROFILE_FUNCTION();
+		m_ActiveTextures = textures;
+		m_BindingSetCache.clear();
 	}
 
 	void NVRHIRendererAPI::Clear()
@@ -208,6 +216,23 @@ namespace Wasteland {
 			setDesc.addItem(nvrhi::BindingSetItem::ConstantBuffer(1, psCB));
 		}
 
+		// Bind active textures (e.g. for Renderer2D texture slots)
+		for (size_t i = 0; i < m_ActiveTextures.size(); i++)
+		{
+			if (m_ActiveTextures[i])
+			{
+				auto nvrhiTex = std::dynamic_pointer_cast<NVRHITexture2D>(m_ActiveTextures[i]);
+				if (nvrhiTex && nvrhiTex->GetTexture())
+				{
+					setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(0, nvrhiTex->GetTexture()).setArrayElement(static_cast<uint32_t>(i)));
+					if (i == 0 && nvrhiTex->GetSampler())
+					{
+						setDesc.addItem(nvrhi::BindingSetItem::Sampler(0, nvrhiTex->GetSampler()));
+					}
+				}
+			}
+		}
+
 		// Create binding set
 		nvrhi::BindingSetHandle bindingSet = device->createBindingSet(setDesc, layout);
 		m_BindingSetCache[shaderPtr] = bindingSet;
@@ -319,10 +344,81 @@ namespace Wasteland {
 	void NVRHIRendererAPI::SetLineWidth(float width)
 	{
 		WL_PROFILE_FUNCTION();
-		
+
 		// Note: DirectX does not support variable line width
 		// This is a no-op for DX11/DX12
 		WL_CORE_TRACE("SetLineWidth({0}) - not supported on DirectX", width);
+	}
+
+	void NVRHIRendererAPI::DispatchCompute(const Ref<Shader>& shader, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+	{
+		WL_PROFILE_FUNCTION();
+
+		if (!m_Context || !shader)
+		{
+			WL_CORE_ERROR("DispatchCompute: Missing context or shader");
+			return;
+		}
+
+		nvrhi::ICommandList* cmd = m_Context->GetCommandList();
+		if (!cmd)
+		{
+			WL_CORE_ERROR("DispatchCompute: No command list available");
+			return;
+		}
+
+		auto nvrhiShader = std::dynamic_pointer_cast<NVRHIShader>(shader);
+		if (!nvrhiShader || !nvrhiShader->GetComputeShader())
+		{
+			WL_CORE_ERROR("DispatchCompute: Invalid shader or missing compute shader");
+			return;
+		}
+
+		nvrhi::IDevice* device = m_Context->GetDevice();
+		if (!device)
+			return;
+
+		const void* shaderPtr = shader.get();
+		auto it = m_ComputePipelineCache.find(shaderPtr);
+		nvrhi::ComputePipelineHandle pipeline;
+		if (it != m_ComputePipelineCache.end())
+		{
+			pipeline = it->second;
+		}
+		else
+		{
+			nvrhi::ComputePipelineDesc desc;
+			desc.CS = nvrhiShader->GetComputeShader();
+			if (nvrhiShader->GetBindingLayout())
+			{
+				desc.addBindingLayout(nvrhiShader->GetBindingLayout());
+			}
+			pipeline = device->createComputePipeline(desc);
+			if (pipeline)
+			{
+				m_ComputePipelineCache[shaderPtr] = pipeline;
+			}
+		}
+
+		if (!pipeline)
+		{
+			WL_CORE_ERROR("DispatchCompute: Failed to create compute pipeline");
+			return;
+		}
+
+		auto bindingSet = GetOrCreateBindingSet(shader);
+
+		nvrhi::ComputeState state;
+		state.pipeline = pipeline;
+		if (bindingSet)
+		{
+			state.bindings.push_back(bindingSet);
+		}
+
+		cmd->open();
+		cmd->setComputeState(state);
+		cmd->dispatch(groupCountX, groupCountY, groupCountZ);
+		cmd->close();
 	}
 
 	void NVRHIRendererAPI::ClearCachedResources()
@@ -331,8 +427,9 @@ namespace Wasteland {
 
 		WL_CORE_INFO("Clearing cached NVRHI resources");
 
-		// Clear pipeline cache
+		// Clear pipeline caches
 		m_PipelineCache.clear();
+		m_ComputePipelineCache.clear();
 
 		// Clear binding set cache
 		m_BindingSetCache.clear();
@@ -340,8 +437,8 @@ namespace Wasteland {
 		// Reset current shader
 		m_CurrentShader = nullptr;
 
-		WL_CORE_INFO("Cleared {0} pipelines and {1} binding sets", 
-			m_PipelineCache.size(), m_BindingSetCache.size());
+		WL_CORE_INFO("Cleared {0} pipelines, {1} compute pipelines, and {2} binding sets",
+			m_PipelineCache.size(), m_ComputePipelineCache.size(), m_BindingSetCache.size());
 	}
 
 }

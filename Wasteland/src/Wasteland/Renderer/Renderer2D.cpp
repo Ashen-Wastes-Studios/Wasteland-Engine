@@ -275,8 +275,18 @@ namespace Wasteland {
 			s_Data.QuadVertexBuffer->SetData(s_Data.QuadVertexBufferBase, dataSize);
 
 			// Bind textures
-			for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
-				s_Data.TextureSlots[i]->Bind(i);
+			if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
+			{
+				std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
+				for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+					activeTexs[i] = s_Data.TextureSlots[i];
+				RenderCommand::SetActiveTextures(activeTexs);
+			}
+			else
+			{
+				for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+					s_Data.TextureSlots[i]->Bind(i);
+			}
 
 			s_Data.QuadShader->Bind();
 			RenderCommand::DrawIndexed(s_Data.QuadVertexArray, s_Data.QuadIndexCount);
@@ -287,6 +297,14 @@ namespace Wasteland {
 		{
 			uint32_t dataSize = (uint32_t)((uint8_t*)s_Data.CircleVertexBufferPtr - (uint8_t*)s_Data.CircleVertexBufferBase);
 			s_Data.CircleVertexBuffer->SetData(s_Data.CircleVertexBufferBase, dataSize);
+
+			if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
+			{
+				std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
+				for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+					activeTexs[i] = s_Data.TextureSlots[i];
+				RenderCommand::SetActiveTextures(activeTexs);
+			}
 
 			s_Data.CircleShader->Bind();
 			RenderCommand::DrawIndexed(s_Data.CircleVertexArray, s_Data.CircleIndexCount);

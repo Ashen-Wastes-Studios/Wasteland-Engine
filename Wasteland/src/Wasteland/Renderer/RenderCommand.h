@@ -42,6 +42,11 @@ namespace Wasteland {
 			s_RendererAPI->SetLineWidth(width);
 		}
 
+		inline static void SetActiveTextures(const std::vector<Ref<Texture2D>>& textures)
+		{
+			s_RendererAPI->SetActiveTextures(textures);
+		}
+
 		static void SetAPI(RendererAPI::API api);
 		
 		inline static RendererAPI* GetRendererAPI()

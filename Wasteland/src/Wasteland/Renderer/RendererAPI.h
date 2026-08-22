@@ -1,8 +1,10 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <vector>
 
 #include "VertexArray.h"
+#include "Texture.h"
 
 namespace Wasteland {
 
@@ -31,6 +33,7 @@ namespace Wasteland {
 		virtual void DrawLines(const Ref<VertexArray>& vertexArray, uint32_t vertexCount) = 0;
 
 		virtual void SetLineWidth(float width) = 0;
+		virtual void SetActiveTextures(const std::vector<Ref<Texture2D>>& textures) {}
 
 		inline static API GetAPI() { return s_API; }
 	private:

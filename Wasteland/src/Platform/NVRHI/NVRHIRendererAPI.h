@@ -24,6 +24,10 @@ namespace Wasteland {
 		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0) override;
 		virtual void DrawLines(const Ref<VertexArray>& vertexArray, uint32_t vertexCount) override;
 		virtual void SetLineWidth(float width) override;
+		virtual void SetActiveTextures(const std::vector<Ref<Texture2D>>& textures) override;
+
+		// Compute dispatch support
+		void DispatchCompute(const Ref<Shader>& shader, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
 
 		// NVRHI-specific methods
 		NVRHIContext* GetContext() const { return m_Context; }
@@ -71,9 +75,14 @@ namespace Wasteland {
 
 		// Pipeline cache
 		std::unordered_map<PipelineKey, nvrhi::GraphicsPipelineHandle, PipelineKeyHash> m_PipelineCache;
-		
+
+		// Compute pipeline cache
+		std::unordered_map<const void*, nvrhi::ComputePipelineHandle> m_ComputePipelineCache;
+
 		// Binding set cache
 		std::unordered_map<const void*, nvrhi::BindingSetHandle> m_BindingSetCache;
+
+		std::vector<Ref<Texture2D>> m_ActiveTextures;
 	};
 
 }

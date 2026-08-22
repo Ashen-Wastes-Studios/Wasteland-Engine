@@ -187,4 +187,60 @@ namespace Wasteland {
 		cmd->writeBuffer(m_Buffer, data, size);
 	}
 
+	/////////////////////////////////////////////////////////////////////////////////////////////
+	// NVRHIStructuredBuffer
+	/////////////////////////////////////////////////////////////////////////////////////////////
+
+	NVRHIStructuredBuffer::NVRHIStructuredBuffer(uint32_t size, uint32_t stride)
+		: m_Size(size), m_Stride(stride)
+	{
+		nvrhi::IDevice* device = GetDevice();
+		if (!device)
+		{
+			WL_CORE_ERROR("NVRHIStructuredBuffer: No NVRHI device available");
+			return;
+		}
+
+		nvrhi::BufferDesc desc;
+		desc.byteSize = size;
+		desc.structStride = stride;
+		desc.canHaveUAVs = true;
+		desc.canHaveRawViews = true;
+		desc.cpuAccess = nvrhi::CpuAccessMode::Write;
+		desc.debugName = "StructuredBuffer";
+
+		m_Buffer = device->createBuffer(desc);
+		if (!m_Buffer)
+		{
+			WL_CORE_ERROR("NVRHIStructuredBuffer: Failed to create buffer");
+		}
+	}
+
+	NVRHIStructuredBuffer::~NVRHIStructuredBuffer()
+	{
+		m_Buffer = nullptr;
+	}
+
+	void NVRHIStructuredBuffer::SetData(const void* data, uint32_t size)
+	{
+		if (!m_Buffer || !data || size == 0)
+			return;
+
+		auto* context = NVRHIRendererAPI::GetCurrentContext();
+		if (!context)
+		{
+			WL_CORE_ERROR("NVRHIStructuredBuffer::SetData: No NVRHI context available");
+			return;
+		}
+
+		nvrhi::ICommandList* cmd = context->GetCommandList();
+		if (!cmd)
+		{
+			WL_CORE_ERROR("NVRHIStructuredBuffer::SetData: No command list available");
+			return;
+		}
+
+		cmd->writeBuffer(m_Buffer, data, size);
+	}
+
 }

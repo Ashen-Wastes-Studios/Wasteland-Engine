@@ -184,11 +184,11 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [x] Convert basic shaders to HLSL (`FlatColor.hlsl`, `Renderer2D_Quad.hlsl`, `Renderer2D_Line.hlsl`, `Renderer2D_Circle.hlsl`, `Renderer3D_Basic.hlsl`)
 - [x] Basic draw calls & pipeline caching via `NVRHIRendererAPI`
 
-### Phase 3: Advanced Features (In Progress / TODO)
-- [ ] Compute shader support
-- [ ] Convert NovaRenderer to HLSL
+### Phase 3: Advanced Features (In Progress)
+- [x] Compute shader support (`DispatchCompute` & compute pipeline caching)
+- [x] SSBO/structured buffer support (`NVRHIStructuredBuffer`)
+- [x] Convert NovaRenderer to HLSL (`Renderer3D_NovaRenderer.hlsl`)
 - [ ] Port Renderer3D full pipeline
-- [ ] SSBO/structured buffer support
 - [ ] Image load/store/UAV support
 
 ### Phase 4: API Switching & Polish (In Progress)
