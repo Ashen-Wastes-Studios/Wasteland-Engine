@@ -194,6 +194,7 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 ### Phase 4: API Switching & Polish (In Progress)
 - [x] Editor UI dropdown for API selection (`ImGuiLayer`)
 - [x] Backend initialization and switching hooks in ImGuiLayer
+- [x] Renderer2D & Renderer3D texture array and sampler binding integration
 - [ ] Persistent API selection (config file)
 - [ ] Runtime API switching with state preservation
 - [ ] Testing and bug fixes
