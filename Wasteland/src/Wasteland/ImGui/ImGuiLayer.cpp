@@ -45,13 +45,13 @@ namespace Wasteland {
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 		//io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+		//io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
 		// Setup Dear ImGui style
 		ImGui::StyleColorsDark();
 
 		ImGuiStyle& style = ImGui::GetStyle();
-		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+		if ((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) && m_CurrentBackend == RendererAPI::API::OpenGL)
 		{
 			style.WindowRounding = 0.0f;
 			style.Colors[ImGuiCol_WindowBg].w = 1.0f;
@@ -70,13 +70,17 @@ namespace Wasteland {
 		GLFWwindow* window = static_cast<GLFWwindow*>(app.GetWindow().GetNativeWindow());
 
 		// Initialize platform bindings (GLFW works for all backends)
-		ImGui_ImplGlfw_InitForOpenGL(window, true);
+		if (api == RendererAPI::API::NVRHI_DX11 || api == RendererAPI::API::NVRHI_DX12)
+			ImGui_ImplGlfw_InitForOther(window, true);
+		else
+			ImGui_ImplGlfw_InitForOpenGL(window, true);
 
 		// Initialize renderer-specific backend
 		switch (api)
 		{
 		case RendererAPI::API::OpenGL:
 			ImGui_ImplOpenGL3_Init("#version 410");
+			m_CurrentBackend = api;
 			WL_CORE_INFO("ImGui: Initialized OpenGL3 backend");
 			break;
 
@@ -84,45 +88,53 @@ namespace Wasteland {
 		{
 			// Get NVRHI context and native DX11 objects
 			auto* graphicsContext = dynamic_cast<NVRHIContext*>(app.GetWindow().GetCurrentContext());
-			if (graphicsContext)
-			{
-				ID3D11Device* device = static_cast<ID3D11Device*>(graphicsContext->GetD3D11Device());
-				ID3D11DeviceContext* context = static_cast<ID3D11DeviceContext*>(graphicsContext->GetD3D11Context());
-				
-				// Validate pointers before using them
-				if (device && context)
-				{
-					// Check if device is still valid by querying interface
-					ID3D11Device* testDevice = nullptr;
-					HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&testDevice));
-					if (SUCCEEDED(hr) && testDevice)
-					{
-						testDevice->Release();
-						ImGui_ImplDX11_Init(device, context);
-						WL_CORE_INFO("ImGui: Initialized DirectX 11 backend");
-					}
-					else
-					{
-						WL_CORE_ERROR("ImGui: DX11 device is invalid or has been released");
-						// Fall back to OpenGL
-						ImGui_ImplOpenGL3_Init("#version 410");
-						m_CurrentBackend = RendererAPI::API::OpenGL;
-						WL_CORE_INFO("ImGui: Fell back to OpenGL3 backend");
-					}
-				}
-				else
-				{
-					WL_CORE_ERROR("ImGui: Failed to get DX11 device/context (null pointers)");
-					// Fall back to OpenGL
-					ImGui_ImplOpenGL3_Init("#version 410");
-					m_CurrentBackend = RendererAPI::API::OpenGL;
-					WL_CORE_INFO("ImGui: Fell back to OpenGL3 backend");
-				}
-			}
-			else
+			if (!graphicsContext)
 			{
 				WL_CORE_ERROR("ImGui: Failed to get NVRHI graphics context");
+				ImGui_ImplGlfw_InitForOpenGL(window, true);
+				ImGui_ImplOpenGL3_Init("#version 410");
+				m_CurrentBackend = RendererAPI::API::OpenGL;
+				break;
 			}
+
+			// Check if context is actually DX11
+			if (graphicsContext->GetAPI() != RendererAPI::API::NVRHI_DX11)
+			{
+				WL_CORE_ERROR("ImGui: Graphics context is not DX11 (API: {0})", (int)graphicsContext->GetAPI());
+				ImGui_ImplGlfw_InitForOpenGL(window, true);
+				ImGui_ImplOpenGL3_Init("#version 410");
+				m_CurrentBackend = RendererAPI::API::OpenGL;
+				break;
+			}
+
+			ID3D11Device* device = static_cast<ID3D11Device*>(graphicsContext->GetD3D11Device());
+			ID3D11DeviceContext* context = static_cast<ID3D11DeviceContext*>(graphicsContext->GetD3D11Context());
+
+			// Validate pointers before using them
+			if (!device || !context)
+			{
+				WL_CORE_ERROR("ImGui: DX11 device or context is null");
+				ImGui_ImplGlfw_InitForOpenGL(window, true);
+				ImGui_ImplOpenGL3_Init("#version 410");
+				m_CurrentBackend = RendererAPI::API::OpenGL;
+				break;
+			}
+
+			// Check if device is still valid using GetDeviceRemovedReason
+			HRESULT removedReason = device->GetDeviceRemovedReason();
+			if (FAILED(removedReason))
+			{
+				WL_CORE_ERROR("ImGui: DX11 device has been removed (HRESULT: {0:X})", (uint32_t)removedReason);
+				ImGui_ImplGlfw_InitForOpenGL(window, true);
+				ImGui_ImplOpenGL3_Init("#version 410");
+				m_CurrentBackend = RendererAPI::API::OpenGL;
+				break;
+			}
+
+			// Device is valid, initialize ImGui DX11
+			ImGui_ImplDX11_Init(device, context);
+			m_CurrentBackend = api;
+			WL_CORE_INFO("ImGui: Initialized DirectX 11 backend");
 			break;
 		}
 
@@ -141,8 +153,9 @@ namespace Wasteland {
 				if (device && commandQueue && srvHeap && cpuHandle && gpuHandle)
 				{
 					// DX12 needs the number of frames in flight and descriptor heap for font
-					ImGui_ImplDX12_Init(device, 2, DXGI_FORMAT_R8G8B8A8_UNORM, srvHeap, 
+					ImGui_ImplDX12_Init(device, 2, DXGI_FORMAT_R8G8B8A8_UNORM, srvHeap,
 						*cpuHandle, *gpuHandle);
+					m_CurrentBackend = api;
 					WL_CORE_INFO("ImGui: Initialized DirectX 12 backend");
 				}
 				else
@@ -157,8 +170,6 @@ namespace Wasteland {
 			WL_CORE_ERROR("ImGui: Unsupported renderer API");
 			break;
 		}
-
-		m_CurrentBackend = api;
 	}
 
 	void ImGuiLayer::ShutdownBackend()
@@ -216,17 +227,77 @@ namespace Wasteland {
 
 		WL_CORE_INFO("ImGui: Performing backend switch to {0}", (int)api);
 
-		// Shutdown current backend
-		ShutdownBackend();
+		// Shutdown renderer-specific backend only, keeping ImGui platform (GLFW) initialized
+		switch (m_CurrentBackend)
+		{
+		case RendererAPI::API::OpenGL:
+			ImGui_ImplOpenGL3_Shutdown();
+			break;
+		case RendererAPI::API::NVRHI_DX11:
+			ImGui_ImplDX11_Shutdown();
+			break;
+		case RendererAPI::API::NVRHI_DX12:
+			ImGui_ImplDX12_Shutdown();
+			break;
+		default:
+			break;
+		}
+
+		Application& app = Application::Get();
+		GLFWwindow* window = static_cast<GLFWwindow*>(app.GetWindow().GetNativeWindow());
+
+		// Update GLFW client API state or re-init platform bindings safely
+		ImGui_ImplGlfw_Shutdown();
+		if (api == RendererAPI::API::NVRHI_DX11 || api == RendererAPI::API::NVRHI_DX12)
+			ImGui_ImplGlfw_InitForOther(window, true);
+		else
+			ImGui_ImplGlfw_InitForOpenGL(window, true);
 
 		// Clear and rebuild font atlas for the new backend
 		ImGuiIO& io = ImGui::GetIO();
-		
-		// Clear font textures but keep font data
 		io.Fonts->ClearTexData();
-		
-		// Initialize new backend (this will create new font texture)
-		InitBackend(api);
+
+		// Initialize new renderer backend
+		switch (api)
+		{
+		case RendererAPI::API::OpenGL:
+			ImGui_ImplOpenGL3_Init("#version 410");
+			m_CurrentBackend = api;
+			WL_CORE_INFO("ImGui: Switched to OpenGL3 backend");
+			break;
+
+		case RendererAPI::API::NVRHI_DX11:
+		{
+			auto* graphicsContext = dynamic_cast<NVRHIContext*>(app.GetWindow().GetCurrentContext());
+			if (graphicsContext && graphicsContext->GetAPI() == RendererAPI::API::NVRHI_DX11)
+			{
+				ID3D11Device* device = static_cast<ID3D11Device*>(graphicsContext->GetD3D11Device());
+				ID3D11DeviceContext* context = static_cast<ID3D11DeviceContext*>(graphicsContext->GetD3D11Context());
+				if (device && context)
+				{
+					ImGui_ImplDX11_Init(device, context);
+					m_CurrentBackend = api;
+					WL_CORE_INFO("ImGui: Switched to DirectX 11 backend");
+					break;
+				}
+			}
+			WL_CORE_ERROR("ImGui: Failed to switch to DX11 backend, falling back to OpenGL");
+			ImGui_ImplGlfw_InitForOpenGL(window, true);
+			ImGui_ImplOpenGL3_Init("#version 410");
+			m_CurrentBackend = RendererAPI::API::OpenGL;
+			break;
+		}
+
+		case RendererAPI::API::NVRHI_DX12:
+			WL_CORE_WARN("ImGui: DX12 backend switching not fully implemented");
+			break;
+
+		default:
+			ImGui_ImplGlfw_InitForOpenGL(window, true);
+			ImGui_ImplOpenGL3_Init("#version 410");
+			m_CurrentBackend = RendererAPI::API::OpenGL;
+			break;
+		}
 	}
 
 	void ImGuiLayer::OnDetach()
@@ -330,7 +401,7 @@ namespace Wasteland {
 			break;
 		}
 
-		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+		if ((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) && m_CurrentBackend == RendererAPI::API::OpenGL)
 		{
 			GLFWwindow* backup_current_context = glfwGetCurrentContext();
 			ImGui::UpdatePlatformWindows();

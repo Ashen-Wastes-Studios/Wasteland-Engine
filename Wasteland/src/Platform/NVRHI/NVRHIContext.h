@@ -39,6 +39,9 @@ namespace Wasteland {
 		void* GetD3D12ImGuiSRVHeapCPU() const { return m_D3D12ImGuiSRVHeapCPU; }
 		void* GetD3D12ImGuiSRVHeapGPU() const { return m_D3D12ImGuiSRVHeapGPU; }
 
+		// Get the renderer API type
+		RendererAPI::API GetAPI() const { return m_API; }
+
 		void Resize(uint32_t width, uint32_t height);
 
 	private:

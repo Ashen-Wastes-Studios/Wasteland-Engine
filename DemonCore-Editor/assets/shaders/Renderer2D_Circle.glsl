@@ -1,7 +1,7 @@
-// Renderer2D Circle Shader
+// Renderer2D Circle Shader (OpenGL & Vulkan Compatible)
 
 #type vertex
-#version 450
+#version 450 core
 
 layout(location = 0) in vec3 a_WorldPosition;
 layout(location = 1) in vec3 a_LocalPosition;
@@ -12,11 +12,11 @@ layout(location = 5) in int a_EntityID;
 
 uniform mat4 u_ViewProjection;
 
-out vec3 v_LocalPosition;
-out vec4 v_Color;
-out float v_Thickness;
-out float v_Fade;
-out flat int v_EntityID;
+layout(location = 0) out vec3 v_LocalPosition;
+layout(location = 1) out vec4 v_Color;
+layout(location = 2) out float v_Thickness;
+layout(location = 3) out float v_Fade;
+layout(location = 4) out flat int v_EntityID;
 
 void main()
 {
@@ -29,20 +29,19 @@ void main()
 }
 
 #type fragment
-#version 450
+#version 450 core
 
 layout(location = 0) out vec4 color;
 layout(location = 1) out int color2;
 
-in vec3 v_LocalPosition;
-in vec4 v_Color;
-in float v_Thickness;
-in float v_Fade;
-in flat int v_EntityID;
+layout(location = 0) in vec3 v_LocalPosition;
+layout(location = 1) in vec4 v_Color;
+layout(location = 2) in float v_Thickness;
+layout(location = 3) in float v_Fade;
+layout(location = 4) in flat int v_EntityID;
 
 void main()
 {
-    // Calculate distance and fill circle with white
     float distance = 1.0 - length(v_LocalPosition);
     float circle = smoothstep(0.0, v_Fade, distance);
     circle *= smoothstep(v_Thickness + v_Fade, v_Thickness, distance);
@@ -50,7 +49,6 @@ void main()
     if (circle == 0.0)
         discard;
 
-    // Set output color
     color = v_Color;
     color.a *= circle;
 

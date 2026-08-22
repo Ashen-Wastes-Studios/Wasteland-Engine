@@ -63,10 +63,10 @@ SamplerState u_Sampler : register(s0);
 PSOutput main(PSInput input)
 {
     PSOutput output;
-    
-    int texIndex = int(input.TexIndex);
+
+    int texIndex = clamp(int(input.TexIndex), 0, 31);
     output.Color = u_Textures[texIndex].Sample(u_Sampler, input.TexCoord * input.TilingFactor) * input.Color;
     output.EntityID = input.EntityID;
-    
+
     return output;
 }

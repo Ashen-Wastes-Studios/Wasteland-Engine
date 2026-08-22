@@ -68,11 +68,11 @@ SamplerState u_Sampler : register(s0);
 PSOutput main(PSInput input)
 {
     PSOutput output;
-    
+
     float4 texColor = input.Color;
 
-    // Dynamic texture array indexing
-    int texIndex = int(input.TexIndex);
+    // Dynamic texture array indexing with bounds clamping
+    int texIndex = clamp(int(input.TexIndex), 0, 31);
     texColor *= u_Textures[texIndex].Sample(u_Sampler, input.TexCoord * input.TilingFactor);
 
     // Simple default light calculation (directional downward-angled light source)
@@ -86,6 +86,6 @@ PSOutput main(PSInput input)
 
     output.Color = float4(texColor.rgb * lightFactor, texColor.a);
     output.EntityID = input.EntityID;
-    
+
     return output;
 }

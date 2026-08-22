@@ -1,4 +1,4 @@
-// Renderer3D Unified Basic Shader with Global Illumination
+// Renderer3D Unified Basic Shader with Global Illumination (OpenGL & Vulkan Compatible)
 // Handles textures, coloring, custom tiling, normals, ambient occlusion, and global illumination.
 
 #type vertex
@@ -99,11 +99,9 @@ void main()
         case 31: texColor *= texture(u_Textures[31], Input.TexCoord * Input.TilingFactor); break;
     }
 
-    // Simple default light calculation setup (directional downward-angled light source)
-    vec3 lightDir = normalize(vec3(0.3, 1.0, 0.4)); 
+    vec3 lightDir = normalize(vec3(0.3, 1.0, 0.4));
     vec3 norm = normalize(Input.Normal);
-    
-    // Combine diffuse lighting element with ambient base factor
+
     float diffuseIntensity = max(dot(norm, lightDir), 0.0);
     float ambientIntensity = 0.2;
     float lightFactor = ambientIntensity + diffuseIntensity;

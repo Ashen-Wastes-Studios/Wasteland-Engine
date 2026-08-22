@@ -174,25 +174,26 @@ if (currentAPI == Wasteland::RendererAPI::API::NVRHI_DX12)
 - [x] RenderCommand::SetAPI() implemented
 - [x] premake5.lua updated with include paths
 
-### Phase 2: Core Rendering (TODO)
-- [x] Implement NVRHIContext (device creation, swapchain)
-- [x] Implement NVRHIBuffer
+### Phase 2: Core Rendering ✅
+- [x] Implement NVRHIContext (device creation, swapchain for DX11/DX12)
+- [x] Implement NVRHIBuffer (vertex, index, and constant buffers)
 - [x] Implement NVRHITexture
-- [x] Implement NVRHIShader
-- [x] Implement NVRHIVertexArray
+- [x] Implement NVRHIShader (HLSL loading, reflection, and pipeline binding)
+- [x] Implement NVRHIVertexArray and input layouts
 - [x] Implement NVRHIFramebuffer
-- [x] Convert basic shaders to HLSL
-- [ ] Get Renderer2D working
+- [x] Convert basic shaders to HLSL (`FlatColor.hlsl`, `Renderer2D_Quad.hlsl`, `Renderer2D_Line.hlsl`, `Renderer2D_Circle.hlsl`, `Renderer3D_Basic.hlsl`)
+- [x] Basic draw calls & pipeline caching via `NVRHIRendererAPI`
 
-### Phase 3: Advanced Features (TODO)
+### Phase 3: Advanced Features (In Progress / TODO)
 - [ ] Compute shader support
 - [ ] Convert NovaRenderer to HLSL
-- [ ] Port Renderer3D
+- [ ] Port Renderer3D full pipeline
 - [ ] SSBO/structured buffer support
 - [ ] Image load/store/UAV support
 
-### Phase 4: API Switching & Polish (TODO)
-- [x] Editor UI dropdown for API selection
+### Phase 4: API Switching & Polish (In Progress)
+- [x] Editor UI dropdown for API selection (`ImGuiLayer`)
+- [x] Backend initialization and switching hooks in ImGuiLayer
 - [ ] Persistent API selection (config file)
 - [ ] Runtime API switching with state preservation
 - [ ] Testing and bug fixes

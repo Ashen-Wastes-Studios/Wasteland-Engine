@@ -335,7 +335,10 @@ namespace Wasteland {
 		if (m_API == RendererAPI::API::NVRHI_DX11)
 		{
 			IDXGISwapChain* swapChain = static_cast<IDXGISwapChain*>(m_DXGISwapChain);
-			
+
+			// Present once to ensure swap chain is in valid state for flip model
+			swapChain->Present(0, 0);
+
 			// Get all backbuffers first
 			std::vector<ID3D11Texture2D*> nativeBuffers(bufferCount, nullptr);
 			for (uint32_t i = 0; i < bufferCount; i++)

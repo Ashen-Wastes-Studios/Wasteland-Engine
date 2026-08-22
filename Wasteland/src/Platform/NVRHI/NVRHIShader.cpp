@@ -31,7 +31,23 @@ namespace Wasteland {
 		auto count = lastDot == std::string::npos ? filepath.size() - lastSlash : lastDot - lastSlash;
 		m_Name = filepath.substr(lastSlash, count);
 
-		std::string source = ReadFile(filepath);
+		std::string path = filepath;
+		auto* context = NVRHIRendererAPI::GetCurrentContext();
+		if (context && context->GetAPI() != RendererAPI::API::NVRHI_Vulkan)
+		{
+			auto dot = path.rfind('.');
+			if (dot != std::string::npos && path.substr(dot) == ".glsl")
+			{
+				std::string hlslPath = path.substr(0, dot) + ".hlsl";
+				std::ifstream f(hlslPath);
+				if (f.good())
+				{
+					path = hlslPath;
+				}
+			}
+		}
+
+		std::string source = ReadFile(path);
 		auto shaderSources = PreProcess(source);
 
 		if (shaderSources.find("vertex") != shaderSources.end() && 

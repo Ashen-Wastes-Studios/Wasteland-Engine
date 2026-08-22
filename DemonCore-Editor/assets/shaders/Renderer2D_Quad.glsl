@@ -1,7 +1,7 @@
-// Renderer2D Quad Shader
+// Renderer2D Quad Shader (OpenGL & Vulkan Compatible)
 
 #type vertex
-#version 450
+#version 450 core
 
 layout(location = 0) in vec3 a_Position;
 layout(location = 1) in vec4 a_Color;
@@ -12,11 +12,11 @@ layout(location = 5) in int a_EntityID;
 
 uniform mat4 u_ViewProjection;
 
-out vec2 v_TexCoord;
-out vec4 v_Color;
-out float v_TexIndex;
-out float v_TilingFactor;
-out flat int v_EntityID;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec4 v_Color;
+layout(location = 2) out float v_TexIndex;
+layout(location = 3) out float v_TilingFactor;
+layout(location = 4) out flat int v_EntityID;
 
 void main()
 {
@@ -29,22 +29,21 @@ void main()
 }
 
 #type fragment
-#version 450
+#version 450 core
 
 layout(location = 0) out vec4 color;
 layout(location = 1) out int color2;
 
-in vec4 v_Color;
-in vec2 v_TexCoord;
-in float v_TexIndex;
-in float v_TilingFactor;
-in flat int v_EntityID;
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in vec4 v_Color;
+layout(location = 2) in float v_TexIndex;
+layout(location = 3) in float v_TilingFactor;
+layout(location = 4) in flat int v_EntityID;
 
-uniform sampler2D u_Texture[32];
+layout(binding = 0) uniform sampler2D u_Texture[32];
 
 void main()
 {
 	color = texture(u_Texture[int(v_TexIndex)], v_TexCoord * v_TilingFactor) * v_Color;
-
-	color2 = v_EntityID; 
+	color2 = v_EntityID;
 }
