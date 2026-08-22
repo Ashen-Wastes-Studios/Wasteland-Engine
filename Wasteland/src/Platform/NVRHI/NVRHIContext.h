@@ -62,12 +62,9 @@ namespace Wasteland {
 		std::vector<nvrhi::FramebufferHandle> m_BackBufferFramebuffers;
 		uint32_t m_CurrentBackBufferIndex = 0;
 
-		// DX11 native objects (when using DX11)
+		// DX11 / DX12 native objects
 		void* m_D3D11Device = nullptr;
 		void* m_D3D11Context = nullptr;
-		void* m_DXGISwapChain = nullptr;
-
-		// DX12 native objects (when using DX12)
 		void* m_D3D12Device = nullptr;
 		void* m_D3D12CommandQueue = nullptr;
 		void* m_DXGISwapChain3 = nullptr;

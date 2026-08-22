@@ -33,15 +33,14 @@ namespace Wasteland {
 		m_Device = nullptr;
 
 		// Release native DX objects
+		if (m_DXGISwapChain3) static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->Release();
 		if (m_API == RendererAPI::API::NVRHI_DX11)
 		{
-			if (m_DXGISwapChain) static_cast<IDXGISwapChain*>(m_DXGISwapChain)->Release();
 			if (m_D3D11Context) static_cast<ID3D11DeviceContext*>(m_D3D11Context)->Release();
 			if (m_D3D11Device) static_cast<ID3D11Device*>(m_D3D11Device)->Release();
 		}
 		else if (m_API == RendererAPI::API::NVRHI_DX12)
 		{
-			if (m_DXGISwapChain3) static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->Release();
 			if (m_D3D12CommandQueue) static_cast<ID3D12CommandQueue*>(m_D3D12CommandQueue)->Release();
 			if (m_D3D12Device) static_cast<ID3D12Device*>(m_D3D12Device)->Release();
 		}
@@ -279,26 +278,21 @@ namespace Wasteland {
 			return;
 		}
 
-		if (m_API == RendererAPI::API::NVRHI_DX12)
+		IDXGISwapChain3* swapChain3 = nullptr;
+		hr = swapChain1->QueryInterface(IID_PPV_ARGS(&swapChain3));
+		if (FAILED(hr) || !swapChain3)
 		{
-			IDXGISwapChain3* swapChain3 = nullptr;
-			hr = swapChain1->QueryInterface(IID_PPV_ARGS(&swapChain3));
-			if (FAILED(hr) || !swapChain3)
-			{
-				WL_CORE_ERROR("CreateSwapChain: Failed to query IDXGISwapChain3 (HRESULT: {0})", hr);
-				swapChain1->Release();
-				factory->Release();
-				return;
-			}
+			WL_CORE_ERROR("CreateSwapChain: Failed to query IDXGISwapChain3 (HRESULT: {0})", hr);
 			swapChain1->Release();
-			m_DXGISwapChain3 = swapChain3;
+			factory->Release();
+			return;
+		}
+		swapChain1->Release();
+		m_DXGISwapChain3 = swapChain3;
+		if (m_API == RendererAPI::API::NVRHI_DX12)
 			WL_CORE_INFO("Created DX12 swap chain");
-		}
-		else if (m_API == RendererAPI::API::NVRHI_DX11)
-		{
-			m_DXGISwapChain = swapChain1;
+		else
 			WL_CORE_INFO("Created DX11 swap chain");
-		}
 
 		factory->Release();
 
@@ -316,14 +310,9 @@ namespace Wasteland {
 		m_BackBufferFramebuffers.clear();
 
 		// Check if swap chain exists
-		if (m_API == RendererAPI::API::NVRHI_DX11 && !m_DXGISwapChain)
+		if ((m_API == RendererAPI::API::NVRHI_DX11 || m_API == RendererAPI::API::NVRHI_DX12) && !m_DXGISwapChain3)
 		{
-			WL_CORE_ERROR("CreateBackBufferFramebuffers: DX11 swap chain is null");
-			return;
-		}
-		else if (m_API == RendererAPI::API::NVRHI_DX12 && !m_DXGISwapChain3)
-		{
-			WL_CORE_ERROR("CreateBackBufferFramebuffers: DX12 swap chain is null");
+			WL_CORE_ERROR("CreateBackBufferFramebuffers: Swap chain is null");
 			return;
 		}
 
@@ -334,10 +323,7 @@ namespace Wasteland {
 
 		if (m_API == RendererAPI::API::NVRHI_DX11)
 		{
-			IDXGISwapChain* swapChain = static_cast<IDXGISwapChain*>(m_DXGISwapChain);
-
-			// Present once to ensure swap chain is in valid state for flip model
-			swapChain->Present(0, 0);
+			IDXGISwapChain3* swapChain = static_cast<IDXGISwapChain3*>(m_DXGISwapChain3);
 
 			// Get all backbuffers first
 			std::vector<ID3D11Texture2D*> nativeBuffers(bufferCount, nullptr);
@@ -356,7 +342,7 @@ namespace Wasteland {
 					return;
 				}
 			}
-			
+
 			// Now create NVRHI textures and framebuffers
 			for (uint32_t i = 0; i < bufferCount; i++)
 			{
@@ -370,8 +356,8 @@ namespace Wasteland {
 				// AddRef for NVRHI, then release our reference
 				nativeBuffers[i]->AddRef();
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
-					nvrhi::ObjectTypes::D3D11_Resource, 
-					nativeBuffers[i], 
+					nvrhi::ObjectTypes::D3D11_Resource,
+					nativeBuffers[i],
 					desc);
 				nativeBuffers[i]->Release();
 
@@ -380,11 +366,13 @@ namespace Wasteland {
 				fbDesc.addColorAttachment(m_BackBuffers[i]);
 				m_BackBufferFramebuffers[i] = m_Device->createFramebuffer(fbDesc);
 			}
+
+			m_CurrentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
 		}
 		else if (m_API == RendererAPI::API::NVRHI_DX12)
 		{
 			IDXGISwapChain3* swapChain = static_cast<IDXGISwapChain3*>(m_DXGISwapChain3);
-			
+
 			// Get all backbuffers first
 			std::vector<ID3D12Resource*> nativeBuffers(bufferCount, nullptr);
 			for (uint32_t i = 0; i < bufferCount; i++)
@@ -402,7 +390,7 @@ namespace Wasteland {
 					return;
 				}
 			}
-			
+
 			// Now create NVRHI textures and framebuffers
 			for (uint32_t i = 0; i < bufferCount; i++)
 			{
@@ -416,8 +404,8 @@ namespace Wasteland {
 				// AddRef for NVRHI, then release our reference
 				nativeBuffers[i]->AddRef();
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
-					nvrhi::ObjectTypes::D3D12_Resource, 
-					nativeBuffers[i], 
+					nvrhi::ObjectTypes::D3D12_Resource,
+					nativeBuffers[i],
 					desc);
 				nativeBuffers[i]->Release();
 
@@ -426,6 +414,8 @@ namespace Wasteland {
 				fbDesc.addColorAttachment(m_BackBuffers[i]);
 				m_BackBufferFramebuffers[i] = m_Device->createFramebuffer(fbDesc);
 			}
+
+			m_CurrentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
 		}
 
 		WL_CORE_INFO("Created {0} backbuffer framebuffers", bufferCount);
@@ -449,11 +439,7 @@ namespace Wasteland {
 	{
 		WL_PROFILE_FUNCTION();
 
-		if (m_API == RendererAPI::API::NVRHI_DX11)
-		{
-			static_cast<IDXGISwapChain*>(m_DXGISwapChain)->Present(1, 0);
-		}
-		else if (m_API == RendererAPI::API::NVRHI_DX12)
+		if (m_API == RendererAPI::API::NVRHI_DX11 || m_API == RendererAPI::API::NVRHI_DX12)
 		{
 			IDXGISwapChain3* swapChain = static_cast<IDXGISwapChain3*>(m_DXGISwapChain3);
 			swapChain->Present(1, 0);
@@ -476,12 +462,7 @@ namespace Wasteland {
 		m_BackBufferFramebuffers.clear();
 
 		// Resize swap chain
-		if (m_API == RendererAPI::API::NVRHI_DX11)
-		{
-			static_cast<IDXGISwapChain*>(m_DXGISwapChain)->ResizeBuffers(
-				2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
-		}
-		else if (m_API == RendererAPI::API::NVRHI_DX12)
+		if (m_API == RendererAPI::API::NVRHI_DX11 || m_API == RendererAPI::API::NVRHI_DX12)
 		{
 			static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->ResizeBuffers(
 				2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
