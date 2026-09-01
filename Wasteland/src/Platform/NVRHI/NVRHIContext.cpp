@@ -5,12 +5,13 @@
 
 // Vulkan headers must be included before GLFW for glfwCreateWindowSurface
 // Enable dynamic Vulkan dispatch for proper device function loading
+// NOTE: The storage for the default dispatcher is defined in VulkanDispatch.cpp (single TU).
+// Do NOT define VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE here — duplicate storage causes
+// the init in CreateDeviceVulkan to affect a different TU's dispatcher than NVRHI uses, leading to
+// null device function pointers and driver crashes in nvrhi::vulkan::Queue::Queue.
 #define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan.hpp>
-
-// Define the Vulkan dynamic dispatcher storage - required for device-level function loading
-VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -581,56 +582,101 @@ namespace Wasteland
 			queueCreateInfos.push_back(queueCreateInfo);
 		}
 
-		// Device extensions
+		// Device extensions — swapchain is always required
 		std::vector<const char *> deviceExtensions = {
 			VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-		bool timelineSemaphoreSupported = false;
-		uint32_t extensionCount = 0;
-		vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
-		std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-		vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, availableExtensions.data());
-		for (const auto &extension : availableExtensions)
-		{
-			if (strcmp(extension.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0)
-			{
-				timelineSemaphoreSupported = true;
-				break;
-			}
-		}
-		if (timelineSemaphoreSupported)
-		{
-			deviceExtensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-		}
-
-		// Device features
+		// --- Timeline semaphore detection (required by NVRHI) ---
+		// In Vulkan 1.2+ timeline semaphores are core (VkPhysicalDeviceVulkan12Features::timelineSemaphore).
+		// In Vulkan 1.1 they are exposed via VK_KHR_timeline_semaphore + VkPhysicalDeviceTimelineSemaphoreFeatures.
+		// The old code only checked the KHR extension string, so on 1.2+ drivers where the extension is not
+		// enumerated (promoted to core) it incorrectly concluded timeline semaphores were unavailable and created
+		// the device without the feature — nvrhi::vulkan::Queue then crashed in nvoglv64.dll when creating its
+		// internal timeline semaphore.
 		VkPhysicalDeviceFeatures deviceFeatures = {};
-		VkPhysicalDeviceTimelineSemaphoreFeatures timelineSemaphoreFeatures = {};
-		timelineSemaphoreFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-		if (timelineSemaphoreSupported)
+		bool timelineSemaphoreSupported = false;
+		VkPhysicalDeviceVulkan12Features vulkan12FeaturesQuery = {};
+		vulkan12FeaturesQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeaturesQueryKHR = {};
+		timelineFeaturesQueryKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+
+		// Core 1.2 path — works even when KHR extension is not reported
 		{
 			VkPhysicalDeviceFeatures2 features2 = {};
 			features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-			features2.pNext = &timelineSemaphoreFeatures;
+			features2.pNext = &vulkan12FeaturesQuery;
 			vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
-			if (!timelineSemaphoreFeatures.timelineSemaphore)
+			if (vulkan12FeaturesQuery.timelineSemaphore)
+				timelineSemaphoreSupported = true;
+		}
+
+		bool hasTimelineSemaphoreExtension = false;
+		if (!timelineSemaphoreSupported)
+		{
+			uint32_t extensionCount = 0;
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+			std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, availableExtensions.data());
+			for (const auto &ext : availableExtensions)
 			{
-				timelineSemaphoreSupported = false;
+				if (strcmp(ext.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0)
+				{
+					hasTimelineSemaphoreExtension = true;
+					break;
+				}
 			}
+			if (hasTimelineSemaphoreExtension)
+			{
+				VkPhysicalDeviceFeatures2 features2 = {};
+				features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+				features2.pNext = &timelineFeaturesQueryKHR;
+				vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+				if (timelineFeaturesQueryKHR.timelineSemaphore)
+					timelineSemaphoreSupported = true;
+			}
+		}
+
+		// Prepare the pNext chain to *enable* timeline semaphores on device creation.
+		// NVRHI's Queue constructor unconditionally creates a timeline semaphore — if the feature
+		// is not enabled, context.device.createSemaphore() crashes inside nvoglv64.dll.
+		VkPhysicalDeviceVulkan12Features enabledVulkan12Features = {};
+		VkPhysicalDeviceTimelineSemaphoreFeatures enabledTimelineFeaturesKHR = {};
+		void *deviceCreatePNext = nullptr;
+
+		if (timelineSemaphoreSupported)
+		{
+			if (vulkan12FeaturesQuery.timelineSemaphore)
+			{
+				// Core path — no extension needed, enable via Vulkan12Features
+				enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+				enabledVulkan12Features.timelineSemaphore = VK_TRUE;
+				deviceCreatePNext = &enabledVulkan12Features;
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (core 1.2)");
+			}
+			else
+			{
+				// KHR extension path — needs extension string + TimelineSemaphoreFeatures
+				enabledTimelineFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+				enabledTimelineFeaturesKHR.timelineSemaphore = VK_TRUE;
+				deviceCreatePNext = &enabledTimelineFeaturesKHR;
+				deviceExtensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+				WL_CORE_INFO("Enabling timeline semaphores via VK_KHR_timeline_semaphore extension");
+			}
+		}
+		else
+		{
+			WL_CORE_ERROR("Vulkan device does not support timeline semaphores — NVRHI Vulkan backend requires it. Device creation will proceed but NVRHI Queue creation will crash.");
 		}
 
 		// Device create info
 		VkDeviceCreateInfo createInfo = {};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+		createInfo.pNext = deviceCreatePNext;
 		createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
 		createInfo.pQueueCreateInfos = queueCreateInfos.data();
 		createInfo.pEnabledFeatures = &deviceFeatures;
 		createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
 		createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-		if (timelineSemaphoreSupported)
-		{
-			createInfo.pNext = &timelineSemaphoreFeatures;
-		}
 
 		// Validation layers (legacy, but supported by some implementations)
 		std::vector<const char *> validationLayers;
