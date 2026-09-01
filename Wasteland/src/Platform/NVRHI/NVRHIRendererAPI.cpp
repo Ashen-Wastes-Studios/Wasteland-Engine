@@ -106,11 +106,22 @@ namespace Wasteland
 			return;
 		}
 
-		// Open command list, clear, and close
-		cmd->open();
+	// Batched frame: BeginFrame() already opened the command list, ExecuteNVRHICommandList() will close+execute.
+		// Do NOT open/close here — per-draw open/close overwrites m_ActiveCommandList and loses previous draws.
+		if (!m_Context->IsCommandListOpen())
+		{
+			WL_CORE_WARN("Clear: Command list not open (missing BeginFrame), recording with transient open/close");
+			cmd->open();
+			cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
+								   nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
+			cmd->close();
+			// Transient: execute immediately since we are outside batched frame
+			if (auto *dev = m_Context->GetDevice())
+				dev->executeCommandList(cmd);
+			return;
+		}
 		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
 							   nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
-		cmd->close();
 	}
 
 	nvrhi::GraphicsPipelineHandle NVRHIRendererAPI::GetOrCreatePipeline(const Ref<Shader> &shader, const Ref<VertexArray> &vertexArray)
@@ -334,13 +345,23 @@ namespace Wasteland
 		state.viewport.addViewport(nvrhi::Viewport(static_cast<float>(m_Context->GetWidth()), static_cast<float>(m_Context->GetHeight())));
 		state.viewport.addScissorRect(nvrhi::Rect(m_Context->GetWidth(), m_Context->GetHeight()));
 
-		// Open command list if not already open
-		cmd->open();
+		// Batched frame: BeginFrame already opened, Execute will close+execute.
+		// Fallback for outside-frame calls (e.g. init) uses transient open/close+execute.
+		if (!m_Context->IsCommandListOpen())
+		{
+			WL_CORE_WARN("DrawIndexed: Command list not open, using transient open/close");
+			cmd->open();
+			cmd->setGraphicsState(state);
+			uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
+			cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
+			cmd->close();
+			if (auto *dev = m_Context->GetDevice())
+				dev->executeCommandList(cmd);
+			return;
+		}
 		cmd->setGraphicsState(state);
-
 		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
-		cmd->close();
 	}
 
 	void NVRHIRendererAPI::DrawLines(const Ref<VertexArray> &vertexArray, uint32_t vertexCount)
@@ -428,10 +449,19 @@ namespace Wasteland
 			state.bindings.push_back(bindingSet);
 		}
 
-		cmd->open();
+		if (!m_Context->IsCommandListOpen())
+		{
+			WL_CORE_WARN("DispatchCompute: Command list not open, using transient");
+			cmd->open();
+			cmd->setComputeState(state);
+			cmd->dispatch(groupCountX, groupCountY, groupCountZ);
+			cmd->close();
+			if (auto *dev = m_Context->GetDevice())
+				dev->executeCommandList(cmd);
+			return;
+		}
 		cmd->setComputeState(state);
 		cmd->dispatch(groupCountX, groupCountY, groupCountZ);
-		cmd->close();
 	}
 
 	void NVRHIRendererAPI::ClearCachedResources()

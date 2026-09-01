@@ -59,17 +59,28 @@ namespace Wasteland
 			return;
 		}
 
+		if (m_Specification.Width == 0 || m_Specification.Height == 0)
+		{
+			WL_CORE_WARN("NVRHIFramebuffer: Skipping Invalidate with zero size ({0}x{1})", m_Specification.Width, m_Specification.Height);
+			return;
+		}
+
 		// Clear old resources
 		m_Framebuffer = nullptr;
 		m_ColorTextures.clear();
 		m_DepthTexture = nullptr;
 
-		// Create color attachments
+		// Create attachments
 		for (const auto &attachmentSpec : m_Specification.Attachments.Attachments)
 		{
 			if (attachmentSpec.TextureFormat == FramebufferTextureFormat::DEPTH24STENCIL8)
 			{
 				// Create depth-stencil texture
+				// D3D11/D3D12 note: A depth texture that is both DSV and SRV must be typeless
+				// (R24G8_TYPELESS + R24_UNORM_X8_TYPELESS / D24_UNORM_S8_UINT). NVRHI only uses
+				// the typeless resource format when desc.isTypeless == true. Here we do NOT
+				// need to sample depth in the editor viewport, so keep it DSV-only to avoid
+				// the E_INVALIDARG from CreateTexture2D (D24 + BIND_SHADER_RESOURCE without typeless).
 				nvrhi::TextureDesc desc;
 				desc.width = m_Specification.Width;
 				desc.height = m_Specification.Height;
@@ -77,11 +88,19 @@ namespace Wasteland
 				desc.dimension = nvrhi::TextureDimension::Texture2D;
 				desc.format = FramebufferTextureFormatToNVRHI(attachmentSpec.TextureFormat);
 				desc.isRenderTarget = true;
+				desc.isShaderResource = false; // critical: no SRV for depth without typeless
+				desc.isUAV = false;
+				desc.isTypeless = false;
+				desc.sampleCount = m_Specification.Samples > 0 ? m_Specification.Samples : 1;
 				desc.debugName = "Framebuffer_Depth";
 				desc.initialState = nvrhi::ResourceStates::DepthWrite;
 				desc.keepInitialState = true;
 
 				m_DepthTexture = device->createTexture(desc);
+				if (!m_DepthTexture)
+				{
+					WL_CORE_ERROR("NVRHIFramebuffer: Failed to create depth texture ({0}x{1} format D24S8)", desc.width, desc.height);
+				}
 			}
 			else
 			{
@@ -93,23 +112,32 @@ namespace Wasteland
 				desc.dimension = nvrhi::TextureDimension::Texture2D;
 				desc.format = FramebufferTextureFormatToNVRHI(attachmentSpec.TextureFormat);
 				desc.isRenderTarget = true;
+				desc.isShaderResource = true; // needed for ImGui viewport + entity picking readback
+				desc.isUAV = false;
+				desc.isTypeless = false;
+				desc.sampleCount = m_Specification.Samples > 0 ? m_Specification.Samples : 1;
 				desc.debugName = "Framebuffer_Color_" + std::to_string(m_ColorTextures.size());
 				desc.initialState = nvrhi::ResourceStates::RenderTarget;
 				desc.keepInitialState = true;
 
 				auto texture = device->createTexture(desc);
+				if (!texture)
+				{
+					WL_CORE_ERROR("NVRHIFramebuffer: Failed to create color texture {0} ({1}x{2})", m_ColorTextures.size(), desc.width, desc.height);
+					continue;
+				}
 				m_ColorTextures.push_back(texture);
 			}
 		}
 
-		// Create framebuffer
+		// Create framebuffer — only add valid attachments
 		nvrhi::FramebufferDesc fbDesc;
 
 		for (const auto &colorTexture : m_ColorTextures)
 		{
-			fbDesc.addColorAttachment(colorTexture);
+			if (colorTexture)
+				fbDesc.addColorAttachment(colorTexture);
 		}
-
 		if (m_DepthTexture)
 		{
 			fbDesc.setDepthAttachment(m_DepthTexture);
@@ -118,7 +146,7 @@ namespace Wasteland
 		m_Framebuffer = device->createFramebuffer(fbDesc);
 		if (!m_Framebuffer)
 		{
-			WL_CORE_ERROR("NVRHIFramebuffer: Failed to create framebuffer");
+			WL_CORE_ERROR("NVRHIFramebuffer: Failed to create framebuffer ({0} color attachments, depth={1})", m_ColorTextures.size(), m_DepthTexture ? "yes" : "no");
 		}
 	}
 

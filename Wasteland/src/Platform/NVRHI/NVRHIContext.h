@@ -35,6 +35,8 @@ namespace Wasteland
 		// Native DirectX object accessors (for ImGui and other integrations)
 		void *GetD3D11Device() const { return m_D3D11Device; }
 		void *GetD3D11Context() const { return m_D3D11Context; }
+		void *GetDXGISwapChain() const { return m_DXGISwapChain3; }
+		void *GetD3D11BackBufferRTV(uint32_t index) const { return (index < m_D3D11RTVs.size()) ? m_D3D11RTVs[index] : nullptr; }
 		void *GetD3D12Device() const { return m_D3D12Device; }
 		void *GetD3D12CommandQueue() const { return m_D3D12CommandQueue; }
 
@@ -83,6 +85,7 @@ namespace Wasteland
 		void Resize(uint32_t width, uint32_t height);
 		void BeginFrame() override;
 		void ExecuteNVRHICommandList();
+		bool IsCommandListOpen() const { return m_CommandListOpen; }
 
 		// Vulkan ImGui lifecycle (called by ImGuiLayer)
 		bool InitVulkanImGuiResources();
@@ -134,6 +137,9 @@ namespace Wasteland
 		void *m_D3D12Device = nullptr;
 		void *m_D3D12CommandQueue = nullptr;
 		void *m_DXGISwapChain3 = nullptr;
+
+		// DX11 cached RTVs for ImGui (owned here, one per backbuffer)
+		std::vector<ID3D11RenderTargetView*> m_D3D11RTVs;
 
 		// DX12 ImGui SRV descriptor heap
 		void *m_D3D12ImGuiSRVHeap = nullptr;
@@ -187,7 +193,8 @@ namespace Wasteland
 		uint32_t m_VkFrameIndex = 0;
 		uint32_t m_VkImageCount = 2;
 
-		// Vulkan validation layers enabled in debug builds
+		// NVRHI command list frame state (DX11/DX12/Vulkan)
+		bool m_CommandListOpen = false;
 		bool m_VkValidationLayersEnabled = false;
 		uint32_t m_Width = 0;
 		uint32_t m_Height = 0;

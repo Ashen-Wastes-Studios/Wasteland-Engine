@@ -21,6 +21,7 @@
 // DirectX headers
 #include <d3d11.h>
 #include <d3d12.h>
+#include <dxgi1_4.h>
 #include <vulkan/vulkan.h>
 
 #include "ImGuizmo.h"
@@ -548,8 +549,77 @@ namespace Wasteland
 			break;
 
 		case RendererAPI::API::NVRHI_DX11:
-			ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+		{
+			auto *ctx = dynamic_cast<NVRHIContext *>(app.GetWindow().GetCurrentContext());
+			if (!ctx)
+			{
+				WL_CORE_ERROR("ImGui: DX11 context is null");
+				break;
+			}
+			ID3D11Device *device = static_cast<ID3D11Device *>(ctx->GetD3D11Device());
+			ID3D11DeviceContext *d3dCtx = static_cast<ID3D11DeviceContext *>(ctx->GetD3D11Context());
+			if (!device || !d3dCtx)
+			{
+				WL_CORE_WARN("ImGui: DX11 device/context not ready, skipping render");
+				break;
+			}
+
+			// Ensure ImGui DX11 device objects exist.
+			// D3DCompile can fail at init if d3dcompiler_47.dll is missing, leaving backend objects null.
+			if (!ImGui_ImplDX11_CreateDeviceObjects())
+			{
+				WL_CORE_ERROR("ImGui: DX11 CreateDeviceObjects failed (check d3dcompiler_47.dll), skipping render");
+				break;
+			}
+
+			ImDrawData *draw_data = ImGui::GetDrawData();
+			if (!draw_data || draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f || draw_data->CmdListsCount == 0 || draw_data->TotalVtxCount == 0)
+				break;
+
+			// Device removed / TDR check
+			HRESULT removedReason = device->GetDeviceRemovedReason();
+			if (FAILED(removedReason))
+			{
+				WL_CORE_ERROR("ImGui: DX11 device removed (HRESULT: {0:X}), skipping render", (uint32_t)removedReason);
+				break;
+			}
+
+			// DX11 backend does NOT set RTV - caller must bind it.
+			// NVRHI may leave the immediate context without a guaranteed RTV after ExecuteNVRHICommandList().
+			// Explicitly bind current backbuffer RTV to avoid driver crash inside DrawIndexed.
+			void *swapPtr = ctx->GetDXGISwapChain();
+			if (!swapPtr)
+			{
+				WL_CORE_WARN("ImGui: DX11 swapchain is null, skipping render");
+				break;
+			}
+			IDXGISwapChain3 *swapChain = static_cast<IDXGISwapChain3 *>(swapPtr);
+			uint32_t idx = ctx->GetCurrentBackBufferIndex();
+			ID3D11Texture2D *backBuffer = nullptr;
+			HRESULT hr = swapChain->GetBuffer(idx, IID_PPV_ARGS(&backBuffer));
+			if (FAILED(hr) || !backBuffer)
+			{
+				WL_CORE_ERROR("ImGui: Failed to get DX11 backbuffer {0} (HRESULT: {1:X})", idx, (uint32_t)hr);
+				break;
+			}
+			ID3D11RenderTargetView *rtv = nullptr;
+			hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
+			backBuffer->Release();
+			if (FAILED(hr) || !rtv)
+			{
+				WL_CORE_ERROR("ImGui: Failed to create DX11 RTV (HRESULT: {0:X})", (uint32_t)hr);
+				break;
+			}
+
+			d3dCtx->OMSetRenderTargets(1, &rtv, nullptr);
+			ImGui_ImplDX11_RenderDrawData(draw_data);
+
+			// Release transient RTV after draw.
+			ID3D11RenderTargetView *nullRTV = nullptr;
+			d3dCtx->OMSetRenderTargets(1, &nullRTV, nullptr);
+			rtv->Release();
 			break;
+		}
 
 		case RendererAPI::API::NVRHI_DX12:
 		{

@@ -57,6 +57,10 @@ namespace Wasteland
 			}
 		}
 
+				// Release D3D11 RTVs cached for ImGui
+	for (auto* rtv : m_D3D11RTVs) if (rtv) rtv->Release();
+	m_D3D11RTVs.clear();
+
 		// Release NVRHI objects
 		m_CommandList = nullptr;
 		m_Device = nullptr;
@@ -182,10 +186,8 @@ namespace Wasteland
 			// and uses native Vulkan APIs rather than DXGI
 			CreateVulkanSwapChain();
 		}
-		else
-		{
-			CreateBackBufferFramebuffers();
-		}
+		// Note: CreateSwapChain() already calls CreateBackBufferFramebuffers() for DX11/DX12
+		// so no second call here (was double-init causing needless Release/GetBuffer)
 
 		// Create command list
 		m_CommandList = m_Device->createCommandList();
@@ -900,24 +902,41 @@ namespace Wasteland
 			return;
 		}
 
-		// Create DXGI factory
+		// Create DXGI factory - use CreateDXGIFactory2 so FLIP model is guaranteed (Factory2+)
 		IDXGIFactory4 *factory = nullptr;
-		HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+		UINT factoryFlags = 0;
+#ifdef WL_DEBUG
+		factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+		HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory));
 		if (FAILED(hr) || !factory)
 		{
-			WL_CORE_ERROR("CreateSwapChain: Failed to create DXGI factory (HRESULT: {0})", hr);
+			// Fallback to CreateDXGIFactory1 for older SDK
+			hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+		}
+		if (FAILED(hr) || !factory)
+		{
+			WL_CORE_ERROR("CreateSwapChain: Failed to create DXGI factory HRESULT 0x{0:X} ({0})", (uint32_t)hr);
 			return;
 		}
 
-		// Describe swap chain
+		// Describe swap chain - must be explicit for FLIP_DISCARD (Scaling/AlphaMode)
+		// Use B8G8R8A8_UNORM - more widely supported for FLIP on D3D11, and BufferCount=2 is minimum for FLIP
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
 		swapChainDesc.BufferCount = 2;
 		swapChainDesc.Width = m_Width;
 		swapChainDesc.Height = m_Height;
-		swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		swapChainDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 		swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 		swapChainDesc.SampleDesc.Count = 1;
+		swapChainDesc.SampleDesc.Quality = 0;
+		swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+		swapChainDesc.Stereo = FALSE;
+		swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+		swapChainDesc.Flags = 0;
+
+		WL_CORE_INFO("CreateSwapChain: Requesting {0}x{1} BufferCount={2} Format=B8G8R8A8_UNORM FlipDiscard Scaling=STRETCH Alpha=IGNORE", m_Width, m_Height, swapChainDesc.BufferCount);
 
 		IDXGISwapChain1 *swapChain1 = nullptr;
 
@@ -960,6 +979,12 @@ namespace Wasteland
 		}
 		swapChain1->Release();
 		m_DXGISwapChain3 = swapChain3;
+		{
+			DXGI_SWAP_CHAIN_DESC1 actual{}; swapChain3->GetDesc1(&actual);
+			WL_CORE_INFO("SwapChain created: BufferCount={0} {1}x{2} Format={3} SwapEffect={4} Scaling={5} Alpha={6}", actual.BufferCount, actual.Width, actual.Height, (int)actual.Format, (int)actual.SwapEffect, (int)actual.Scaling, (int)actual.AlphaMode);
+			if (actual.BufferCount != 2)
+				WL_CORE_WARN("SwapChain BufferCount !=2 - driver clamped! This will cause GetBuffer(1) INVALID_CALL");
+		}
 		if (m_API == RendererAPI::API::NVRHI_DX12)
 			WL_CORE_INFO("Created DX12 swap chain");
 		else
@@ -976,8 +1001,10 @@ namespace Wasteland
 	{
 		WL_PROFILE_FUNCTION();
 
-		// Clear old backbuffers
-		m_BackBuffers.clear();
+		// Clear old backbuffers - release D3D11 RTVs first (they hold refs to backbuffers)
+		for (auto* rtv : m_D3D11RTVs) if (rtv) rtv->Release();
+	m_D3D11RTVs.clear();
+	m_BackBuffers.clear();
 		m_BackBufferFramebuffers.clear();
 
 		// For Vulkan, backbuffers are created in CreateVulkanSwapChain
@@ -993,8 +1020,13 @@ namespace Wasteland
 			return;
 		}
 
-		// Get backbuffers from swapchain
+		// Get backbuffers from swapchain - query actual desc to sanity-check hardcoded 2
 		const uint32_t bufferCount = 2;
+		{
+			DXGI_SWAP_CHAIN_DESC1 scDesc{}; static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->GetDesc1(&scDesc);
+			if (scDesc.BufferCount != bufferCount)
+				WL_CORE_WARN("CreateBackBufferFramebuffers: SwapChain BufferCount={0} != expected {1}", scDesc.BufferCount, bufferCount);
+		}
 		m_BackBuffers.resize(bufferCount);
 		m_BackBufferFramebuffers.resize(bufferCount);
 
@@ -1009,7 +1041,25 @@ namespace Wasteland
 				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&nativeBuffers[i]));
 				if (FAILED(hr) || !nativeBuffers[i])
 				{
-					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX11 backbuffer {0} (HRESULT: {1})", i, hr);
+					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX11 backbuffer {0} HRESULT 0x{1:X} ({1}) - INVALID_CALL(0x887A0001)=out-of-range or ResizeBuffers with live refs; DEVICE_REMOVED=0x887A0005", i, (uint32_t)hr);
+					{
+						DXGI_SWAP_CHAIN_DESC1 dbg{}; swapChain->GetDesc1(&dbg);
+					WL_CORE_ERROR("  SwapChain desc at failure: BufferCount={0} Width={1} Height={2} Format={3} SwapEffect={4} Scaling={5} Alpha={6} Flags=0x{7:X}", dbg.BufferCount, dbg.Width, dbg.Height, (int)dbg.Format, (int)dbg.SwapEffect, (int)dbg.Scaling, (int)dbg.AlphaMode, dbg.Flags);
+						if (m_D3D11Device)
+						{
+							HRESULT removed = static_cast<ID3D11Device*>(m_D3D11Device)->GetDeviceRemovedReason();
+							if (FAILED(removed))
+								WL_CORE_ERROR("  D3D11 GetDeviceRemovedReason: 0x{0:X}", (uint32_t)removed);
+						}
+						// Try IDXGISwapChain2 path for diagnosis
+						IDXGISwapChain2* sc2 = nullptr;
+						if (SUCCEEDED(swapChain->QueryInterface(IID_PPV_ARGS(&sc2))))
+						{
+							DXGI_SWAP_CHAIN_DESC1 d2{}; sc2->GetDesc1(&d2);
+							WL_CORE_ERROR("  IDXGISwapChain2::GetDesc1 confirms BufferCount={0}", d2.BufferCount);
+							sc2->Release();
+						}
+					}
 					// Clean up already acquired buffers
 					for (uint32_t j = 0; j < i; j++)
 					{
@@ -1023,19 +1073,29 @@ namespace Wasteland
 			// Now create NVRHI textures and framebuffers
 			for (uint32_t i = 0; i < bufferCount; i++)
 			{
-				// Create NVRHI texture from D3D11 texture
+				// Create NVRHI texture from D3D11 texture (swapchain is B8G8R8A8_UNORM)
 				nvrhi::TextureDesc desc;
 				desc.width = m_Width;
 				desc.height = m_Height;
-				desc.format = nvrhi::Format::SRGBA8_UNORM;
+				desc.format = nvrhi::Format::BGRA8_UNORM;
 				desc.isRenderTarget = true;
 
-				// AddRef for NVRHI, then release our reference
-				nativeBuffers[i]->AddRef();
+				// NVRHI RefCountPtr will AddRef internally, so just hand off
+				// and Release our GetBuffer() reference
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
 					nvrhi::ObjectTypes::D3D11_Resource,
 					nativeBuffers[i],
 					desc);
+				// Create cached RTV for ImGui (owned here, one per backbuffer)
+				ID3D11RenderTargetView* rtv = nullptr;
+				HRESULT rtvHr = static_cast<ID3D11Device*>(m_D3D11Device)->CreateRenderTargetView(nativeBuffers[i], nullptr, &rtv);
+				if (SUCCEEDED(rtvHr) && rtv)
+					m_D3D11RTVs.push_back(rtv);
+				else
+				{
+					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to create D3D11 RTV {0} HRESULT 0x{1:X}", i, (uint32_t)rtvHr);
+					m_D3D11RTVs.push_back(nullptr);
+				}
 				nativeBuffers[i]->Release();
 
 				// Create framebuffer
@@ -1057,7 +1117,11 @@ namespace Wasteland
 				HRESULT hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&nativeBuffers[i]));
 				if (FAILED(hr) || !nativeBuffers[i])
 				{
-					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX12 backbuffer {0} (HRESULT: {1})", i, hr);
+					WL_CORE_ERROR("CreateBackBufferFramebuffers: Failed to get DX12 backbuffer {0} HRESULT 0x{1:X} ({1})", i, (uint32_t)hr);
+					{
+						DXGI_SWAP_CHAIN_DESC1 dbg{}; swapChain->GetDesc1(&dbg);
+					WL_CORE_ERROR("  SwapChain desc at failure: BufferCount={0}", dbg.BufferCount);
+					}
 					// Clean up already acquired buffers
 					for (uint32_t j = 0; j < i; j++)
 					{
@@ -1075,11 +1139,11 @@ namespace Wasteland
 				nvrhi::TextureDesc desc;
 				desc.width = m_Width;
 				desc.height = m_Height;
-				desc.format = nvrhi::Format::SRGBA8_UNORM;
+				desc.format = nvrhi::Format::BGRA8_UNORM;
 				desc.isRenderTarget = true;
 
-				// AddRef for NVRHI, then release our reference
-				nativeBuffers[i]->AddRef();
+				// NVRHI RefCountPtr will AddRef internally, so just hand off
+				// and Release our GetBuffer() reference
 				m_BackBuffers[i] = m_Device->createHandleForNativeTexture(
 					nvrhi::ObjectTypes::D3D12_Resource,
 					nativeBuffers[i],
@@ -1500,10 +1564,16 @@ namespace Wasteland
 		}
 		else
 		{
-			ExecuteNVRHICommandList();
-
+			// Scene NVRHI work was already close()+execute() in Application::Run before ImGui
+			// (scene must be behind UI for DX12 where ImGui uses its own native command list).
+			// Do NOT ExecuteNVRHICommandList() again here — second execute dereferences null
+			// m_ActiveCommandList and is the crash at Device::executeCommandLists / getD3D12CommandList().
+			// SwapBuffers for DX11/DX12 only needs to Present; Vulkan path above already handled via vkQueueSubmit.
 			if (m_API == RendererAPI::API::NVRHI_DX11 || m_API == RendererAPI::API::NVRHI_DX12)
 			{
+				// Safety: if for any reason Execute was skipped (e.g. no BeginFrame), flush now once.
+				if (m_CommandListOpen)
+					ExecuteNVRHICommandList();
 				IDXGISwapChain3 *swapChain = static_cast<IDXGISwapChain3 *>(m_DXGISwapChain3);
 				if (swapChain)
 				{
@@ -1520,6 +1590,19 @@ namespace Wasteland
 
 		if (width == m_Width && height == m_Height)
 			return;
+
+		if (width == 0 || height == 0)
+		{
+			WL_CORE_WARN("Resize: ignoring 0-sized request ({0}x{1}) - window minimized", width, height);
+			return;
+		}
+
+		// If a NVRHI command list is still open (mid-frame resize), close+execute before touching swapchain
+		if (m_CommandListOpen)
+		{
+			WL_CORE_WARN("Resize: closing open NVRHI command list before ResizeBuffers");
+			ExecuteNVRHICommandList();
+		}
 
 		m_Width = width;
 		m_Height = height;
@@ -1541,6 +1624,9 @@ namespace Wasteland
 		}
 		else if (m_API == RendererAPI::API::NVRHI_DX11 || m_API == RendererAPI::API::NVRHI_DX12)
 		{
+			if (m_Device)
+				m_Device->waitForIdle();
+
 			if (m_API == RendererAPI::API::NVRHI_DX12 && m_D3D12CommandQueue && m_D3D12ImGuiFence)
 			{
 				ID3D12CommandQueue *queue = static_cast<ID3D12CommandQueue *>(m_D3D12CommandQueue);
@@ -1558,13 +1644,28 @@ namespace Wasteland
 				}
 			}
 
+			else if (m_API == RendererAPI::API::NVRHI_DX11 && m_D3D11Context)
+			{
+				ID3D11DeviceContext *ctx = static_cast<ID3D11DeviceContext *>(m_D3D11Context);
+				ctx->OMSetRenderTargets(0, nullptr, nullptr);
+				ctx->Flush();
+				ctx->ClearState();
+			}
+
+			for (auto* rtv : m_D3D11RTVs) if (rtv) rtv->Release();
+			m_D3D11RTVs.clear();
 			m_BackBuffers.clear();
 			m_BackBufferFramebuffers.clear();
 
-			HRESULT hr = static_cast<IDXGISwapChain3 *>(m_DXGISwapChain3)->ResizeBuffers(2, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+			if (m_Device)
+				m_Device->waitForIdle();
+
+			HRESULT hr = static_cast<IDXGISwapChain3 *>(m_DXGISwapChain3)->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
 			if (FAILED(hr))
-			{
-				WL_CORE_ERROR("ResizeBuffers failed: {0:X}", (uint32_t)hr);
+				{
+				WL_CORE_ERROR("ResizeBuffers({0}x{1}) failed: HRESULT 0x{2:X} ({2}) - likely leaked backbuffer refs or minimized window", width, height, (uint32_t)hr);
+					DXGI_SWAP_CHAIN_DESC1 dbg{}; static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->GetDesc1(&dbg);
+				WL_CORE_ERROR("  SwapChain desc: BufferCount={0} Format={1} SwapEffect={2}", dbg.BufferCount, (int)dbg.Format, (int)dbg.SwapEffect);
 			}
 
 			CreateBackBufferFramebuffers();
@@ -1575,8 +1676,18 @@ namespace Wasteland
 	{
 		WL_PROFILE_FUNCTION();
 		if (m_API != RendererAPI::API::NVRHI_Vulkan)
+		{
+			// Open NVRHI command list for batched frame recording (DX11/DX12/Vulkan via NVRHI)
+			// All writeBuffer / clear / draw calls between BeginFrame and ExecuteNVRHICommandList
+			// must be inside a single open/close pair — per-draw open/close overwrites previous chunks
+			// and writeBuffer outside open is illegal. See NVRHIRendererAPI.
+			if (m_Device && m_CommandList && !m_CommandListOpen)
+			{
+				m_CommandList->open();
+				m_CommandListOpen = true;
+			}
 			return;
-
+		}
 		VkDevice device = static_cast<VkDevice>(m_VkDevice);
 		VkSwapchainKHR swapchain = static_cast<VkSwapchainKHR>(m_VkSwapchain);
 		if (!device || !swapchain || m_VkFences.empty() || m_VkImageAvailableSemaphores.empty())
@@ -1634,10 +1745,20 @@ namespace Wasteland
 	void NVRHIContext::ExecuteNVRHICommandList()
 	{
 		WL_PROFILE_FUNCTION();
-		if (m_Device && m_CommandList)
+		if (!m_Device || !m_CommandList)
+			return;
+		if (!m_CommandListOpen)
 		{
-			m_Device->executeCommandList(m_CommandList);
+			// No work recorded this frame (empty flush) or already executed — prevents
+			// Device::executeCommandLists dereferencing null m_ActiveCommandList (crash at getD3D12CommandList())
+			// which happens on double-execute (Application::Run + SwapBuffers) or empty frame.
+			return;
 		}
+		// Guard against executing an empty list via native check — extra safety before vendor deref
+		// After executed(), m_ActiveCommandList is null, so getNativeObject would return null.
+		m_CommandList->close();
+		m_CommandListOpen = false;
+		m_Device->executeCommandList(m_CommandList);
 	}
 
 	VkFramebuffer NVRHIContext::GetVkCurrentImGuiFramebuffer() const
