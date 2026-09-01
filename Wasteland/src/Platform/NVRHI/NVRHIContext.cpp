@@ -594,23 +594,49 @@ namespace Wasteland
 		// the device without the feature — nvrhi::vulkan::Queue then crashed in nvoglv64.dll when creating its
 		// internal timeline semaphore.
 		VkPhysicalDeviceFeatures deviceFeatures = {};
+		// --- Diagnostic dump ---
+		{
+			VkPhysicalDeviceProperties propsDbg = {};
+			vkGetPhysicalDeviceProperties(physicalDevice, &propsDbg);
+			WL_CORE_INFO("=== Vulkan Device Diagnostic ===");
+			WL_CORE_INFO("  GPU: {0} apiVersion {1}.{2}.{3}", propsDbg.deviceName, VK_VERSION_MAJOR(propsDbg.apiVersion), VK_VERSION_MINOR(propsDbg.apiVersion), VK_VERSION_PATCH(propsDbg.apiVersion));
+			uint32_t extCountDbg = 0;
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCountDbg, nullptr);
+			std::vector<VkExtensionProperties> extsDbg(extCountDbg);
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extCountDbg, extsDbg.data());
+			bool hasSwapchain = false, hasTimelineKHRDbg = false;
+			for (auto &e : extsDbg) {
+				if (strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)==0) hasSwapchain = true;
+				if (strcmp(e.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)==0) hasTimelineKHRDbg = true;
+			}
+			WL_CORE_INFO("  Extensions: swapchain={0} timelineKHR={1} total={2}", hasSwapchain, hasTimelineKHRDbg, extCountDbg);
+			for (auto &e : extsDbg) {
+				if (strstr(e.extensionName, "timeline") || strstr(e.extensionName, "swapchain"))
+					WL_CORE_INFO("    ext: {0}", e.extensionName);
+			}
+		}
 		bool timelineSemaphoreSupported = false;
+		bool hasTimelineSemaphoreExtension = false;
 		VkPhysicalDeviceVulkan12Features vulkan12FeaturesQuery = {};
 		vulkan12FeaturesQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 		VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeaturesQueryKHR = {};
 		timelineFeaturesQueryKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
 
-		// Core 1.2 path — works even when KHR extension is not reported
+		// Query both structs in one chain — some drivers only fill the struct you chain,
+		// so chain Vulkan12 -> KHR and check both.
 		{
+			vulkan12FeaturesQuery.pNext = &timelineFeaturesQueryKHR;
 			VkPhysicalDeviceFeatures2 features2 = {};
 			features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 			features2.pNext = &vulkan12FeaturesQuery;
 			vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
-			if (vulkan12FeaturesQuery.timelineSemaphore)
+			WL_CORE_INFO("  Query Vulkan12.timelineSemaphore={0} KHR.timelineSemaphore={1}", (bool)vulkan12FeaturesQuery.timelineSemaphore, (bool)timelineFeaturesQueryKHR.timelineSemaphore);
+			if (vulkan12FeaturesQuery.timelineSemaphore || timelineFeaturesQueryKHR.timelineSemaphore)
 				timelineSemaphoreSupported = true;
+			// unchain for later enable path
+			vulkan12FeaturesQuery.pNext = nullptr;
 		}
 
-		bool hasTimelineSemaphoreExtension = false;
 		if (!timelineSemaphoreSupported)
 		{
 			uint32_t extensionCount = 0;
@@ -625,42 +651,50 @@ namespace Wasteland
 					break;
 				}
 			}
+			WL_CORE_INFO("  Fallback KHR extension present: {0}", hasTimelineSemaphoreExtension);
 			if (hasTimelineSemaphoreExtension)
 			{
+				// Re-query KHR alone to be sure
+				VkPhysicalDeviceTimelineSemaphoreFeatures ts2 = {};
+				ts2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
 				VkPhysicalDeviceFeatures2 features2 = {};
 				features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-				features2.pNext = &timelineFeaturesQueryKHR;
+				features2.pNext = &ts2;
 				vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
-				if (timelineFeaturesQueryKHR.timelineSemaphore)
+				if (ts2.timelineSemaphore)
 					timelineSemaphoreSupported = true;
+				WL_CORE_INFO("  Fallback KHR query timelineSemaphore={0}", (bool)ts2.timelineSemaphore);
 			}
+		} else {
+			// Also check if KHR extension is enumerated (for enable path)
+			uint32_t ec = 0;
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &ec, nullptr);
+			std::vector<VkExtensionProperties> ae(ec);
+			vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &ec, ae.data());
+			for (auto &e: ae) if (strcmp(e.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)==0) hasTimelineSemaphoreExtension = true;
 		}
 
-		// Prepare the pNext chain to *enable* timeline semaphores on device creation.
-		// NVRHI's Queue constructor unconditionally creates a timeline semaphore — if the feature
-		// is not enabled, context.device.createSemaphore() crashes inside nvoglv64.dll.
+		// Prepare pNext to enable — chain both structs so driver sees both core and KHR enable.
 		VkPhysicalDeviceVulkan12Features enabledVulkan12Features = {};
 		VkPhysicalDeviceTimelineSemaphoreFeatures enabledTimelineFeaturesKHR = {};
 		void *deviceCreatePNext = nullptr;
 
 		if (timelineSemaphoreSupported)
 		{
-			if (vulkan12FeaturesQuery.timelineSemaphore)
-			{
-				// Core path — no extension needed, enable via Vulkan12Features
-				enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-				enabledVulkan12Features.timelineSemaphore = VK_TRUE;
-				deviceCreatePNext = &enabledVulkan12Features;
-				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (core 1.2)");
-			}
-			else
-			{
-				// KHR extension path — needs extension string + TimelineSemaphoreFeatures
-				enabledTimelineFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-				enabledTimelineFeaturesKHR.timelineSemaphore = VK_TRUE;
-				deviceCreatePNext = &enabledTimelineFeaturesKHR;
+			enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+			enabledVulkan12Features.timelineSemaphore = VK_TRUE;
+			enabledTimelineFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+			enabledTimelineFeaturesKHR.timelineSemaphore = VK_TRUE;
+			// Only chain KHR struct if extension is actually reported — passing it without the extension
+			// makes vkCreateDevice fail with VK_ERROR_EXTENSION_NOT_PRESENT on core 1.2 drivers.
+			if (hasTimelineSemaphoreExtension) {
+				enabledVulkan12Features.pNext = &enabledTimelineFeaturesKHR;
 				deviceExtensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-				WL_CORE_INFO("Enabling timeline semaphores via VK_KHR_timeline_semaphore extension");
+				deviceCreatePNext = &enabledVulkan12Features;
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features + KHR extension (has extension)");
+			} else {
+				deviceCreatePNext = &enabledVulkan12Features;
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (core 1.2, no extension)");
 			}
 		}
 		else
