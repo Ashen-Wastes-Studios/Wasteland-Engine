@@ -674,27 +674,37 @@ namespace Wasteland
 			for (auto &e: ae) if (strcmp(e.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)==0) hasTimelineSemaphoreExtension = true;
 		}
 
-		// Prepare pNext to enable — chain both structs so driver sees both core and KHR enable.
+		// Prepare pNext to enable — Vulkan 1.2+ core path uses ONLY VkPhysicalDeviceVulkan12Features.
+		// Chaining both Vulkan12 and VkPhysicalDeviceTimelineSemaphoreFeatures violates
+		// VUID-VkDeviceCreateInfo-pNext-02830 and triggers validation error (seen on 591.59).
 		VkPhysicalDeviceVulkan12Features enabledVulkan12Features = {};
 		VkPhysicalDeviceTimelineSemaphoreFeatures enabledTimelineFeaturesKHR = {};
 		void *deviceCreatePNext = nullptr;
+		// Remember which path provided the feature so we enable the matching struct only
+		bool timelineViaVulkan12 = vulkan12FeaturesQuery.timelineSemaphore == VK_TRUE;
+		bool timelineViaKHR = timelineFeaturesQueryKHR.timelineSemaphore == VK_TRUE;
 
 		if (timelineSemaphoreSupported)
 		{
-			enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-			enabledVulkan12Features.timelineSemaphore = VK_TRUE;
-			enabledTimelineFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-			enabledTimelineFeaturesKHR.timelineSemaphore = VK_TRUE;
-			// Only chain KHR struct if extension is actually reported — passing it without the extension
-			// makes vkCreateDevice fail with VK_ERROR_EXTENSION_NOT_PRESENT on core 1.2 drivers.
-			if (hasTimelineSemaphoreExtension) {
-				enabledVulkan12Features.pNext = &enabledTimelineFeaturesKHR;
+			if (timelineViaVulkan12) {
+				// Core 1.2 path: only Vulkan12 struct. Do NOT push KHR extension nor chain KHR struct.
+				enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+				enabledVulkan12Features.timelineSemaphore = VK_TRUE;
+				deviceCreatePNext = &enabledVulkan12Features;
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (core 1.2)");
+			} else if (timelineViaKHR || hasTimelineSemaphoreExtension) {
+				// 1.1 fallback: KHR extension path
+				enabledTimelineFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+				enabledTimelineFeaturesKHR.timelineSemaphore = VK_TRUE;
 				deviceExtensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-				deviceCreatePNext = &enabledVulkan12Features;
-				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features + KHR extension (has extension)");
+				deviceCreatePNext = &enabledTimelineFeaturesKHR;
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceTimelineSemaphoreFeatures + KHR extension (1.1 fallback)");
 			} else {
+				// Should not happen, fallback to Vulkan12
+				enabledVulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+				enabledVulkan12Features.timelineSemaphore = VK_TRUE;
 				deviceCreatePNext = &enabledVulkan12Features;
-				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (core 1.2, no extension)");
+				WL_CORE_INFO("Enabling timeline semaphores via VkPhysicalDeviceVulkan12Features (fallback)");
 			}
 		}
 		else
