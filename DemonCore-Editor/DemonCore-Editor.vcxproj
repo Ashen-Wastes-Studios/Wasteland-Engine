@@ -96,7 +96,9 @@
     <ProjectReference>
     </ProjectReference>
     <PostBuildEvent>
-      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+      <Command>if not exist "$(TargetDir)assets" mkdir "$(TargetDir)assets"
+xcopy /Y /E /I "$(SolutionDir)/DemonCore-Editor/assets" "$(TargetDir)assets"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
 copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>
@@ -128,7 +130,9 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ProjectReference>
     </ProjectReference>
     <PostBuildEvent>
-      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+      <Command>if not exist "$(TargetDir)assets" mkdir "$(TargetDir)assets"
+xcopy /Y /E /I "$(SolutionDir)/DemonCore-Editor/assets" "$(TargetDir)assets"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
 copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>
@@ -160,7 +164,9 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ProjectReference>
     </ProjectReference>
     <PostBuildEvent>
-      <Command>copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
+      <Command>if not exist "$(TargetDir)assets" mkdir "$(TargetDir)assets"
+xcopy /Y /E /I "$(SolutionDir)/DemonCore-Editor/assets" "$(TargetDir)assets"
+copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314.dll" "$(TargetDir)python314.dll"
 copy /Y "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\python314._pth" "$(TargetDir)"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib" "$(TargetDir)Lib"
 xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(TargetDir)DLLs"</Command>

@@ -70,7 +70,28 @@ namespace Wasteland
 
 		{
 			WL_PROFILE_SCOPE("glfwCreateWindow");
+			// Set window hints based on initial renderer API
+			// Vulkan and DirectX require NO_API, OpenGL requires OPENGL_API
+			RendererAPI::API initialAPI = RendererAPI::GetAPI();
+			glfwDefaultWindowHints();
+			if (initialAPI == RendererAPI::API::NVRHI_Vulkan ||
+				initialAPI == RendererAPI::API::NVRHI_DX11 ||
+				initialAPI == RendererAPI::API::NVRHI_DX12)
+			{
+				glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+			}
+			else
+			{
+				glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+				glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+				glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+				glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+			}
+			glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+			glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+
 			m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
+			WL_CORE_ASSERT(m_Window, "Failed to create GLFW window!");
 		}
 
 		// Create all contexts
@@ -84,9 +105,41 @@ namespace Wasteland
 		SetVSync(true);
 
 		// Set GLFW callbacks
+		SetupCallbacks();
+	}
+
+	void WindowsWindow::CreateContexts()
+	{
+		WL_PROFILE_FUNCTION();
+
+		RendererAPI::API api = RendererAPI::GetAPI();
+		bool needGL = (api == RendererAPI::API::OpenGL);
+		// Only create OpenGL context if we are starting with OpenGL
+		// For NO_API windows (Vulkan/DX), OpenGL context would fail
+		if (needGL)
+		{
+			m_OpenGLContext = new OpenGLContext(m_Window);
+			m_OpenGLContext->Init();
+			WL_CORE_INFO("Created OpenGL context");
+		}
+		else
+		{
+			m_OpenGLContext = nullptr;
+			WL_CORE_INFO("Skipping OpenGL context creation for NO_API window");
+		}
+
+		// Create NVRHI context (will be initialized on first switch)
+		// We don't initialize it here to avoid creating DX device when not needed
+		m_NVRHIContext = nullptr;
+	}
+
+	void WindowsWindow::SetupCallbacks()
+	{
 		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow *window, int width, int height)
 								  {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
+				if (data.SuppressCloseEvent)
+					return;
 				data.Width = width;
 				data.Height = height;
 
@@ -97,6 +150,8 @@ namespace Wasteland
 		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow *window)
 								   {
 				WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
+				if (data.SuppressCloseEvent)
+					return;
 				WindowCloseEvent event;
 				data.EventCallback(event); });
 
@@ -168,21 +223,6 @@ namespace Wasteland
 				data.EventCallback(event); });
 	}
 
-	void WindowsWindow::CreateContexts()
-	{
-		WL_PROFILE_FUNCTION();
-
-		// Create OpenGL context
-		m_OpenGLContext = new OpenGLContext(m_Window);
-		m_OpenGLContext->Init();
-
-		// Create NVRHI context (will be initialized on first switch)
-		// We don't initialize it here to avoid creating DX device when not needed
-		m_NVRHIContext = nullptr;
-
-		WL_CORE_INFO("Created OpenGL context");
-	}
-
 	void WindowsWindow::DestroyContexts()
 	{
 		WL_PROFILE_FUNCTION();
@@ -208,41 +248,183 @@ namespace Wasteland
 
 		if (api == m_CurrentAPI && m_CurrentContext)
 			return;
+		if (m_PendingSwitch && m_PendingAPI == api)
+			return;
 
-		WL_CORE_INFO("Switching renderer API to {0}", (int)api);
+		m_PendingAPI = api;
+		m_PendingSwitch = true;
 
-		// Clear cached resources when switching away from NVRHI
-		if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
-		    m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
-		    m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+		// If called during init (no current API or app not fully initialized), switch immediately
+		// Otherwise defer to next BeginFrame (safe, outside ImGui frame)
+		if (!Application::IsInitialized() || m_CurrentAPI == RendererAPI::API::None || m_Window == nullptr)
 		{
-			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
-			if (nvrhiAPI)
+			ProcessPendingSwitch();
+		}
+	}
+
+	void WindowsWindow::ProcessPendingSwitch()
+	{
+		if (!m_PendingSwitch)
+			return;
+		RendererAPI::API api = m_PendingAPI;
+		m_PendingSwitch = false;
+		ExecuteSwitch(api);
+	}
+
+	void WindowsWindow::ExecuteSwitch(RendererAPI::API api)
+	{
+		WL_PROFILE_FUNCTION();
+
+		if (api == m_CurrentAPI && m_CurrentContext)
+			return;
+		WL_CORE_INFO("Switching renderer API to {0}", (int)api);
+		// Check if window needs recreation due to GLFW_CLIENT_API mismatch
+		// OpenGL requires OPENGL_API, Vulkan/DX require NO_API
+		// At startup m_CurrentAPI is None, window was just created with correct hints for 'api', so no recreate needed
+		bool isNewNoAPI = (api == RendererAPI::API::NVRHI_Vulkan ||
+						   api == RendererAPI::API::NVRHI_DX11 ||
+						   api == RendererAPI::API::NVRHI_DX12);
+		bool isOldNoAPI = (m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan ||
+						   m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+						   m_CurrentAPI == RendererAPI::API::NVRHI_DX12);
+		bool needWindowRecreate = false;
+		if (m_CurrentAPI != RendererAPI::API::None && m_Window != nullptr)
+			needWindowRecreate = (isNewNoAPI != isOldNoAPI);
+
+		if (needWindowRecreate)
+		{
+			WL_CORE_INFO("Recreating GLFW window for API switch (GL <-> NO_API)");
+			m_Data.SuppressCloseEvent = true;
+			if (m_Window)
 			{
-				nvrhiAPI->ClearCachedResources();
+				glfwSetWindowCloseCallback(m_Window, nullptr);
+				glfwSetWindowSizeCallback(m_Window, nullptr);
 			}
+			// Save window properties
+			WindowProps props(m_Data.Title, m_Data.Width, m_Data.Height);
+
+			// Clear NVRHI cached resources before destroying contexts
+			if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+				m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+				m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+			{
+				NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
+				if (nvrhiAPI)
+					nvrhiAPI->ClearCachedResources();
+			}
+
+			// Shutdown ImGui backend before window destruction (it holds GLFW window references)
+			if (Application::IsInitialized())
+			{
+				ImGuiLayer *imguiLayer = Application::Get().GetImGuiLayer();
+				if (imguiLayer)
+					imguiLayer->ShutdownBackendForWindowRecreate();
+			}
+
+			// Destroy contexts that are tied to old window
+			DestroyContexts();
+			glfwDestroyWindow(m_Window);
+			m_Window = nullptr;
+
+			// Set hints for new API
+			glfwDefaultWindowHints();
+			if (isNewNoAPI)
+			{
+				glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+			}
+			else
+			{
+				glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+				glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+				glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+				glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+			}
+			glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+			glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+
+			m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, props.Title.c_str(), nullptr, nullptr);
+			WL_CORE_ASSERT(m_Window, "Failed to recreate GLFW window for API switch!");
+
+			// Recreate contexts for new window
+			if (api == RendererAPI::API::OpenGL)
+			{
+				m_OpenGLContext = new OpenGLContext(m_Window);
+				m_OpenGLContext->Init();
+				m_NVRHIContext = nullptr;
+			}
+			else
+			{
+				m_OpenGLContext = nullptr;
+				m_NVRHIContext = nullptr; // will be created below
+			}
+
+			m_Data.Width = props.Width;
+			m_Data.Height = props.Height;
+			glfwSetWindowUserPointer(m_Window, &m_Data);
+			SetupCallbacks();
+			m_Data.SuppressCloseEvent = false;
+			// Set VSync directly without calling glfwSwapInterval for NO_API windows
+			// glfwSwapInterval is only valid for OpenGL contexts
+			m_Data.VSync = true;
+			if (!isNewNoAPI)
+			{
+				// Only call glfwSwapInterval for OpenGL windows
+				glfwMakeContextCurrent(m_Window);
+				glfwSwapInterval(1);
+			}
+			SetupCallbacks();
+
+			// Reset current context tracking so the switch below creates the right context
+			m_CurrentContext = nullptr;
+			m_CurrentAPI = RendererAPI::API::None;
+		}
+
+		// Ensure global RenderCommand API matches target api before creating contexts
+		// This makes the switch atomic (previously EditorLayer called SetAPI separately causing 1-frame mismatch)
+		if (RendererAPI::GetAPI() != api)
+		{
+			// Clear cached resources from old NVRHI API before deleting it
+			if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+				m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+				m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+			{
+				NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
+				if (nvrhiAPI)
+					nvrhiAPI->ClearCachedResources();
+			}
+			RenderCommand::SetAPI(api);
+		}
+		else if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+				 m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+				 m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+		{
+			// Clear cached resources when switching away from NVRHI but API enum already matches
+			NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
+			if (nvrhiAPI)
+				nvrhiAPI->ClearCachedResources();
 		}
 
 		// Create NVRHI context if needed and not already created
 		if ((api == RendererAPI::API::NVRHI_DX11 ||
-		     api == RendererAPI::API::NVRHI_DX12 ||
-		     api == RendererAPI::API::NVRHI_Vulkan) && !m_NVRHIContext)
+			 api == RendererAPI::API::NVRHI_DX12 ||
+			 api == RendererAPI::API::NVRHI_Vulkan) &&
+			!m_NVRHIContext)
 		{
 			m_NVRHIContext = new NVRHIContext(m_Window, api);
 			m_NVRHIContext->Init();
 
 			// Set the context on the renderer API
-			NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+			NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
 			if (nvrhiAPI)
 			{
-				nvrhiAPI->SetContext(static_cast<NVRHIContext*>(m_NVRHIContext));
+				nvrhiAPI->SetContext(static_cast<NVRHIContext *>(m_NVRHIContext));
 			}
 
 			WL_CORE_INFO("Created NVRHI context");
 		}
 		else if (api == RendererAPI::API::NVRHI_DX11 ||
-		         api == RendererAPI::API::NVRHI_DX12 ||
-		         api == RendererAPI::API::NVRHI_Vulkan)
+				 api == RendererAPI::API::NVRHI_DX12 ||
+				 api == RendererAPI::API::NVRHI_Vulkan)
 		{
 			// Switching between NVRHI APIs - need to recreate context
 			if (m_NVRHIContext)
@@ -251,10 +433,10 @@ namespace Wasteland
 				m_NVRHIContext = new NVRHIContext(m_Window, api);
 				m_NVRHIContext->Init();
 
-				NVRHIRendererAPI* nvrhiAPI = dynamic_cast<NVRHIRendererAPI*>(RenderCommand::GetRendererAPI());
+				NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
 				if (nvrhiAPI)
 				{
-					nvrhiAPI->SetContext(static_cast<NVRHIContext*>(m_NVRHIContext));
+					nvrhiAPI->SetContext(static_cast<NVRHIContext *>(m_NVRHIContext));
 				}
 			}
 		}
@@ -265,8 +447,8 @@ namespace Wasteland
 			m_CurrentContext = m_OpenGLContext;
 		}
 		else if (api == RendererAPI::API::NVRHI_DX11 ||
-		         api == RendererAPI::API::NVRHI_DX12 ||
-		         api == RendererAPI::API::NVRHI_Vulkan)
+				 api == RendererAPI::API::NVRHI_DX12 ||
+				 api == RendererAPI::API::NVRHI_Vulkan)
 		{
 			m_CurrentContext = m_NVRHIContext;
 		}
@@ -276,8 +458,8 @@ namespace Wasteland
 		// Switch ImGui backend to match the new renderer API
 		if (Application::IsInitialized())
 		{
-			ImGuiLayer* imguiLayer = Application::Get().GetImGuiLayer();
-			if (imguiLayer)
+			ImGuiLayer *imguiLayer = Application::Get().GetImGuiLayer();
+			if (imguiLayer != nullptr)
 			{
 				imguiLayer->SwitchBackend(api);
 			}
@@ -290,6 +472,15 @@ namespace Wasteland
 
 		DestroyContexts();
 		glfwDestroyWindow(m_Window);
+	}
+
+	void WindowsWindow::BeginFrame()
+	{
+		WL_PROFILE_FUNCTION();
+		if (m_PendingSwitch)
+			ProcessPendingSwitch();
+		if (m_CurrentContext)
+			m_CurrentContext->BeginFrame();
 	}
 
 	void WindowsWindow::OnUpdate()
@@ -305,12 +496,16 @@ namespace Wasteland
 	{
 		WL_PROFILE_FUNCTION();
 
-		if (enabled)
-			glfwSwapInterval(1);
-		else
-			glfwSwapInterval(0);
-
 		m_Data.VSync = enabled;
+		// glfwSwapInterval is only valid for OpenGL contexts
+		// For NO_API windows (Vulkan/DX), it's a no-op and may generate GLFW error
+		if (m_Window && glfwGetWindowAttrib(m_Window, GLFW_CLIENT_API) == GLFW_OPENGL_API)
+		{
+			if (enabled)
+				glfwSwapInterval(1);
+			else
+				glfwSwapInterval(0);
+		}
 	}
 
 	bool WindowsWindow::IsVSync() const

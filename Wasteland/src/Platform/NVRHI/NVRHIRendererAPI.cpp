@@ -6,9 +6,10 @@
 #include "NVRHIBuffer.h"
 #include "NVRHITexture.h"
 #include "Wasteland/Core/Log.h"
-namespace Wasteland {
+namespace Wasteland
+{
 
-	NVRHIContext* NVRHIRendererAPI::s_CurrentContext = nullptr;
+	NVRHIContext *NVRHIRendererAPI::s_CurrentContext = nullptr;
 
 	NVRHIRendererAPI::NVRHIRendererAPI(RendererAPI::API api)
 		: m_API(api), m_ClearColor(0.1f, 0.1f, 0.1f, 1.0f)
@@ -18,31 +19,41 @@ namespace Wasteland {
 	NVRHIRendererAPI::~NVRHIRendererAPI()
 	{
 		m_PipelineCache.clear();
+		if (s_CurrentContext == m_Context)
+			s_CurrentContext = nullptr;
 	}
 
 	void NVRHIRendererAPI::Init()
 	{
 		WL_PROFILE_FUNCTION();
-		
+
 		// Context is set externally by the window system
 		if (m_Context)
 		{
 			m_Context->Init();
 		}
-		
+
 		std::string apiName;
 		switch (m_API)
 		{
-		case RendererAPI::API::NVRHI_DX11: apiName = "DirectX 11"; break;
-		case RendererAPI::API::NVRHI_DX12: apiName = "DirectX 12"; break;
-		case RendererAPI::API::NVRHI_Vulkan: apiName = "Vulkan"; break;
-		default: apiName = "Unknown"; break;
+		case RendererAPI::API::NVRHI_DX11:
+			apiName = "DirectX 11";
+			break;
+		case RendererAPI::API::NVRHI_DX12:
+			apiName = "DirectX 12";
+			break;
+		case RendererAPI::API::NVRHI_Vulkan:
+			apiName = "Vulkan";
+			break;
+		default:
+			apiName = "Unknown";
+			break;
 		}
-		
+
 		WL_CORE_INFO("NVRHI Renderer API initialized: {0}", apiName);
 	}
 
-	void NVRHIRendererAPI::SetContext(NVRHIContext* context)
+	void NVRHIRendererAPI::SetContext(NVRHIContext *context)
 	{
 		m_Context = context;
 		s_CurrentContext = context;
@@ -51,20 +62,20 @@ namespace Wasteland {
 	void NVRHIRendererAPI::SetViewport(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 	{
 		WL_PROFILE_FUNCTION();
-		
+
 		// Note: In NVRHI, viewport is set as part of GraphicsState before drawing
 		// This is handled in the Renderer implementation
 		// For now, this is a no-op
 		WL_CORE_TRACE("SetViewport({0}, {1}, {2}, {3}) - will be set via GraphicsState", x, y, width, height);
 	}
 
-	void NVRHIRendererAPI::SetClearColor(const glm::vec4& color)
+	void NVRHIRendererAPI::SetClearColor(const glm::vec4 &color)
 	{
 		WL_PROFILE_FUNCTION();
 		m_ClearColor = color;
 	}
 
-	void NVRHIRendererAPI::SetActiveTextures(const std::vector<Ref<Texture2D>>& textures)
+	void NVRHIRendererAPI::SetActiveTextures(const std::vector<Ref<Texture2D>> &textures)
 	{
 		WL_PROFILE_FUNCTION();
 		m_ActiveTextures = textures;
@@ -74,14 +85,14 @@ namespace Wasteland {
 	void NVRHIRendererAPI::Clear()
 	{
 		WL_PROFILE_FUNCTION();
-		
+
 		if (!m_Context)
 		{
 			WL_CORE_ERROR("Clear: No NVRHI context available");
 			return;
 		}
 
-		nvrhi::ICommandList* cmd = m_Context->GetCommandList();
+		nvrhi::ICommandList *cmd = m_Context->GetCommandList();
 		if (!cmd)
 		{
 			WL_CORE_ERROR("Clear: No command list available");
@@ -97,12 +108,12 @@ namespace Wasteland {
 
 		// Open command list, clear, and close
 		cmd->open();
-		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources, 
-			nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
+		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
+							   nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
 		cmd->close();
 	}
 
-	nvrhi::GraphicsPipelineHandle NVRHIRendererAPI::GetOrCreatePipeline(const Ref<Shader>& shader, const Ref<VertexArray>& vertexArray)
+	nvrhi::GraphicsPipelineHandle NVRHIRendererAPI::GetOrCreatePipeline(const Ref<Shader> &shader, const Ref<VertexArray> &vertexArray)
 	{
 		PipelineKey key;
 		key.shaderPtr = shader.get();
@@ -115,7 +126,7 @@ namespace Wasteland {
 		}
 
 		// Create new pipeline
-		nvrhi::IDevice* device = m_Context->GetDevice();
+		nvrhi::IDevice *device = m_Context->GetDevice();
 		if (!device)
 		{
 			WL_CORE_ERROR("GetOrCreatePipeline: No NVRHI device available");
@@ -133,7 +144,7 @@ namespace Wasteland {
 
 		// Create input layout
 		uint32_t inputLayoutCount = 0;
-		nvrhi::VertexAttributeDesc* inputLayoutDescs = nvrhiVA->GetInputLayout(inputLayoutCount);
+		nvrhi::VertexAttributeDesc *inputLayoutDescs = nvrhiVA->GetInputLayout(inputLayoutCount);
 		nvrhi::InputLayoutHandle inputLayout;
 		if (inputLayoutDescs && inputLayoutCount > 0)
 		{
@@ -179,20 +190,20 @@ namespace Wasteland {
 		return pipeline;
 	}
 
-	nvrhi::BindingSetHandle NVRHIRendererAPI::GetOrCreateBindingSet(const Ref<Shader>& shader)
+	nvrhi::BindingSetHandle NVRHIRendererAPI::GetOrCreateBindingSet(const Ref<Shader> &shader)
 	{
 		auto nvrhiShader = std::dynamic_pointer_cast<NVRHIShader>(shader);
 		if (!nvrhiShader)
 			return nullptr;
 
-		const void* shaderPtr = shader.get();
+		const void *shaderPtr = shader.get();
 		auto it = m_BindingSetCache.find(shaderPtr);
 		if (it != m_BindingSetCache.end())
 		{
 			return it->second;
 		}
 
-		nvrhi::IDevice* device = m_Context->GetDevice();
+		nvrhi::IDevice *device = m_Context->GetDevice();
 		if (!device)
 			return nullptr;
 
@@ -239,7 +250,7 @@ namespace Wasteland {
 		return bindingSet;
 	}
 
-	void NVRHIRendererAPI::DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount)
+	void NVRHIRendererAPI::DrawIndexed(const Ref<VertexArray> &vertexArray, uint32_t indexCount)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -249,7 +260,7 @@ namespace Wasteland {
 			return;
 		}
 
-		nvrhi::ICommandList* cmd = m_Context->GetCommandList();
+		nvrhi::ICommandList *cmd = m_Context->GetCommandList();
 		if (!cmd)
 		{
 			WL_CORE_ERROR("DrawIndexed: No command list available");
@@ -293,7 +304,7 @@ namespace Wasteland {
 		nvrhi::GraphicsState state;
 		state.pipeline = pipeline;
 		state.framebuffer = m_Context->GetCurrentFramebuffer();
-		
+
 		// Add binding set if available
 		if (bindingSet)
 		{
@@ -301,23 +312,23 @@ namespace Wasteland {
 		}
 
 		// Bind vertex buffers
-		const auto& vertexBuffers = nvrhiVA->GetVertexBuffers();
+		const auto &vertexBuffers = nvrhiVA->GetVertexBuffers();
 		for (size_t i = 0; i < vertexBuffers.size(); i++)
 		{
 			auto nvrhiVB = std::dynamic_pointer_cast<NVRHIVertexBuffer>(vertexBuffers[i]);
 			if (nvrhiVB)
 			{
 				state.vertexBuffers.push_back(nvrhi::VertexBufferBinding()
-					.setBuffer(nvrhiVB->GetBuffer())
-					.setOffset(0));
+												  .setBuffer(nvrhiVB->GetBuffer())
+												  .setOffset(0));
 			}
 		}
 
 		// Bind index buffer
 		state.indexBuffer = nvrhi::IndexBufferBinding()
-			.setBuffer(nvrhiIB->GetBuffer())
-			.setOffset(0)
-			.setFormat(nvrhi::Format::R32_UINT);
+								.setBuffer(nvrhiIB->GetBuffer())
+								.setOffset(0)
+								.setFormat(nvrhi::Format::R32_UINT);
 
 		// Set viewport
 		state.viewport.addViewport(nvrhi::Viewport(static_cast<float>(m_Context->GetWidth()), static_cast<float>(m_Context->GetHeight())));
@@ -326,18 +337,19 @@ namespace Wasteland {
 		// Open command list if not already open
 		cmd->open();
 		cmd->setGraphicsState(state);
-		
+
 		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
 		cmd->close();
 	}
 
-	void NVRHIRendererAPI::DrawLines(const Ref<VertexArray>& vertexArray, uint32_t vertexCount)
+	void NVRHIRendererAPI::DrawLines(const Ref<VertexArray> &vertexArray, uint32_t vertexCount)
 	{
 		WL_PROFILE_FUNCTION();
-		
-		// TODO: Implement NVRHI line drawing
-		// Similar to DrawIndexed but with primitive topology = LineList
+
+		// TODO: Implement line drawing for all NVRHI backends
+		// For Vulkan, primitive topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+		// For DirectX, primitive topology = D3D_PRIMITIVE_TOPOLOGY_LINELIST
 		WL_CORE_WARN("NVRHIRendererAPI::DrawLines not yet implemented");
 	}
 
@@ -345,12 +357,13 @@ namespace Wasteland {
 	{
 		WL_PROFILE_FUNCTION();
 
-		// Note: DirectX does not support variable line width
-		// This is a no-op for DX11/DX12
-		WL_CORE_TRACE("SetLineWidth({0}) - not supported on DirectX", width);
+		// Vulkan supports variable line width (with wideLines feature), but it's not universally available
+		// DirectX does not support variable line width
+		// For now, this is a no-op for all APIs
+		WL_CORE_TRACE("SetLineWidth({0}) - not supported on current API", width);
 	}
 
-	void NVRHIRendererAPI::DispatchCompute(const Ref<Shader>& shader, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+	void NVRHIRendererAPI::DispatchCompute(const Ref<Shader> &shader, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -360,7 +373,7 @@ namespace Wasteland {
 			return;
 		}
 
-		nvrhi::ICommandList* cmd = m_Context->GetCommandList();
+		nvrhi::ICommandList *cmd = m_Context->GetCommandList();
 		if (!cmd)
 		{
 			WL_CORE_ERROR("DispatchCompute: No command list available");
@@ -374,11 +387,11 @@ namespace Wasteland {
 			return;
 		}
 
-		nvrhi::IDevice* device = m_Context->GetDevice();
+		nvrhi::IDevice *device = m_Context->GetDevice();
 		if (!device)
 			return;
 
-		const void* shaderPtr = shader.get();
+		const void *shaderPtr = shader.get();
 		auto it = m_ComputePipelineCache.find(shaderPtr);
 		nvrhi::ComputePipelineHandle pipeline;
 		if (it != m_ComputePipelineCache.end())
@@ -438,7 +451,7 @@ namespace Wasteland {
 		m_CurrentShader = nullptr;
 
 		WL_CORE_INFO("Cleared {0} pipelines, {1} compute pipelines, and {2} binding sets",
-			m_PipelineCache.size(), m_ComputePipelineCache.size(), m_BindingSetCache.size());
+					 m_PipelineCache.size(), m_ComputePipelineCache.size(), m_BindingSetCache.size());
 	}
 
 }

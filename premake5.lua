@@ -1,5 +1,6 @@
 workspace "Wasteland"
 	architecture "x64"
+	toolset "v145"
 	startproject "DemonCore-Editor"
 
 	configurations
@@ -27,6 +28,7 @@ IncludeDir["pybind11"] = "Wasteland/vendor/pybind11/include"
 IncludeDir["NVRHI"] = "Wasteland/vendor/nvrhi/include"
 IncludeDir["DirectXHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/directx_headers-src/include"
 IncludeDir["VulkanHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/vulkan_headers-src/include"
+IncludeDir["VulkanSDK"] = "C:/VulkanSDK/1.3.296.0/Include"
 
 pythonpath = "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64"
 
@@ -90,14 +92,16 @@ project "Wasteland"
 		"%{IncludeDir.NVRHI}",
 		"%{IncludeDir.DirectXHeaders}",
 		"%{IncludeDir.VulkanHeaders}",
-		pythonpath .. "/include"
+		"%{IncludeDir.VulkanSDK}",
+				pythonpath .. "/include"
 	}
 
 	libdirs
 	{
 		pythonpath .. "/libs",
-		"Wasteland/vendor/nvrhi/build/%{cfg.buildcfg}"
-	}
+		"Wasteland/vendor/nvrhi/build/%{cfg.buildcfg}",
+		"C:/VulkanSDK/1.3.296.0/Lib"
+			}
 
 	links
 	{
@@ -110,8 +114,9 @@ project "Wasteland"
 		"python314",
 		"nvrhi",
 		"nvrhi_d3d11",
-		"nvrhi_d3d12"
-	}
+		"nvrhi_d3d12",
+		"nvrhi_vk"
+			}
 
 	filter "files:vendor/ImGuizmo/**.cpp"
 		flags
@@ -147,8 +152,10 @@ project "Wasteland"
 			"d3d12.lib",
 			"dxgi.lib",
 			"d3dcompiler.lib",
-			"dxguid.lib"
-		}
+			"dxguid.lib",
+			"vulkan-1.lib",
+			"volk.lib"
+				}
 
 	filter "system:linux"
 		buildoptions
@@ -461,6 +468,8 @@ project "DemonCore-Editor"
 	}
 
 	postbuildcommands {
+        'if not exist "$(TargetDir)assets" mkdir "$(TargetDir)assets"',
+        'xcopy /Y /E /I "%{wks.location}/DemonCore-Editor/assets" "$(TargetDir)assets"',
         'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.dll" "$(TargetDir)python314.dll"',
 		'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314._pth" "$(TargetDir)"',
         'xcopy /Y /E /I "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib" "$(TargetDir)Lib"',

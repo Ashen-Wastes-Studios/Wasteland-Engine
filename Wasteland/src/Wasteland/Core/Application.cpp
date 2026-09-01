@@ -4,6 +4,8 @@
 #include "Wasteland/Core/Log.h"
 
 #include "Wasteland/Renderer/Renderer.h"
+#include "Wasteland/Renderer/RendererAPI.h"
+#include "Platform/NVRHI/NVRHIContext.h"
 
 #include "Input.h"
 
@@ -103,11 +105,22 @@ namespace Wasteland
 
 			if (!m_Minimized)
 			{
+				m_Window->BeginFrame();
 				{
 					WL_PROFILE_SCOPE("LayerStack OnUpdate");
 
 					for (Layer *layer : m_LayerStack)
 						layer->OnUpdate(timestep);
+				}
+
+				// Flush NVRHI scene rendering before ImGui (scene must be behind UI)
+				if (RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX11 ||
+					RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX12 ||
+					RendererAPI::GetAPI() == RendererAPI::API::NVRHI_Vulkan)
+				{
+					auto *nvrhiCtx = dynamic_cast<NVRHIContext *>(m_Window->GetCurrentContext());
+					if (nvrhiCtx)
+						nvrhiCtx->ExecuteNVRHICommandList();
 				}
 
 				m_ImGuiLayer->Begin();
@@ -126,6 +139,7 @@ namespace Wasteland
 
 	bool Application::OnWindowClose(WindowCloseEvent &e)
 	{
+		WL_CORE_INFO("OnWindowClose received! Shutting down app.");
 		m_Running = false;
 		return true;
 	}

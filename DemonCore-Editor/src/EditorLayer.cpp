@@ -308,6 +308,7 @@ namespace Wasteland
 		fbSpec.Width = 1280;
 		fbSpec.Height = 720;
 		m_Framebuffer = Framebuffer::Create(fbSpec);
+		m_FramebufferAPI = RendererAPI::GetAPI();
 
 		m_EditorScene = CreateRef<Scene>();
 		m_ActiveScene = m_EditorScene;
@@ -327,6 +328,13 @@ namespace Wasteland
 	void EditorLayer::OnUpdate(Timestep ts)
 	{
 		WL_PROFILE_FUNCTION();
+
+		if (m_FramebufferAPI != RendererAPI::GetAPI())
+		{
+			FramebufferSpecification spec = m_Framebuffer->GetSpecification();
+			m_Framebuffer = Framebuffer::Create(spec);
+			m_FramebufferAPI = RendererAPI::GetAPI();
+		}
 
 		// Resize
 		if (FramebufferSpecification spec = m_Framebuffer->GetSpecification();
@@ -596,20 +604,18 @@ namespace Wasteland
 			ImGui::Separator();
 			ImGui::Text("Rendering Backend");
 
-			static const char* apiItems[] = {"OpenGL", "DirectX 11", "DirectX 12", "Vulkan"};
+			static const char *apiItems[] = {"OpenGL", "DirectX 11", "DirectX 12", "Vulkan"};
 			int currentAPI = (int)Wasteland::RendererAPI::GetAPI() - 1; // -1 because None = 0
-			if (currentAPI < 0) currentAPI = 0;
-			
+			if (currentAPI < 0)
+				currentAPI = 0;
+
 			if (ImGui::Combo("Rendering API", &currentAPI, apiItems, IM_ARRAYSIZE(apiItems)))
 			{
 				Wasteland::RendererAPI::API newAPI = (Wasteland::RendererAPI::API)(currentAPI + 1);
-				
-				// Switch renderer API
-				Wasteland::RenderCommand::SetAPI(newAPI);
-				
-				// Switch window context
+
+				// Switch window context (also updates RenderCommand API atomically when switch executes)
 				Wasteland::Application::Get().GetWindow().SwitchRendererAPI(newAPI);
-				
+
 				WL_CORE_INFO("Switched to rendering API: {0}", apiItems[currentAPI]);
 			}
 

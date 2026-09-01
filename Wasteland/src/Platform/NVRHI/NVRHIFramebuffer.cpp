@@ -3,14 +3,21 @@
 #include "NVRHIContext.h"
 #include "NVRHIRendererAPI.h"
 #include "Wasteland/Core/Log.h"
+#include "Wasteland/Renderer/RendererAPI.h"
 
-namespace Wasteland {
+namespace Wasteland
+{
 
 	// Helper to get the current NVRHI device
-	static nvrhi::IDevice* GetDevice()
+	static nvrhi::IDevice *GetDevice()
 	{
-		auto* context = NVRHIRendererAPI::GetCurrentContext();
-		return context ? context->GetDevice() : nullptr;
+		auto *context = NVRHIRendererAPI::GetCurrentContext();
+		if (!context || context->GetAPI() != RendererAPI::GetAPI())
+		{
+			WL_CORE_ERROR("NVRHIFramebuffer: renderer API and NVRHI context do not match");
+			return nullptr;
+		}
+		return context->GetDevice();
 	}
 
 	// Helper to convert framebuffer texture format to NVRHI format
@@ -18,16 +25,19 @@ namespace Wasteland {
 	{
 		switch (format)
 		{
-			case FramebufferTextureFormat::RGBA8: return nvrhi::Format::SRGBA8_UNORM;
-			case FramebufferTextureFormat::RED_INTEGER: return nvrhi::Format::R32_SINT;
-			case FramebufferTextureFormat::DEPTH24STENCIL8: return nvrhi::Format::D24S8;
-			default:
-				WL_CORE_ASSERT(false, "Unknown FramebufferTextureFormat!");
-				return nvrhi::Format::UNKNOWN;
+		case FramebufferTextureFormat::RGBA8:
+			return nvrhi::Format::SRGBA8_UNORM;
+		case FramebufferTextureFormat::RED_INTEGER:
+			return nvrhi::Format::R32_SINT;
+		case FramebufferTextureFormat::DEPTH24STENCIL8:
+			return nvrhi::Format::D24S8;
+		default:
+			WL_CORE_ASSERT(false, "Unknown FramebufferTextureFormat!");
+			return nvrhi::Format::UNKNOWN;
 		}
 	}
 
-	NVRHIFramebuffer::NVRHIFramebuffer(const FramebufferSpecification& spec)
+	NVRHIFramebuffer::NVRHIFramebuffer(const FramebufferSpecification &spec)
 		: m_Specification(spec)
 	{
 		Invalidate();
@@ -42,7 +52,7 @@ namespace Wasteland {
 
 	void NVRHIFramebuffer::Invalidate()
 	{
-		nvrhi::IDevice* device = GetDevice();
+		nvrhi::IDevice *device = GetDevice();
 		if (!device)
 		{
 			WL_CORE_ERROR("NVRHIFramebuffer: No NVRHI device available");
@@ -55,7 +65,7 @@ namespace Wasteland {
 		m_DepthTexture = nullptr;
 
 		// Create color attachments
-		for (const auto& attachmentSpec : m_Specification.Attachments.Attachments)
+		for (const auto &attachmentSpec : m_Specification.Attachments.Attachments)
 		{
 			if (attachmentSpec.TextureFormat == FramebufferTextureFormat::DEPTH24STENCIL8)
 			{
@@ -94,12 +104,12 @@ namespace Wasteland {
 
 		// Create framebuffer
 		nvrhi::FramebufferDesc fbDesc;
-		
-		for (const auto& colorTexture : m_ColorTextures)
+
+		for (const auto &colorTexture : m_ColorTextures)
 		{
 			fbDesc.addColorAttachment(colorTexture);
 		}
-		
+
 		if (m_DepthTexture)
 		{
 			fbDesc.setDepthAttachment(m_DepthTexture);
@@ -126,8 +136,8 @@ namespace Wasteland {
 
 	void NVRHIFramebuffer::Resize(uint32_t width, uint32_t height)
 	{
-		if (width == 0 || height == 0 || 
-		    width == m_Specification.Width && height == m_Specification.Height)
+		if (width == 0 || height == 0 ||
+			width == m_Specification.Width && height == m_Specification.Height)
 			return;
 
 		m_Specification.Width = width;
@@ -145,14 +155,14 @@ namespace Wasteland {
 
 	void NVRHIFramebuffer::ClearAttachment(uint32_t attachmentIndex, int value)
 	{
-		auto* context = NVRHIRendererAPI::GetCurrentContext();
+		auto *context = NVRHIRendererAPI::GetCurrentContext();
 		if (!context)
 		{
 			WL_CORE_ERROR("NVRHIFramebuffer::ClearAttachment: No NVRHI context available");
 			return;
 		}
 
-		nvrhi::ICommandList* cmd = context->GetCommandList();
+		nvrhi::ICommandList *cmd = context->GetCommandList();
 		if (!cmd)
 		{
 			WL_CORE_ERROR("NVRHIFramebuffer::ClearAttachment: No command list available");

@@ -33,6 +33,8 @@ namespace Wasteland {
 		void InitBackend(RendererAPI::API api);
 		void ShutdownBackend();
 		void PerformBackendSwitch();
+	public:
+		void ShutdownBackendForWindowRecreate();
 		
 		bool m_BlockEvents = true;
 		float m_Time = 0.0f;

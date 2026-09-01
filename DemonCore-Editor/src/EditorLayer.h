@@ -57,6 +57,7 @@ namespace Wasteland
 		OrthographicCameraController m_CameraController;
 
 		Ref<Framebuffer> m_Framebuffer;
+		RendererAPI::API m_FramebufferAPI = RendererAPI::API::None;
 
 		Ref<Scene> m_ActiveScene;
 		Ref<Scene> m_EditorScene;
