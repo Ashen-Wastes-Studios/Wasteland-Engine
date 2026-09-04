@@ -275,6 +275,98 @@ namespace Wasteland
 
 	extern const std::filesystem::path g_AssetPath;
 
+	// ------------------------------------------------------------------
+	// Asset sync: the built exe runs from bin/<Config>/DemonCore-Editor and reads
+	// its local "assets" copy, which the postbuild step only refreshes on rebuild.
+	// To keep hand-edits under DemonCore-Editor/assets/ visible without rebuilding,
+	// mirror newer source files over on startup, and mirror in-editor saves back
+	// to the source tree so a later rebuild doesn't wipe them.
+	// ------------------------------------------------------------------
+	static std::filesystem::path s_SourceAssetsRoot;
+
+	static std::filesystem::path GetExecutableDir()
+	{
+		std::filesystem::path dir;
+#ifdef _WIN32
+		char buffer[MAX_PATH];
+		DWORD length = GetModuleFileNameA(NULL, buffer, MAX_PATH);
+		if (length > 0 && length < MAX_PATH)
+			dir = std::filesystem::path(buffer).parent_path();
+#endif
+		return dir;
+	}
+
+	static bool IsNewerFile(const std::filesystem::path &src, const std::filesystem::path &dst)
+	{
+		std::error_code ec;
+		if (!std::filesystem::exists(dst, ec))
+			return true;
+		auto srcTime = std::filesystem::last_write_time(src, ec);
+		if (ec) return true;
+		auto dstTime = std::filesystem::last_write_time(dst, ec);
+		if (ec) return true;
+		return srcTime > dstTime;
+	}
+
+	static void SyncRuntimeAssetsFromSource()
+	{
+		std::error_code ec;
+		std::filesystem::path exeDir = GetExecutableDir();
+		if (exeDir.empty())
+			return;
+
+		std::filesystem::path candidate = (exeDir / ".." / ".." / ".." / "DemonCore-Editor" / "assets").lexically_normal();
+		if (!std::filesystem::is_directory(candidate, ec))
+			return; // Not a repo-layout launch (e.g. packaged build) — nothing to sync.
+
+		std::filesystem::path runtimeAssets = (exeDir / "assets").lexically_normal();
+		if (std::filesystem::equivalent(candidate, runtimeAssets, ec))
+			return;
+
+		s_SourceAssetsRoot = candidate;
+		std::filesystem::create_directories(runtimeAssets, ec);
+
+		uint32_t copied = 0;
+		for (auto it = std::filesystem::recursive_directory_iterator(candidate, ec);
+			it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+		{
+			if (ec) break;
+			if (!it->is_regular_file(ec))
+				continue;
+			std::filesystem::path rel = std::filesystem::relative(it->path(), candidate, ec);
+			if (ec) continue;
+			std::filesystem::path dst = runtimeAssets / rel;
+			if (!IsNewerFile(it->path(), dst))
+				continue;
+			std::filesystem::create_directories(dst.parent_path(), ec);
+			std::filesystem::copy_file(it->path(), dst, std::filesystem::copy_options::overwrite_existing, ec);
+			if (!ec)
+				copied++;
+		}
+		if (copied > 0)
+			WL_CORE_INFO("Asset sync: updated {0} file(s) from {1}", copied, candidate.string());
+	}
+
+	static void MirrorSavedAssetToSource(const std::filesystem::path &savedPath)
+	{
+		if (s_SourceAssetsRoot.empty())
+			return;
+		std::error_code ec;
+		std::filesystem::path runtimeAssets = std::filesystem::absolute("assets", ec);
+		std::filesystem::path absSaved = std::filesystem::absolute(savedPath, ec);
+		if (ec) return;
+		std::filesystem::path rel = std::filesystem::relative(absSaved, runtimeAssets, ec);
+		if (ec || rel.empty() || *rel.begin() == "..")
+			return; // Saved outside the runtime assets tree — nothing to mirror.
+		std::filesystem::path dst = s_SourceAssetsRoot / rel;
+		if (std::filesystem::equivalent(absSaved, dst, ec))
+			return;
+		std::filesystem::create_directories(dst.parent_path(), ec);
+		std::filesystem::copy_file(absSaved, dst, std::filesystem::copy_options::overwrite_existing, ec);
+		if (!ec)
+			WL_CORE_INFO("Asset sync: mirrored save to {0}", dst.string());
+	}
+
 	static const uint32_t s_MapWidth = 24;
 	static const char *s_MapTiles =
 		"WWWWWWWWWWWWWWWWWWWWWWWW"
@@ -312,6 +404,8 @@ namespace Wasteland
 
 		m_EditorScene = CreateRef<Scene>();
 		m_ActiveScene = m_EditorScene;
+
+		SyncRuntimeAssetsFromSource();
 
 		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
 
@@ -1138,6 +1232,7 @@ namespace Wasteland
 	{
 		SceneSerializer serializer(scene);
 		serializer.Serialize(path.string());
+		MirrorSavedAssetToSource(path);
 	}
 
 	void EditorLayer::OnScenePlay()

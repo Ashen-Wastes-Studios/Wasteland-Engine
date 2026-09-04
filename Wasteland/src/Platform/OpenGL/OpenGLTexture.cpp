@@ -48,7 +48,7 @@ namespace Wasteland
 		GLenum internalFormat = 0, dataFormat = 0;
 		if (channels == 4)
 		{
-			internalFormat = GL_RGB8;
+			internalFormat = GL_RGBA8;
 			dataFormat = GL_RGBA;
 		}
 		else if (channels == 3)
@@ -62,10 +62,17 @@ namespace Wasteland
 
 		WL_CORE_ASSERT(internalFormat && dataFormat, "Format not supported!");
 
-		glCreateTextures(GL_TEXTURE_2D, 1, &m_RendererID);
-		glTextureStorage2D(m_RendererID, 1, internalFormat, m_Width, m_Height);
+		// Full mip chain: the ray tracer minifies aggressively (distant floors at
+		// grazing angles, reduced-res tracing) and samples explicit LODs. A single
+		// level + LINEAR minification causes moire lines and shimmer.
+		int mipLevels = 1;
+		for (int s = width > height ? width : height; s > 1; s >>= 1)
+			mipLevels++;
 
-		glTextureParameteri(m_RendererID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glCreateTextures(GL_TEXTURE_2D, 1, &m_RendererID);
+		glTextureStorage2D(m_RendererID, mipLevels, internalFormat, m_Width, m_Height);
+
+		glTextureParameteri(m_RendererID, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTextureParameteri(m_RendererID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -76,7 +83,13 @@ namespace Wasteland
 		glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &maxAniso);
 		glTextureParameterf(m_RendererID, GL_TEXTURE_MAX_ANISOTROPY, std::min(maxAniso, 16.0f));
 
+		// Row pitch safety: 3-channel widths like 225 (675 bytes/row) are not a
+		// multiple of GL's default unpack alignment of 4, which shears every
+		// row and shows up as diagonal RGB rainbow stripes. Alignment 1 is
+		// always safe for tightly-packed stb data.
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 		glTextureSubImage2D(m_RendererID, 0, 0, 0, m_Width, m_Height, dataFormat, GL_UNSIGNED_BYTE, data);
+		glGenerateMipmap(m_RendererID);
 
 		stbi_image_free(data);
 	}
@@ -94,6 +107,7 @@ namespace Wasteland
 
 		uint32_t bpp = m_DataFormat == GL_RGBA ? 4 : 3;
 		WL_CORE_ASSERT(size == m_Width * m_Height * bpp, "Data must be entire texture!");
+		glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 		glTextureSubImage2D(m_RendererID, 0, 0, 0, m_Width, m_Height, m_DataFormat, GL_UNSIGNED_BYTE, data);
 	}
 

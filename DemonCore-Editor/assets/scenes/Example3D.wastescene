@@ -67,7 +67,7 @@ Entities:
       Metallic: 0
       Roughness: 0.5
       EmissionColor: [0.737024248, 1, 0.441176474, 1]
-      EmissionIntensity: 10
+      EmissionIntensity: 2
       DisplacementScale: 0
   - Entity: 7087185800274467715
     TagComponent:

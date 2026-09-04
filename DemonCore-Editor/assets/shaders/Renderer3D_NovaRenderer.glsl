@@ -12,7 +12,7 @@ layout(rgba32f, binding = 1) uniform image2D img_Accumulation;
 layout(rgba32f, binding = 2) uniform image2D img_Bloom;
 layout(rgba32f, binding = 7) uniform image2D img_Bloom_Temp;
 layout(rg16f, binding = 5) uniform image2D img_Velocity;
-layout(rgba32f, binding = 6) uniform image2D img_FinalDisplay;
+layout(rgba32f, binding = 6) uniform image2D img_TraceGBuffer; // r=NDC depth (1=sky), gba=packed normal
 layout(binding = 3) uniform sampler2D s_Accumulation;
 layout(binding = 4) uniform sampler2D s_DepthBuffer;
 layout(binding = 8) uniform sampler2D s_Output;
@@ -97,6 +97,21 @@ uniform float u_NeuralLightStrength;
 uniform float u_NeuralMatStrength;
 
 float wl_softsign(float x) { return x / (1.0 + abs(x)); }
+
+// Reduced-resolution tracing: passes 0/1/2/7 dispatch at ComputeWidth/Height
+// (= full size * u_RenderScale) into the corner subregion, which RunComposite
+// upscales. UV math must use the dispatched extent, not the full image.
+// Identical to imageSize() at scale 1, so lower presets are unaffected.
+ivec2 wl_trace_extent(ivec2 fullSize)
+{
+    ivec2 t = ivec2(vec2(fullSize) * u_RenderScale);
+    return ivec2(max(t.x, 1), max(t.y, 1));
+}
+
+// Trace G-buffers (depth/normal) live full-size with valid data in the trace
+// subregion; trace-space UVs span [0,1] across dispatched pixels, so scale
+// them to buffer space when sampling. Identity at scale 1.
+vec2 wl_buf_uv(vec2 traceUV) { return traceUV * u_RenderScale; }
 
 float wl_hash12(vec2 p)
 {
@@ -316,7 +331,7 @@ bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
     return false;
 }
 
-bool IsOccluded(Ray r, float maxDist) {
+bool IsOccluded(Ray r, float maxDist, int skipIdx) {
     if (u_InstanceCount == 0) return false;
 
     vec3 safeDir = sign(r.Direction) * max(abs(r.Direction), vec3(0.00001));
@@ -342,6 +357,10 @@ bool IsOccluded(Ray r, float maxDist) {
             int first = -encoded - 1;
             int count = int(node.MaxBounds.w);
             for (int i = first; i < first + count; i++) {
+                // Never let a light shadow itself: shadow rays aim at the
+                // light's center, so without this the light's own front
+                // surface always occludes and kills all direct light.
+                if (i == skipIdx) continue;
                 if (TestInstanceOcclusion(r, maxDist, i)) return true;
             }
         } else {
@@ -432,9 +451,9 @@ vec2 CalculateUV(vec3 localPos, RayTracingInstance inst) {
 
 void RunVisibilityAndVelocity() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
-    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imageSize(img_Output));
+    vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(wl_trace_extent(imageSize(img_Output)));
     
-    float depth = texture(s_DepthBuffer, uv).r;
+    float depth = texture(s_DepthBuffer, wl_buf_uv(uv)).r;
     if (depth >= 1.0) { 
         imageStore(img_Velocity, pixelCoords, vec4(0.0, 0.0, 0.0, 1.0));
         return;
@@ -465,10 +484,10 @@ struct HitInfo {
     vec3 f0Tint; // neural material specular tint, 1.0 = classic F0
 };
 
-void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec2 texScale,
+void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec4 texScaleFull,
                          out vec3 T, out vec3 B, out vec2 uvScale)
 {
-    if (shapeType == 1) 
+    if (shapeType == 1)
     {
         T = vec3(-localNormal.z, 0.0, localNormal.x);
         float lenT = length(T);
@@ -483,25 +502,31 @@ void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec2
         float radiusXZ = length(localHitPos.xz);
         radiusXZ = max(radiusXZ, 0.05 * radius);
 
-        uvScale.x = (1.0 / (2.0 * PI * radiusXZ)) * texScale.x;
-        uvScale.y = (1.0 / (PI * radius)) * texScale.y;
+        uvScale.x = (1.0 / (2.0 * PI * radiusXZ)) * texScaleFull.x;
+        uvScale.y = (1.0 / (PI * radius)) * texScaleFull.y;
     }
-    else 
+    else
     {
+        // Cube: mirror CalculateUV's per-face tiling so the POM march steps
+        // in the same UV space the heights are sampled from. A flat texScale
+        // here skews the march along one axis (e.g. floor top samples with
+        // (x, w) = (50, 50) but marched with (x, y) = (50, 1)), producing
+        // directional relief and occlusion banding.
         vec3 absN = abs(localNormal);
 
         if (absN.x > absN.y && absN.x > absN.z) {
             T = vec3(0.0, 0.0, sign(localNormal.x));
             B = vec3(0.0, 1.0, 0.0);
+            uvScale = vec2(texScaleFull.z, texScaleFull.y);
         } else if (absN.y > absN.x && absN.y > absN.z) {
             T = vec3(1.0, 0.0, 0.0);
             B = vec3(0.0, 0.0, -sign(localNormal.y));
+            uvScale = vec2(texScaleFull.x, texScaleFull.w);
         } else {
             T = vec3(-sign(localNormal.z), 0.0, 0.0);
             B = vec3(0.0, 1.0, 0.0);
+            uvScale = vec2(texScaleFull.x, texScaleFull.y);
         }
-
-        uvScale = texScale;
     }
 }
 
@@ -532,7 +557,7 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     int shapeType = int(inst.MaterialParams.z);
     vec3 T, B;
     vec2 uvScale;
-    ComputeTangentFrame(localHitPos, localNormal, shapeType, inst.TextureScale.xy, T, B, uvScale);
+    ComputeTangentFrame(localHitPos, localNormal, shapeType, inst.TextureScale, T, B, uvScale);
 
     int texID = inst.TextureID;
     float eps = 1.0 / 256.0;
@@ -599,10 +624,25 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
         float dhdu = (hU - finalHeight) / eps;
         float dhdv = (hV - finalHeight) / eps;
 
-        float dh_dsT = dhdu * uvScale.x;
-        float dh_dsB = dhdv * uvScale.y;
+        // UV-space gradient -> world-space gradient. The engine tiles ~1 texture
+        // per meter (cube TextureScale = world scale, sphere scales are
+        // circumference-based), so UV-per-world is ~1 and NO uvScale factor
+        // belongs here. Multiplying by uvScale (50x on a 50m floor, up to 20x
+        // near sphere poles) saturated normals into garbage and blackened
+        // everything POM touched. (uvScale IS still correct for the march
+        // step above, which walks in UV units.)
+        float dh_dsT = dhdu;
+        float dh_dsB = dhdv;
 
-        vec3 localPerturbedNormal = normalize(localNormal - (dh_dsT * T + dh_dsB * B) * bumpStrength);
+        vec3 bumpGrad = (dh_dsT * T + dh_dsB * B) * bumpStrength;
+        vec3 localPerturbedNormal = localNormal - bumpGrad;
+        float bumpLen = length(bumpGrad);
+        // Cap the perturbation: with large texture scales (e.g. a 50m floor
+        // with uvScale 50) the UV-space gradient saturates into garbage
+        // normals and near-black shading. Direction kept, magnitude capped.
+        if (bumpLen > 1.0)
+            localPerturbedNormal = localNormal - bumpGrad / bumpLen;
+        localPerturbedNormal = normalize(localPerturbedNormal);
         mat3 normalMatrix = transpose(mat3(inst.InvTransform));
         worldNormal = normalize(normalMatrix * localPerturbedNormal);
 
@@ -648,8 +688,25 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
             }
 
             float dist = distance(worldHit, u_CameraPosition);
-            float scaleLen = max(length(inst.TextureScale.xy), 0.0001);
-            float mipLevel = clamp(log2(max(dist * scaleLen * 0.02, 0.0001)), 0.0, 5.0);
+            // LOD from texel DENSITY (tiles per meter), not raw TextureScale:
+            // scale grows with object size (50m floor tiles 50x) but density
+            // is ~1/m like a unit cube. Raw scale pushed big surfaces to max
+            // LOD meters from the camera, erasing all texture detail.
+            // (Axis-aligned approx; rotation ignored.)
+            vec3 wAxis = vec3(length(inst.WorldTransform[0].xyz),
+                              length(inst.WorldTransform[1].xyz),
+                              length(inst.WorldTransform[2].xyz));
+            vec3 wSize = max((inst.Max.xyz - inst.Min.xyz) * wAxis, vec3(0.0001));
+            float worldExtent = max(max(wSize.x, wSize.y), wSize.z);
+            float scaleLen = max(length(inst.TextureScale.xy) / worldExtent, 0.0001);
+            // Gentle distance ramp (holds LOD 0 ~4x farther out) + extra blur
+            // at grazing angles, where one isotropic LOD can't cover the
+            // stretched footprint and shimmer/RGB striping appears.
+            // (textureLod bypasses driver anisotropy, so compensate manually.)
+            float ndv = abs(dot(info.normal, ray.Direction));
+            float grazing = 1.0 - clamp(ndv, 0.0, 1.0);
+            float mipLevel = log2(max(dist * scaleLen * 0.008, 0.0001)) + grazing * grazing * 2.0;
+            mipLevel = clamp(mipLevel, 0.0, 4.0);
 
             vec3 sampledAlbedo = vec3(1.0);
             if (inst.TextureID >= 0 && inst.TextureID < 32)
@@ -727,7 +784,7 @@ HitInfo TraceScene(Ray ray) {
     return info;
 }
 
-vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
+vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed) {
     vec3 F0 = mix(vec3(0.04), max(h.albedo, vec3(0.04)), h.metal) * h.f0Tint;
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
@@ -737,14 +794,32 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
                        ((u_QualityLevel == 2) ? 4 : u_MaxLights));
     int lightsToSample = min(u_LightCount, maxLightsCap);
 
-    for (int li = 0; li < lightsToSample; li++) {
+    // Stochastic subset: evaluate 2 rotating lights instead of all N shadow
+    // rays, scaled to stay unbiased. Temporal accumulation converges the
+    // rotation; ~4x cheaper direct lighting at Ultra.
+    int evalCount = lightsToSample;
+    int lightStart = 0;
+    int lightStride = 1;
+    if (lightsToSample > 2)
+    {
+        evalCount = 2;
+        lightStart = int(lightSeed % uint(lightsToSample));
+        lightStride = lightsToSample / 2;
+        if (lightStride < 1) lightStride = 1;
+    }
+    float lightScale = float(lightsToSample) / float(max(evalCount, 1));
+
+    for (int k = 0; k < evalCount; k++) {
+        int li = (lightStart + k * lightStride) % lightsToSample;
         int i = LightIndices[li];
         RayTracingInstance light = Instances[i];
         vec3 toLight = light.WorldTransform[3].xyz - h.worldPos;
         float distToLight = length(toLight);
         vec3 dirToLight = toLight / distToLight;
         Ray shadowRay = Ray(h.worldPos + h.normal * 0.001, dirToLight);
-        if (!IsOccluded(shadowRay, distToLight)) {
+        // Pass the light's own instance index so it can't self-shadow
+        // (shadow rays target the light center, inside its geometry).
+        if (!IsOccluded(shadowRay, distToLight, i)) {
             float NdotL = max(dot(h.normal, dirToLight), 0.0);
             if (NdotL <= 0.0) continue;
             vec3 H = normalize(V + dirToLight);
@@ -757,7 +832,7 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
 
             float brightness = dot(contrib, vec3(0.2126, 0.7152, 0.0722));
             if (brightness > 10.0) contrib *= (10.0 / brightness);
-            directLight += contrib;
+            directLight += contrib * lightScale;
         }
     }
 
@@ -787,16 +862,29 @@ void RunTraceAndDenoise()
 {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 imgSize = imageSize(img_Output);
-    if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
+    ivec2 traceSize = wl_trace_extent(imgSize);
+    if (pixelCoords.x >= traceSize.x || pixelCoords.y >= traceSize.y) return;
 
     seed = uint(pixelCoords.y * 1024 + pixelCoords.x) + uint(u_FrameIndex * 1000);
     vec2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
-    vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(imgSize)) * 2.0 - 1.0;
+    vec2 jitteredUV = ((vec2(pixelCoords) + jitter) / vec2(traceSize)) * 2.0 - 1.0;
     
     Ray primaryRay = Ray(u_CameraPosition, normalize((u_InverseViewProjection * vec4(jitteredUV, 1.0, 1.0)).xyz));
     HitInfo primary = TraceScene(primaryRay);
 
     imageStore(img_AlbedoHit, pixelCoords, vec4(primary.hit ? primary.albedo : vec3(1.0), primary.hit ? 1.0 : 0.0));
+
+    // Trace G-buffer: NDC depth (far on miss) + packed world normal for the
+    // velocity / temporal / bilateral passes. Full-size buffer, subregion data.
+    // (RunResolve was removed; binding 6 was dead. Image units are capped at
+    // 0-7 on this GL driver, so depth+normal share one RGBA32F image.)
+    if (!primary.hit) {
+        imageStore(img_TraceGBuffer, pixelCoords, vec4(1.0, 0.5, 0.5, 1.0));
+    } else {
+        vec4 tclip = u_ViewProjection * vec4(primary.worldPos, 1.0);
+        float tndc = tclip.z / max(tclip.w, 1e-6);
+        imageStore(img_TraceGBuffer, pixelCoords, vec4(clamp(tndc * 0.5 + 0.5, 0.0, 1.0), primary.normal * 0.5 + 0.5));
+    }
 
     if (!primary.hit) {
         imageStore(img_Bloom, pixelCoords, vec4(GetSkyColor(primaryRay.Direction), 1.0));
@@ -811,7 +899,8 @@ void RunTraceAndDenoise()
 
     if (tileHit.hit) {
         vec3 V = normalize(-lightRay.Direction);
-        directLight = ComputeDirectLighting(tileHit, V);
+        uint lightSeed = uint(pixelCoords.x * 73 + pixelCoords.y * 149 + u_FrameIndex * 2);
+        directLight = ComputeDirectLighting(tileHit, V, lightSeed);
 
         int maxIndirectRays = (u_QualityLevel == 0) ? 0 : 
                               ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
@@ -838,7 +927,7 @@ void RunTraceAndDenoise()
 
                 if (indirect.hit) {
                     vec3 indirectV = normalize(-indirectDir);
-                    vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV);
+                    vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV, lightSeed + 1u);
                     indirectLight += indirectReflectance * bouncedLight;
                 } else {
                     indirectLight += indirectReflectance * GetSkyColor(indirectDir);
@@ -862,29 +951,34 @@ void RunTraceAndDenoise()
     directLight = clamp(directLight, vec3(0.0), vec3(10.0));
     indirectLight = clamp(indirectLight, vec3(0.0), vec3(5.0));
 
-    vec3 finalPixelColor = (primary.albedo * directLight) + indirectLight;
+    // ComputeDirectLighting already folds albedo into the BRDF (diffuse/spec/
+    // ambient/emission), and indirectLight already carries tile reflectance -
+    // do NOT multiply by albedo again (albedo^2 pushed textured floors to black).
+    vec3 finalPixelColor = directLight + indirectLight;
     imageStore(img_Bloom, pixelCoords, vec4(finalPixelColor, 1.0));
 }
 
 void RunTemporalAccumulation() {
     ivec2 pixelCoords = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imgSize = imageSize(img_Accumulation);
+    ivec2 imgSize = wl_trace_extent(imageSize(img_Accumulation));
     vec2 uv = (vec2(pixelCoords) + 0.5) / vec2(imgSize);
 
     vec3 currentLight = imageLoad(img_Bloom, pixelCoords).rgb;
     vec2 velocity = imageLoad(img_Velocity, pixelCoords).xy;
     vec2 prevUV = uv - velocity;
+    // Accumulation + depth buffers hold the subregion; map history UVs to it.
+    vec2 histUV = prevUV * u_RenderScale;
 
     bool validHistory = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
     float motionMag = length(velocity * vec2(imgSize));
 
     if (validHistory) {
-        float currentDepth = texture(s_DepthBuffer, uv).r;
-        float prevDepth = texture(s_DepthBuffer, prevUV).r;
+        float currentDepth = texture(s_DepthBuffer, wl_buf_uv(uv)).r;
+        float prevDepth = texture(s_DepthBuffer, histUV).r;
         if (abs(currentDepth - prevDepth) > 0.02) validHistory = false;
     }
 
-    vec3 historyLight = texture(s_Accumulation, prevUV).rgb;
+    vec3 historyLight = texture(s_Accumulation, histUV).rgb;
 
     if (validHistory) {
         if (u_QualityLevel >= 3) {
@@ -980,9 +1074,12 @@ void RunComposite() {
     ivec2 fullSize = imageSize(img_Output);
     if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
 
-    vec3 denoisedIrradiance;
-    vec3 albedo;
-    float hitMask;
+    // img_Accumulation / img_Bloom_Temp already hold FINAL shaded color
+    // (albedo * direct + indirect, see RunTraceAndDenoise), so it must NOT
+    // be multiplied by albedo again here. The old `denoised * albedo` applied
+    // albedo twice (albedo^2 on direct, albedo-scaled indirect) and pushed
+    // textured surfaces (e.g. the floor) toward black.
+    vec3 denoised;
 
     if (u_RenderScale < 1.0) {
         ivec2 srcSize = ivec2(vec2(fullSize) * u_RenderScale);
@@ -999,23 +1096,12 @@ void RunComposite() {
         vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
         vec3 c01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
         vec3 c11 = imageLoad(img_Accumulation, s1).rgb;
-        denoisedIrradiance = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-
-        vec4 a00 = imageLoad(img_AlbedoHit, s0);
-        vec4 a10 = imageLoad(img_AlbedoHit, ivec2(s1.x, s0.y));
-        vec4 a01 = imageLoad(img_AlbedoHit, ivec2(s0.x, s1.y));
-        vec4 a11 = imageLoad(img_AlbedoHit, s1);
-        vec4 albedoHit = mix(mix(a00, a10, f.x), mix(a01, a11, f.x), f.y);
-        albedo = albedoHit.rgb;
-        hitMask = albedoHit.a;
+        denoised = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
     } else {
-        denoisedIrradiance = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
-        vec4 albedoHit = imageLoad(img_AlbedoHit, pos);
-        albedo = albedoHit.rgb;
-        hitMask = albedoHit.a;
+        denoised = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
     }
 
-    vec3 combined = hitMask > 0.5 ? (denoisedIrradiance * albedo) : denoisedIrradiance;
+    vec3 combined = denoised;
 
     vec3 mapped = combined / (combined + vec3(1.0));
     vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
@@ -1035,7 +1121,7 @@ void RunBilateralBlur() {
     if (u_QualityLevel <= 1) return;
 
     ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 imgSize = imageSize(img_Bloom_Temp);
+    ivec2 imgSize = wl_trace_extent(imageSize(img_Bloom_Temp));
     if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
 
     vec3 centerColor = imageLoad(img_Accumulation, pos).rgb;
@@ -1046,13 +1132,13 @@ void RunBilateralBlur() {
     }
 
     vec2 uv = (vec2(pos) + 0.5) / vec2(imgSize);
-    float centerDepth = texture(s_DepthBuffer, uv).r;
+    float centerDepth = texture(s_DepthBuffer, wl_buf_uv(uv)).r;
     if (centerDepth >= 1.0) { 
         imageStore(img_Bloom_Temp, pos, vec4(centerColor, 1.0));
         return;
     }
 
-    vec3 centerNormal = texture(s_NormalBuffer, uv).rgb * 2.0 - 1.0;
+    vec3 centerNormal = texture(s_NormalBuffer, wl_buf_uv(uv)).rgb * 2.0 - 1.0;
     float centerLuma = GetLuminance(centerColor);
 
     int step = max(1, u_StepSize);
@@ -1071,8 +1157,8 @@ void RunBilateralBlur() {
             vec3 neighborColor = imageLoad(img_Accumulation, samplePos).rgb;
             vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
 
-            float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
-            vec3 neighborNormal = texture(s_NormalBuffer, sampleUV).rgb * 2.0 - 1.0;
+            float neighborDepth = texture(s_DepthBuffer, wl_buf_uv(sampleUV)).r;
+            vec3 neighborNormal = texture(s_NormalBuffer, wl_buf_uv(sampleUV)).rgb * 2.0 - 1.0;
             float neighborLuma = GetLuminance(neighborColor);
 
             float spatialWeight = (i == 0) ? 0.375 : ((i <= 4) ? 0.125 : 0.03125);
@@ -1110,8 +1196,8 @@ void RunBilateralBlur() {
                 vec3 neighborColor = imageLoad(img_Accumulation, samplePos).rgb;
                 vec2 sampleUV = (vec2(samplePos) + 0.5) / vec2(imgSize);
 
-                float neighborDepth = texture(s_DepthBuffer, sampleUV).r;
-                vec3 neighborNormal = texture(s_NormalBuffer, sampleUV).rgb * 2.0 - 1.0;
+                float neighborDepth = texture(s_DepthBuffer, wl_buf_uv(sampleUV)).r;
+                vec3 neighborNormal = texture(s_NormalBuffer, wl_buf_uv(sampleUV)).rgb * 2.0 - 1.0;
                 float neighborLuma = GetLuminance(neighborColor);
 
                 float spatialWeight = kernel[abs(x)] * kernel[abs(y)];
@@ -1131,23 +1217,6 @@ void RunBilateralBlur() {
 
     vec3 finalFiltered = (totalWeight > 0.0001) ? (totalColor / totalWeight) : centerColor;
     imageStore(img_Bloom_Temp, pos, vec4(finalFiltered, 1.0));
-}
-
-void RunResolve() 
-{
-    ivec2 displayPos = ivec2(gl_GlobalInvocationID.xy);
-    vec2 displaySize = vec2(imageSize(img_FinalDisplay));
-    vec2 uv = vec2(displayPos) / displaySize;
-
-    vec3 color = texture(s_Output, uv).rgb;
-    vec3 bloom = texture(s_Bloom, uv).rgb;
-    
-    vec3 combined = color + bloom;
-    
-    vec3 mapped = combined / (combined + vec3(1.0));
-    vec3 finalColor = pow(mapped, vec3(1.0 / 2.2));
-
-    imageStore(img_FinalDisplay, displayPos, vec4(finalColor, 1.0));
 }
 
 void GenerateMaterialMaps() {

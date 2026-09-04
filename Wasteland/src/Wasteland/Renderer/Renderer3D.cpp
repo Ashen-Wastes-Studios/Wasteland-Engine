@@ -331,7 +331,7 @@ namespace Wasteland
         uint32_t AccumulationTextures[2] = {0, 0};
         uint32_t CurrentAccumulationIndex = 0;
 
-        uint32_t DepthTextureID = 0;
+        uint32_t TraceGBufferTextureID = 0;
         uint32_t VelocityTextureID = 0;
         uint32_t AlbedoTextureID = 0;
 
@@ -413,6 +413,13 @@ namespace Wasteland
         for (int i = 0; i < 2; i++)
         {
             glClearTexImage(s_Data.AccumulationTextures[i], 0, GL_RGBA, GL_FLOAT, clearColor);
+        }
+
+        // Reset trace G-buffer so velocity/temporal start from a clean slate
+        if (s_Data.TraceGBufferTextureID)
+        {
+            float gbufferClear[] = {1.0f, 0.5f, 0.5f, 1.0f};
+            glClearTexImage(s_Data.TraceGBufferTextureID, 0, GL_RGBA, GL_FLOAT, gbufferClear);
         }
     }
 
@@ -520,6 +527,20 @@ namespace Wasteland
         glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
+        // Trace G-buffer (full-size, valid data in the trace subregion):
+        // R=NDC depth, GBA=packed normal. Written by pass 1, sampled by
+        // passes 0/2/7. Shares one RGBA32F image on unit 6 because this GL
+        // driver caps image bindings at 0-7 (units 0-5,7 taken, 6 was dead).
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.TraceGBufferTextureID);
+        glTextureStorage2D(s_Data.TraceGBufferTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        float gbufferInit[4] = {1.0f, 0.5f, 0.5f, 1.0f};
+        glClearTexImage(s_Data.TraceGBufferTextureID, 0, GL_RGBA, GL_FLOAT, gbufferInit);
+
         glCreateTextures(GL_TEXTURE_2D, 2, s_Data.AccumulationTextures);
         for (int i = 0; i < 2; i++)
         {
@@ -575,6 +596,7 @@ namespace Wasteland
         glDeleteTextures(1, &s_Data.BloomTempTextureID);
         glDeleteTextures(1, &s_Data.VelocityTextureID);
         glDeleteTextures(1, &s_Data.AlbedoTextureID);
+        glDeleteTextures(1, &s_Data.TraceGBufferTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
 
         s_Data.CubeVertexArray = nullptr;
@@ -770,7 +792,9 @@ namespace Wasteland
             glActiveTexture(GL_TEXTURE0 + 3);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
             glActiveTexture(GL_TEXTURE0 + 4);
-            glBindTexture(GL_TEXTURE_2D, s_Data.DepthTextureID);
+            glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
+            glActiveTexture(GL_TEXTURE0 + 10);
+            glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
 
             uint32_t currentFrameIndex = s_Data.FrameIndex;
             float accumulationAlpha = 1.0f;
@@ -802,6 +826,7 @@ namespace Wasteland
             glBindImageTexture(5, s_Data.VelocityTextureID, 0, layered, 0, GL_READ_WRITE, GL_RG16F);
             glBindImageTexture(7, s_Data.BloomTempTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
             glBindImageTexture(4, s_Data.AlbedoTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA8);
+            glBindImageTexture(6, s_Data.TraceGBufferTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
 
             for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
             {
@@ -1023,14 +1048,17 @@ namespace Wasteland
             break;
         case QualityPreset::Ultra:
             // 1 ray per pixel (1x1 tile)
+            // Perf: traces at 2/3 res (upscaled in composite), 2 rotating
+            // shadow rays from up to 4 lights (stochastic subset in shader),
+            // neural GI steadies the single indirect bounce.
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
-            s_Data.MaxLights = 8;
+            s_Data.MaxLights = 4;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
-            s_Data.BilateralBlurPasses = 4;
-            s_Data.RenderScale = 1.0f; // Kept at 1.0f
+            s_Data.BilateralBlurPasses = 2;
+            s_Data.RenderScale = 1.0f;
             break;
         }
 
@@ -1118,6 +1146,19 @@ namespace Wasteland
         glTextureStorage2D(s_Data.AlbedoTextureID, 1, GL_RGBA8, width, height);
         glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        // Reallocate trace G-buffer at full size (valid data in trace subregion)
+        if (s_Data.TraceGBufferTextureID)
+            glDeleteTextures(1, &s_Data.TraceGBufferTextureID);
+        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.TraceGBufferTextureID);
+        glTextureStorage2D(s_Data.TraceGBufferTextureID, 1, GL_RGBA32F, width, height);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTextureParameteri(s_Data.TraceGBufferTextureID, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        float gbufferResize[4] = {1.0f, 0.5f, 0.5f, 1.0f};
+        glClearTexImage(s_Data.TraceGBufferTextureID, 0, GL_RGBA, GL_FLOAT, gbufferResize);
 
         // Resize Accumulation Textures
         if (s_Data.AccumulationTextures[0])
