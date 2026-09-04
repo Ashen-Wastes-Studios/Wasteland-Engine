@@ -294,6 +294,10 @@ namespace Wasteland
         int Loc_CameraPosition;
         int Loc_RenderScale;
         int Loc_LightCount;
+        int Loc_NeuralEnabled;
+        int Loc_NeuralTexStrength;
+        int Loc_NeuralLightStrength;
+        int Loc_NeuralMatStrength;
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
@@ -302,6 +306,12 @@ namespace Wasteland
 
         glm::vec3 SkyBottomColor = glm::vec3(0.1f);
         glm::vec3 SkyTopColor = glm::vec3(0.2f, 0.3f, 0.7f);
+
+        // Neural Rendering (OpenGL): tiny GLSL MLP for texture detail + indirect light cache
+        bool NeuralEnabled = true;
+        float NeuralTextureStrength = 0.6f;
+        float NeuralLightStrength = 0.8f;
+        float NeuralMaterialStrength = 0.7f;
 
         uint32_t BloomTextureID = 0;
         uint32_t BloomTempTextureID = 0;
@@ -482,6 +492,10 @@ namespace Wasteland
         s_Data.Loc_CameraPosition = glGetUniformLocation(rtProg, "u_CameraPosition");
         s_Data.Loc_RenderScale = glGetUniformLocation(rtProg, "u_RenderScale");
         s_Data.Loc_LightCount = glGetUniformLocation(rtProg, "u_LightCount");
+        s_Data.Loc_NeuralEnabled = glGetUniformLocation(rtProg, "u_NeuralEnabled");
+        s_Data.Loc_NeuralTexStrength = glGetUniformLocation(rtProg, "u_NeuralTexStrength");
+        s_Data.Loc_NeuralLightStrength = glGetUniformLocation(rtProg, "u_NeuralLightStrength");
+        s_Data.Loc_NeuralMatStrength = glGetUniformLocation(rtProg, "u_NeuralMatStrength");
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
@@ -816,6 +830,15 @@ namespace Wasteland
             glUniform1i(s_Data.FrameIndexLocation, s_Data.FrameIndex);
             glUniform1f(s_Data.Loc_RenderScale, s_Data.RenderScale);
             glUniform1i(s_Data.Loc_LightCount, (int)s_Data.m_LightIndices.size());
+            // Neural Rendering uniforms (cached locations; -1 if shader predates neural block)
+            if (s_Data.Loc_NeuralEnabled >= 0)
+                glUniform1i(s_Data.Loc_NeuralEnabled, s_Data.NeuralEnabled ? 1 : 0);
+            if (s_Data.Loc_NeuralTexStrength >= 0)
+                glUniform1f(s_Data.Loc_NeuralTexStrength, s_Data.NeuralTextureStrength);
+            if (s_Data.Loc_NeuralLightStrength >= 0)
+                glUniform1f(s_Data.Loc_NeuralLightStrength, s_Data.NeuralLightStrength);
+            if (s_Data.Loc_NeuralMatStrength >= 0)
+                glUniform1f(s_Data.Loc_NeuralMatStrength, s_Data.NeuralMaterialStrength);
 
             // Pass 0: Visibility + Velocity
             glUniform1i(s_Data.Loc_PassID, 0);
@@ -903,6 +926,11 @@ namespace Wasteland
         }
 
         s_Data.BasicShader->Bind();
+        // Neural Rendering uniforms for the raster path (no-ops if shader lacks them)
+        s_Data.BasicShader->SetInt("u_NeuralEnabled", s_Data.NeuralEnabled ? 1 : 0);
+        s_Data.BasicShader->SetFloat("u_NeuralTexStrength", s_Data.NeuralTextureStrength);
+        s_Data.BasicShader->SetFloat("u_NeuralLightStrength", s_Data.NeuralLightStrength);
+        s_Data.BasicShader->SetFloat("u_NeuralMatStrength", s_Data.NeuralMaterialStrength);
         if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
         {
             std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
@@ -1155,6 +1183,31 @@ namespace Wasteland
     void Renderer3D::SetSkyTopColor(const glm::vec3 &color)
     {
         s_Data.SkyTopColor = color;
+        s_Data.FrameIndex = 0;
+    }
+
+    bool Renderer3D::IsNeuralRenderingEnabled() { return s_Data.NeuralEnabled; }
+    void Renderer3D::SetNeuralRenderingEnabled(bool enabled)
+    {
+        s_Data.NeuralEnabled = enabled;
+        s_Data.FrameIndex = 0;
+    }
+    float Renderer3D::GetNeuralTextureStrength() { return s_Data.NeuralTextureStrength; }
+    void Renderer3D::SetNeuralTextureStrength(float strength)
+    {
+        s_Data.NeuralTextureStrength = glm::clamp(strength, 0.0f, 1.0f);
+        s_Data.FrameIndex = 0;
+    }
+    float Renderer3D::GetNeuralLightStrength() { return s_Data.NeuralLightStrength; }
+    void Renderer3D::SetNeuralLightStrength(float strength)
+    {
+        s_Data.NeuralLightStrength = glm::clamp(strength, 0.0f, 1.0f);
+        s_Data.FrameIndex = 0;
+    }
+    float Renderer3D::GetNeuralMaterialStrength() { return s_Data.NeuralMaterialStrength; }
+    void Renderer3D::SetNeuralMaterialStrength(float strength)
+    {
+        s_Data.NeuralMaterialStrength = glm::clamp(strength, 0.0f, 1.0f);
         s_Data.FrameIndex = 0;
     }
 

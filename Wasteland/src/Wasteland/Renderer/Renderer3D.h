@@ -72,6 +72,16 @@ namespace Wasteland
         static glm::vec3 GetSkyTopColor();
         static void SetSkyTopColor(const glm::vec3 &color);
 
+        // Neural Rendering (OpenGL GLSL MLP: neural texture detail + neural indirect lighting)
+        static bool IsNeuralRenderingEnabled();
+        static void SetNeuralRenderingEnabled(bool enabled);
+        static float GetNeuralTextureStrength();
+        static void SetNeuralTextureStrength(float strength);
+        static float GetNeuralLightStrength();
+        static void SetNeuralLightStrength(float strength);
+        static float GetNeuralMaterialStrength();
+        static void SetNeuralMaterialStrength(float strength);
+
         static float Halton(int index, int base);
         static glm::vec2 GetCurrentJitter(int frameIndex, glm::vec2 viewportSize);
 

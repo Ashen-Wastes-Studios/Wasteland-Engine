@@ -653,6 +653,33 @@ namespace Wasteland
 			}
 
 			ImGui::Separator();
+			ImGui::Text("Neural Rendering (OpenGL)");
+
+			bool neuralEnabled = Wasteland::Renderer3D::IsNeuralRenderingEnabled();
+			if (ImGui::Checkbox("Neural Textures + Lighting", &neuralEnabled))
+			{
+				Wasteland::Renderer3D::SetNeuralRenderingEnabled(neuralEnabled);
+			}
+
+			float neuralTexStrength = Wasteland::Renderer3D::GetNeuralTextureStrength();
+			if (ImGui::SliderFloat("Neural Texture Detail", &neuralTexStrength, 0.0f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetNeuralTextureStrength(neuralTexStrength);
+			}
+
+			float neuralLightStrength = Wasteland::Renderer3D::GetNeuralLightStrength();
+			if (ImGui::SliderFloat("Neural Light Strength", &neuralLightStrength, 0.0f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetNeuralLightStrength(neuralLightStrength);
+			}
+
+			float neuralMatStrength = Wasteland::Renderer3D::GetNeuralMaterialStrength();
+			if (ImGui::SliderFloat("Neural Material Strength", &neuralMatStrength, 0.0f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetNeuralMaterialStrength(neuralMatStrength);
+			}
+
+			ImGui::Separator();
 			ImGui::Text("Sky Settings");
 
 			glm::vec3 skyBottomColor = Wasteland::Renderer3D::GetSkyBottomColor();

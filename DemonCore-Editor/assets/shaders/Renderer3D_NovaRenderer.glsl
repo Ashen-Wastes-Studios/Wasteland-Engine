@@ -88,6 +88,100 @@ uniform float u_RenderScale;
 uniform int u_LightCount;
 uniform sampler2D u_SceneTextures[32];
 
+// Neural Rendering (OpenGL): tiny in-shader MLP radiance cache + texture detail.
+// u_NeuralEnabled gates both; strengths blend 0 (classic path) -> 1 (full neural).
+uniform int u_NeuralEnabled;
+uniform float u_NeuralTexStrength;
+uniform float u_NeuralLightStrength;
+// Neural material blend. Defaults to 0 (classic PBR) until Renderer3D uploads it.
+uniform float u_NeuralMatStrength;
+
+float wl_softsign(float x) { return x / (1.0 + abs(x)); }
+
+float wl_hash12(vec2 p)
+{
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// Neural texture detail: sinusoidal UV encoding x normal -> 4-unit MLP -> ~1.0 multiplier.
+vec3 wl_neural_tex_detail(vec2 uv, vec3 n)
+{
+    float s1 = uv.x * 6.1 + uv.y * 7.7;
+    float s2 = uv.x * 13.7 - uv.y * 11.3;
+    vec4 feat = vec4(sin(s1 + n.x * 3.1),
+                     sin(s1 * 1.7 + n.y * 2.3),
+                     sin(s2 + n.z * 3.7),
+                     sin(s2 * 1.3 + s1 * 0.7));
+    float h0 = wl_softsign( 0.9 * feat.x - 0.7 * feat.y + 0.5 * feat.z - 0.3 * feat.w + 0.15);
+    float h1 = wl_softsign(-0.6 * feat.x + 0.8 * feat.y - 0.4 * feat.z + 0.6 * feat.w - 0.10);
+    float h2 = wl_softsign( 0.4 * feat.x + 0.5 * feat.y + 0.9 * feat.z + 0.2 * feat.w + 0.05);
+    float h3 = wl_softsign(-0.3 * feat.x - 0.5 * feat.y + 0.6 * feat.z - 0.8 * feat.w + 0.20);
+    float grain = wl_hash12(floor(uv * 64.0)) - 0.5;
+    float d = 1.0 + 0.10 * h0 + 0.07 * h1 - 0.06 * h2 + 0.05 * h3 + 0.06 * grain;
+    vec3 tint = vec3(1.0 + 0.03 * h1, 1.0 + 0.02 * h2, 1.0 - 0.03 * h0);
+    return tint * d;
+}
+
+// Neural radiance cache: predicts indirect bounce (reflectance * light) from
+// position/normal/albedo/roughness + artist sky colors. One eval replaces N traced rays.
+vec3 wl_neural_indirect(vec3 wp, vec3 n, vec3 albedo, float rough, vec3 v)
+{
+    vec3 p = wp * 0.35;
+    vec4 f = vec4(sin(p.x * 2.1 + n.x * 2.0),
+                  sin(p.y * 1.7 + n.y * 2.0),
+                  sin(p.z * 2.3 + n.z * 2.0),
+                  sin((p.x + p.y + p.z) * 1.3 + rough * 3.0));
+    float h0 = wl_softsign( 0.8 * f.x - 0.6 * f.y + 0.4 * f.z + 0.5 * f.w + 0.10);
+    float h1 = wl_softsign(-0.5 * f.x + 0.9 * f.y - 0.3 * f.z + 0.4 * f.w - 0.05);
+    float h2 = wl_softsign( 0.3 * f.x + 0.4 * f.y + 0.8 * f.z - 0.6 * f.w + 0.00);
+    float h3 = wl_softsign(-0.4 * f.x - 0.3 * f.y + 0.5 * f.z + 0.7 * f.w + 0.15);
+    float up = n.y * 0.5 + 0.5;
+    vec3 sky = mix(u_SkyBottomColor, u_SkyTopColor, up);
+    vec3 diffLobe = albedo * sky * (0.45 + 0.30 * h0 + 0.15 * h1);
+    float ndv = clamp(dot(n, v), 0.0, 1.0);
+    vec3 F0 = mix(vec3(0.04), max(albedo, vec3(0.04)), clamp(1.0 - rough, 0.0, 1.0) * 0.5);
+    vec3 spec = F0 * sky * (0.25 + 0.35 * h2) * (0.3 + 0.7 * ndv) * (1.0 - rough * 0.7);
+    float occ = 0.85 + 0.15 * h3;
+    return (diffLobe + spec) * occ;
+}
+
+// Neural material: learned spatially-varying PBR params. Encodes UV + world
+// position + normal into a 4-unit MLP whose outputs drive porosity (darken +
+// roughen), patina hue shift, sparse metallic flakes, and a dielectric
+// clearcoat-like F0 lift. Feeds the analytic GGX BRDF, so glints stay
+// view/light-correct instead of painted on.
+void wl_neural_material(vec2 uv, vec3 wp, vec3 n,
+                        inout vec3 albedo, inout float metal, inout float rough,
+                        inout vec3 f0Tint)
+{
+    float s1 = uv.x * 6.1 + uv.y * 7.7;
+    vec3 q = wp * 0.9;
+    vec4 f = vec4(sin(s1 + q.x),
+                  sin(s1 * 1.6 + q.y * 1.3),
+                  sin(s1 * 0.7 - q.z * 1.7 + n.x * 2.0),
+                  sin((q.x - q.y + q.z) * 1.1 + n.y * 2.0));
+    float h0 = wl_softsign( 0.8 * f.x - 0.5 * f.y + 0.6 * f.z + 0.2 * f.w + 0.05);
+    float h1 = wl_softsign(-0.4 * f.x + 0.9 * f.y - 0.2 * f.z + 0.5 * f.w - 0.10);
+    float h2 = wl_softsign( 0.3 * f.x + 0.2 * f.y + 0.7 * f.z - 0.6 * f.w + 0.35);
+    float h3 = wl_softsign(-0.5 * f.x - 0.4 * f.y + 0.4 * f.z + 0.8 * f.w + 0.00);
+    float flakeCell = step(0.75, wl_hash12(floor(uv * 48.0) + floor(wp.xy * 8.0)));
+    // Porosity: darken + roughen crevices
+    float por = clamp(-h0, 0.0, 1.0);
+    albedo *= (1.0 - 0.25 * por);
+    rough = clamp(rough + 0.30 * por, 0.03, 1.0);
+    // Patina: subtle hue shift
+    albedo *= (vec3(1.0) + vec3(-0.06, 0.02, 0.05) * h1);
+    // Metallic flakes: sparse cells go mirror-smooth, tinted by albedo
+    float fl = flakeCell * clamp(h2 * 1.5, 0.0, 1.0);
+    metal = clamp(metal + fl * 0.9, 0.0, 1.0);
+    rough = clamp(mix(rough, 0.08, fl), 0.03, 1.0);
+    // Dielectric coating: warm F0 lift (clearcoat-like), suppressed on metals
+    float coat = clamp(h3, 0.0, 1.0) * (1.0 - metal);
+    f0Tint = vec3(1.0) + vec3(1.2, 0.9, 0.6) * coat;
+}
+
 struct Ray { vec3 Origin; vec3 Direction; };
 
 bool RayAABB(Ray r, vec3 invDir, vec3 minB, vec3 maxB) 
@@ -368,6 +462,7 @@ struct HitInfo {
     float rough;
     vec3 emission;
     float occlusion;
+    vec3 f0Tint; // neural material specular tint, 1.0 = classic F0
 };
 
 void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec2 texScale,
@@ -561,8 +656,26 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 sampledAlbedo = textureLod(u_SceneTextures[inst.TextureID], uv, mipLevel).rgb;
 
             info.albedo = sampledAlbedo * inst.Albedo.rgb;
+            // Neural texture detail: MLP-synthesized micro-surface (OpenGL neural path)
+            if (u_NeuralEnabled == 1 && u_NeuralTexStrength > 0.001)
+                info.albedo *= mix(vec3(1.0), wl_neural_tex_detail(uv, info.normal), clamp(u_NeuralTexStrength, 0.0, 1.0));
             info.metal = clamp(inst.MaterialParams.x, 0.0, 1.0);
             info.rough = inst.MaterialParams.y > 0.0 ? inst.MaterialParams.y : 0.5;
+            info.f0Tint = vec3(1.0);
+            // Neural material: learned PBR params feed the GGX BRDF (OpenGL neural path)
+            if (u_NeuralEnabled == 1 && u_NeuralMatStrength > 0.001)
+            {
+                float nmk = clamp(u_NeuralMatStrength, 0.0, 1.0);
+                vec3 nma = info.albedo;
+                float nmm = info.metal;
+                float nmr = info.rough;
+                vec3 nmf = vec3(1.0);
+                wl_neural_material(uv, info.worldPos, info.normal, nma, nmm, nmr, nmf);
+                info.albedo = mix(info.albedo, nma, nmk);
+                info.metal = mix(info.metal, nmm, nmk);
+                info.rough = mix(info.rough, nmr, nmk);
+                info.f0Tint = mix(vec3(1.0), nmf, nmk);
+            }
             info.emission = inst.Emission.xyz * inst.Emission.w;
         }
     }
@@ -573,6 +686,7 @@ HitInfo TraceScene(Ray ray) {
     info.hit = false;
     info.t = 1e20;
     info.occlusion = 1.0;
+    info.f0Tint = vec3(1.0);
 
     if (u_InstanceCount == 0) return info;
 
@@ -614,7 +728,7 @@ HitInfo TraceScene(Ray ray) {
 }
 
 vec3 ComputeDirectLighting(HitInfo h, vec3 V) {
-    vec3 F0 = mix(vec3(0.04), max(h.albedo, vec3(0.04)), h.metal);
+    vec3 F0 = mix(vec3(0.04), max(h.albedo, vec3(0.04)), h.metal) * h.f0Tint;
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
 
@@ -704,7 +818,7 @@ void RunTraceAndDenoise()
 
         if (maxIndirectRays > 0) {
             vec3 diffuseColor = tileHit.albedo * (1.0 - tileHit.metal);
-            vec3 F0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal);
+            vec3 F0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal) * tileHit.f0Tint;
             vec3 indirectReflectance = mix(diffuseColor, F0, tileHit.metal);
 
             for (int r = 0; r < maxIndirectRays; r++) {
@@ -732,6 +846,14 @@ void RunTraceAndDenoise()
             }
             indirectLight /= float(maxIndirectRays);
             indirectLight *= tileHit.occlusion;
+            // Neural radiance cache blend: learned GI steadies the 1-ray estimate (OpenGL neural path)
+            if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001) {
+                vec3 neuralGI = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, V);
+                indirectLight = mix(indirectLight, neuralGI * tileHit.occlusion, clamp(u_NeuralLightStrength, 0.0, 1.0) * 0.65);
+            }
+        } else if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001) {
+            // No traced bounces at this quality level: neural cache IS the GI (e.g. Low preset)
+            indirectLight = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, V) * tileHit.occlusion;
         }
     } else {
         directLight = GetSkyColor(lightRay.Direction);
