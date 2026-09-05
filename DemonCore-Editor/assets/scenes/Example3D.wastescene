@@ -115,7 +115,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 0.0500000007
+      DisplacementScale: 0.300000012
   - Entity: 4023313775802900017
     TagComponent:
       Tag: Player
@@ -162,7 +162,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 0.0500000007
+      DisplacementScale: 0.300000012
     RigidBody3DComponent:
       BodyType: Static
       GravityScale: 1
@@ -182,7 +182,7 @@ Entities:
       Tag: Metal Cube
     TransformComponent:
       Translation: [-0.441912323, -0.000142269462, -5.30288792]
-      Rotation: [5.18581419e-06, -0.000426594226, 2.76519881e-06]
+      Rotation: [5.18581464e-06, -0.000426594226, 2.76519881e-06]
       Scale: [1, 1, 1]
     CubeRendererComponent:
       Color: [1, 1, 1, 1]
@@ -286,3 +286,43 @@ Entities:
       Density: 1
       Friction: 0.5
       Restitution: 0.439999998
+  - Entity: 14293422949666980895
+    TagComponent:
+      Tag: Wood Wall
+    TransformComponent:
+      Translation: [0, 4.5, 25.1819992]
+      Rotation: [0, 0, 0]
+      Scale: [50, 10, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 447
+      TextureHeight: 447
+      TextureIndex: 0
+      TexturePath: assets/textures/wood_wall.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.300000012
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0

@@ -906,7 +906,12 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     mesoAmp = 0.25 * clamp(dispScale, 0.0, 1.5);
 
     float dHeight = 1.0 / float(numLayers);
-    vec2 dUV = (uvOffsetPerHeight * uvScale) * dHeight * maxDisplacement;
+    // March in geometric-depth units: the step must scale with dispScale
+    // (world meters of relief), NOT max(disp, bump). Bump-only materials
+    // carry relief in the gradient normal; giving them full-depth parallax
+    // spans dozens of tiles (uvScale ~50 on a 50 m wall) and swims with
+    // the view. (Raster Basic already marches on disp only.)
+    vec2 dUV = (uvOffsetPerHeight * uvScale) * dHeight * dispScale;
 
     vec2 prevUV = uv;
     float prevLayerH = 1.0;

@@ -75,8 +75,12 @@ namespace Wasteland
 		glTextureParameteri(m_RendererID, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
 		glTextureParameteri(m_RendererID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		// Mirrored repeat: photographic textures (wood, metal floors) are tiled
+		// ~1/m by the ray tracer but are NOT tileable (edge MAD ~30/255), so
+		// GL_REPEAT shows hard seams every tile and spikes the POM height
+		// gradient at borders. Mirroring is C0-continuous for any photo.
+		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+		glTextureParameteri(m_RendererID, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
 
 		// Anisotropic filtering for sharper textures at oblique angles
 		float maxAniso = 0.0f;

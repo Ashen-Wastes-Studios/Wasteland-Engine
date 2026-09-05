@@ -3,9 +3,11 @@
 #include <imgui/imgui.h>
 #ifdef _WIN32
 #include <Windows.h>
+#include <dxgi1_4.h>
 #endif
 #include <glad/glad.h>
 
+#include <cstring>
 #include <sstream>
 #if !defined(_WIN32)
 #include <unistd.h>
@@ -31,6 +33,28 @@ namespace Wasteland
 {
 
 // Simple system stats helpers (cross-platform)
+// Core-profile-safe GL extension check: glGetString(GL_EXTENSIONS) returns
+// NULL on GL >= 3.0 core contexts (this engine runs 4.5 core), so enumerate
+// with glGetStringi instead. Safe with no current context (returns false).
+static bool HasGLExtension(const char *name)
+{
+	GLint count = 0;
+	glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+	if (count > 0)
+	{
+		for (GLint i = 0; i < count; i++)
+		{
+			const char *e = (const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i);
+			if (e && strcmp(e, name) == 0)
+				return true;
+		}
+		return false;
+	}
+	// Compat-profile fallback
+	const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+	return ext && strstr(ext, name) != nullptr;
+}
+
 #if defined(_WIN32)
 	static unsigned long long FileTimeToULL(const FILETIME &ft)
 	{
@@ -79,30 +103,82 @@ namespace Wasteland
 
 	static bool GetGPUVRAMUsagePercent(float &outPercent)
 	{
-		const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-		if (!ext)
-			return false;
+		// (GL extension presence is checked per-path below via HasGLExtension.)
 
-		// Prefer NVIDIA NVX extension
-		if (strstr(ext, "GL_NVX_gpu_memory_info"))
+		// NVIDIA GL extension (needs a current GL context — absent under the
+		// D3D/Vulkan backends, where HasGLExtension safely returns false).
+		if (HasGLExtension("GL_NVX_gpu_memory_info"))
 		{
 			const GLenum GL_GPU_MEM_TOTAL = 0x9048;
 			const GLenum GL_GPU_MEM_CUR = 0x9049;
 			GLint totalKB = 0, availKB = 0;
 			glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
 			glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
-			if (totalKB <= 0)
-				return false;
-			int usedKB = totalKB - availKB;
-			outPercent = (float)usedKB * 100.0f / (float)totalKB;
-			return true;
+			if (totalKB > 0)
+			{
+				int usedKB = totalKB - availKB;
+				outPercent = (float)usedKB * 100.0f / (float)totalKB;
+				return true;
+			}
 		}
 
-		// Fallback: AMD ATI extension returns free memory but no explicit total; skip percent
-		if (strstr(ext, "GL_ATI_meminfo"))
+		// Fallback: DXGI — any vendor, any backend, no GL context needed.
+		// dxgi.dll is loaded dynamically so no link dependency is added.
 		{
-			// We won't compute percent here since total isn't provided reliably
-			return false;
+			HMODULE dxgiMod = LoadLibraryA("dxgi.dll");
+			if (dxgiMod)
+			{
+				typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID riid, void **ppFactory);
+				PFN_CreateDXGIFactory1 createFactory =
+					(PFN_CreateDXGIFactory1)GetProcAddress(dxgiMod, "CreateDXGIFactory1");
+				IDXGIFactory1 *factory = nullptr;
+				if (createFactory && SUCCEEDED(createFactory(IID_PPV_ARGS(&factory))) && factory)
+				{
+					IDXGIAdapter1 *best = nullptr;
+					SIZE_T bestDedicated = 0;
+					for (UINT i = 0;; i++)
+					{
+						IDXGIAdapter1 *a = nullptr;
+						if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND)
+							break;
+						if (a)
+						{
+							DXGI_ADAPTER_DESC1 desc = {};
+							if (SUCCEEDED(a->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+								desc.DedicatedVideoMemory > bestDedicated)
+							{
+								if (best)
+									best->Release();
+								best = a;
+								bestDedicated = desc.DedicatedVideoMemory;
+								continue;
+							}
+							a->Release();
+						}
+					}
+					if (best && bestDedicated > 0)
+					{
+						IDXGIAdapter3 *adapter3 = nullptr;
+						if (SUCCEEDED(best->QueryInterface(IID_PPV_ARGS(&adapter3))) && adapter3)
+						{
+							DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+							if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo)))
+							{
+								outPercent = (float)((double)memInfo.CurrentUsage * 100.0 / (double)bestDedicated);
+								adapter3->Release();
+								best->Release();
+								factory->Release();
+								FreeLibrary(dxgiMod);
+								return true;
+							}
+							adapter3->Release();
+						}
+						best->Release();
+					}
+					factory->Release();
+				}
+				FreeLibrary(dxgiMod);
+			}
 		}
 
 		return false;
@@ -156,18 +232,15 @@ namespace Wasteland
 
 	static bool GetGPUVRAMUsagePercent(float &outPercent)
 	{
-		const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-		if (!ext)
+		if (!HasGLExtension("GL_NVX_gpu_memory_info"))
 			return false;
-		if (strstr(ext, "GL_NVX_gpu_memory_info"))
+		const GLenum GL_GPU_MEM_TOTAL = 0x9048;
+		const GLenum GL_GPU_MEM_CUR = 0x9049;
+		GLint totalKB = 0, availKB = 0;
+		glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
+		glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
+		if (totalKB > 0)
 		{
-			const GLenum GL_GPU_MEM_TOTAL = 0x9048;
-			const GLenum GL_GPU_MEM_CUR = 0x9049;
-			GLint totalKB = 0, availKB = 0;
-			glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
-			glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
-			if (totalKB <= 0)
-				return false;
 			int usedKB = totalKB - availKB;
 			outPercent = (float)usedKB * 100.0f / (float)totalKB;
 			return true;
@@ -247,18 +320,15 @@ namespace Wasteland
 
 	static bool GetGPUVRAMUsagePercent(float &outPercent)
 	{
-		const char *ext = (const char *)glGetString(GL_EXTENSIONS);
-		if (!ext)
+		if (!HasGLExtension("GL_NVX_gpu_memory_info"))
 			return false;
-		if (strstr(ext, "GL_NVX_gpu_memory_info"))
+		const GLenum GL_GPU_MEM_TOTAL = 0x9048;
+		const GLenum GL_GPU_MEM_CUR = 0x9049;
+		GLint totalKB = 0, availKB = 0;
+		glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
+		glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
+		if (totalKB > 0)
 		{
-			const GLenum GL_GPU_MEM_TOTAL = 0x9048;
-			const GLenum GL_GPU_MEM_CUR = 0x9049;
-			GLint totalKB = 0, availKB = 0;
-			glGetIntegerv(GL_GPU_MEM_TOTAL, &totalKB);
-			glGetIntegerv(GL_GPU_MEM_CUR, &availKB);
-			if (totalKB <= 0)
-				return false;
 			int usedKB = totalKB - availKB;
 			outPercent = (float)usedKB * 100.0f / (float)totalKB;
 			return true;
