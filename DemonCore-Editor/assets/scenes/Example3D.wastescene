@@ -1,201 +1,52 @@
 Scene: Untitled
 Entities:
-  - Entity: 12190645617490407318
+  - Entity: 17897628911760291305
     TagComponent:
-      Tag: Wood Cube
+      Tag: Directional Light
     TransformComponent:
-      Translation: [0.237263054, -0.000142267905, -0.147178456]
-      Rotation: [5.19585137e-06, -0.00826051086, 2.71707268e-06]
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
       Scale: [1, 1, 1]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/wood_floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 0
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 0.300000012
-    RigidBody3DComponent:
-      BodyType: Dynamic
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0.439999998
-  - Entity: 3308840676256262708
+    DirectionalLightComponent:
+      Color: [0.737254918, 1, 0.443137258, 1]
+      Intensity: 1.5
+  - Entity: 16201232747388855503
     TagComponent:
-      Tag: Emissive Sphere
+      Tag: Volumetric Fog
     TransformComponent:
-      Translation: [56.2000008, 55.7999992, -1.70000005]
+      Translation: [0, 0, 0]
       Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    SphereRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      Radius: 50
-      Sectors: 3
-      Stacks: 2
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TexturePath: assets/
-      HasGeneratedMaps: false
-      NormalStrength: 0
-      Metallic: 0
-      Roughness: 0.5
-      EmissionColor: [0.737024248, 1, 0.441176474, 1]
-      EmissionIntensity: 1
-      DisplacementScale: 0
-  - Entity: 7087185800274467715
+      Scale: [10000, 150, 10000]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.699999988, 0.75, 0.800000012, 1]
+      Density: 0.0500000007
+      Anisotropy: 0.300000012
+      HeightFalloff: 1
+      NoiseStrength: 0.5
+      NoiseScale: 0.25
+      WindSpeed: 0.0500000007
+      MaxSteps: 12
+  - Entity: 17168953761241370128
     TagComponent:
-      Tag: Metal Cube
+      Tag: Volumetric Clouds
     TransformComponent:
-      Translation: [-0.441912323, -0.000142269462, -5.30288792]
-      Rotation: [5.18581419e-06, -0.000426594226, 2.76519881e-06]
-      Scale: [1, 1, 1]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/metal_floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 0.300000012
-    RigidBody3DComponent:
-      BodyType: Dynamic
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0.5
-  - Entity: 11202436623447093941
-    TagComponent:
-      Tag: Wood Floor
-    TransformComponent:
-      Translation: [0, -1, 0]
-      Rotation: [0, -0, 0]
-      Scale: [50, 1, 50]
-    CubeRendererComponent:
-      Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/wood_floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 0
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 0.0500000007
-    RigidBody3DComponent:
-      BodyType: Static
-      GravityScale: 1
-      LinearDamping: 0
-      AngularDamping: 0
-      FixedRotationX: false
-      FixedRotationY: false
-      FixedRotationZ: false
-    BoxCollider3DComponent:
-      HalfExtents: [0.5, 0.5, 0.5]
-      Offset: [0, 0, 0]
-      Density: 1
-      Friction: 0.5
-      Restitution: 0
-  - Entity: 4023313775802900017
-    TagComponent:
-      Tag: Player
-    TransformComponent:
-      Translation: [0, 0, 10]
+      Translation: [0, 100, 0]
       Rotation: [0, 0, 0]
-      Scale: [1, 1, 1]
-    CameraComponent:
-      Camera:
-        ProjectionType: 0
-        PerspectiveFOV: 0.785398185
-        PerspectiveNear: 0.00999999978
-        PerspectiveFar: 1000
-        OrthographicSize: 10
-        OrthographicNear: -1
-        OrthographicFar: 1
-      Primary: true
-      FixedAspectRatio: false
-    ScriptComponent:
-      ScriptPath: assets/scripts/Player.py
-      ScriptName: Player
-  - Entity: 17511523757608198697
-    TagComponent:
-      Tag: Metal Floor
-    TransformComponent:
-      Translation: [50, -1, 0]
-      Rotation: [0, 0, 0]
-      Scale: [50, 1, 50]
-    CubeRendererComponent:
+      Scale: [10000, 50, 10000]
+    VolumetricCloudsComponent:
+      Enabled: true
       Color: [1, 1, 1, 1]
-      TextureWidth: 0
-      TextureHeight: 0
-      TextureIndex: 0
-      TilingFactor: 1
-    MaterialComponent:
-      Albedo: [1, 1, 1, 1]
-      TextureWidth: 225
-      TextureHeight: 225
-      TextureIndex: 0
-      TexturePath: assets/textures/metal_floor.jpg
-      HasGeneratedMaps: false
-      NormalStrength: 1
-      Metallic: 1
-      Roughness: 1
-      EmissionColor: [1, 1, 1, 1]
-      EmissionIntensity: 0
-      DisplacementScale: 0.0500000007
+      AmbientTint: [0.449999988, 0.550000012, 0.699999988, 1]
+      Coverage: 0.5
+      Density: 0.600000024
+      NoiseScale: 0.0799999982
+      DetailAmount: 0.5
+      WindDirection: [1, 0.300000012]
+      WindSpeed: 0.0199999996
+      SilverLining: 0.600000024
+      ShadowStrength: 0.699999988
+      MaxSteps: 16
   - Entity: 13623424219446870359
     TagComponent:
       Tag: Sphere
@@ -239,50 +90,199 @@ Entities:
       Density: 1
       Friction: 0.5
       Restitution: 0.99000001
-  - Entity: 17168953761241370128
+  - Entity: 17511523757608198697
     TagComponent:
-      Tag: Volumetric Clouds
+      Tag: Metal Floor
     TransformComponent:
-      Translation: [0, 100, 0]
+      Translation: [50, -1, 0]
       Rotation: [0, 0, 0]
-      Scale: [10000, 50, 10000]
-    VolumetricCloudsComponent:
-      Enabled: true
+      Scale: [50, 1, 50]
+    CubeRendererComponent:
       Color: [1, 1, 1, 1]
-      AmbientTint: [0.449999988, 0.550000012, 0.699999988, 1]
-      Coverage: 0.5
-      Density: 0.600000024
-      NoiseScale: 0.0799999982
-      DetailAmount: 0.5
-      WindDirection: [1, 0.300000012]
-      WindSpeed: 0.0199999996
-      SilverLining: 0.600000024
-      ShadowStrength: 0.699999988
-      MaxSteps: 16
-  - Entity: 16201232747388855503
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 1
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.0500000007
+  - Entity: 4023313775802900017
     TagComponent:
-      Tag: Volumetric Fog
+      Tag: Player
     TransformComponent:
-      Translation: [0, 0, 0]
+      Translation: [0, 0, 10]
       Rotation: [0, 0, 0]
-      Scale: [10000, 10, 10000]
-    VolumetricFogComponent:
-      Enabled: true
-      Color: [0.699999988, 0.75, 0.800000012, 1]
-      Density: 0.0500000007
-      Anisotropy: 0.300000012
-      HeightFalloff: 0.300000012
-      NoiseStrength: 0.5
-      NoiseScale: 0.25
-      WindSpeed: 0.0500000007
-      MaxSteps: 12
-  - Entity: 17897628911760291305
-    TagComponent:
-      Tag: Directional Light
-    TransformComponent:
-      Translation: [0, 0, 0]
-      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
       Scale: [1, 1, 1]
-    DirectionalLightComponent:
-      Color: [0.737254918, 1, 0.443137258, 1]
-      Intensity: 1.5
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: assets/scripts/Player.py
+      ScriptName: Player
+  - Entity: 11202436623447093941
+    TagComponent:
+      Tag: Wood Floor
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, -0, 0]
+      Scale: [50, 1, 50]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/wood_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.0500000007
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 7087185800274467715
+    TagComponent:
+      Tag: Metal Cube
+    TransformComponent:
+      Translation: [-0.441912323, -0.000142269462, -5.30288792]
+      Rotation: [5.18581419e-06, -0.000426594226, 2.76519881e-06]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 1
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.300000012
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0.5
+  - Entity: 3308840676256262708
+    TagComponent:
+      Tag: Emissive Sphere
+    TransformComponent:
+      Translation: [56.2000008, 55.7999992, -1.70000005]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 50
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.737024248, 1, 0.441176474, 1]
+      EmissionIntensity: 1
+      DisplacementScale: 0
+  - Entity: 12190645617490407318
+    TagComponent:
+      Tag: Wood Cube
+    TransformComponent:
+      Translation: [0.237263054, -0.000142267905, -0.147178456]
+      Rotation: [5.19585137e-06, -0.00826051086, 2.71707268e-06]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/wood_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.300000012
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0.439999998
