@@ -59,6 +59,8 @@ namespace Wasteland
         static void SetRayTracingAccumulate(bool enabled);
         static uint32_t GetRayTraceTargetID();
         static void ResizeRayTraceTarget(uint32_t width, uint32_t height);
+        static float GetRenderScale();
+        static void SetRenderScale(float scale);
 
         // Ray Tracing Settings
         static uint32_t GetSamplesPerPixel();
@@ -71,6 +73,23 @@ namespace Wasteland
         static void SetSkyBottomColor(const glm::vec3 &color);
         static glm::vec3 GetSkyTopColor();
         static void SetSkyTopColor(const glm::vec3 &color);
+
+        // Volumetric atmosphere (fog + clouds). Volumes are submitted per-frame
+        // by the Scene from VolumetricFog/VolumetricClouds components; the
+        // entity Transform defines the volume box (center = Translation,
+        // full size = Scale). Raymarched in both Nova and raster paths.
+        static constexpr int MaxFogVolumes = 4;
+        static constexpr int MaxCloudVolumes = 2;
+        static void SubmitFogVolume(const glm::mat4 &transform, const VolumetricFogComponent &fog);
+        static void SubmitCloudVolume(const glm::mat4 &transform, const VolumetricCloudsComponent &clouds);
+        static bool IsVolumetricFogEnabled();
+        static void SetVolumetricFogEnabled(bool enabled);
+        static bool IsVolumetricCloudsEnabled();
+        static void SetVolumetricCloudsEnabled(bool enabled);
+        static glm::vec3 GetSunDirection();
+        static void SetSunDirection(const glm::vec3 &direction);
+        static float GetVolumetricStepScale();
+        static void SetVolumetricStepScale(float scale);
 
         // Neural Rendering (OpenGL GLSL MLP: neural texture detail + neural indirect lighting)
         static bool IsNeuralRenderingEnabled();

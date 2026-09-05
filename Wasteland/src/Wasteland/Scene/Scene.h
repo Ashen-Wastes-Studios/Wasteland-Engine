@@ -61,6 +61,10 @@ namespace Wasteland
 
 		void RenderScene(EditorCamera &camera);
 
+	// Gathers VolumetricFog/VolumetricClouds components and submits them to
+	// Renderer3D. Called between BeginScene/EndScene at every 3D render site.
+	void SubmitVolumetricVolumes();
+
 	private:
 		entt::registry m_Registry;
 		uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;

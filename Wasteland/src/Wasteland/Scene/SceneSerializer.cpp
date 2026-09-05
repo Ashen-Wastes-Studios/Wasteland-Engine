@@ -405,6 +405,43 @@ namespace Wasteland
 			out << YAML::EndMap;
 		}
 
+		if (entity.HasComponent<VolumetricFogComponent>())
+		{
+			out << YAML::Key << "VolumetricFogComponent";
+			out << YAML::BeginMap;
+			auto &fog = entity.GetComponent<VolumetricFogComponent>();
+			out << YAML::Key << "Enabled" << YAML::Value << fog.Enabled;
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(fog.Color, 1.0f);
+			out << YAML::Key << "Density" << YAML::Value << fog.Density;
+			out << YAML::Key << "Anisotropy" << YAML::Value << fog.Anisotropy;
+			out << YAML::Key << "HeightFalloff" << YAML::Value << fog.HeightFalloff;
+			out << YAML::Key << "NoiseStrength" << YAML::Value << fog.NoiseStrength;
+			out << YAML::Key << "NoiseScale" << YAML::Value << fog.NoiseScale;
+			out << YAML::Key << "WindSpeed" << YAML::Value << fog.WindSpeed;
+			out << YAML::Key << "MaxSteps" << YAML::Value << fog.MaxSteps;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<VolumetricCloudsComponent>())
+		{
+			out << YAML::Key << "VolumetricCloudsComponent";
+			out << YAML::BeginMap;
+			auto &clouds = entity.GetComponent<VolumetricCloudsComponent>();
+			out << YAML::Key << "Enabled" << YAML::Value << clouds.Enabled;
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(clouds.Color, 1.0f);
+			out << YAML::Key << "AmbientTint" << YAML::Value << glm::vec4(clouds.AmbientTint, 1.0f);
+			out << YAML::Key << "Coverage" << YAML::Value << clouds.Coverage;
+			out << YAML::Key << "Density" << YAML::Value << clouds.Density;
+			out << YAML::Key << "NoiseScale" << YAML::Value << clouds.NoiseScale;
+			out << YAML::Key << "DetailAmount" << YAML::Value << clouds.DetailAmount;
+			out << YAML::Key << "WindDirection" << YAML::Value << clouds.WindDirection;
+			out << YAML::Key << "WindSpeed" << YAML::Value << clouds.WindSpeed;
+			out << YAML::Key << "SilverLining" << YAML::Value << clouds.SilverLining;
+			out << YAML::Key << "ShadowStrength" << YAML::Value << clouds.ShadowStrength;
+			out << YAML::Key << "MaxSteps" << YAML::Value << clouds.MaxSteps;
+			out << YAML::EndMap;
+		}
+
 		if (entity.HasComponent<ScriptComponent>())
 		{
 			out << YAML::Key << "ScriptComponent";
@@ -668,6 +705,60 @@ namespace Wasteland
 					cc.Density = capsuleCollider3DComponent["Density"].as<float>();
 					cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
 					cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
+				}
+
+				auto volumetricFogComponent = entity["VolumetricFogComponent"];
+				if (volumetricFogComponent)
+				{
+					auto &fog = deserializedEntity.AddComponent<VolumetricFogComponent>();
+					if (volumetricFogComponent["Enabled"])
+						fog.Enabled = volumetricFogComponent["Enabled"].as<bool>();
+					if (volumetricFogComponent["Color"])
+						fog.Color = glm::vec3(volumetricFogComponent["Color"].as<glm::vec4>());
+					if (volumetricFogComponent["Density"])
+						fog.Density = volumetricFogComponent["Density"].as<float>();
+					if (volumetricFogComponent["Anisotropy"])
+						fog.Anisotropy = volumetricFogComponent["Anisotropy"].as<float>();
+					if (volumetricFogComponent["HeightFalloff"])
+						fog.HeightFalloff = volumetricFogComponent["HeightFalloff"].as<float>();
+					if (volumetricFogComponent["NoiseStrength"])
+						fog.NoiseStrength = volumetricFogComponent["NoiseStrength"].as<float>();
+					if (volumetricFogComponent["NoiseScale"])
+						fog.NoiseScale = volumetricFogComponent["NoiseScale"].as<float>();
+					if (volumetricFogComponent["WindSpeed"])
+						fog.WindSpeed = volumetricFogComponent["WindSpeed"].as<float>();
+					if (volumetricFogComponent["MaxSteps"])
+						fog.MaxSteps = volumetricFogComponent["MaxSteps"].as<int>();
+				}
+
+				auto volumetricCloudsComponent = entity["VolumetricCloudsComponent"];
+				if (volumetricCloudsComponent)
+				{
+					auto &clouds = deserializedEntity.AddComponent<VolumetricCloudsComponent>();
+					if (volumetricCloudsComponent["Enabled"])
+						clouds.Enabled = volumetricCloudsComponent["Enabled"].as<bool>();
+					if (volumetricCloudsComponent["Color"])
+						clouds.Color = glm::vec3(volumetricCloudsComponent["Color"].as<glm::vec4>());
+					if (volumetricCloudsComponent["AmbientTint"])
+						clouds.AmbientTint = glm::vec3(volumetricCloudsComponent["AmbientTint"].as<glm::vec4>());
+					if (volumetricCloudsComponent["Coverage"])
+						clouds.Coverage = volumetricCloudsComponent["Coverage"].as<float>();
+					if (volumetricCloudsComponent["Density"])
+						clouds.Density = volumetricCloudsComponent["Density"].as<float>();
+					if (volumetricCloudsComponent["NoiseScale"])
+						clouds.NoiseScale = volumetricCloudsComponent["NoiseScale"].as<float>();
+					if (volumetricCloudsComponent["DetailAmount"])
+						clouds.DetailAmount = volumetricCloudsComponent["DetailAmount"].as<float>();
+					if (volumetricCloudsComponent["WindDirection"])
+						clouds.WindDirection = volumetricCloudsComponent["WindDirection"].as<glm::vec2>();
+					if (volumetricCloudsComponent["WindSpeed"])
+						clouds.WindSpeed = volumetricCloudsComponent["WindSpeed"].as<float>();
+					if (volumetricCloudsComponent["SilverLining"])
+						clouds.SilverLining = volumetricCloudsComponent["SilverLining"].as<float>();
+					if (volumetricCloudsComponent["ShadowStrength"])
+						clouds.ShadowStrength = volumetricCloudsComponent["ShadowStrength"].as<float>();
+					if (volumetricCloudsComponent["MaxSteps"])
+						clouds.MaxSteps = volumetricCloudsComponent["MaxSteps"].as<int>();
 				}
 
 				auto scriptComponent = entity["ScriptComponent"];

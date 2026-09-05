@@ -96,6 +96,33 @@ uniform float u_NeuralLightStrength;
 // Neural material blend. Defaults to 0 (classic PBR) until Renderer3D uploads it.
 uniform float u_NeuralMatStrength;
 
+// Volumetric atmosphere (Renderer3D uploads; locations are skipped when absent).
+// Fog d1 = (density, anisotropy, noiseStrength, noiseScale)
+// Fog d2 = (windSpeed, heightFalloff, steps, enabled)
+// Cloud d1 = (coverage, density, noiseScale, detail)
+// Cloud d2 = (windSpeed, windDirX, windDirY, steps)
+// Cloud d3 = (silverLining, shadowStrength, enabled, unused)
+uniform vec3 u_SunDirection;
+uniform float u_Time;
+uniform int u_FogEnabled;
+uniform int u_FogCount;
+uniform vec3 u_FogMin[4];
+uniform vec3 u_FogMax[4];
+uniform vec3 u_FogColor[4];
+uniform vec4 u_FogData[4];
+uniform vec4 u_FogData2[4];
+uniform int u_CloudEnabled;
+uniform int u_CloudCount;
+uniform vec3 u_CloudMin[2];
+uniform vec3 u_CloudMax[2];
+uniform vec3 u_CloudColor[2];
+uniform vec3 u_CloudAmbient[2];
+uniform vec4 u_CloudData[2];
+uniform vec4 u_CloudData2[2];
+uniform vec4 u_CloudData3[2];
+// 1 = reduced noise octaves (Low/Medium quality presets).
+uniform int u_VolFast;
+
 float wl_softsign(float x) { return x / (1.0 + abs(x)); }
 
 // Reduced-resolution tracing: passes 0/1/2/7 dispatch at ComputeWidth/Height
@@ -140,8 +167,10 @@ vec3 wl_neural_tex_detail(vec2 uv, vec3 n)
 }
 
 // Neural radiance cache: predicts indirect bounce (reflectance * light) from
-// position/normal/albedo/roughness + artist sky colors. One eval replaces N traced rays.
-vec3 wl_neural_indirect(vec3 wp, vec3 n, vec3 albedo, float rough, vec3 v)
+// position/normal/albedo/roughness/metal + artist sky colors. One eval
+// replaces N traced rays. Diffuse lobe is suppressed on metals (they have
+// ~no diffuse response); the specular lobe stays for all materials.
+vec3 wl_neural_indirect(vec3 wp, vec3 n, vec3 albedo, float rough, float metal, vec3 v)
 {
     vec3 p = wp * 0.35;
     vec4 f = vec4(sin(p.x * 2.1 + n.x * 2.0),
@@ -154,7 +183,7 @@ vec3 wl_neural_indirect(vec3 wp, vec3 n, vec3 albedo, float rough, vec3 v)
     float h3 = wl_softsign(-0.4 * f.x - 0.3 * f.y + 0.5 * f.z + 0.7 * f.w + 0.15);
     float up = n.y * 0.5 + 0.5;
     vec3 sky = mix(u_SkyBottomColor, u_SkyTopColor, up);
-    vec3 diffLobe = albedo * sky * (0.45 + 0.30 * h0 + 0.15 * h1);
+    vec3 diffLobe = albedo * (1.0 - metal) * sky * (0.45 + 0.30 * h0 + 0.15 * h1);
     float ndv = clamp(dot(n, v), 0.0, 1.0);
     vec3 F0 = mix(vec3(0.04), max(albedo, vec3(0.04)), clamp(1.0 - rough, 0.0, 1.0) * 0.5);
     vec3 spec = F0 * sky * (0.25 + 0.35 * h2) * (0.3 + 0.7 * ndv) * (1.0 - rough * 0.7);
@@ -195,6 +224,213 @@ void wl_neural_material(vec2 uv, vec3 wp, vec3 n,
     // Dielectric coating: warm F0 lift (clearcoat-like), suppressed on metals
     float coat = clamp(h3, 0.0, 1.0) * (1.0 - metal);
     f0Tint = vec3(1.0) + vec3(1.2, 0.9, 0.6) * coat;
+}
+
+// ---- Volumetric fog & clouds (box volumes submitted by Renderer3D) ----
+float wl_vol_hash(vec3 p)
+{
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float wl_vol_noise(vec3 p)
+{
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(wl_vol_hash(i), wl_vol_hash(i + vec3(1.0, 0.0, 0.0)), u.x),
+                   mix(wl_vol_hash(i + vec3(0.0, 1.0, 0.0)), wl_vol_hash(i + vec3(1.0, 1.0, 0.0)), u.x), u.y),
+               mix(mix(wl_vol_hash(i + vec3(0.0, 0.0, 1.0)), wl_vol_hash(i + vec3(1.0, 0.0, 1.0)), u.x),
+                   mix(wl_vol_hash(i + vec3(0.0, 1.0, 1.0)), wl_vol_hash(i + vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+}
+
+float wl_vol_fbm(vec3 p)
+{
+    float v = 0.0;
+    float a = 0.5;
+    for (int o = 0; o < 4; o++)
+    {
+        v += a * wl_vol_noise(p);
+        p = p * 2.03 + vec3(17.3);
+        a *= 0.5;
+    }
+    return v;
+}
+
+// 2-octave variant for low quality presets / cheap taps. Rescaled to match
+// wl_vol_fbm's mean so coverage thresholds behave the same.
+float wl_vol_fbm2(vec3 p)
+{
+    return (0.5 * wl_vol_noise(p) + 0.25 * wl_vol_noise(p * 2.03 + vec3(17.3))) * 1.25;
+}
+
+// Slab test: returns (entry, exit) distances, negative entry range when missed.
+vec2 wl_box_range(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax)
+{
+    vec3 safe = rd + (vec3(1.0) - step(vec3(0.00001), abs(rd))) * 0.00001;
+    vec3 inv = 1.0 / safe;
+    vec3 t0 = (bmin - ro) * inv;
+    vec3 t1 = (bmax - ro) * inv;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    return vec2(max(max(tmin.x, tmin.y), tmin.z), min(min(tmax.x, tmax.y), tmax.z));
+}
+
+float wl_hg(float cosT, float g)
+{
+    float g2 = g * g;
+    return 0.07957747 * (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * cosT, 0.001), 1.5);
+}
+
+// Front-to-back march through one fog box. Returns (scatteredLight, transmittance).
+vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
+                      vec3 tint, vec4 d1, vec4 d2, float dither)
+{
+    vec2 range = wl_box_range(ro, rd, bmin, bmax);
+    float t0 = max(range.x, 0.0);
+    float t1 = min(range.y, tMax);
+    // Depth-adaptive steps: thin intersections cost proportionally less while
+    // keeping an approximately constant world-space step size.
+    float fogLen = max(t1 - t0, 0.0);
+    int steps = int(clamp(d2.z * clamp(fogLen / 8.0, 0.25, 1.0), 2.0, 32.0));
+    if (t1 <= t0 || steps <= 0)
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    float dt = (t1 - t0) / float(steps);
+    float phase = wl_hg(dot(rd, u_SunDirection), clamp(d1.y, -0.9, 0.9));
+    vec3 sunCol = vec3(1.15, 1.05, 0.95);
+    vec3 ambCol = mix(u_SkyBottomColor, u_SkyTopColor, 0.5);
+    vec3 light = ambCol * 0.7 + sunCol * (0.25 + phase * 2.0);
+    float hgt = max(bmax.y - bmin.y, 0.001);
+    vec3 acc = vec3(0.0);
+    float trans = 1.0;
+    float t = t0 + dt * dither;
+    for (int s = 0; s < 32; s++)
+    {
+        if (s >= steps)
+            break;
+        vec3 p = ro + rd * t;
+        float d = max(d1.x, 0.0);
+        float h = clamp((p.y - bmin.y) / hgt, 0.0, 1.0);
+        d *= mix(1.0, exp(-h * 4.0), clamp(d2.y, 0.0, 1.0));
+        if (d1.z > 0.001)
+        {
+            vec3 np = p * max(d1.w, 0.001) + vec3(u_Time * d2.x, 0.0, u_Time * d2.x * 0.6);
+            float n = (u_VolFast == 1) ? wl_vol_fbm2(np) : wl_vol_fbm(np);
+            d *= (1.0 - d1.z * 0.5) + d1.z * n;
+        }
+        float a = 1.0 - exp(-max(d, 0.0) * dt);
+        acc += trans * a * tint * light;
+        trans *= (1.0 - a);
+        if (trans < 0.02)
+        {
+            trans = 0.0;
+            break;
+        }
+        t += dt;
+    }
+    return vec4(acc, trans);
+}
+
+// Front-to-back march through one cloud layer box. Returns (scatteredLight, transmittance).
+vec4 wl_march_cloud_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
+                        vec3 tint, vec3 amb, vec4 d1, vec4 d2, vec4 d3, float dither)
+{
+    vec2 range = wl_box_range(ro, rd, bmin, bmax);
+    float t0 = max(range.x, 0.0);
+    float t1 = min(range.y, tMax);
+    float clLen = max(t1 - t0, 0.0);
+    int steps = int(clamp(d2.w * clamp(clLen / 8.0, 0.25, 1.0), 2.0, 32.0));
+    if (t1 <= t0 || steps <= 0)
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    float dt = (t1 - t0) / float(steps);
+    vec2 wnd = vec2(d2.y, d2.z);
+    if (dot(wnd, wnd) < 0.00000001)
+        wnd = vec2(1.0, 0.0);
+    wnd = normalize(wnd) * d2.x * u_Time;
+    float silverPow = pow(clamp(dot(rd, u_SunDirection), 0.0, 1.0), 6.0);
+    vec3 sunCol = vec3(1.2, 1.1, 1.0);
+    float hgt = max(bmax.y - bmin.y, 0.001);
+    float nScale = max(d1.z, 0.001);
+    vec3 acc = vec3(0.0);
+    float trans = 1.0;
+    float t = t0 + dt * dither;
+    for (int s = 0; s < 32; s++)
+    {
+        if (s >= steps)
+            break;
+        vec3 p = ro + rd * t;
+        vec3 q = p * nScale + vec3(wnd.x, 0.0, wnd.y);
+        float base = (u_VolFast == 1) ? wl_vol_fbm2(q) : wl_vol_fbm(q);
+        float cov = clamp(d1.x, 0.0, 1.0);
+        float d = smoothstep(1.0 - cov, 1.0 - cov + 0.35, base);
+        if (d > 0.001 && d1.w > 0.001)
+        {
+            float det = wl_vol_noise(q * 3.7 + vec3(0.0, u_Time * d2.x * 0.5, 0.0));
+            d = max(d - det * d1.w * d, 0.0);
+        }
+        d *= max(d1.y, 0.0);
+        float h = clamp((p.y - bmin.y) / hgt, 0.0, 1.0);
+        d *= smoothstep(0.0, 0.25, h) * (1.0 - smoothstep(0.6, 1.0, h) * 0.7);
+        float a = 1.0 - exp(-d * dt);
+        if (a > 0.001)
+        {
+            float sh = 1.0;
+            if (d3.y > 0.01)
+            {
+                // Cheap self-shadow: single-octave density tap toward the sun
+                // (a full second march is overkill for a soft darkening term).
+                vec3 sp = p + u_SunDirection * dt * 2.0;
+                float sd = wl_vol_noise(sp * nScale + vec3(wnd.x, 0.0, wnd.y)) * max(d1.y, 0.0);
+                sh = exp(-sd * dt * 4.0 * clamp(d3.y, 0.0, 1.0));
+            }
+            vec3 scol = tint * (amb * (0.35 + 0.65 * sh) + sunCol * sh * 0.9)
+                      + sunCol * silverPow * clamp(d3.x, 0.0, 1.0) * 0.6;
+            acc += trans * a * scol;
+            trans *= (1.0 - a);
+            if (trans < 0.02)
+            {
+                trans = 0.0;
+                break;
+            }
+        }
+        t += dt;
+    }
+    return vec4(acc, trans);
+}
+
+// Applies all submitted cloud + fog volumes to a primary-ray sample.
+vec3 wl_apply_volumetrics(vec3 ro, vec3 rd, float tHit, vec3 baseColor, float dither)
+{
+    vec3 col = baseColor;
+    if (u_CloudEnabled == 1)
+    {
+        for (int i = 0; i < 2; i++)
+        {
+            if (i >= u_CloudCount)
+                break;
+            if (u_CloudData3[i].z < 0.5)
+                continue;
+            vec4 r = wl_march_cloud_vol(ro, rd, tHit, u_CloudMin[i], u_CloudMax[i],
+                                        u_CloudColor[i], u_CloudAmbient[i],
+                                        u_CloudData[i], u_CloudData2[i], u_CloudData3[i], dither);
+            col = col * r.a + r.rgb;
+        }
+    }
+    if (u_FogEnabled == 1)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            if (i >= u_FogCount)
+                break;
+            if (u_FogData2[i].w < 0.5)
+                continue;
+            vec4 r = wl_march_fog_vol(ro, rd, tHit, u_FogMin[i], u_FogMax[i],
+                                      u_FogColor[i], u_FogData[i], u_FogData2[i], dither);
+            col = col * r.a + r.rgb;
+        }
+    }
+    return col;
 }
 
 struct Ray { vec3 Origin; vec3 Direction; };
@@ -467,6 +703,10 @@ void RunVisibilityAndVelocity() {
     prevClipPos /= prevClipPos.w;
     vec2 prevUV = prevClipPos.xy * 0.5 + 0.5;
 
+    // NOTE: intentionally the UNjittered grid UV. History is stored per-pixel
+    // on that grid, so velocity = uv - prevUV lands the lookup on the texel
+    // that saw this surface point. Biasing by the frame jitter (tempting,
+    // tried) offsets the lookup by a per-frame-varying amount and smears.
     vec2 velocity = uv - prevUV;
     imageStore(img_Velocity, pixelCoords, vec4(velocity, 0.0, 1.0));
 }
@@ -784,7 +1024,7 @@ HitInfo TraceScene(Ray ray) {
     return info;
 }
 
-vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed) {
+vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed, bool skipEnv) {
     vec3 F0 = mix(vec3(0.04), max(h.albedo, vec3(0.04)), h.metal) * h.f0Tint;
     vec3 diffuseColor = h.albedo * (1.0 - h.metal);
     vec3 directLight = vec3(0.0);
@@ -842,7 +1082,9 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed) {
     vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
     directLight += diffuseColor * skyAmbient * h.occlusion;
 
-    if (h.metal > 0.0) {
+    // Analytic sky env approx for metals. Skipped when the caller traces a
+    // true mirror ray instead (Low-preset metals) so the sky isn't counted twice.
+    if (h.metal > 0.0 && !skipEnv) {
         vec3 R = reflect(-V, h.normal);
         vec3 specSky = GetSkyColor(R);
         vec3 diffSky = skyAmbient / 0.15; 
@@ -887,7 +1129,13 @@ void RunTraceAndDenoise()
     }
 
     if (!primary.hit) {
-        imageStore(img_Bloom, pixelCoords, vec4(GetSkyColor(primaryRay.Direction), 1.0));
+        vec3 skyCol = GetSkyColor(primaryRay.Direction);
+        // Static per-pixel dither (NOT frame-animated): accumulation converges
+        // a stable field in a few frames, while a cycling dither keeps every
+        // frame different and the image shimmers forever, especially upsized.
+        float skyDith = wl_hash12(vec2(pixelCoords));
+        skyCol = wl_apply_volumetrics(primaryRay.Origin, primaryRay.Direction, 600.0, skyCol, skyDith);
+        imageStore(img_Bloom, pixelCoords, vec4(skyCol, 1.0));
         return;
     }
 
@@ -900,10 +1148,13 @@ void RunTraceAndDenoise()
     if (tileHit.hit) {
         vec3 V = normalize(-lightRay.Direction);
         uint lightSeed = uint(pixelCoords.x * 73 + pixelCoords.y * 149 + u_FrameIndex * 2);
-        directLight = ComputeDirectLighting(tileHit, V, lightSeed);
-
-        int maxIndirectRays = (u_QualityLevel == 0) ? 0 : 
+        int maxIndirectRays = (u_QualityLevel == 0) ? 0 :
                               ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
+        // Mirror gap-fill: Low preset traces no indirect rays, so metals
+        // would only get the analytic sky approx. Trace one real mirror ray
+        // instead and skip the approx inside ComputeDirectLighting.
+        bool doMirror = (tileHit.metal > 0.01 && maxIndirectRays == 0);
+        directLight = ComputeDirectLighting(tileHit, V, lightSeed, doMirror);
 
         if (maxIndirectRays > 0) {
             vec3 diffuseColor = tileHit.albedo * (1.0 - tileHit.metal);
@@ -927,7 +1178,7 @@ void RunTraceAndDenoise()
 
                 if (indirect.hit) {
                     vec3 indirectV = normalize(-indirectDir);
-                    vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV, lightSeed + 1u);
+                    vec3 bouncedLight = ComputeDirectLighting(indirect, indirectV, lightSeed + 1u, false);
                     indirectLight += indirectReflectance * bouncedLight;
                 } else {
                     indirectLight += indirectReflectance * GetSkyColor(indirectDir);
@@ -935,14 +1186,37 @@ void RunTraceAndDenoise()
             }
             indirectLight /= float(maxIndirectRays);
             indirectLight *= tileHit.occlusion;
-            // Neural radiance cache blend: learned GI steadies the 1-ray estimate (OpenGL neural path)
+            // Neural radiance cache blend: learned GI steadies the 1-ray estimate (OpenGL neural path).
+            // Weighted down on metals so the traced specular reflection dominates.
             if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001) {
-                vec3 neuralGI = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, V);
-                indirectLight = mix(indirectLight, neuralGI * tileHit.occlusion, clamp(u_NeuralLightStrength, 0.0, 1.0) * 0.65);
+                vec3 neuralGI = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V);
+                float neuralK = clamp(u_NeuralLightStrength, 0.0, 1.0) * 0.65 * (1.0 - tileHit.metal * 0.8);
+                indirectLight = mix(indirectLight, neuralGI * tileHit.occlusion, neuralK);
             }
         } else if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001) {
             // No traced bounces at this quality level: neural cache IS the GI (e.g. Low preset)
-            indirectLight = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, V) * tileHit.occlusion;
+            indirectLight = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V) * tileHit.occlusion;
+        }
+
+        // Sharp scene reflection for metals with no traced bounce (Low preset):
+        // one roughness-jittered mirror ray, Fresnel-tinted. Shadow-correct
+        // because the reflected hit is shaded with full shadowed direct light.
+        if (doMirror) {
+            seed = uint(pixelCoords.y * 1024 + pixelCoords.x) + uint(u_FrameIndex * 1000) + 40543u;
+            vec3 R = reflect(-V, tileHit.normal);
+            vec3 mirrorDir = normalize(mix(R, random_in_hemisphere(tileHit.normal), tileHit.rough * tileHit.rough));
+            Ray mirrorRay = Ray(tileHit.worldPos + tileHit.normal * 0.002, mirrorDir);
+            HitInfo mirrorHit = TraceScene(mirrorRay);
+            vec3 mirrorColor;
+            if (mirrorHit.hit) {
+                vec3 mirrorV = normalize(-mirrorRay.Direction);
+                mirrorColor = ComputeDirectLighting(mirrorHit, mirrorV, lightSeed + 7u, false);
+            } else {
+                mirrorColor = GetSkyColor(mirrorRay.Direction);
+            }
+            vec3 mF0 = mix(vec3(0.04), max(tileHit.albedo, vec3(0.04)), tileHit.metal) * tileHit.f0Tint;
+            vec3 mF = FresnelSchlick(clamp(dot(tileHit.normal, V), 0.0, 1.0), mF0);
+            directLight += mF * mirrorColor * tileHit.metal;
         }
     } else {
         directLight = GetSkyColor(lightRay.Direction);
@@ -955,6 +1229,10 @@ void RunTraceAndDenoise()
     // ambient/emission), and indirectLight already carries tile reflectance -
     // do NOT multiply by albedo again (albedo^2 pushed textured floors to black).
     vec3 finalPixelColor = directLight + indirectLight;
+    // Volumetric atmosphere over the primary ray (clouds, then fog).
+    float volDist = distance(u_CameraPosition, tileHit.worldPos);
+    float volDith = wl_hash12(vec2(pixelCoords) + 7.3);
+    finalPixelColor = wl_apply_volumetrics(lightRay.Origin, lightRay.Direction, volDist, finalPixelColor, volDith);
     imageStore(img_Bloom, pixelCoords, vec4(finalPixelColor, 1.0));
 }
 
@@ -968,6 +1246,10 @@ void RunTemporalAccumulation() {
     vec2 prevUV = uv - velocity;
     // Accumulation + depth buffers hold the subregion; map history UVs to it.
     vec2 histUV = prevUV * u_RenderScale;
+    // Keep bilinear taps inside the valid subregion: outside it lives stale
+    // data (e.g. from full-res frames), which would streak the frame edges.
+    vec2 fullRes = vec2(imageSize(img_Accumulation));
+    histUV = min(histUV, vec2(u_RenderScale) - 0.5 / fullRes);
 
     bool validHistory = prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0;
     float motionMag = length(velocity * vec2(imgSize));
@@ -1000,7 +1282,12 @@ void RunTemporalAccumulation() {
             vec3 maxCol = mean + 1.25 * stddev;
             historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
             historyLight = YCoCg2RGB(historyYCoCg);
-        } else if (u_QualityLevel == 2) {
+        } else {
+            // History clamp at EVERY tier (not just High/Ultra): without it,
+            // per-frame variations (trace jitter cycle, shadow-seed rotation,
+            // mirror-ray randomness on metals) smear unboundedly through the
+            // blend and Low/Medium never resolve sharp. Pulls history toward
+            // the current frame's local neighborhood; slight noise cost.
             ivec2 offsets[5] = ivec2[](ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
             vec3 m1 = vec3(0.0);
             vec3 m2 = vec3(0.0);
@@ -1090,7 +1377,9 @@ void RunComposite() {
         vec2 srcPixel = srcCoord - vec2(0.5);
         ivec2 s0 = clamp(ivec2(floor(srcPixel)), ivec2(0), srcSize - ivec2(1));
         ivec2 s1 = clamp(s0 + ivec2(1), ivec2(0), srcSize - ivec2(1));
-        vec2 f = srcPixel - vec2(s0);
+        // Clamp weights: at the frame border srcPixel can go slightly negative
+        // and unclamped extrapolation rings bright/dark edges.
+        vec2 f = clamp(srcPixel - vec2(s0), vec2(0.0), vec2(1.0));
 
         vec3 c00 = imageLoad(img_Accumulation, s0).rgb;
         vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
@@ -1108,7 +1397,10 @@ void RunComposite() {
 
     imageStore(img_Output, pos, vec4(finalColor, 1.0));
 
-    if (u_QualityLevel >= 1 && u_RenderScale >= 1.0) {
+    // Bloom threshold must run at ANY scale: passes 4/5 blur img_Bloom at full
+    // res, so leaving stale trace-subregion data in it (by skipping this when
+    // scaled) smears a ghost copy of the frame over the output.
+    if (u_QualityLevel >= 1) {
         float brightness = dot(combined, vec3(0.2126, 0.7152, 0.0722));
         float threshold = 0.8;
         float knee = 0.15;

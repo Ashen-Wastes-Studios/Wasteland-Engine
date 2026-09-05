@@ -10,6 +10,8 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glad/glad.h>
 
+#include <chrono>
+
 namespace Wasteland
 {
     struct Vertex3D
@@ -18,7 +20,11 @@ namespace Wasteland
         glm::vec4 Color;
         glm::vec3 Normal;
         glm::vec2 TexCoord;
+        float TexIndex;
+        float TilingFactor;
         int EntityID;
+        float Metallic;
+        float Roughness;
     };
 
     struct alignas(16) RayTracingInstance
@@ -63,6 +69,61 @@ namespace Wasteland
         glm::vec3 maxBounds;
         int index; // index into m_SceneInstances
     };
+
+    // CPU-side volumetric volume (world-space AABB + shading params).
+    // Filled per-frame by SubmitFogVolume/SubmitCloudVolume from components.
+    struct FogVolumeData
+    {
+        glm::vec3 Min;
+        glm::vec3 Max;
+        glm::vec3 Color;
+        float Density = 0.0f;
+        float Anisotropy = 0.0f;
+        float NoiseStrength = 0.0f;
+        float NoiseScale = 0.25f;
+        float WindSpeed = 0.0f;
+        float HeightFalloff = 0.0f;
+        int Steps = 12;
+        bool Enabled = true;
+    };
+
+    struct CloudVolumeData
+    {
+        glm::vec3 Min;
+        glm::vec3 Max;
+        glm::vec3 Color;
+        glm::vec3 Ambient;
+        float Coverage = 0.5f;
+        float Density = 0.5f;
+        float NoiseScale = 0.08f;
+        float Detail = 0.5f;
+        glm::vec2 WindDir = {1.0f, 0.0f};
+        float WindSpeed = 0.0f;
+        float SilverLining = 0.5f;
+        float ShadowStrength = 0.7f;
+        int Steps = 16;
+        bool Enabled = true;
+    };
+
+    // World-space AABB of a unit-cube volume transformed by an entity matrix
+    // (rotation is conservatively absorbed, same approach as the BVH builder).
+    static void ComputeVolumeBounds(const glm::mat4 &transform, glm::vec3 &outMin, glm::vec3 &outMax)
+    {
+        glm::vec3 center = glm::vec3(transform[3]);
+        glm::vec3 axisX = glm::abs(glm::vec3(transform[0])) * 0.5f;
+        glm::vec3 axisY = glm::abs(glm::vec3(transform[1])) * 0.5f;
+        glm::vec3 axisZ = glm::abs(glm::vec3(transform[2])) * 0.5f;
+        outMin = center - axisX - axisY - axisZ;
+        outMax = center + axisX + axisY + axisZ;
+    }
+
+    // Seconds since first call — drives wind-animated volume noise.
+    static float GetVolumetricTimeSeconds()
+    {
+        static auto s_Start = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration<float>(now - s_Start).count();
+    }
 
     static const int BVH_LEAF_SIZE = 4;
 
@@ -298,6 +359,32 @@ namespace Wasteland
         int Loc_NeuralTexStrength;
         int Loc_NeuralLightStrength;
         int Loc_NeuralMatStrength;
+        // Volumetric uniform locations, indexed by VolLoc enum below.
+        // [0] = Nova compute program, [1] = Basic raster program (-1 = optimized out).
+        enum VolLoc
+        {
+            Vol_SunDirection = 0,
+            Vol_Time,
+            Vol_FogEnabled,
+            Vol_FogCount,
+            Vol_FogMin,
+            Vol_FogMax,
+            Vol_FogColor,
+            Vol_FogData,
+            Vol_FogData2,
+            Vol_CloudEnabled,
+            Vol_CloudCount,
+            Vol_CloudMin,
+            Vol_CloudMax,
+            Vol_CloudColor,
+            Vol_CloudAmbient,
+            Vol_CloudData,
+            Vol_CloudData2,
+            Vol_CloudData3,
+            Vol_VolFast,
+            VolLoc_Count
+        };
+        int Loc_Volumetric[2][VolLoc_Count];
         std::vector<RayTracingInstance> m_SceneInstances;
         bool m_SceneDirty = true;
 
@@ -312,6 +399,15 @@ namespace Wasteland
         float NeuralTextureStrength = 0.6f;
         float NeuralLightStrength = 0.8f;
         float NeuralMaterialStrength = 0.7f;
+
+        // Volumetric atmosphere: per-frame volume list submitted by the Scene
+        // from VolumetricFog/VolumetricClouds components, raymarched in-shader.
+        bool VolFogEnabled = true;
+        bool VolCloudsEnabled = true;
+        glm::vec3 SunDirection = glm::vec3(0.2873f, 0.9578f, 0.3831f); // normalize(0.3, 1.0, 0.4)
+        float VolStepScale = 1.0f;                                     // global quality multiplier for march steps
+        std::vector<FogVolumeData> FogVolumes;
+        std::vector<CloudVolumeData> CloudVolumes;
 
         uint32_t BloomTextureID = 0;
         uint32_t BloomTempTextureID = 0;
@@ -423,6 +519,114 @@ namespace Wasteland
         }
     }
 
+    // Uploads fog/cloud volume uniforms to the currently bound program.
+    // progIndex: 0 = Nova compute, 1 = Basic raster. Missing locations (-1)
+    // are skipped so shaders that predate volumetrics keep working.
+    static void UploadVolumetricUniforms(int progIndex)
+    {
+        using V = Renderer3DData;
+        int *loc = s_Data.Loc_Volumetric[progIndex];
+
+        if (loc[V::Vol_SunDirection] >= 0)
+            glUniform3f(loc[V::Vol_SunDirection], s_Data.SunDirection.x, s_Data.SunDirection.y, s_Data.SunDirection.z);
+        if (loc[V::Vol_Time] >= 0)
+            glUniform1f(loc[V::Vol_Time], GetVolumetricTimeSeconds());
+
+        // Low/Medium presets march with reduced noise octaves (u_VolFast)
+        // and fewer steps; High/Ultra keep full quality.
+        bool volFast = (s_Data.CurrentQualityPreset == QualityPreset::Low ||
+                        s_Data.CurrentQualityPreset == QualityPreset::Medium);
+        if (loc[V::Vol_VolFast] >= 0)
+            glUniform1i(loc[V::Vol_VolFast], volFast ? 1 : 0);
+        float presetStepFactor = 1.0f;
+        if (s_Data.CurrentQualityPreset == QualityPreset::Low)
+            presetStepFactor = 0.5f;
+        else if (s_Data.CurrentQualityPreset == QualityPreset::Medium)
+            presetStepFactor = 0.75f;
+
+        int fogCount = 0;
+        if (s_Data.VolFogEnabled && !s_Data.FogVolumes.empty())
+            fogCount = (int)s_Data.FogVolumes.size() < Renderer3D::MaxFogVolumes ? (int)s_Data.FogVolumes.size() : Renderer3D::MaxFogVolumes;
+        if (loc[V::Vol_FogEnabled] >= 0)
+            glUniform1i(loc[V::Vol_FogEnabled], s_Data.VolFogEnabled ? 1 : 0);
+        if (loc[V::Vol_FogCount] >= 0)
+            glUniform1i(loc[V::Vol_FogCount], fogCount);
+        if (fogCount > 0)
+        {
+            glm::vec3 mins[Renderer3D::MaxFogVolumes];
+            glm::vec3 maxs[Renderer3D::MaxFogVolumes];
+            glm::vec3 cols[Renderer3D::MaxFogVolumes];
+            glm::vec4 d1[Renderer3D::MaxFogVolumes];
+            glm::vec4 d2[Renderer3D::MaxFogVolumes];
+            for (int i = 0; i < fogCount; i++)
+            {
+                const FogVolumeData &v = s_Data.FogVolumes[(size_t)i];
+                mins[i] = v.Min;
+                maxs[i] = v.Max;
+                cols[i] = v.Color;
+                d1[i] = glm::vec4(v.Density, v.Anisotropy, v.NoiseStrength, v.NoiseScale);
+                int steps = (int)(v.Steps * s_Data.VolStepScale * presetStepFactor + 0.5f);
+                steps = steps < 1 ? 1 : (steps > 32 ? 32 : steps);
+                d2[i] = glm::vec4(v.WindSpeed, v.HeightFalloff, (float)steps, v.Enabled ? 1.0f : 0.0f);
+            }
+            if (loc[V::Vol_FogMin] >= 0)
+                glUniform3fv(loc[V::Vol_FogMin], fogCount, glm::value_ptr(mins[0]));
+            if (loc[V::Vol_FogMax] >= 0)
+                glUniform3fv(loc[V::Vol_FogMax], fogCount, glm::value_ptr(maxs[0]));
+            if (loc[V::Vol_FogColor] >= 0)
+                glUniform3fv(loc[V::Vol_FogColor], fogCount, glm::value_ptr(cols[0]));
+            if (loc[V::Vol_FogData] >= 0)
+                glUniform4fv(loc[V::Vol_FogData], fogCount, glm::value_ptr(d1[0]));
+            if (loc[V::Vol_FogData2] >= 0)
+                glUniform4fv(loc[V::Vol_FogData2], fogCount, glm::value_ptr(d2[0]));
+        }
+
+        int cloudCount = 0;
+        if (s_Data.VolCloudsEnabled && !s_Data.CloudVolumes.empty())
+            cloudCount = (int)s_Data.CloudVolumes.size() < Renderer3D::MaxCloudVolumes ? (int)s_Data.CloudVolumes.size() : Renderer3D::MaxCloudVolumes;
+        if (loc[V::Vol_CloudEnabled] >= 0)
+            glUniform1i(loc[V::Vol_CloudEnabled], s_Data.VolCloudsEnabled ? 1 : 0);
+        if (loc[V::Vol_CloudCount] >= 0)
+            glUniform1i(loc[V::Vol_CloudCount], cloudCount);
+        if (cloudCount > 0)
+        {
+            glm::vec3 mins[Renderer3D::MaxCloudVolumes];
+            glm::vec3 maxs[Renderer3D::MaxCloudVolumes];
+            glm::vec3 cols[Renderer3D::MaxCloudVolumes];
+            glm::vec3 ambs[Renderer3D::MaxCloudVolumes];
+            glm::vec4 d1[Renderer3D::MaxCloudVolumes];
+            glm::vec4 d2[Renderer3D::MaxCloudVolumes];
+            glm::vec4 d3[Renderer3D::MaxCloudVolumes];
+            for (int i = 0; i < cloudCount; i++)
+            {
+                const CloudVolumeData &v = s_Data.CloudVolumes[(size_t)i];
+                mins[i] = v.Min;
+                maxs[i] = v.Max;
+                cols[i] = v.Color;
+                ambs[i] = v.Ambient;
+                d1[i] = glm::vec4(v.Coverage, v.Density, v.NoiseScale, v.Detail);
+                int steps = (int)(v.Steps * s_Data.VolStepScale * presetStepFactor + 0.5f);
+                steps = steps < 1 ? 1 : (steps > 32 ? 32 : steps);
+                d2[i] = glm::vec4(v.WindSpeed, v.WindDir.x, v.WindDir.y, (float)steps);
+                d3[i] = glm::vec4(v.SilverLining, v.ShadowStrength, v.Enabled ? 1.0f : 0.0f, 0.0f);
+            }
+            if (loc[V::Vol_CloudMin] >= 0)
+                glUniform3fv(loc[V::Vol_CloudMin], cloudCount, glm::value_ptr(mins[0]));
+            if (loc[V::Vol_CloudMax] >= 0)
+                glUniform3fv(loc[V::Vol_CloudMax], cloudCount, glm::value_ptr(maxs[0]));
+            if (loc[V::Vol_CloudColor] >= 0)
+                glUniform3fv(loc[V::Vol_CloudColor], cloudCount, glm::value_ptr(cols[0]));
+            if (loc[V::Vol_CloudAmbient] >= 0)
+                glUniform3fv(loc[V::Vol_CloudAmbient], cloudCount, glm::value_ptr(ambs[0]));
+            if (loc[V::Vol_CloudData] >= 0)
+                glUniform4fv(loc[V::Vol_CloudData], cloudCount, glm::value_ptr(d1[0]));
+            if (loc[V::Vol_CloudData2] >= 0)
+                glUniform4fv(loc[V::Vol_CloudData2], cloudCount, glm::value_ptr(d2[0]));
+            if (loc[V::Vol_CloudData3] >= 0)
+                glUniform4fv(loc[V::Vol_CloudData3], cloudCount, glm::value_ptr(d3[0]));
+        }
+    }
+
     void Renderer3D::Init()
     {
         WL_PROFILE_FUNCTION();
@@ -434,7 +638,9 @@ namespace Wasteland
             {ShaderDataType::Float2, "a_TexCoord"},
             {ShaderDataType::Float, "a_TexIndex"},
             {ShaderDataType::Float, "a_TilingFactor"},
-            {ShaderDataType::Int, "a_EntityID"}};
+            {ShaderDataType::Int, "a_EntityID"},
+            {ShaderDataType::Float, "a_Metallic"},
+            {ShaderDataType::Float, "a_Roughness"}};
 
         // --- CUBE SETUP ---
         s_Data.CubeVertexArray = VertexArray::Create();
@@ -503,6 +709,19 @@ namespace Wasteland
         s_Data.Loc_NeuralTexStrength = glGetUniformLocation(rtProg, "u_NeuralTexStrength");
         s_Data.Loc_NeuralLightStrength = glGetUniformLocation(rtProg, "u_NeuralLightStrength");
         s_Data.Loc_NeuralMatStrength = glGetUniformLocation(rtProg, "u_NeuralMatStrength");
+
+        auto cacheVolumetricLocations = [](GLuint prog, int progIndex)
+        {
+            static const char *names[Renderer3DData::VolLoc_Count] = {
+                "u_SunDirection", "u_Time",
+                "u_FogEnabled", "u_FogCount", "u_FogMin[0]", "u_FogMax[0]", "u_FogColor[0]", "u_FogData[0]", "u_FogData2[0]",
+                "u_CloudEnabled", "u_CloudCount", "u_CloudMin[0]", "u_CloudMax[0]", "u_CloudColor[0]",
+                "u_CloudAmbient[0]", "u_CloudData[0]", "u_CloudData2[0]", "u_CloudData3[0]", "u_VolFast"};
+            for (int i = 0; i < Renderer3DData::VolLoc_Count; i++)
+                s_Data.Loc_Volumetric[progIndex][i] = glGetUniformLocation(prog, names[i]);
+        };
+        cacheVolumetricLocations(rtProg, 0);
+        cacheVolumetricLocations(s_Data.BasicShader->GetRendererID(), 1);
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
@@ -613,6 +832,10 @@ namespace Wasteland
     {
         WL_PROFILE_FUNCTION();
 
+        // New frame: drop last frame's volumes (kept across mid-frame overflow
+        // flushes, unlike the geometry batches reset in FlushAndReset).
+        s_Data.FogVolumes.clear();
+        s_Data.CloudVolumes.clear();
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
@@ -653,6 +876,11 @@ namespace Wasteland
         s_Data.CurrentCameraPitch = 0.0f;
         s_Data.CurrentCameraYaw = 0.0f;
 
+        s_Data.BasicShader->Bind();
+        s_Data.BasicShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+        s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+        s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
+
         s_Data.RayTracingShader->Bind();
         glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
         glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
@@ -664,6 +892,10 @@ namespace Wasteland
     {
         WL_PROFILE_FUNCTION();
 
+        // New frame: drop last frame's volumes (kept across mid-frame overflow
+        // flushes, unlike the geometry batches reset in FlushAndReset).
+        s_Data.FogVolumes.clear();
+        s_Data.CloudVolumes.clear();
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetViewProjection();
@@ -685,6 +917,11 @@ namespace Wasteland
         s_Data.CurrentCameraPosition = camera.GetPosition();
         s_Data.CurrentCameraPitch = camera.GetPitch();
         s_Data.CurrentCameraYaw = camera.GetYaw();
+
+        s_Data.BasicShader->Bind();
+        s_Data.BasicShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+        s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+        s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
 
         s_Data.RayTracingShader->Bind();
         glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
@@ -864,6 +1101,14 @@ namespace Wasteland
                 glUniform1f(s_Data.Loc_NeuralLightStrength, s_Data.NeuralLightStrength);
             if (s_Data.Loc_NeuralMatStrength >= 0)
                 glUniform1f(s_Data.Loc_NeuralMatStrength, s_Data.NeuralMaterialStrength);
+            UploadVolumetricUniforms(0);
+
+            // View matrices must be uploaded BEFORE pass 0: velocity
+            // reconstructs with the inverse and reprojects with the previous
+            // matrix, and pass 0 previously ran on last frame's uploads (one
+            // frame stale) which dragged history behind during motion.
+            glUniformMatrix4fv(s_Data.Loc_PrevViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.PrevViewProjection));
+            glUniformMatrix4fv(s_Data.Loc_InverseViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.InverseViewProjection));
 
             // Pass 0: Visibility + Velocity
             glUniform1i(s_Data.Loc_PassID, 0);
@@ -872,8 +1117,6 @@ namespace Wasteland
 
             // Pass 1: Hybrid Trace (direct + indirect rays)
             glUniform1i(s_Data.Loc_PassID, 1);
-            glUniformMatrix4fv(s_Data.Loc_PrevViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.PrevViewProjection));
-            glUniformMatrix4fv(s_Data.Loc_InverseViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.InverseViewProjection));
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
@@ -956,6 +1199,11 @@ namespace Wasteland
         s_Data.BasicShader->SetFloat("u_NeuralTexStrength", s_Data.NeuralTextureStrength);
         s_Data.BasicShader->SetFloat("u_NeuralLightStrength", s_Data.NeuralLightStrength);
         s_Data.BasicShader->SetFloat("u_NeuralMatStrength", s_Data.NeuralMaterialStrength);
+        UploadVolumetricUniforms(1);
+        // View-dependent metal reflection inputs
+        s_Data.BasicShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+        s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+        s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
         if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
         {
             std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
@@ -1011,32 +1259,42 @@ namespace Wasteland
             s_Data.ComputeHeight = 1;
     }
 
+    float Renderer3D::GetRenderScale() { return s_Data.RenderScale; }
+    void Renderer3D::SetRenderScale(float scale)
+    {
+        s_Data.RenderScale = glm::clamp(scale, 0.25f, 1.0f);
+        UpdateComputeResolution();
+        s_Data.FrameIndex = 0;
+        ClearAccumulationBuffers();
+    }
+
     static void ApplyQualityPreset()
     {
         switch (s_Data.CurrentQualityPreset)
         {
         case QualityPreset::Low:
-            // 1/16th rays per pixel (4x4 tile)
+            // Traces at half res (upscaled in composite): ~4x fewer pixels.
+            // The 60fps preset at 4K.
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 1;
             s_Data.IndirectRays = 0;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
-            s_Data.RenderScale = 1.0f; // Kept at 1.0f
+            s_Data.RenderScale = 0.5f;
             break;
         case QualityPreset::Medium:
-            // 1/16th rays per pixel (4x4 tile)
+            // Traces at 2/3 res (upscaled in composite).
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 2;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
-            s_Data.RenderScale = 1.0f; // Kept at 1.0f
+            s_Data.RenderScale = 0.66f;
             break;
         case QualityPreset::High:
-            // 1/4th rays per pixel (2x2 tile)
+            // Traces at 2/3 res (upscaled in composite).
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 4;
@@ -1044,21 +1302,19 @@ namespace Wasteland
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 0;
-            s_Data.RenderScale = 1.0f; // Kept at 1.0f
+            s_Data.RenderScale = 0.66f;
             break;
         case QualityPreset::Ultra:
-            // 1 ray per pixel (1x1 tile)
-            // Perf: traces at 2/3 res (upscaled in composite), 2 rotating
-            // shadow rays from up to 4 lights (stochastic subset in shader),
-            // neural GI steadies the single indirect bounce.
+            // Traces at 3/4 res (upscaled in composite). Perf: 1 ray/px + 2 rotating shadow rays
+            // from up to 4 lights, neural GI steadies the single indirect
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 4;
             s_Data.IndirectRays = 1;
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
-            s_Data.BilateralBlurPasses = 2;
-            s_Data.RenderScale = 1.0f;
+            s_Data.BilateralBlurPasses = 1;
+            s_Data.RenderScale = 0.75f;
             break;
         }
 
@@ -1227,6 +1483,77 @@ namespace Wasteland
         s_Data.FrameIndex = 0;
     }
 
+    void Renderer3D::SubmitFogVolume(const glm::mat4 &transform, const VolumetricFogComponent &fog)
+    {
+        if (!fog.Enabled)
+            return;
+        if (s_Data.FogVolumes.size() >= (size_t)MaxFogVolumes)
+            return;
+        FogVolumeData v;
+        ComputeVolumeBounds(transform, v.Min, v.Max);
+        v.Color = fog.Color;
+        v.Density = glm::max(fog.Density, 0.0f);
+        v.Anisotropy = glm::clamp(fog.Anisotropy, -0.9f, 0.9f);
+        v.NoiseStrength = glm::clamp(fog.NoiseStrength, 0.0f, 1.0f);
+        v.NoiseScale = glm::max(fog.NoiseScale, 0.001f);
+        v.WindSpeed = glm::max(fog.WindSpeed, 0.0f);
+        v.HeightFalloff = glm::clamp(fog.HeightFalloff, 0.0f, 1.0f);
+        v.Steps = glm::clamp(fog.MaxSteps, 1, 32);
+        v.Enabled = true;
+        s_Data.FogVolumes.push_back(v);
+    }
+
+    void Renderer3D::SubmitCloudVolume(const glm::mat4 &transform, const VolumetricCloudsComponent &clouds)
+    {
+        if (!clouds.Enabled)
+            return;
+        if (s_Data.CloudVolumes.size() >= (size_t)MaxCloudVolumes)
+            return;
+        CloudVolumeData v;
+        ComputeVolumeBounds(transform, v.Min, v.Max);
+        v.Color = clouds.Color;
+        v.Ambient = clouds.AmbientTint;
+        v.Coverage = glm::clamp(clouds.Coverage, 0.0f, 1.0f);
+        v.Density = glm::max(clouds.Density, 0.0f);
+        v.NoiseScale = glm::max(clouds.NoiseScale, 0.001f);
+        v.Detail = glm::clamp(clouds.DetailAmount, 0.0f, 1.0f);
+        v.WindDir = clouds.WindDirection;
+        if (glm::length2(v.WindDir) < 1e-8f)
+            v.WindDir = glm::vec2(1.0f, 0.0f);
+        v.WindSpeed = glm::max(clouds.WindSpeed, 0.0f);
+        v.SilverLining = glm::clamp(clouds.SilverLining, 0.0f, 1.0f);
+        v.ShadowStrength = glm::clamp(clouds.ShadowStrength, 0.0f, 1.0f);
+        v.Steps = glm::clamp(clouds.MaxSteps, 1, 32);
+        v.Enabled = true;
+        s_Data.CloudVolumes.push_back(v);
+    }
+
+    bool Renderer3D::IsVolumetricFogEnabled() { return s_Data.VolFogEnabled; }
+    void Renderer3D::SetVolumetricFogEnabled(bool enabled)
+    {
+        s_Data.VolFogEnabled = enabled;
+        s_Data.FrameIndex = 0;
+    }
+    bool Renderer3D::IsVolumetricCloudsEnabled() { return s_Data.VolCloudsEnabled; }
+    void Renderer3D::SetVolumetricCloudsEnabled(bool enabled)
+    {
+        s_Data.VolCloudsEnabled = enabled;
+        s_Data.FrameIndex = 0;
+    }
+    glm::vec3 Renderer3D::GetSunDirection() { return s_Data.SunDirection; }
+    void Renderer3D::SetSunDirection(const glm::vec3 &direction)
+    {
+        if (glm::length2(direction) > 1e-8f)
+            s_Data.SunDirection = glm::normalize(direction);
+        s_Data.FrameIndex = 0;
+    }
+    float Renderer3D::GetVolumetricStepScale() { return s_Data.VolStepScale; }
+    void Renderer3D::SetVolumetricStepScale(float scale)
+    {
+        s_Data.VolStepScale = glm::clamp(scale, 0.25f, 2.0f);
+        s_Data.FrameIndex = 0;
+    }
+
     bool Renderer3D::IsNeuralRenderingEnabled() { return s_Data.NeuralEnabled; }
     void Renderer3D::SetNeuralRenderingEnabled(bool enabled)
     {
@@ -1331,13 +1658,20 @@ namespace Wasteland
         glm::mat4 invTransform = FastTRSInverse(transform);
         glm::mat3 normalMatrix = glm::transpose(glm::mat3(invTransform));
 
+        // Raster-path material inputs (also reused by the ray-trace instance below)
+        int cubeTextureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : 0;
+
         for (int i = 0; i < 24; i++)
         {
             s_Data.CubeVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(cubePositions[i], 1.0f));
             s_Data.CubeVertexBufferPtr->Color = material.Albedo;
             s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]);
             s_Data.CubeVertexBufferPtr->TexCoord = texCoords[i % 4];
+            s_Data.CubeVertexBufferPtr->TexIndex = (float)cubeTextureSlot;
+            s_Data.CubeVertexBufferPtr->TilingFactor = 1.0f;
             s_Data.CubeVertexBufferPtr->EntityID = entityID;
+            s_Data.CubeVertexBufferPtr->Metallic = material.Metallic;
+            s_Data.CubeVertexBufferPtr->Roughness = material.Roughness;
             s_Data.CubeVertexBufferPtr++;
         }
 
@@ -1400,6 +1734,8 @@ namespace Wasteland
         }
 
         uint32_t startIndexOffset = s_Data.SphereVertexCount;
+        // Raster-path material inputs (ray-trace instance below reuses the map lookup)
+        int sphereTextureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : 0;
         float sectorStep = 2 * glm::pi<float>() / sectors;
         float stackStep = glm::pi<float>() / stacks;
         glm::mat4 invTransform = FastTRSInverse(transform);
@@ -1421,7 +1757,11 @@ namespace Wasteland
                 s_Data.SphereVertexBufferPtr->Color = material.Albedo;
                 s_Data.SphereVertexBufferPtr->Normal = glm::normalize(normalMatrix * glm::normalize(glm::vec3(x, y, z)));
                 s_Data.SphereVertexBufferPtr->TexCoord = glm::vec2((float)j / sectors, (float)i / stacks);
+                s_Data.SphereVertexBufferPtr->TexIndex = (float)sphereTextureSlot;
+                s_Data.SphereVertexBufferPtr->TilingFactor = 1.0f;
                 s_Data.SphereVertexBufferPtr->EntityID = entityID;
+                s_Data.SphereVertexBufferPtr->Metallic = material.Metallic;
+                s_Data.SphereVertexBufferPtr->Roughness = material.Roughness;
                 s_Data.SphereVertexBufferPtr++;
             }
         }

@@ -732,6 +732,14 @@ namespace Wasteland
 				Wasteland::Renderer3D::SetQualityPreset((Wasteland::QualityPreset)currentQuality);
 			}
 
+			float renderScale = Wasteland::Renderer3D::GetRenderScale();
+			if (ImGui::SliderFloat("Resolution Scale", &renderScale, 0.25f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetRenderScale(renderScale);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Fraction of viewport resolution the path tracer runs at.\nLower = faster (upscaled in composite). Resets when the preset changes.");
+
 			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
 			uint32_t minSamples = 1;
 			uint32_t maxSamples = 256;
@@ -789,6 +797,38 @@ namespace Wasteland
 			{
 				Wasteland::Renderer3D::SetSkyTopColor(glm::vec3(topColor[0], topColor[1], topColor[2]));
 			}
+
+			ImGui::Separator();
+			ImGui::Text("Volumetric Atmosphere");
+
+			bool fogEnabled = Wasteland::Renderer3D::IsVolumetricFogEnabled();
+			if (ImGui::Checkbox("Volumetric Fog", &fogEnabled))
+			{
+				Wasteland::Renderer3D::SetVolumetricFogEnabled(fogEnabled);
+			}
+
+			bool cloudsEnabled = Wasteland::Renderer3D::IsVolumetricCloudsEnabled();
+			if (ImGui::Checkbox("Volumetric Clouds", &cloudsEnabled))
+			{
+				Wasteland::Renderer3D::SetVolumetricCloudsEnabled(cloudsEnabled);
+			}
+
+			glm::vec3 sunDir = Wasteland::Renderer3D::GetSunDirection();
+			float sunArr[3] = {sunDir.x, sunDir.y, sunDir.z};
+			if (ImGui::DragFloat3("Sun Direction", sunArr, 0.02f, -1.0f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetSunDirection(glm::vec3(sunArr[0], sunArr[1], sunArr[2]));
+			}
+
+			float volQuality = Wasteland::Renderer3D::GetVolumetricStepScale();
+			if (ImGui::SliderFloat("Volume Quality", &volQuality, 0.25f, 2.0f))
+			{
+				Wasteland::Renderer3D::SetVolumetricStepScale(volQuality);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Global multiplier for per-volume march steps.\nLower it if volumetrics cost too much performance.");
+
+			ImGui::TextWrapped("Add Volumetric Fog / Volumetric Clouds components to an entity; its Transform defines the volume box.");
 
 			ImGui::End();
 

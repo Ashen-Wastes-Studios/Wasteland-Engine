@@ -316,4 +316,44 @@ namespace Wasteland
 		CapsuleCollider3DComponent(const CapsuleCollider3DComponent &other) = default;
 	};
 
+	// --- Volumetric Atmosphere Components ---
+	// The entity's Transform defines the volume box: Translation = center,
+	// Scale = full box size (a unit cube scaled by Scale, axis-aligned in world).
+	// Renderer3D gathers all enabled volumes every frame and raymarches them
+	// in both the Nova path-tracer and the raster (Basic) path.
+
+	struct VolumetricFogComponent
+	{
+		bool Enabled = true;
+		glm::vec3 Color = {0.7f, 0.75f, 0.8f};
+		float Density = 0.05f;       // Base extinction coefficient (0 = clear)
+		float Anisotropy = 0.3f;     // Henyey-Greenstein phase g (-0.9 .. 0.9, forward scatter)
+		float HeightFalloff = 0.15f; // 0 = uniform, 1 = concentrated at volume bottom
+		float NoiseStrength = 0.5f;  // 0 = uniform fog, 1 = fully broken up
+		float NoiseScale = 0.25f;    // World-space noise frequency
+		float WindSpeed = 0.05f;     // Noise drift speed (world units / second)
+		int MaxSteps = 8;            // Raymarch steps inside this volume (1 .. 32)
+
+		VolumetricFogComponent() = default;
+		VolumetricFogComponent(const VolumetricFogComponent &other) = default;
+	};
+
+	struct VolumetricCloudsComponent
+	{
+		bool Enabled = true;
+		glm::vec3 Color = {1.0f, 1.0f, 1.0f};
+		glm::vec3 AmbientTint = {0.45f, 0.55f, 0.7f};
+		float Coverage = 0.5f;       // 0 = clear sky, 1 = overcast
+		float Density = 0.6f;        // Extinction inside cloud mass
+		float NoiseScale = 0.08f;    // World-space billow frequency
+		float DetailAmount = 0.5f;   // High-frequency erosion (0 = smooth puffs)
+		glm::vec2 WindDirection = {1.0f, 0.3f};
+		float WindSpeed = 0.02f;     // Drift speed (world units / second)
+		float SilverLining = 0.6f;   // Forward-scatter rim around sun (0 .. 1)
+		float ShadowStrength = 0.7f; // Self-shadowing depth (0 = flat, 1 = dark cores)
+		int MaxSteps = 12;           // Raymarch steps inside this volume (1 .. 32)
+
+		VolumetricCloudsComponent() = default;
+		VolumetricCloudsComponent(const VolumetricCloudsComponent &other) = default;
+	};
 }

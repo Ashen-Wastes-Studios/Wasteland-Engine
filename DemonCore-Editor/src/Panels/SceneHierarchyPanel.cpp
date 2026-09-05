@@ -199,6 +199,24 @@ namespace Wasteland
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<VolumetricFogComponent>())
+				{
+					if (ImGui::MenuItem("Volumetric Fog"))
+					{
+						m_SelectionContext.AddComponent<VolumetricFogComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<VolumetricCloudsComponent>())
+				{
+					if (ImGui::MenuItem("Volumetric Clouds"))
+					{
+						m_SelectionContext.AddComponent<VolumetricCloudsComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<ScriptComponent>())
 				{
 					if (ImGui::MenuItem("Script Component"))
@@ -988,6 +1006,95 @@ namespace Wasteland
 
 			if (removeComponent)
 				entity.RemoveComponent<CapsuleCollider3DComponent>();
+		}
+
+		if (entity.HasComponent<VolumetricFogComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(VolumetricFogComponent).hash_code(), treeNodeFlags, "Volumetric Fog");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &fog = entity.GetComponent<VolumetricFogComponent>();
+
+				ImGui::Checkbox("Enabled", &fog.Enabled);
+				ImGui::ColorEdit3("Color", glm::value_ptr(fog.Color));
+				ImGui::DragFloat("Density", &fog.Density, 0.005f, 0.0f, 2.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Base extinction. The entity Transform defines the fog box:\nTranslation = center, Scale = full box size.");
+				ImGui::SliderFloat("Anisotropy", &fog.Anisotropy, -0.9f, 0.9f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Henyey-Greenstein phase: forward (+) vs backward (-) scattering.\nHigher values glow more when looking toward the sun.");
+				ImGui::SliderFloat("Height Falloff", &fog.HeightFalloff, 0.0f, 1.0f);
+				ImGui::SliderFloat("Noise Strength", &fog.NoiseStrength, 0.0f, 1.0f);
+				ImGui::DragFloat("Noise Scale", &fog.NoiseScale, 0.01f, 0.001f, 4.0f);
+				ImGui::DragFloat("Wind Speed", &fog.WindSpeed, 0.01f, 0.0f, 2.0f);
+				ImGui::DragInt("March Steps", &fog.MaxSteps, 1.0f, 1, 32);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<VolumetricFogComponent>();
+		}
+
+		if (entity.HasComponent<VolumetricCloudsComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(VolumetricCloudsComponent).hash_code(), treeNodeFlags, "Volumetric Clouds");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &clouds = entity.GetComponent<VolumetricCloudsComponent>();
+
+				ImGui::Checkbox("Enabled", &clouds.Enabled);
+				ImGui::ColorEdit3("Color", glm::value_ptr(clouds.Color));
+				ImGui::ColorEdit3("Ambient Tint", glm::value_ptr(clouds.AmbientTint));
+				ImGui::SliderFloat("Coverage", &clouds.Coverage, 0.0f, 1.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("0 = clear sky, 1 = overcast.\nThe entity Transform defines the cloud layer box:\nTranslation = center, Scale = full box size.");
+				ImGui::DragFloat("Density", &clouds.Density, 0.02f, 0.0f, 5.0f);
+				ImGui::DragFloat("Noise Scale", &clouds.NoiseScale, 0.005f, 0.001f, 1.0f);
+				ImGui::SliderFloat("Detail", &clouds.DetailAmount, 0.0f, 1.0f);
+				ImGui::DragFloat2("Wind Direction", glm::value_ptr(clouds.WindDirection), 0.05f);
+				ImGui::DragFloat("Wind Speed", &clouds.WindSpeed, 0.005f, 0.0f, 1.0f);
+				ImGui::SliderFloat("Silver Lining", &clouds.SilverLining, 0.0f, 1.0f);
+				ImGui::SliderFloat("Self Shadow", &clouds.ShadowStrength, 0.0f, 1.0f);
+				ImGui::DragInt("March Steps", &clouds.MaxSteps, 1.0f, 1, 32);
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<VolumetricCloudsComponent>();
 		}
 
 		if (entity.HasComponent<ScriptComponent>())

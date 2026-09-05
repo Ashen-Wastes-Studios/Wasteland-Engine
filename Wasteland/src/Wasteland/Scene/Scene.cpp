@@ -230,6 +230,8 @@ namespace Wasteland
 		CopyComponent<BoxCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<SphereCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<CapsuleCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<VolumetricFogComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<VolumetricCloudsComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
@@ -406,6 +408,7 @@ namespace Wasteland
 
 			// Render 3D
 			Renderer3D::BeginScene(mainCamera->GetProjection(), cameraTransform);
+			SubmitVolumetricVolumes();
 
 			// Draw Cubes
 			{
@@ -553,6 +556,8 @@ namespace Wasteland
 		CopyComponentIfExists<BoxCollider3DComponent>(newEntity, entity);
 		CopyComponentIfExists<SphereCollider3DComponent>(newEntity, entity);
 		CopyComponentIfExists<CapsuleCollider3DComponent>(newEntity, entity);
+		CopyComponentIfExists<VolumetricFogComponent>(newEntity, entity);
+		CopyComponentIfExists<VolumetricCloudsComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
 		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
@@ -735,6 +740,25 @@ namespace Wasteland
 		}
 	}
 
+	void Scene::SubmitVolumetricVolumes()
+	{
+		auto fogView = m_Registry.view<TransformComponent, VolumetricFogComponent>();
+		for (auto entity : fogView)
+		{
+			auto &tc = fogView.get<TransformComponent>(entity);
+			auto &fog = fogView.get<VolumetricFogComponent>(entity);
+			Renderer3D::SubmitFogVolume(tc.GetTransform(), fog);
+		}
+
+		auto cloudView = m_Registry.view<TransformComponent, VolumetricCloudsComponent>();
+		for (auto entity : cloudView)
+		{
+			auto &tc = cloudView.get<TransformComponent>(entity);
+			auto &clouds = cloudView.get<VolumetricCloudsComponent>(entity);
+			Renderer3D::SubmitCloudVolume(tc.GetTransform(), clouds);
+		}
+	}
+
 	void Scene::RenderScene(EditorCamera &camera)
 	{
 		// Render 2D
@@ -770,6 +794,7 @@ namespace Wasteland
 
 		// Render 3D
 		Renderer3D::BeginScene(camera);
+		SubmitVolumetricVolumes();
 
 		// Draw Cubes
 		{
@@ -919,6 +944,16 @@ namespace Wasteland
 
 	template <>
 	void Scene::OnComponentAdded<CapsuleCollider3DComponent>(Entity entity, CapsuleCollider3DComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<VolumetricFogComponent>(Entity entity, VolumetricFogComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<VolumetricCloudsComponent>(Entity entity, VolumetricCloudsComponent &component)
 	{
 	}
 

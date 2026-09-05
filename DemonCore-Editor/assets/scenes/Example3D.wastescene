@@ -239,3 +239,40 @@ Entities:
       Density: 1
       Friction: 0.5
       Restitution: 0.99000001
+  - Entity: 17168953761241370128
+    TagComponent:
+      Tag: Volumetric Clouds
+    TransformComponent:
+      Translation: [0, 100, 0]
+      Rotation: [0, 0, 0]
+      Scale: [10000, 50, 10000]
+    VolumetricCloudsComponent:
+      Enabled: true
+      Color: [1, 1, 1, 1]
+      AmbientTint: [0.449999988, 0.550000012, 0.699999988, 1]
+      Coverage: 0.5
+      Density: 0.600000024
+      NoiseScale: 0.0799999982
+      DetailAmount: 0.5
+      WindDirection: [1, 0.300000012]
+      WindSpeed: 0.0199999996
+      SilverLining: 0.600000024
+      ShadowStrength: 0.699999988
+      MaxSteps: 16
+  - Entity: 16201232747388855503
+    TagComponent:
+      Tag: Volumetric Fog
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [10000, 10, 10000]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.699999988, 0.75, 0.800000012, 1]
+      Density: 0.0500000007
+      Anisotropy: 0.300000012
+      HeightFalloff: 0.150000006
+      NoiseStrength: 0.5
+      NoiseScale: 0.25
+      WindSpeed: 0.0500000007
+      MaxSteps: 12
