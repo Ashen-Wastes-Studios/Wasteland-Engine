@@ -442,6 +442,56 @@ namespace Wasteland
 			out << YAML::EndMap;
 		}
 
+		if (entity.HasComponent<DirectionalLightComponent>())
+		{
+			out << YAML::Key << "DirectionalLightComponent";
+			out << YAML::BeginMap;
+			auto &light = entity.GetComponent<DirectionalLightComponent>();
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(light.Color, 1.0f);
+			out << YAML::Key << "Intensity" << YAML::Value << light.Intensity;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<PointLightComponent>())
+		{
+			out << YAML::Key << "PointLightComponent";
+			out << YAML::BeginMap;
+			auto &light = entity.GetComponent<PointLightComponent>();
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(light.Color, 1.0f);
+			out << YAML::Key << "Intensity" << YAML::Value << light.Intensity;
+			out << YAML::Key << "Range" << YAML::Value << light.Range;
+			out << YAML::Key << "Falloff" << YAML::Value << light.Falloff;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<SpotLightComponent>())
+		{
+			out << YAML::Key << "SpotLightComponent";
+			out << YAML::BeginMap;
+			auto &light = entity.GetComponent<SpotLightComponent>();
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(light.Color, 1.0f);
+			out << YAML::Key << "Intensity" << YAML::Value << light.Intensity;
+			out << YAML::Key << "Range" << YAML::Value << light.Range;
+			out << YAML::Key << "Falloff" << YAML::Value << light.Falloff;
+			out << YAML::Key << "InnerAngle" << YAML::Value << light.InnerAngle;
+			out << YAML::Key << "OuterAngle" << YAML::Value << light.OuterAngle;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<AreaLightComponent>())
+		{
+			out << YAML::Key << "AreaLightComponent";
+			out << YAML::BeginMap;
+			auto &light = entity.GetComponent<AreaLightComponent>();
+			out << YAML::Key << "Color" << YAML::Value << glm::vec4(light.Color, 1.0f);
+			out << YAML::Key << "Intensity" << YAML::Value << light.Intensity;
+			out << YAML::Key << "Width" << YAML::Value << light.Width;
+			out << YAML::Key << "Height" << YAML::Value << light.Height;
+			out << YAML::Key << "Range" << YAML::Value << light.Range;
+			out << YAML::Key << "DoubleSided" << YAML::Value << light.DoubleSided;
+			out << YAML::EndMap;
+		}
+
 		if (entity.HasComponent<ScriptComponent>())
 		{
 			out << YAML::Key << "ScriptComponent";
@@ -759,6 +809,66 @@ namespace Wasteland
 						clouds.ShadowStrength = volumetricCloudsComponent["ShadowStrength"].as<float>();
 					if (volumetricCloudsComponent["MaxSteps"])
 						clouds.MaxSteps = volumetricCloudsComponent["MaxSteps"].as<int>();
+				}
+
+				auto directionalLightComponent = entity["DirectionalLightComponent"];
+				if (directionalLightComponent)
+				{
+					auto &light = deserializedEntity.AddComponent<DirectionalLightComponent>();
+					if (directionalLightComponent["Color"])
+						light.Color = glm::vec3(directionalLightComponent["Color"].as<glm::vec4>());
+					if (directionalLightComponent["Intensity"])
+						light.Intensity = directionalLightComponent["Intensity"].as<float>();
+				}
+
+				auto pointLightComponent = entity["PointLightComponent"];
+				if (pointLightComponent)
+				{
+					auto &light = deserializedEntity.AddComponent<PointLightComponent>();
+					if (pointLightComponent["Color"])
+						light.Color = glm::vec3(pointLightComponent["Color"].as<glm::vec4>());
+					if (pointLightComponent["Intensity"])
+						light.Intensity = pointLightComponent["Intensity"].as<float>();
+					if (pointLightComponent["Range"])
+						light.Range = pointLightComponent["Range"].as<float>();
+					if (pointLightComponent["Falloff"])
+						light.Falloff = pointLightComponent["Falloff"].as<float>();
+				}
+
+				auto spotLightComponent = entity["SpotLightComponent"];
+				if (spotLightComponent)
+				{
+					auto &light = deserializedEntity.AddComponent<SpotLightComponent>();
+					if (spotLightComponent["Color"])
+						light.Color = glm::vec3(spotLightComponent["Color"].as<glm::vec4>());
+					if (spotLightComponent["Intensity"])
+						light.Intensity = spotLightComponent["Intensity"].as<float>();
+					if (spotLightComponent["Range"])
+						light.Range = spotLightComponent["Range"].as<float>();
+					if (spotLightComponent["Falloff"])
+						light.Falloff = spotLightComponent["Falloff"].as<float>();
+					if (spotLightComponent["InnerAngle"])
+						light.InnerAngle = spotLightComponent["InnerAngle"].as<float>();
+					if (spotLightComponent["OuterAngle"])
+						light.OuterAngle = spotLightComponent["OuterAngle"].as<float>();
+				}
+
+				auto areaLightComponent = entity["AreaLightComponent"];
+				if (areaLightComponent)
+				{
+					auto &light = deserializedEntity.AddComponent<AreaLightComponent>();
+					if (areaLightComponent["Color"])
+						light.Color = glm::vec3(areaLightComponent["Color"].as<glm::vec4>());
+					if (areaLightComponent["Intensity"])
+						light.Intensity = areaLightComponent["Intensity"].as<float>();
+					if (areaLightComponent["Width"])
+						light.Width = areaLightComponent["Width"].as<float>();
+					if (areaLightComponent["Height"])
+						light.Height = areaLightComponent["Height"].as<float>();
+					if (areaLightComponent["Range"])
+						light.Range = areaLightComponent["Range"].as<float>();
+					if (areaLightComponent["DoubleSided"])
+						light.DoubleSided = areaLightComponent["DoubleSided"].as<bool>();
 				}
 
 				auto scriptComponent = entity["ScriptComponent"];

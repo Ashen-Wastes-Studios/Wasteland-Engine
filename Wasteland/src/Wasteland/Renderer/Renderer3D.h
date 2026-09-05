@@ -62,6 +62,32 @@ namespace Wasteland
         static float GetRenderScale();
         static void SetRenderScale(float scale);
 
+        // Dynamic resolution: holds a target framerate (default 30fps) by
+        // moving RenderScale between [DynamicMinScale, preset scale] based on
+        // measured GPU time. This is what lets Ultra stay above 30fps on
+        // older hardware (RTX 20-series): the preset stays at full quality,
+        // the tracer transparently drops resolution when the GPU can't keep
+        // up, and the composite upscale + shader perf tiers hide the change.
+        static bool IsDynamicResolutionEnabled();
+        static void SetDynamicResolutionEnabled(bool enabled);
+        static float GetTargetFPS();
+        static void SetTargetFPS(float fps);
+        static float GetDynamicMinScale();
+        static void SetDynamicMinScale(float scale);
+        // Smoothed measured framerate / GPU frame cost. 0 until measured.
+        static float GetCurrentFPS();
+        static float GetGPUFrameTimeMs();
+        // True while the scaler is holding RenderScale below the preset max.
+        static bool IsDynamicResolutionActive();
+        // Classified from the GL renderer string at Init
+        // ("RTX 20-series", "RTX 30-series or newer", ...). Empty if unknown.
+        static const char *GetGPUTierName();
+        // Feeds the application's real frame time (ms) into the scaler.
+        // Call once per frame (EditorLayer::OnUpdate does). The scaler uses
+        // the slowest available signal (GPU timer vs app frame), so it still
+        // converges when the bottleneck sits outside the compute chain.
+        static void NotifyFrameTime(double ms);
+
         // Ray Tracing Settings
         static uint32_t GetSamplesPerPixel();
         static void SetSamplesPerPixel(uint32_t samples);
@@ -90,6 +116,15 @@ namespace Wasteland
         static void SetSunDirection(const glm::vec3 &direction);
         static float GetVolumetricStepScale();
         static void SetVolumetricStepScale(float scale);
+
+        // Analytic lights (directional/spot/point/area components). Submitted
+        // per-frame by the Scene; first MaxAnalyticLights win. Evaluated with
+        // shadows in the Nova path alongside emissive-geometry lights.
+        static constexpr int MaxAnalyticLights = 8;
+        static void SubmitDirectionalLight(const glm::mat4 &transform, const DirectionalLightComponent &light);
+        static void SubmitPointLight(const glm::mat4 &transform, const PointLightComponent &light);
+        static void SubmitSpotLight(const glm::mat4 &transform, const SpotLightComponent &light);
+        static void SubmitAreaLight(const glm::mat4 &transform, const AreaLightComponent &light);
 
         // Neural Rendering (OpenGL GLSL MLP: neural texture detail + neural indirect lighting)
         static bool IsNeuralRenderingEnabled();

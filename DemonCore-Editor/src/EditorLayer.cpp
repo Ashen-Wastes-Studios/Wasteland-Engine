@@ -423,6 +423,8 @@ namespace Wasteland
 	{
 		WL_PROFILE_FUNCTION();
 
+		Wasteland::Renderer3D::NotifyFrameTime((double)ts.GetMilliseconds());
+
 		if (m_FramebufferAPI != RendererAPI::GetAPI())
 		{
 			FramebufferSpecification spec = m_Framebuffer->GetSpecification();
@@ -740,6 +742,51 @@ namespace Wasteland
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Fraction of viewport resolution the path tracer runs at.\nLower = faster (upscaled in composite). Resets when the preset changes.");
 
+			ImGui::Separator();
+			ImGui::Text("Performance (older GPUs)");
+
+			const char *gpuTier = Wasteland::Renderer3D::GetGPUTierName();
+			ImGui::Text("GPU: %s", (gpuTier && gpuTier[0]) ? gpuTier : "Unknown");
+			float curFPS = Wasteland::Renderer3D::GetCurrentFPS();
+			float gpuMs = Wasteland::Renderer3D::GetGPUFrameTimeMs();
+			if (curFPS > 0.5f)
+				ImGui::Text("Tracer: %.0f fps (%.1f ms GPU)%s", curFPS, gpuMs,
+					Wasteland::Renderer3D::IsDynamicResolutionActive() ? " [SCALED]" : "");
+			else
+				ImGui::Text("Tracer: measuring...");
+
+			bool drsEnabled = Wasteland::Renderer3D::IsDynamicResolutionEnabled();
+			if (ImGui::Checkbox("Dynamic Resolution (hold target FPS)", &drsEnabled))
+			{
+				Wasteland::Renderer3D::SetDynamicResolutionEnabled(drsEnabled);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Auto-adjusts trace resolution between Min Scale and the\npreset/slider ceiling to hold the target framerate.\nKeeps Ultra above 30fps on RTX 20-series.");
+
+			float targetFPS = Wasteland::Renderer3D::GetTargetFPS();
+			if (ImGui::SliderFloat("Target FPS", &targetFPS, 20.0f, 60.0f))
+			{
+				Wasteland::Renderer3D::SetTargetFPS(targetFPS);
+			}
+
+			float dynMin = Wasteland::Renderer3D::GetDynamicMinScale();
+			if (ImGui::SliderFloat("Dynamic Min Scale", &dynMin, 0.25f, 1.0f))
+			{
+				Wasteland::Renderer3D::SetDynamicMinScale(dynMin);
+			}
+
+			if (ImGui::Button("Tune for RTX 20-series (Ultra 30fps)"))
+			{
+				Wasteland::Renderer3D::SetQualityPreset(Wasteland::QualityPreset::Ultra);
+				Wasteland::Renderer3D::SetDynamicResolutionEnabled(true);
+				Wasteland::Renderer3D::SetTargetFPS(30.0f);
+				Wasteland::Renderer3D::SetDynamicMinScale(0.5f);
+				Wasteland::Renderer3D::SetVolumetricStepScale(0.75f);
+				Wasteland::Renderer3D::SetNeuralRenderingEnabled(true);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Ultra preset + dynamic resolution at 30fps target.\nVolumetric quality 0.75x, neural GI on (carries diffuse\nlighting when the scaler drops resolution).");
+
 			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
 			uint32_t minSamples = 1;
 			uint32_t maxSamples = 256;
@@ -819,6 +866,8 @@ namespace Wasteland
 			{
 				Wasteland::Renderer3D::SetSunDirection(glm::vec3(sunArr[0], sunArr[1], sunArr[2]));
 			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Fallback sun for fog/clouds. A Directional Light component\nin the scene overrides this (direction + color) and casts god rays.");
 
 			float volQuality = Wasteland::Renderer3D::GetVolumetricStepScale();
 			if (ImGui::SliderFloat("Volume Quality", &volQuality, 0.25f, 2.0f))

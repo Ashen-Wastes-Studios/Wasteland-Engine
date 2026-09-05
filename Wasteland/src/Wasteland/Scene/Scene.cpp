@@ -232,6 +232,10 @@ namespace Wasteland
 		CopyComponent<CapsuleCollider3DComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<VolumetricFogComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<VolumetricCloudsComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<DirectionalLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<PointLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<SpotLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<AreaLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
@@ -409,6 +413,7 @@ namespace Wasteland
 			// Render 3D
 			Renderer3D::BeginScene(mainCamera->GetProjection(), cameraTransform);
 			SubmitVolumetricVolumes();
+			SubmitSceneLights();
 
 			// Draw Cubes
 			{
@@ -558,6 +563,10 @@ namespace Wasteland
 		CopyComponentIfExists<CapsuleCollider3DComponent>(newEntity, entity);
 		CopyComponentIfExists<VolumetricFogComponent>(newEntity, entity);
 		CopyComponentIfExists<VolumetricCloudsComponent>(newEntity, entity);
+		CopyComponentIfExists<DirectionalLightComponent>(newEntity, entity);
+		CopyComponentIfExists<PointLightComponent>(newEntity, entity);
+		CopyComponentIfExists<SpotLightComponent>(newEntity, entity);
+		CopyComponentIfExists<AreaLightComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
 		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
@@ -759,6 +768,41 @@ namespace Wasteland
 		}
 	}
 
+	void Scene::SubmitSceneLights()
+	{
+		auto dirView = m_Registry.view<TransformComponent, DirectionalLightComponent>();
+		for (auto entity : dirView)
+		{
+			auto &tc = dirView.get<TransformComponent>(entity);
+			auto &light = dirView.get<DirectionalLightComponent>(entity);
+			Renderer3D::SubmitDirectionalLight(tc.GetTransform(), light);
+		}
+
+		auto pointView = m_Registry.view<TransformComponent, PointLightComponent>();
+		for (auto entity : pointView)
+		{
+			auto &tc = pointView.get<TransformComponent>(entity);
+			auto &light = pointView.get<PointLightComponent>(entity);
+			Renderer3D::SubmitPointLight(tc.GetTransform(), light);
+		}
+
+		auto spotView = m_Registry.view<TransformComponent, SpotLightComponent>();
+		for (auto entity : spotView)
+		{
+			auto &tc = spotView.get<TransformComponent>(entity);
+			auto &light = spotView.get<SpotLightComponent>(entity);
+			Renderer3D::SubmitSpotLight(tc.GetTransform(), light);
+		}
+
+		auto areaView = m_Registry.view<TransformComponent, AreaLightComponent>();
+		for (auto entity : areaView)
+		{
+			auto &tc = areaView.get<TransformComponent>(entity);
+			auto &light = areaView.get<AreaLightComponent>(entity);
+			Renderer3D::SubmitAreaLight(tc.GetTransform(), light);
+		}
+	}
+
 	void Scene::RenderScene(EditorCamera &camera)
 	{
 		// Render 2D
@@ -795,6 +839,7 @@ namespace Wasteland
 		// Render 3D
 		Renderer3D::BeginScene(camera);
 		SubmitVolumetricVolumes();
+		SubmitSceneLights();
 
 		// Draw Cubes
 		{
@@ -954,6 +999,26 @@ namespace Wasteland
 
 	template <>
 	void Scene::OnComponentAdded<VolumetricCloudsComponent>(Entity entity, VolumetricCloudsComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<DirectionalLightComponent>(Entity entity, DirectionalLightComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<PointLightComponent>(Entity entity, PointLightComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<SpotLightComponent>(Entity entity, SpotLightComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent &component)
 	{
 	}
 

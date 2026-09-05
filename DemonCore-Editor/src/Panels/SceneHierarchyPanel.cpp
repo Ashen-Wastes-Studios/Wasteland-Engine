@@ -217,6 +217,42 @@ namespace Wasteland
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<DirectionalLightComponent>())
+				{
+					if (ImGui::MenuItem("Directional Light"))
+					{
+						m_SelectionContext.AddComponent<DirectionalLightComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<PointLightComponent>())
+				{
+					if (ImGui::MenuItem("Point Light"))
+					{
+						m_SelectionContext.AddComponent<PointLightComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<SpotLightComponent>())
+				{
+					if (ImGui::MenuItem("Spot Light"))
+					{
+						m_SelectionContext.AddComponent<SpotLightComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				if (!m_SelectionContext.HasComponent<AreaLightComponent>())
+				{
+					if (ImGui::MenuItem("Area Light"))
+					{
+						m_SelectionContext.AddComponent<AreaLightComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<ScriptComponent>())
 				{
 					if (ImGui::MenuItem("Script Component"))
@@ -697,7 +733,7 @@ namespace Wasteland
 				std::string normalLabel = mc.HasGeneratedMaps ? "Normal Strength (Map Multiplier)" : "Normal Strength (Base)";
 				ImGui::DragFloat(normalLabel.c_str(), &mc.NormalStrength, 0.05f, 0.0f, 5.0f);
 				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Controls bump mapping strength in the ray tracer.\nPerturbs surface normals based on texture luminance gradients.\n0 = automatic (1.0 when a texture is assigned).\nHigher values = stronger surface detail from bump mapping.");
+					ImGui::SetTooltip("Controls bump mapping strength in the ray tracer and\nrelief-normal strength in the raster preview (Basic shader).\nPerturbs surface normals based on texture luminance gradients.\n0 = off in raster; ray tracer uses 1.0 automatic when textured.\nHigher values = stronger surface detail from bump mapping.");
 
 				ImGui::DragFloat("Metallic", &mc.Metallic, 0.05f, 0.0f, 1.0f);
 
@@ -709,7 +745,7 @@ namespace Wasteland
 
 				ImGui::DragFloat("Displacement Scale", &mc.DisplacementScale, 0.01f, 0.0f, 2.0f);
 				if (ImGui::IsItemHovered())
-					ImGui::SetTooltip("Displaces the surface position along the normal based on\ntexture luminance. This is geometric displacement, separate\nfrom bump mapping (Normal Strength).\n0 = no position displacement.\nRequires a texture to be assigned.");
+					ImGui::SetTooltip("Displaces the surface position along the normal based on\ntexture luminance (ray tracer + raster geometric displacement).\nShape-preserving: features rise AND recess around the base\nsurface, which keeps its original shape.\nThis is geometric displacement, separate\nfrom bump mapping (Normal Strength).\n0 = no position displacement.\nRequires a texture to be assigned.");
 
 				ImGui::TreePop();
 			}
@@ -1095,6 +1131,162 @@ namespace Wasteland
 
 			if (removeComponent)
 				entity.RemoveComponent<VolumetricCloudsComponent>();
+		}
+
+		if (entity.HasComponent<DirectionalLightComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(DirectionalLightComponent).hash_code(), treeNodeFlags, "Directional Light");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &light = entity.GetComponent<DirectionalLightComponent>();
+
+				ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
+				ImGui::DragFloat("Intensity", &light.Intensity, 0.05f, 0.0f, 20.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Aim with the entity rotation: light travels along local -Z.");
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<DirectionalLightComponent>();
+		}
+
+		if (entity.HasComponent<PointLightComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(PointLightComponent).hash_code(), treeNodeFlags, "Point Light");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &light = entity.GetComponent<PointLightComponent>();
+
+				ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
+				ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 50.0f);
+				ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 100.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("0 = infinite range.");
+				ImGui::SliderFloat("Falloff", &light.Falloff, 0.5f, 8.0f);
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<PointLightComponent>();
+		}
+
+		if (entity.HasComponent<SpotLightComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(SpotLightComponent).hash_code(), treeNodeFlags, "Spot Light");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &light = entity.GetComponent<SpotLightComponent>();
+
+				ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
+				ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 60.0f);
+				ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 100.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("0 = infinite range.");
+				ImGui::SliderFloat("Falloff", &light.Falloff, 0.5f, 8.0f);
+				ImGui::SliderFloat("Inner Angle", &light.InnerAngle, 0.0f, 89.5f);
+				ImGui::SliderFloat("Outer Angle", &light.OuterAngle, 0.5f, 90.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Aim with the entity rotation: cone opens along local -Z.");
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<SpotLightComponent>();
+		}
+
+		if (entity.HasComponent<AreaLightComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(AreaLightComponent).hash_code(), treeNodeFlags, "Area Light");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &light = entity.GetComponent<AreaLightComponent>();
+
+				ImGui::ColorEdit3("Color", glm::value_ptr(light.Color));
+				ImGui::DragFloat("Intensity", &light.Intensity, 0.1f, 0.0f, 50.0f);
+				ImGui::DragFloat("Width", &light.Width, 0.05f, 0.01f, 50.0f);
+				ImGui::DragFloat("Height", &light.Height, 0.05f, 0.01f, 50.0f);
+				ImGui::DragFloat("Range", &light.Range, 0.1f, 0.0f, 100.0f);
+				ImGui::Checkbox("Double Sided", &light.DoubleSided);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Rect lies in the local XY plane and emits along local -Z.\nSingle-sample approximation (no soft area shadows).");
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<AreaLightComponent>();
 		}
 
 		if (entity.HasComponent<ScriptComponent>())

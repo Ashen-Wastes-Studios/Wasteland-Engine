@@ -11,6 +11,8 @@
 #include <glad/glad.h>
 
 #include <chrono>
+#include <cstring>
+#include <string>
 
 namespace Wasteland
 {
@@ -25,6 +27,8 @@ namespace Wasteland
         int EntityID;
         float Metallic;
         float Roughness;
+        float Displacement;
+        float BumpStrength;
     };
 
     struct alignas(16) RayTracingInstance
@@ -104,6 +108,31 @@ namespace Wasteland
         int Steps = 16;
         bool Enabled = true;
     };
+
+    // CPU-side analytic light (world space). Type: 0=dir, 1=point, 2=spot, 3=area.
+    // Direction = travel direction (dir/spot) or rect normal facing the scene (area).
+    struct AnalyticLightData
+    {
+        glm::vec3 Position = glm::vec3(0.0f);
+        glm::vec3 Direction = glm::vec3(0.0f, -1.0f, 0.0f);
+        glm::vec3 Color = glm::vec3(1.0f);
+        float Type = 0.0f;
+        float Intensity = 1.0f;
+        float Range = 0.0f; // 0 = infinite
+        float Falloff = 2.0f;
+        float InnerCos = 1.0f;
+        float OuterCos = 0.0f;
+        float AreaSize = 1.0f; // sqrt(width*height)
+        float DoubleSided = 0.0f;
+    };
+
+    static glm::vec3 LightTravelDirection(const glm::mat4 &transform)
+    {
+        glm::vec3 d = glm::mat3(transform) * glm::vec3(0.0f, 0.0f, -1.0f);
+        if (glm::length2(d) < 1e-8f)
+            return glm::vec3(0.0f, -1.0f, 0.0f);
+        return glm::normalize(d);
+    }
 
     // World-space AABB of a unit-cube volume transformed by an entity matrix
     // (rotation is conservatively absorbed, same approach as the BVH builder).
@@ -296,6 +325,24 @@ namespace Wasteland
         uint32_t ComputeWidth = 1280;
         uint32_t ComputeHeight = 720;
         float RenderScale = 1.0f;
+        // Dynamic resolution (see Renderer3D.h): holds TargetFPS by moving
+        // RenderScale in [DynamicMinScale, DynamicMaxScale]. GPU cost is
+        // measured with GL_TIME_ELAPSED queries around the compute passes
+        // (CPU Flush timing is the fallback until GPU samples arrive).
+        bool DynamicResolutionEnabled = true;
+        float TargetFPS = 30.0f;
+        float DynamicMinScale = 0.5f;
+        float DynamicMaxScale = 1.0f;
+        double GPUFrameTimeEMA = 0.0;
+        double CPUFlushTimeEMA = 0.0;
+        double AppFrameTimeEMA = 0.0;
+        float CurrentFPS = 0.0f;
+        uint32_t DRSFramesSinceAdjust = 0;
+        uint32_t DRSGpuSamples = 0;
+        GLuint DRSTimerQueries[3] = {0, 0, 0};
+        uint32_t DRSTimerIndex = 0;
+        bool DRSTimerActive = false;
+        char GPUTierName[64] = {};
         int MaxBounces = 1;
         int MaxLights = 1;
         int IndirectRays = 0;
@@ -382,10 +429,27 @@ namespace Wasteland
             Vol_CloudData2,
             Vol_CloudData3,
             Vol_VolFast,
+            Vol_SunLightColor,
             VolLoc_Count
         };
         int Loc_Volumetric[2][VolLoc_Count];
+        // Analytic-light uniform locations, indexed by ALightLoc ([0] = Nova, [1] = Basic).
+        enum ALightLoc
+        {
+            AL_Count = 0,
+            AL_Pos,
+            AL_Dir,
+            AL_Color,
+            AL_Data,
+            AL_Data2,
+            ALoc_Count
+        };
+        int Loc_ALights[2][ALoc_Count];
         std::vector<RayTracingInstance> m_SceneInstances;
+        // Previous frame's instances: compared bitwise to skip the CPU BVH
+        // rebuild + SSBO re-upload when the scene is static (Draw* pushes
+        // every instance every frame and sets m_SceneDirty unconditionally).
+        std::vector<RayTracingInstance> m_PrevSceneInstances;
         bool m_SceneDirty = true;
 
         float LastCameraRotation;
@@ -408,6 +472,14 @@ namespace Wasteland
         float VolStepScale = 1.0f;                                     // global quality multiplier for march steps
         std::vector<FogVolumeData> FogVolumes;
         std::vector<CloudVolumeData> CloudVolumes;
+
+        // Effective sun for volumetrics/god-rays: first submitted directional
+        // light wins, else the global SunDirection with a neutral warm color.
+        glm::vec3 EffSunDir = glm::vec3(0.2873f, 0.9578f, 0.3831f);
+        glm::vec3 EffSunColor = glm::vec3(1.15f, 1.05f, 0.95f);
+
+        // Analytic component lights submitted per-frame by the Scene.
+        std::vector<AnalyticLightData> AnalyticLights;
 
         uint32_t BloomTextureID = 0;
         uint32_t BloomTempTextureID = 0;
@@ -441,6 +513,9 @@ namespace Wasteland
     static Renderer3DData s_Data;
 
     static void ApplyQualityPreset();
+    static void DetectGPUTier();
+    static void UpdateDynamicResolution();
+    static bool SceneInstancesChanged();
 
     static glm::mat4 FastTRSInverse(const glm::mat4 &m)
     {
@@ -519,6 +594,48 @@ namespace Wasteland
         }
     }
 
+    // Uploads analytic component lights to the currently bound program.
+    // progIndex: 0 = Nova compute, 1 = Basic raster. Missing locations (-1)
+    // are skipped so shaders that predate lights keep working.
+    static void UploadAnalyticLights(int progIndex)
+    {
+        using A = Renderer3DData;
+        int *loc = s_Data.Loc_ALights[progIndex];
+
+        int count = (int)s_Data.AnalyticLights.size() < Renderer3D::MaxAnalyticLights
+                        ? (int)s_Data.AnalyticLights.size()
+                        : Renderer3D::MaxAnalyticLights;
+        if (loc[A::AL_Count] >= 0)
+            glUniform1i(loc[A::AL_Count], count);
+        if (count > 0)
+        {
+            glm::vec3 pos[Renderer3D::MaxAnalyticLights];
+            glm::vec3 dir[Renderer3D::MaxAnalyticLights];
+            glm::vec3 col[Renderer3D::MaxAnalyticLights];
+            glm::vec4 d1[Renderer3D::MaxAnalyticLights];
+            glm::vec4 d2[Renderer3D::MaxAnalyticLights];
+            for (int i = 0; i < count; i++)
+            {
+                const AnalyticLightData &v = s_Data.AnalyticLights[(size_t)i];
+                pos[i] = v.Position;
+                dir[i] = v.Direction;
+                col[i] = v.Color;
+                d1[i] = glm::vec4(v.Type, v.Intensity, v.Range, v.Falloff);
+                d2[i] = glm::vec4(v.InnerCos, v.OuterCos, v.AreaSize, v.DoubleSided);
+            }
+            if (loc[A::AL_Pos] >= 0)
+                glUniform3fv(loc[A::AL_Pos], count, glm::value_ptr(pos[0]));
+            if (loc[A::AL_Dir] >= 0)
+                glUniform3fv(loc[A::AL_Dir], count, glm::value_ptr(dir[0]));
+            if (loc[A::AL_Color] >= 0)
+                glUniform3fv(loc[A::AL_Color], count, glm::value_ptr(col[0]));
+            if (loc[A::AL_Data] >= 0)
+                glUniform4fv(loc[A::AL_Data], count, glm::value_ptr(d1[0]));
+            if (loc[A::AL_Data2] >= 0)
+                glUniform4fv(loc[A::AL_Data2], count, glm::value_ptr(d2[0]));
+        }
+    }
+
     // Uploads fog/cloud volume uniforms to the currently bound program.
     // progIndex: 0 = Nova compute, 1 = Basic raster. Missing locations (-1)
     // are skipped so shaders that predate volumetrics keep working.
@@ -527,8 +644,24 @@ namespace Wasteland
         using V = Renderer3DData;
         int *loc = s_Data.Loc_Volumetric[progIndex];
 
+        // Effective sun: first directional light wins (drives fog phase, cloud
+        // silver lining AND god-ray shafts); otherwise the global setting.
+        s_Data.EffSunDir = s_Data.SunDirection;
+        s_Data.EffSunColor = glm::vec3(1.15f, 1.05f, 0.95f);
+        for (const AnalyticLightData &L : s_Data.AnalyticLights)
+        {
+            if (L.Type == 0.0f)
+            {
+                s_Data.EffSunDir = L.Direction;
+                s_Data.EffSunColor = L.Color * glm::max(L.Intensity, 0.0f);
+                break;
+            }
+        }
+
         if (loc[V::Vol_SunDirection] >= 0)
-            glUniform3f(loc[V::Vol_SunDirection], s_Data.SunDirection.x, s_Data.SunDirection.y, s_Data.SunDirection.z);
+            glUniform3f(loc[V::Vol_SunDirection], s_Data.EffSunDir.x, s_Data.EffSunDir.y, s_Data.EffSunDir.z);
+        if (loc[V::Vol_SunLightColor] >= 0)
+            glUniform3f(loc[V::Vol_SunLightColor], s_Data.EffSunColor.x, s_Data.EffSunColor.y, s_Data.EffSunColor.z);
         if (loc[V::Vol_Time] >= 0)
             glUniform1f(loc[V::Vol_Time], GetVolumetricTimeSeconds());
 
@@ -627,6 +760,52 @@ namespace Wasteland
         }
     }
 
+    // Classify the GPU from the GL renderer string. Only feeds the Settings
+    // panel label + log line; the dynamic-resolution scaler itself is
+    // measurement-driven and needs no per-GPU tuning.
+    static void DetectGPUTier()
+    {
+        const char *rendererC = (const char *)glGetString(GL_RENDERER);
+        const char *vendorC = (const char *)glGetString(GL_VENDOR);
+        std::string desc = rendererC ? rendererC : "";
+        std::string vendor = vendorC ? vendorC : "";
+        std::string tier = "Unknown GPU";
+        auto has = [&](const char *sub)
+        {
+            return desc.find(sub) != std::string::npos || vendor.find(sub) != std::string::npos;
+        };
+        if (desc.find("2060") != std::string::npos || desc.find("2070") != std::string::npos ||
+            desc.find("2080") != std::string::npos || desc.find("TITAN RTX") != std::string::npos ||
+            desc.find("RTX 20") != std::string::npos)
+            tier = "RTX 20-series (Turing)";
+        else if (desc.find("1660") != std::string::npos || desc.find("1650") != std::string::npos ||
+                 desc.find("GTX 16") != std::string::npos)
+            tier = "GTX 16-series (Turing)";
+        else if (has("NVIDIA") || has("GeForce") || has("RTX") || has("GTX"))
+            tier = "NVIDIA (newer than 20-series)";
+        else if (has("AMD") || has("Radeon"))
+            tier = "AMD";
+        else if (has("Intel"))
+            tier = "Intel";
+        tier.copy(s_Data.GPUTierName, sizeof(s_Data.GPUTierName) - 1);
+        WL_CORE_INFO("Renderer3D GPU: {0} [{1}]", desc.empty() ? "unknown" : desc, tier);
+    }
+
+    // True when the submitted instances differ from last frame's (size or
+    // bits). Lets Flush() skip the CPU BVH rebuild + SSBO re-upload for a
+    // static scene — Draw* re-pushes everything every frame, so m_SceneDirty
+    // alone is true 100% of the time. Transforms recomputed from an
+    // unchanged scene are bit-identical, so memcmp is exact.
+    static bool SceneInstancesChanged()
+    {
+        if (s_Data.m_SceneInstances.size() != s_Data.m_PrevSceneInstances.size())
+            return true;
+        if (s_Data.m_SceneInstances.empty())
+            return false;
+        return memcmp(s_Data.m_SceneInstances.data(), s_Data.m_PrevSceneInstances.data(),
+                      s_Data.m_SceneInstances.size() * sizeof(RayTracingInstance)) != 0;
+    }
+
     void Renderer3D::Init()
     {
         WL_PROFILE_FUNCTION();
@@ -640,7 +819,9 @@ namespace Wasteland
             {ShaderDataType::Float, "a_TilingFactor"},
             {ShaderDataType::Int, "a_EntityID"},
             {ShaderDataType::Float, "a_Metallic"},
-            {ShaderDataType::Float, "a_Roughness"}};
+            {ShaderDataType::Float, "a_Roughness"},
+            {ShaderDataType::Float, "a_Displacement"},
+            {ShaderDataType::Float, "a_BumpStrength"}};
 
         // --- CUBE SETUP ---
         s_Data.CubeVertexArray = VertexArray::Create();
@@ -716,12 +897,22 @@ namespace Wasteland
                 "u_SunDirection", "u_Time",
                 "u_FogEnabled", "u_FogCount", "u_FogMin[0]", "u_FogMax[0]", "u_FogColor[0]", "u_FogData[0]", "u_FogData2[0]",
                 "u_CloudEnabled", "u_CloudCount", "u_CloudMin[0]", "u_CloudMax[0]", "u_CloudColor[0]",
-                "u_CloudAmbient[0]", "u_CloudData[0]", "u_CloudData2[0]", "u_CloudData3[0]", "u_VolFast"};
+                "u_CloudAmbient[0]", "u_CloudData[0]", "u_CloudData2[0]", "u_CloudData3[0]", "u_VolFast", "u_SunLightColor"};
             for (int i = 0; i < Renderer3DData::VolLoc_Count; i++)
                 s_Data.Loc_Volumetric[progIndex][i] = glGetUniformLocation(prog, names[i]);
         };
         cacheVolumetricLocations(rtProg, 0);
         cacheVolumetricLocations(s_Data.BasicShader->GetRendererID(), 1);
+        auto cacheAnalyticLocations = [](GLuint prog, int progIndex)
+        {
+            static const char *names[Renderer3DData::ALoc_Count] = {
+                "u_ALightCount", "u_ALightPos[0]", "u_ALightDir[0]",
+                "u_ALightColor[0]", "u_ALightData[0]", "u_ALightData2[0]"};
+            for (int i = 0; i < Renderer3DData::ALoc_Count; i++)
+                s_Data.Loc_ALights[progIndex][i] = glGetUniformLocation(prog, names[i]);
+        };
+        cacheAnalyticLocations(rtProg, 0);
+        cacheAnalyticLocations(s_Data.BasicShader->GetRendererID(), 1);
 
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
@@ -797,6 +988,9 @@ namespace Wasteland
             samplers[i] = i + 15;
         s_Data.RayTracingShader->SetIntArray("u_SceneTextures", samplers, 32);
 
+        DetectGPUTier();
+        glGenQueries(3, s_Data.DRSTimerQueries);
+
         ApplyQualityPreset();
     }
 
@@ -818,6 +1012,12 @@ namespace Wasteland
         glDeleteTextures(1, &s_Data.TraceGBufferTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
 
+        if (s_Data.DRSTimerQueries[0] != 0)
+        {
+            glDeleteQueries(3, s_Data.DRSTimerQueries);
+            s_Data.DRSTimerQueries[0] = s_Data.DRSTimerQueries[1] = s_Data.DRSTimerQueries[2] = 0;
+        }
+
         s_Data.CubeVertexArray = nullptr;
         s_Data.CubeVertexBuffer = nullptr;
         s_Data.SphereVertexArray = nullptr;
@@ -836,6 +1036,7 @@ namespace Wasteland
         // flushes, unlike the geometry batches reset in FlushAndReset).
         s_Data.FogVolumes.clear();
         s_Data.CloudVolumes.clear();
+        s_Data.AnalyticLights.clear();
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetProjection() * glm::inverse(transform);
@@ -896,6 +1097,7 @@ namespace Wasteland
         // flushes, unlike the geometry batches reset in FlushAndReset).
         s_Data.FogVolumes.clear();
         s_Data.CloudVolumes.clear();
+        s_Data.AnalyticLights.clear();
         s_Data.m_SceneInstances.clear();
 
         glm::mat4 viewProj = camera.GetViewProjection();
@@ -943,6 +1145,29 @@ namespace Wasteland
             if (s_Data.m_SceneInstances.empty())
                 return;
 
+            auto drsFlushStart = std::chrono::steady_clock::now();
+            // Poll the timer query from two frames ago (non-blocking; a miss
+            // just skips this frame's sample — the EMA tolerates gaps).
+            if (s_Data.DRSTimerQueries[0] != 0)
+            {
+                GLuint readQ = s_Data.DRSTimerQueries[(s_Data.DRSTimerIndex + 2) % 3];
+                GLint available = 0;
+                glGetQueryObjectiv(readQ, GL_QUERY_RESULT_AVAILABLE, &available);
+                if (available)
+                {
+                    GLuint64 elapsedNs = 0;
+                    glGetQueryObjectui64v(readQ, GL_QUERY_RESULT, &elapsedNs);
+                    double ms = (double)elapsedNs / 1000000.0;
+                    if (ms > 0.0 && ms < 1000.0)
+                    {
+                        s_Data.GPUFrameTimeEMA = (s_Data.DRSGpuSamples == 0)
+                                                     ? ms
+                                                     : s_Data.GPUFrameTimeEMA * 0.9 + ms * 0.1;
+                        s_Data.DRSGpuSamples++;
+                    }
+                }
+            }
+
             bool moved = false;
             float sqThreshold = s_Data.MovementThreshold * s_Data.MovementThreshold;
             if (s_Data.ActiveCameraIsEditor)
@@ -971,7 +1196,7 @@ namespace Wasteland
             }
             s_Data.CameraMoved = moved;
 
-            if (s_Data.m_SceneDirty)
+            if (s_Data.m_SceneDirty && SceneInstancesChanged())
             {
                 // Build BVH for acceleration
                 BuildAndFlattenBVH(s_Data.m_SceneInstances, s_Data.m_BVHNodes, s_Data.m_BVHPrimOrder);
@@ -1014,6 +1239,7 @@ namespace Wasteland
                 }
 
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+                s_Data.m_PrevSceneInstances = s_Data.m_SceneInstances;
                 s_Data.m_SceneDirty = false;
             }
 
@@ -1102,6 +1328,7 @@ namespace Wasteland
             if (s_Data.Loc_NeuralMatStrength >= 0)
                 glUniform1f(s_Data.Loc_NeuralMatStrength, s_Data.NeuralMaterialStrength);
             UploadVolumetricUniforms(0);
+            UploadAnalyticLights(0);
 
             // View matrices must be uploaded BEFORE pass 0: velocity
             // reconstructs with the inverse and reprojects with the previous
@@ -1111,6 +1338,14 @@ namespace Wasteland
             glUniformMatrix4fv(s_Data.Loc_InverseViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.InverseViewProjection));
 
             // Pass 0: Visibility + Velocity
+            // GPU timer around the whole compute chain (passes 0-7, composite,
+            // bloom): feeds the dynamic-resolution scaler + FPS readout.
+            if (s_Data.DRSTimerQueries[0] != 0 && !s_Data.DRSTimerActive)
+            {
+                glBeginQuery(GL_TIME_ELAPSED, s_Data.DRSTimerQueries[s_Data.DRSTimerIndex]);
+                s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 1) % 3;
+                s_Data.DRSTimerActive = true;
+            }
             glUniform1i(s_Data.Loc_PassID, 0);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
@@ -1162,6 +1397,22 @@ namespace Wasteland
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
 
+            if (s_Data.DRSTimerActive)
+            {
+                glEndQuery(GL_TIME_ELAPSED);
+                s_Data.DRSTimerActive = false;
+            }
+            double drsCpuMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - drsFlushStart)
+                                  .count();
+            if (drsCpuMs > 0.0 && drsCpuMs < 1000.0)
+            {
+                s_Data.CPUFlushTimeEMA = (s_Data.CPUFlushTimeEMA <= 0.0)
+                                             ? drsCpuMs
+                                             : s_Data.CPUFlushTimeEMA * 0.95 + drsCpuMs * 0.05;
+            }
+            UpdateDynamicResolution();
+
             s_Data.RayTracingShader->Unbind();
 
             if (currentFrameIndex >= UINT32_MAX - 1)
@@ -1200,6 +1451,7 @@ namespace Wasteland
         s_Data.BasicShader->SetFloat("u_NeuralLightStrength", s_Data.NeuralLightStrength);
         s_Data.BasicShader->SetFloat("u_NeuralMatStrength", s_Data.NeuralMaterialStrength);
         UploadVolumetricUniforms(1);
+        UploadAnalyticLights(1);
         // View-dependent metal reflection inputs
         s_Data.BasicShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
         s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
@@ -1263,6 +1515,10 @@ namespace Wasteland
     void Renderer3D::SetRenderScale(float scale)
     {
         s_Data.RenderScale = glm::clamp(scale, 0.25f, 1.0f);
+        // A manual choice becomes the scaler ceiling: dynamic resolution may
+        // drop below it to hold the target FPS, never above it.
+        s_Data.DynamicMaxScale = s_Data.RenderScale;
+        s_Data.DRSFramesSinceAdjust = 0;
         UpdateComputeResolution();
         s_Data.FrameIndex = 0;
         ClearAccumulationBuffers();
@@ -1294,7 +1550,7 @@ namespace Wasteland
             s_Data.RenderScale = 0.66f;
             break;
         case QualityPreset::High:
-            // Traces at 2/3 res (upscaled in composite).
+            // Traces at 0.8 res (upscaled in composite).
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
             s_Data.MaxLights = 4;
@@ -1302,10 +1558,10 @@ namespace Wasteland
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 0;
-            s_Data.RenderScale = 0.66f;
+            s_Data.RenderScale = 0.8f;
             break;
         case QualityPreset::Ultra:
-            // Traces at 3/4 res (upscaled in composite). Perf: 1 ray/px + 2 rotating shadow rays
+            // Traces at 1 res (upscaled in composite). Perf: 1 ray/px + 2 rotating shadow rays
             // from up to 4 lights, neural GI steadies the single indirect
             s_Data.SamplesPerPixel = 1;
             s_Data.MaxBounces = 1;
@@ -1314,13 +1570,78 @@ namespace Wasteland
             s_Data.BloomEnabled = true;
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 1;
-            s_Data.RenderScale = 0.75f;
+            s_Data.RenderScale = 1.0f;
             break;
         }
 
+        s_Data.DynamicMaxScale = s_Data.RenderScale;
+        s_Data.DRSFramesSinceAdjust = 0;
         UpdateComputeResolution();
         s_Data.FrameIndex = 0;
         ClearAccumulationBuffers();
+    }
+
+    // Holds TargetFPS by stepping RenderScale in [min, preset-max] every 20
+    // frames. Steps are proportional (far over budget = big steps) with a
+    // dead band (down past 115% of budget, up below 60%) so the scale
+    // converges in seconds, not a minute, and doesn't hunt; every step
+    // resets accumulation so no stale history smears across the change.
+    // Scale changes are logged (proves the new binary is running + shows
+    // whether the GPU or something else is the bottleneck).
+    static void UpdateDynamicResolution()
+    {
+        // Slowest available signal wins: GPU time when the tracer is the
+        // bottleneck, app frame time when it sits elsewhere (or the GL
+        // timer yields nothing). CPU submit time is the last resort.
+        double ema = 0.0;
+        if (s_Data.DRSGpuSamples > 10 && s_Data.GPUFrameTimeEMA > 0.0)
+            ema = s_Data.GPUFrameTimeEMA;
+        if (s_Data.AppFrameTimeEMA > 0.0 && s_Data.AppFrameTimeEMA > ema)
+            ema = s_Data.AppFrameTimeEMA;
+        if (ema <= 0.0)
+            ema = s_Data.CPUFlushTimeEMA;
+        if (ema > 0.0)
+            s_Data.CurrentFPS = (float)(1000.0 / ema);
+        if (!s_Data.DynamicResolutionEnabled)
+            return;
+        if (ema <= 0.0)
+            return;
+        if (++s_Data.DRSFramesSinceAdjust < 20)
+            return;
+        s_Data.DRSFramesSinceAdjust = 0;
+
+        double targetMs = 1000.0 / (double)glm::clamp(s_Data.TargetFPS, 20.0f, 240.0f);
+        float maxScale = glm::clamp(s_Data.DynamicMaxScale, 0.25f, 1.0f);
+        float minScale = glm::clamp(s_Data.DynamicMinScale, 0.25f, 1.0f);
+        if (minScale > maxScale)
+            minScale = maxScale;
+
+        double overBudget = ema / targetMs;
+        if (ema > targetMs * 1.15 && s_Data.RenderScale > minScale + 1e-4f)
+        {
+            float step = (overBudget > 2.0) ? 0.15f : ((overBudget > 1.4) ? 0.10f : 0.05f);
+            float ns = glm::clamp(s_Data.RenderScale - step, minScale, maxScale);
+            if (ns < s_Data.RenderScale - 1e-4f)
+            {
+                WL_CORE_INFO("Dynamic resolution: GPU {0:.1f}ms (target {1:.1f}ms) scale {2:.2f} -> {3:.2f}",
+                             ema, targetMs, s_Data.RenderScale, ns);
+                s_Data.RenderScale = ns;
+                UpdateComputeResolution();
+                s_Data.FrameIndex = 0;
+                ClearAccumulationBuffers();
+            }
+        }
+        else if (ema < targetMs * 0.6 && s_Data.RenderScale < maxScale - 1e-4f)
+        {
+            float ns = glm::clamp(s_Data.RenderScale + 0.05f, minScale, maxScale);
+            if (ns > s_Data.RenderScale + 1e-4f)
+            {
+                s_Data.RenderScale = ns;
+                UpdateComputeResolution();
+                s_Data.FrameIndex = 0;
+                ClearAccumulationBuffers();
+            }
+        }
     }
 
     QualityPreset Renderer3D::GetQualityPreset() { return s_Data.CurrentQualityPreset; }
@@ -1329,6 +1650,32 @@ namespace Wasteland
         s_Data.CurrentQualityPreset = preset;
         ApplyQualityPreset();
     }
+    bool Renderer3D::IsDynamicResolutionEnabled() { return s_Data.DynamicResolutionEnabled; }
+    void Renderer3D::SetDynamicResolutionEnabled(bool enabled)
+    {
+        s_Data.DynamicResolutionEnabled = enabled;
+        s_Data.DRSFramesSinceAdjust = 0;
+    }
+    float Renderer3D::GetTargetFPS() { return s_Data.TargetFPS; }
+    void Renderer3D::SetTargetFPS(float fps)
+    {
+        s_Data.TargetFPS = glm::clamp(fps, 20.0f, 240.0f);
+        s_Data.DRSFramesSinceAdjust = 0;
+    }
+    void Renderer3D::NotifyFrameTime(double ms)
+    {
+        if (ms <= 0.0 || ms >= 1000.0)
+            return;
+        s_Data.AppFrameTimeEMA = (s_Data.AppFrameTimeEMA <= 0.0)
+                                     ? ms
+                                     : s_Data.AppFrameTimeEMA * 0.95 + ms * 0.05;
+    }
+    float Renderer3D::GetDynamicMinScale() { return s_Data.DynamicMinScale; }
+    void Renderer3D::SetDynamicMinScale(float scale) { s_Data.DynamicMinScale = glm::clamp(scale, 0.25f, 1.0f); }
+    float Renderer3D::GetCurrentFPS() { return s_Data.CurrentFPS; }
+    float Renderer3D::GetGPUFrameTimeMs() { return (float)s_Data.GPUFrameTimeEMA; }
+    bool Renderer3D::IsDynamicResolutionActive() { return s_Data.RenderScale < s_Data.DynamicMaxScale - 1e-4f; }
+    const char *Renderer3D::GetGPUTierName() { return s_Data.GPUTierName; }
     bool Renderer3D::IsRayTracingAccumulate() { return s_Data.RayTracingAccumulate; }
     void Renderer3D::SetRayTracingAccumulate(bool enabled)
     {
@@ -1554,6 +1901,72 @@ namespace Wasteland
         s_Data.FrameIndex = 0;
     }
 
+    static void PushAnalyticLight(const AnalyticLightData &v)
+    {
+        if (s_Data.AnalyticLights.size() >= (size_t)Renderer3D::MaxAnalyticLights)
+            return;
+        s_Data.AnalyticLights.push_back(v);
+    }
+
+    void Renderer3D::SubmitDirectionalLight(const glm::mat4 &transform, const DirectionalLightComponent &light)
+    {
+        AnalyticLightData v;
+        v.Direction = LightTravelDirection(transform);
+        v.Color = light.Color;
+        v.Type = 0.0f;
+        v.Intensity = glm::max(light.Intensity, 0.0f);
+        PushAnalyticLight(v);
+    }
+
+    void Renderer3D::SubmitPointLight(const glm::mat4 &transform, const PointLightComponent &light)
+    {
+        AnalyticLightData v;
+        v.Position = glm::vec3(transform[3]);
+        v.Color = light.Color;
+        v.Type = 1.0f;
+        v.Intensity = glm::max(light.Intensity, 0.0f);
+        v.Range = glm::max(light.Range, 0.0f);
+        v.Falloff = glm::clamp(light.Falloff, 0.5f, 8.0f);
+        PushAnalyticLight(v);
+    }
+
+    void Renderer3D::SubmitSpotLight(const glm::mat4 &transform, const SpotLightComponent &light)
+    {
+        AnalyticLightData v;
+        v.Position = glm::vec3(transform[3]);
+        v.Direction = LightTravelDirection(transform);
+        v.Color = light.Color;
+        v.Type = 2.0f;
+        v.Intensity = glm::max(light.Intensity, 0.0f);
+        v.Range = glm::max(light.Range, 0.0f);
+        v.Falloff = glm::clamp(light.Falloff, 0.5f, 8.0f);
+        float inner = glm::clamp(light.InnerAngle, 0.0f, 89.5f);
+        float outer = glm::clamp(light.OuterAngle, 0.5f, 90.0f);
+        if (outer < inner)
+            outer = inner;
+        // smoothstep needs edge0 <= edge1, i.e. outerCos <= innerCos.
+        v.InnerCos = glm::cos(glm::radians(inner));
+        v.OuterCos = glm::cos(glm::radians(outer));
+        PushAnalyticLight(v);
+    }
+
+    void Renderer3D::SubmitAreaLight(const glm::mat4 &transform, const AreaLightComponent &light)
+    {
+        AnalyticLightData v;
+        v.Position = glm::vec3(transform[3]);
+        v.Direction = LightTravelDirection(transform);
+        v.Color = light.Color;
+        v.Type = 3.0f;
+        v.Intensity = glm::max(light.Intensity, 0.0f);
+        v.Range = glm::max(light.Range, 0.0f);
+        v.Falloff = 2.0f;
+        float w = glm::max(light.Width, 0.01f);
+        float h = glm::max(light.Height, 0.01f);
+        v.AreaSize = glm::sqrt(w * h);
+        v.DoubleSided = light.DoubleSided ? 1.0f : 0.0f;
+        PushAnalyticLight(v);
+    }
+
     bool Renderer3D::IsNeuralRenderingEnabled() { return s_Data.NeuralEnabled; }
     void Renderer3D::SetNeuralRenderingEnabled(bool enabled)
     {
@@ -1645,7 +2058,9 @@ namespace Wasteland
             FlushAndReset();
         }
 
-        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-0.5f), glm::vec3(0.5f), transform))
+        // Displacement-aware cull padding: relief pushes vertices outward.
+        float cullPad = material.Texture ? material.DisplacementScale : 0.0f;
+        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-0.5f - cullPad), glm::vec3(0.5f + cullPad), transform))
             return;
 
         static const glm::vec3 cubePositions[24] = {
@@ -1661,23 +2076,125 @@ namespace Wasteland
         // Raster-path material inputs (also reused by the ray-trace instance below)
         int cubeTextureSlot = material.Texture ? FindOrAddTextureSlot(material.Texture) : 0;
 
-        for (int i = 0; i < 24; i++)
-        {
-            s_Data.CubeVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(cubePositions[i], 1.0f));
-            s_Data.CubeVertexBufferPtr->Color = material.Albedo;
-            s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]);
-            s_Data.CubeVertexBufferPtr->TexCoord = texCoords[i % 4];
-            s_Data.CubeVertexBufferPtr->TexIndex = (float)cubeTextureSlot;
-            s_Data.CubeVertexBufferPtr->TilingFactor = 1.0f;
-            s_Data.CubeVertexBufferPtr->EntityID = entityID;
-            s_Data.CubeVertexBufferPtr->Metallic = material.Metallic;
-            s_Data.CubeVertexBufferPtr->Roughness = material.Roughness;
-            s_Data.CubeVertexBufferPtr++;
-        }
+        // Neural geometric displacement: DisplacementScale > 0 subdivides the
+        // cube into per-face grids that the vertex shader pushes along the
+        // normal with the neural height field. Disp == 0 keeps the classic
+        // 24-vertex path: zero behavior change.
+        float reliefDisp = material.Texture ? material.DisplacementScale : 0.0f;
+        float reliefBump = material.Texture ? material.NormalStrength : 0.0f;
+        int gridN = (reliefDisp > 0.001f) ? std::min(2 + (int)(reliefDisp * 8.0f), 10) : 1;
 
-        s_Data.CubeIndexCount += 36;
-        s_Data.CubeVertexCount += 24;
-        s_Data.Stats.QuadCount += 6;
+        if (gridN <= 1)
+        {
+            for (int i = 0; i < 24; i++)
+            {
+                s_Data.CubeVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(cubePositions[i], 1.0f));
+                s_Data.CubeVertexBufferPtr->Color = material.Albedo;
+                s_Data.CubeVertexBufferPtr->Normal = glm::normalize(normalMatrix * cubeNormals[i]);
+                s_Data.CubeVertexBufferPtr->TexCoord = texCoords[i % 4];
+                s_Data.CubeVertexBufferPtr->TexIndex = (float)cubeTextureSlot;
+                s_Data.CubeVertexBufferPtr->TilingFactor = 1.0f;
+                s_Data.CubeVertexBufferPtr->EntityID = entityID;
+                s_Data.CubeVertexBufferPtr->Metallic = material.Metallic;
+                s_Data.CubeVertexBufferPtr->Roughness = material.Roughness;
+                // Raster relief is opt-in (no Nova-style auto-bump): zero POM cost
+                // for plain textured scenes until the artist dials it in.
+                s_Data.CubeVertexBufferPtr->Displacement = material.Texture ? material.DisplacementScale : 0.0f;
+                s_Data.CubeVertexBufferPtr->BumpStrength = material.Texture ? material.NormalStrength : 0.0f;
+                s_Data.CubeVertexBufferPtr++;
+            }
+
+            s_Data.CubeIndexCount += 36;
+            s_Data.CubeVertexCount += 24;
+            s_Data.Stats.QuadCount += 6;
+        }
+        else
+        {
+            // Relief-subdivided cubes share the dynamic-index batch: the cube
+            // batch index buffer is a static quad pattern and cannot grow.
+            // Face grids mirror the classic corner order/winding per face.
+            uint32_t side = (uint32_t)((gridN + 1) * (gridN + 1));
+            uint32_t needVerts = side * 6;
+            uint32_t needIdx = (uint32_t)(gridN * gridN * 36);
+            if (s_Data.SphereVertexCount + needVerts >= s_Data.MaxVertices ||
+                s_Data.SphereIndexCount + needIdx >= s_Data.MaxIndices)
+            {
+                Flush();
+                FlushAndReset();
+            }
+            uint32_t batchBase = s_Data.SphereVertexCount;
+            for (int f = 0; f < 6; f++)
+            {
+                uint32_t faceBase = batchBase + (uint32_t)f * side;
+                for (int j = 0; j <= gridN; j++)
+                {
+                    for (int i = 0; i <= gridN; i++)
+                    {
+                        float u = (float)i / (float)gridN;
+                        float v = (float)j / (float)gridN;
+                        glm::vec3 lp, ln;
+                        switch (f)
+                        {
+                        case 0:
+                            lp = glm::vec3(-0.5f + u, -0.5f + v, 0.5f);
+                            ln = glm::vec3(0.0f, 0.0f, 1.0f);
+                            break;
+                        case 1:
+                            lp = glm::vec3(0.5f - u, -0.5f + v, -0.5f);
+                            ln = glm::vec3(0.0f, 0.0f, -1.0f);
+                            break;
+                        case 2:
+                            lp = glm::vec3(-0.5f + u, 0.5f, 0.5f - v);
+                            ln = glm::vec3(0.0f, 1.0f, 0.0f);
+                            break;
+                        case 3:
+                            lp = glm::vec3(-0.5f + u, -0.5f, -0.5f + v);
+                            ln = glm::vec3(0.0f, -1.0f, 0.0f);
+                            break;
+                        case 4:
+                            lp = glm::vec3(0.5f, -0.5f + v, 0.5f - u);
+                            ln = glm::vec3(1.0f, 0.0f, 0.0f);
+                            break;
+                        default:
+                            lp = glm::vec3(-0.5f, -0.5f + v, -0.5f + u);
+                            ln = glm::vec3(-1.0f, 0.0f, 0.0f);
+                            break;
+                        }
+                        s_Data.SphereVertexBufferPtr->Position = glm::vec3(transform * glm::vec4(lp, 1.0f));
+                        s_Data.SphereVertexBufferPtr->Color = material.Albedo;
+                        s_Data.SphereVertexBufferPtr->Normal = glm::normalize(normalMatrix * ln);
+                        s_Data.SphereVertexBufferPtr->TexCoord = glm::vec2(u, v);
+                        s_Data.SphereVertexBufferPtr->TexIndex = (float)cubeTextureSlot;
+                        s_Data.SphereVertexBufferPtr->TilingFactor = 1.0f;
+                        s_Data.SphereVertexBufferPtr->EntityID = entityID;
+                        s_Data.SphereVertexBufferPtr->Metallic = material.Metallic;
+                        s_Data.SphereVertexBufferPtr->Roughness = material.Roughness;
+                        s_Data.SphereVertexBufferPtr->Displacement = reliefDisp;
+                        s_Data.SphereVertexBufferPtr->BumpStrength = reliefBump;
+                        s_Data.SphereVertexBufferPtr++;
+                    }
+                }
+                for (int j = 0; j < gridN; j++)
+                {
+                    for (int i = 0; i < gridN; i++)
+                    {
+                        uint32_t a = faceBase + (uint32_t)(j * (gridN + 1) + i);
+                        uint32_t b = a + 1;
+                        uint32_t c = a + (uint32_t)(gridN + 1);
+                        uint32_t d = c + 1;
+                        *s_Data.SphereIndexBufferPtr++ = a;
+                        *s_Data.SphereIndexBufferPtr++ = b;
+                        *s_Data.SphereIndexBufferPtr++ = d;
+                        *s_Data.SphereIndexBufferPtr++ = d;
+                        *s_Data.SphereIndexBufferPtr++ = c;
+                        *s_Data.SphereIndexBufferPtr++ = a;
+                    }
+                }
+            }
+            s_Data.SphereVertexCount += needVerts;
+            s_Data.SphereIndexCount += needIdx;
+            s_Data.Stats.QuadCount += needIdx / 6;
+        }
 
         if (s_Data.RayTracingEnabled)
         {
@@ -1714,7 +2231,16 @@ namespace Wasteland
 
     void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent &material, int entityID)
     {
-        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-radius), glm::vec3(radius), transform))
+        // Neural geometric displacement needs real vertices: raise the tessellation
+        // floor while DisplacementScale is set (still capped; opt-in via the slider).
+        float sphDisp = material.Texture ? material.DisplacementScale : 0.0f;
+        if (sphDisp > 0.001f)
+        {
+            int target = 12 + (int)(sphDisp * 40.0f);
+            sectors = std::min(std::max(sectors, target), 48);
+            stacks = std::min(std::max(stacks, (target * 2) / 3), 32);
+        }
+        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-radius - sphDisp), glm::vec3(radius + sphDisp), transform))
             return;
 
         uint32_t vertexCount = (stacks + 1) * (sectors + 1);
@@ -1762,6 +2288,8 @@ namespace Wasteland
                 s_Data.SphereVertexBufferPtr->EntityID = entityID;
                 s_Data.SphereVertexBufferPtr->Metallic = material.Metallic;
                 s_Data.SphereVertexBufferPtr->Roughness = material.Roughness;
+                s_Data.SphereVertexBufferPtr->Displacement = material.Texture ? material.DisplacementScale : 0.0f;
+                s_Data.SphereVertexBufferPtr->BumpStrength = material.Texture ? material.NormalStrength : 0.0f;
                 s_Data.SphereVertexBufferPtr++;
             }
         }

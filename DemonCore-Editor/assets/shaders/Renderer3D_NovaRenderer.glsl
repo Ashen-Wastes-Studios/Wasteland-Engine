@@ -105,6 +105,8 @@ uniform float u_NeuralMatStrength;
 uniform vec3 u_SunDirection;
 uniform float u_Time;
 uniform int u_FogEnabled;
+// God-ray sun color (directional light color x intensity, or warm default).
+uniform vec3 u_SunLightColor;
 uniform int u_FogCount;
 uniform vec3 u_FogMin[4];
 uniform vec3 u_FogMax[4];
@@ -122,6 +124,17 @@ uniform vec4 u_CloudData2[2];
 uniform vec4 u_CloudData3[2];
 // 1 = reduced noise octaves (Low/Medium quality presets).
 uniform int u_VolFast;
+
+// Analytic component lights (Renderer3D uploads; locations skipped if absent).
+// d1 = (type 0=dir 1=point 2=spot 3=area, intensity, range 0=inf, falloff)
+// d2 = (spot innerCos, spot outerCos, areaSize, areaDoubleSided)
+// u_ALightDir = travel direction (dir/spot) or rect normal facing scene (area).
+uniform int u_ALightCount;
+uniform vec3 u_ALightPos[8];
+uniform vec3 u_ALightDir[8];
+uniform vec3 u_ALightColor[8];
+uniform vec4 u_ALightData[8];
+uniform vec4 u_ALightData2[8];
 
 float wl_softsign(float x) { return x / (1.0 + abs(x)); }
 
@@ -164,6 +177,24 @@ vec3 wl_neural_tex_detail(vec2 uv, vec3 n)
     float d = 1.0 + 0.10 * h0 + 0.07 * h1 - 0.06 * h2 + 0.05 * h3 + 0.06 * grain;
     vec3 tint = vec3(1.0 + 0.03 * h1, 1.0 + 0.02 * h2, 1.0 - 0.03 * h0);
     return tint * d;
+}
+
+// Smooth-only neural micro for GEOMETRY (no per-cell hash grain): the grain
+// stays in the albedo tint where it sparkles, but must not imprint voxel
+// cells into displaced height.
+float wl_neural_micro(vec2 uv, vec3 n)
+{
+    float s1 = uv.x * 6.1 + uv.y * 7.7;
+    float s2 = uv.x * 13.7 - uv.y * 11.3;
+    vec4 feat = vec4(sin(s1 + n.x * 3.1),
+                     sin(s1 * 1.7 + n.y * 2.3),
+                     sin(s2 + n.z * 3.7),
+                     sin(s2 * 1.3 + s1 * 0.7));
+    float h0 = wl_softsign( 0.9 * feat.x - 0.7 * feat.y + 0.5 * feat.z - 0.3 * feat.w + 0.15);
+    float h1 = wl_softsign(-0.6 * feat.x + 0.8 * feat.y - 0.4 * feat.z + 0.6 * feat.w - 0.10);
+    float h2 = wl_softsign( 0.4 * feat.x + 0.5 * feat.y + 0.9 * feat.z + 0.2 * feat.w + 0.05);
+    float h3 = wl_softsign(-0.3 * feat.x - 0.5 * feat.y + 0.6 * feat.z - 0.8 * feat.w + 0.20);
+    return 0.10 * h0 + 0.07 * h1 - 0.06 * h2 + 0.05 * h3;
 }
 
 // Neural radiance cache: predicts indirect bounce (reflectance * light) from
@@ -284,8 +315,9 @@ float wl_hg(float cosT, float g)
 }
 
 // Front-to-back march through one fog box. Returns (scatteredLight, transmittance).
+// sunVis gates the sun in-scatter (god-ray shafts): 1 = fully sunlit fog.
 vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
-                      vec3 tint, vec4 d1, vec4 d2, float dither)
+                      vec3 tint, vec4 d1, vec4 d2, float dither, float sunVis)
 {
     vec2 range = wl_box_range(ro, rd, bmin, bmax);
     float t0 = max(range.x, 0.0);
@@ -293,14 +325,16 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
     // Depth-adaptive steps: thin intersections cost proportionally less while
     // keeping an approximately constant world-space step size.
     float fogLen = max(t1 - t0, 0.0);
-    int steps = int(clamp(d2.z * clamp(fogLen / 8.0, 0.25, 1.0), 2.0, 32.0));
+    // Perf tier: march fewer steps when the tracer runs below full resolution
+    // (dynamic resolution on older GPUs) — the composite upscale hides it.
+    float fogPerfK = mix(0.6, 1.0, smoothstep(0.6, 0.9, u_RenderScale));
+    int steps = int(clamp(d2.z * fogPerfK * clamp(fogLen / 8.0, 0.25, 1.0), 2.0, 32.0));
     if (t1 <= t0 || steps <= 0)
         return vec4(0.0, 0.0, 0.0, 1.0);
     float dt = (t1 - t0) / float(steps);
     float phase = wl_hg(dot(rd, u_SunDirection), clamp(d1.y, -0.9, 0.9));
-    vec3 sunCol = vec3(1.15, 1.05, 0.95);
     vec3 ambCol = mix(u_SkyBottomColor, u_SkyTopColor, 0.5);
-    vec3 light = ambCol * 0.7 + sunCol * (0.25 + phase * 2.0);
+    vec3 light = ambCol * 0.7 + u_SunLightColor * sunVis * (0.25 + phase * 2.0);
     float hgt = max(bmax.y - bmin.y, 0.001);
     vec3 acc = vec3(0.0);
     float trans = 1.0;
@@ -316,7 +350,7 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
         if (d1.z > 0.001)
         {
             vec3 np = p * max(d1.w, 0.001) + vec3(u_Time * d2.x, 0.0, u_Time * d2.x * 0.6);
-            float n = (u_VolFast == 1) ? wl_vol_fbm2(np) : wl_vol_fbm(np);
+            float n = (u_VolFast == 1 || u_RenderScale < 0.75) ? wl_vol_fbm2(np) : wl_vol_fbm(np);
             d *= (1.0 - d1.z * 0.5) + d1.z * n;
         }
         float a = 1.0 - exp(-max(d, 0.0) * dt);
@@ -340,7 +374,9 @@ vec4 wl_march_cloud_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
     float t0 = max(range.x, 0.0);
     float t1 = min(range.y, tMax);
     float clLen = max(t1 - t0, 0.0);
-    int steps = int(clamp(d2.w * clamp(clLen / 8.0, 0.25, 1.0), 2.0, 32.0));
+    // Perf tier: same render-scale step scaling as wl_march_fog_vol.
+    float cloudPerfK = mix(0.6, 1.0, smoothstep(0.6, 0.9, u_RenderScale));
+    int steps = int(clamp(d2.w * cloudPerfK * clamp(clLen / 8.0, 0.25, 1.0), 2.0, 32.0));
     if (t1 <= t0 || steps <= 0)
         return vec4(0.0, 0.0, 0.0, 1.0);
     float dt = (t1 - t0) / float(steps);
@@ -361,7 +397,7 @@ vec4 wl_march_cloud_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
             break;
         vec3 p = ro + rd * t;
         vec3 q = p * nScale + vec3(wnd.x, 0.0, wnd.y);
-        float base = (u_VolFast == 1) ? wl_vol_fbm2(q) : wl_vol_fbm(q);
+        float base = (u_VolFast == 1 || u_RenderScale < 0.75) ? wl_vol_fbm2(q) : wl_vol_fbm(q);
         float cov = clamp(d1.x, 0.0, 1.0);
         float d = smoothstep(1.0 - cov, 1.0 - cov + 0.35, base);
         if (d > 0.001 && d1.w > 0.001)
@@ -400,7 +436,8 @@ vec4 wl_march_cloud_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
 }
 
 // Applies all submitted cloud + fog volumes to a primary-ray sample.
-vec3 wl_apply_volumetrics(vec3 ro, vec3 rd, float tHit, vec3 baseColor, float dither)
+// sunVis scales fog sun in-scatter (god rays); clouds keep self-shadowing.
+vec3 wl_apply_volumetrics(vec3 ro, vec3 rd, float tHit, vec3 baseColor, float dither, float sunVis)
 {
     vec3 col = baseColor;
     if (u_CloudEnabled == 1)
@@ -426,7 +463,7 @@ vec3 wl_apply_volumetrics(vec3 ro, vec3 rd, float tHit, vec3 baseColor, float di
             if (u_FogData2[i].w < 0.5)
                 continue;
             vec4 r = wl_march_fog_vol(ro, rd, tHit, u_FogMin[i], u_FogMax[i],
-                                      u_FogColor[i], u_FogData[i], u_FogData2[i], dither);
+                                      u_FogColor[i], u_FogData[i], u_FogData2[i], dither, sunVis);
             col = col * r.a + r.rgb;
         }
     }
@@ -770,11 +807,41 @@ void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec4
     }
 }
 
+// Relief height stack (Crimson-rock setup): texture macro-relief + procedural
+// craggy breakup + strata banding + neural micro-surface. The linear march
+// and binary refine sample the cheap macro height only; final/shadow/gradient
+// taps use the full stack so detail rides on the macro silhouette.
+float wl_pom_macro(int texID, vec2 tapUV)
+{
+    return GetLuminance(textureLod(u_SceneTextures[texID], tapUV, 0.0).rgb);
+}
+
+float wl_pom_full(int texID, vec2 tapUV, vec3 wpBase, vec3 nRef,
+                  float mesoAmp, float strataW, float neuralK)
+{
+    float h = wl_pom_macro(texID, tapUV);
+    if (mesoAmp > 0.001)
+    {
+        vec2 muv = tapUV * 6.0;
+        float n1 = wl_vol_noise(vec3(muv, 3.7));
+        float n2 = wl_vol_noise(vec3(muv * 2.3 + 5.0, 9.1));
+        float st = sin(wpBase.y * 5.0 + n1 * 4.0) * 0.5 + 0.5;
+        h += ((n1 - 0.5) * 0.7 + (n2 - 0.5) * 0.3) * mesoAmp
+           + (st - 0.5) * mesoAmp * 0.8 * strataW;
+    }
+    if (neuralK > 0.001)
+        h += wl_neural_micro(tapUV, nRef) * 2.0 * neuralK;
+    return clamp(h, 0.0, 1.5);
+}
+
 void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
               vec3 localViewDir, inout vec2 uv, inout vec3 worldPos,
-              inout vec3 worldNormal, out float selfOcclusion)
+              inout vec3 worldNormal, out float selfOcclusion, out float dispPush,
+              out float outHeight)
 {
     selfOcclusion = 1.0;
+    dispPush = 0.0;
+    outHeight = -1.0;
 
     if (u_QualityLevel <= 1)
         return;
@@ -783,9 +850,21 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     float distToCam = length(worldPos - u_CameraPosition);
     float cosView = abs(dot(V, localNormal));
 
-    float maxDist = (u_QualityLevel == 2) ? 25.0 : 50.0;
-    if (cosView < 0.15 || distToCam > maxDist)
+    // Perf tier: pull POM range down when tracing below full resolution
+    // (dynamic resolution on older GPUs) — distFade already zeroes detail at maxDist.
+    float pomPerfK = smoothstep(0.6, 0.9, u_RenderScale);
+    float maxDist = (u_QualityLevel == 2) ? 25.0 : mix(35.0, 50.0, pomPerfK);
+    if (distToCam > maxDist)
         return;
+    // Grazing views skip the UV march (the view-ray projection blows up
+    // edge-on) but still push + perturb from the center height below, so
+    // relief never vanishes side-on.
+    bool doMarch = (cosView >= 0.15);
+    // Angular march weight: the transition band above the gate still projects
+    // each step across many texels (smear streaks), so collapse the offset
+    // toward the center tap smoothly instead of switching hard.
+    float marchK = smoothstep(0.10, 0.45, cosView);
+    float marchLOD = (1.0 - marchK) * 2.0;
 
     float dispScale = inst.DisplacementParams.x;
     float bumpStrength = inst.DisplacementParams.y;
@@ -802,11 +881,19 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     int texID = inst.TextureID;
     float eps = 1.0 / 256.0;
 
+    // Meso setup rides on Displacement Scale only (opt-in): existing scenes
+    // with bump-only materials render pixel-identical to before.
+    vec3 wpBase = worldPos;
+    vec3 wNorm0 = normalize(worldNormal);
+    float mesoAmp = 0.0;
+    float strataW = clamp(1.0 - abs(wNorm0.y), 0.15, 1.0);
+    float neuralK = (u_NeuralEnabled == 1) ? clamp(u_NeuralTexStrength, 0.0, 1.0) : 0.0;
+
     float maxDisplacement = max(dispScale, bumpStrength);
     float cosAngle = max(dot(V, localNormal), 0.05);
     
-    int baseLayers = (u_QualityLevel == 2) ? 6 : 16;
-    int maxLayers  = (u_QualityLevel == 2) ? 16 : 32;
+    int baseLayers = (u_QualityLevel == 2) ? 6 : int(mix(8.0, 16.0, pomPerfK));
+    int maxLayers  = (u_QualityLevel == 2) ? 16 : int(mix(20.0, 32.0, pomPerfK));
     int numLayers  = int(clamp(float(baseLayers) / cosAngle, float(baseLayers), float(maxLayers)));
 
     float vnDot = dot(V, localNormal);
@@ -816,6 +903,7 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     float distFade = clamp(1.0 - (distToCam - (maxDist - 15.0)) / 15.0, 0.0, 1.0);
     dispScale *= distFade;
     bumpStrength *= distFade;
+    mesoAmp = 0.25 * clamp(dispScale, 0.0, 1.5);
 
     float dHeight = 1.0 / float(numLayers);
     vec2 dUV = (uvOffsetPerHeight * uvScale) * dHeight * maxDisplacement;
@@ -823,10 +911,11 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
     vec2 prevUV = uv;
     float prevLayerH = 1.0;
     float currLayerH = 1.0;
-    float prevTexH = GetLuminance(textureLod(u_SceneTextures[texID], uv, 0.0).rgb);
+    float prevTexH = GetLuminance(textureLod(u_SceneTextures[texID], uv, marchLOD).rgb);
     vec2 currUV = uv;
     float currTexH = prevTexH;
 
+    if (doMarch)
     for (int i = 0; i < numLayers; i++)
     {
         prevUV = currUV;
@@ -835,18 +924,49 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 
         currUV += dUV;
         currLayerH -= dHeight;
-        currTexH = GetLuminance(textureLod(u_SceneTextures[texID], currUV, 0.0).rgb);
+        currTexH = GetLuminance(textureLod(u_SceneTextures[texID], currUV, marchLOD).rgb);
 
         if (currTexH > currLayerH)
             break;
     }
 
-    float d1 = prevLayerH - prevTexH;
-    float d2 = currTexH - currLayerH;
-    float weight = d1 / max(d1 + d2, 0.0001);
-    vec2 pomUV = mix(prevUV, currUV, weight);
+    // Binary refine: crisp heightfield intersections for deep relief instead
+    // of the linear-interp smear. Macro sampler only (cheap, silhouette-grade).
+    int refineSteps = (u_QualityLevel >= 3) ? 5 : 3;
+    if (doMarch)
+    for (int b = 0; b < 5; b++)
+    {
+        if (b >= refineSteps)
+            break;
+        vec2 midUV = (prevUV + currUV) * 0.5;
+        float midH = wl_pom_macro(texID, midUV);
+        float midL = (prevLayerH + currLayerH) * 0.5;
+        if (midH > midL)
+        {
+            currUV = midUV;
+            currLayerH = midL;
+            currTexH = midH;
+        }
+        else
+        {
+            prevUV = midUV;
+            prevLayerH = midL;
+            prevTexH = midH;
+        }
+    }
 
-    vec2 uvDelta = pomUV - uv;
+    // March skipped (grazing): pomUV stays on the center tap, weight is moot.
+    vec2 pomUV = uv;
+    float weight = 0.5;
+    if (doMarch)
+    {
+        float d1 = prevLayerH - prevTexH;
+        float d2 = currTexH - currLayerH;
+        weight = d1 / max(d1 + d2, 0.0001);
+        pomUV = mix(prevUV, currUV, weight);
+    }
+
+    vec2 uvDelta = (pomUV - uv) * marchK;
     float maxOffset = 0.15;
     if (length(uvDelta) > maxOffset)
         uvDelta = normalize(uvDelta) * maxOffset;
@@ -855,12 +975,21 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
 
     float finalHeight = mix(prevTexH, currTexH, weight);
     if (dispScale > 0.001)
-        worldPos += worldNormal * finalHeight * dispScale;
+    {
+        // Detail rides on the macro silhouette: enrich after the march.
+        finalHeight = wl_pom_full(texID, uv, wpBase, wNorm0, mesoAmp, strataW, neuralK);
+        // Shape-preserving push: bilateral around the mid-level so the mesh
+        // keeps its base shape — features rise AND recess instead of the whole
+        // surface ballooning outward by up to full dispScale.
+        worldPos += worldNormal * (finalHeight - 0.5) * dispScale;
+        dispPush = (finalHeight - 0.5) * dispScale;
+        outHeight = finalHeight;
+    }
 
     if (bumpStrength > 0.001)
     {
-        float hU = GetLuminance(textureLod(u_SceneTextures[texID], uv + vec2(eps, 0.0), 0.0).rgb);
-        float hV = GetLuminance(textureLod(u_SceneTextures[texID], uv + vec2(0.0, eps), 0.0).rgb);
+        float hU = wl_pom_full(texID, uv + vec2(eps, 0.0), wpBase, wNorm0, mesoAmp, strataW, neuralK);
+        float hV = wl_pom_full(texID, uv + vec2(0.0, eps), wpBase, wNorm0, mesoAmp, strataW, neuralK);
         float dhdu = (hU - finalHeight) / eps;
         float dhdv = (hV - finalHeight) / eps;
 
@@ -889,6 +1018,36 @@ void ApplyPOM(RayTracingInstance inst, vec3 localHitPos, vec3 localNormal,
         float gradMag = length(vec2(dh_dsT, dh_dsB));
         float ridgeFactor = max(0.0, finalHeight - 0.5) * gradMag;
         selfOcclusion = clamp(1.0 - ridgeFactor * 0.04 * bumpStrength, 0.2, 1.0);
+    }
+
+    // Deep-crevice sun shadow: short heightfield march toward the sun so
+    // crags cast onto each other. Displacement-gated (opt-in look change).
+    if (dispScale > 0.001)
+    {
+        vec3 localSun = normalize(mat3(inst.InvTransform) * u_SunDirection);
+        vec2 sunUV = vec2(dot(localSun, T), dot(localSun, B));
+        float sunZ = dot(localSun, localNormal);
+        if (sunZ > 0.05)
+        {
+            int shSteps = (u_QualityLevel >= 3) ? 6 : 4;
+            vec2 shStep = (sunUV / sunZ) * (maxDisplacement * 0.05 / float(shSteps));
+            if (length(shStep) > 0.1)
+                shStep = normalize(shStep) * 0.1;
+            float rayH = finalHeight + 0.02;
+            float rayRise = (1.0 - finalHeight + 0.05) / float(shSteps);
+            float occ = 1.0;
+            vec2 suv = uv;
+            for (int s = 0; s < 6; s++)
+            {
+                if (s >= shSteps)
+                    break;
+                suv += shStep;
+                rayH += rayRise;
+                float sh = wl_pom_full(texID, suv, wpBase, wNorm0, mesoAmp, strataW, neuralK);
+                occ = min(occ, clamp((rayH - sh) * 6.0, 0.0, 1.0));
+            }
+            selfOcclusion *= clamp(occ, 0.25, 1.0);
+        }
     }
 }
 
@@ -920,11 +1079,37 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
 
             vec2 uv = CalculateUV(localHitPos, inst);
 
+            float pomH = -1.0;
             if (isPrimaryRay)
             {
                 float pomOcclusion = 1.0;
-                ApplyPOM(inst, localHitPos, localNormal, -localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion);
+                float pomPush = 0.0;
+                ApplyPOM(inst, localHitPos, localNormal, -localRay.Direction, uv, info.worldPos, info.normal, pomOcclusion, pomPush, pomH);
                 info.occlusion = pomOcclusion;
+                // Screen-space displacement: re-anchor the POM hit onto the
+                // primary world ray. The UV march + normal push reconstruct
+                // the relief point approximately (exact only for planar,
+                // uniformly-scaled surfaces); on spheres / scaled instances
+                // it drifts off-ray, corrupting trace depth, secondary-ray
+                // origins, and temporal stability. Intersecting the pixel ray
+                // with the tangent plane through the pushed point keeps the
+                // height estimate but guarantees screen-space correctness.
+                // No extra texture taps. Signed push: raised features anchor
+                // in front of the base hit, dented recesses slightly behind.
+                float pomPushAbs = abs(pomPush);
+                if (pomPushAbs > 0.00001)
+                {
+                    float pomDenom = dot(ray.Direction, info.normal);
+                    if (abs(pomDenom) > 1e-4)
+                    {
+                        float tAnchor = dot(info.worldPos - ray.Origin, info.normal) / pomDenom;
+                        if (tAnchor > 0.0 && tAnchor < info.t + pomPushAbs + 0.001)
+                        {
+                            info.t = tAnchor;
+                            info.worldPos = ray.Origin + ray.Direction * tAnchor;
+                        }
+                    }
+                }
             }
 
             float dist = distance(worldHit, u_CameraPosition);
@@ -972,6 +1157,16 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 info.metal = mix(info.metal, nmm, nmk);
                 info.rough = mix(info.rough, nmr, nmk);
                 info.f0Tint = mix(vec3(1.0), nmf, nmk);
+            }
+            // Relief weathering: dust settles in pits, sun bleaches ridge tops.
+            // Displacement-gated: only set when the relief march ran with push.
+            if (pomH >= 0.0)
+            {
+                float cav = smoothstep(0.45, 0.05, pomH);
+                float ridge = smoothstep(0.55, 0.95, pomH);
+                info.albedo *= (1.0 - 0.30 * cav);
+                info.albedo = mix(info.albedo, info.albedo * vec3(1.10, 1.03, 0.92), ridge * 0.65);
+                info.occlusion *= (1.0 - 0.35 * cav);
             }
             info.emission = inst.Emission.xyz * inst.Emission.w;
         }
@@ -1078,6 +1273,64 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed, bool skipEnv) {
 
     directLight += h.emission;
 
+    // Analytic component lights (directional/point/spot/area). All submitted
+    // lights are evaluated (capped at 8) with shadow rays, using the same
+    // Cook-Torrance BRDF as the emissive-geometry lights above.
+    for (int a = 0; a < 8; a++) {
+        if (a >= u_ALightCount) break;
+        float atype = u_ALightData[a].x;
+        vec3 lcol = u_ALightColor[a] * u_ALightData[a].y;
+        float arange = max(u_ALightData[a].z, 0.0);
+        float afall = max(u_ALightData[a].w, 0.5);
+        vec3 L;
+        float att = 1.0;
+        float shadowLen = 100000.0;
+        if (atype < 0.5) {
+            L = -u_ALightDir[a];
+        } else {
+            vec3 toL = u_ALightPos[a] - h.worldPos;
+            float d = length(toL);
+            L = toL / max(d, 0.00001);
+            if (arange > 0.0) {
+                if (d >= arange) continue;
+                att *= pow(clamp(1.0 - d / arange, 0.0, 1.0), afall);
+                shadowLen = d;
+            } else {
+                att *= 1.0 / (1.0 + 0.1 * afall * d * d);
+                shadowLen = min(d, 500.0);
+            }
+            if (atype > 1.5 && atype < 2.5) {
+                float c = dot(-L, u_ALightDir[a]);
+                att *= smoothstep(u_ALightData2[a].y, u_ALightData2[a].x, c);
+                if (att <= 0.0) continue;
+            } else if (atype > 2.5) {
+                float front = dot(-L, u_ALightDir[a]);
+                if (u_ALightData2[a].w < 0.5) {
+                    if (front <= 0.0) continue;
+                    att *= clamp(front * 3.0, 0.0, 1.0);
+                }
+                float asize = max(u_ALightData2[a].z, 0.01);
+                att *= asize / (d + asize);
+            }
+        }
+        float aNdotL = max(dot(h.normal, L), 0.0);
+        if (aNdotL <= 0.0) continue;
+        Ray aShadowRay = Ray(h.worldPos + h.normal * 0.001, L);
+        if (!IsOccluded(aShadowRay, shadowLen, -1)) {
+            vec3 aH = normalize(V + L);
+            vec3 aF = FresnelSchlick(max(dot(aH, V), 0.0), F0);
+            float aD = DistributionGGX(max(dot(h.normal, aH), 0.0), h.rough);
+            float aG = GeometrySmith(h.normal, V, L, h.rough);
+            float aNdotV = max(dot(h.normal, V), 0.0);
+            vec3 abrdf = (vec3(1.0) - aF) * (1.0 - h.metal) * h.albedo / PI + (aD * aG * aF) / max(4.0 * aNdotV * aNdotL, 0.001);
+            vec3 acontrib = abrdf * lcol * att * aNdotL;
+
+            float abright = dot(acontrib, vec3(0.2126, 0.7152, 0.0722));
+            if (abright > 10.0) acontrib *= (10.0 / abright);
+            directLight += acontrib;
+        }
+    }
+
     float skyT = 0.5 * (h.normal.y + 1.0);
     vec3 skyAmbient = mix(u_SkyBottomColor, u_SkyTopColor, skyT) * 0.15;
     directLight += diffuseColor * skyAmbient * h.occlusion;
@@ -1093,6 +1346,38 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed, bool skipEnv) {
     }
 
     return directLight;
+}
+
+// God-ray sun visibility: one shadow tap toward the sun for fogged pixels.
+// Fog in shadowed regions keeps ambient but loses sun in-scatter, so shafts
+// appear where geometry breaks the sunlight. Skipped (returns 1) when the ray
+// enters no fog volume. Tested at the surface end for hits, at the camera
+// for sky rays — a single-tap approximation, noted as such.
+float wl_godray_visibility(vec3 ro, vec3 rd, float tHit)
+{
+    if (u_FogEnabled != 1 || u_FogCount <= 0)
+        return 1.0;
+    bool hitsFog = false;
+    for (int i = 0; i < 4; i++)
+    {
+        if (i >= u_FogCount)
+            break;
+        if (u_FogData2[i].w < 0.5)
+            continue;
+        vec2 r = wl_box_range(ro, rd, u_FogMin[i], u_FogMax[i]);
+        if (min(r.y, tHit) > max(r.x, 0.0))
+        {
+            hitsFog = true;
+            break;
+        }
+    }
+    if (!hitsFog)
+        return 1.0;
+    vec3 tapPoint = (tHit < 500.0) ? (ro + rd * tHit) : ro;
+    Ray sunRay = Ray(tapPoint + u_SunDirection * 0.05, u_SunDirection);
+    if (IsOccluded(sunRay, 100000.0, -1))
+        return 0.12;
+    return 1.0;
 }
 
 vec3 GetSkyColor(vec3 dir) {
@@ -1134,7 +1419,13 @@ void RunTraceAndDenoise()
         // a stable field in a few frames, while a cycling dither keeps every
         // frame different and the image shimmers forever, especially upsized.
         float skyDith = wl_hash12(vec2(pixelCoords));
-        skyCol = wl_apply_volumetrics(primaryRay.Origin, primaryRay.Direction, 600.0, skyCol, skyDith);
+        // Skip the volume march entirely when the scene submits no volumes
+        // (the per-volume loops would break at count 0 anyway).
+        if ((u_FogEnabled == 1 && u_FogCount > 0) || (u_CloudEnabled == 1 && u_CloudCount > 0))
+        {
+            float skySunVis = wl_godray_visibility(primaryRay.Origin, primaryRay.Direction, 600.0);
+            skyCol = wl_apply_volumetrics(primaryRay.Origin, primaryRay.Direction, 600.0, skyCol, skyDith, skySunVis);
+        }
         imageStore(img_Bloom, pixelCoords, vec4(skyCol, 1.0));
         return;
     }
@@ -1150,6 +1441,13 @@ void RunTraceAndDenoise()
         uint lightSeed = uint(pixelCoords.x * 73 + pixelCoords.y * 149 + u_FrameIndex * 2);
         int maxIndirectRays = (u_QualityLevel == 0) ? 0 :
                               ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
+        // Perf tier: at reduced render scale the neural cache carries diffuse
+        // GI (it already blends 65% into the traced result) — skip the second
+        // traced bounce for non-metals and save ~40% of the trace pass.
+        // Metals keep the ray so reflections stay sharp.
+        if (maxIndirectRays > 0 && u_RenderScale <= 0.75 && tileHit.metal <= 0.5 &&
+            u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001)
+            maxIndirectRays = 0;
         // Mirror gap-fill: Low preset traces no indirect rays, so metals
         // would only get the analytic sky approx. Trace one real mirror ray
         // instead and skip the approx inside ComputeDirectLighting.
@@ -1230,9 +1528,14 @@ void RunTraceAndDenoise()
     // do NOT multiply by albedo again (albedo^2 pushed textured floors to black).
     vec3 finalPixelColor = directLight + indirectLight;
     // Volumetric atmosphere over the primary ray (clouds, then fog).
-    float volDist = distance(u_CameraPosition, tileHit.worldPos);
-    float volDith = wl_hash12(vec2(pixelCoords) + 7.3);
-    finalPixelColor = wl_apply_volumetrics(lightRay.Origin, lightRay.Direction, volDist, finalPixelColor, volDith);
+    // Skipped when the scene submits no volumes (see sky path above).
+    if ((u_FogEnabled == 1 && u_FogCount > 0) || (u_CloudEnabled == 1 && u_CloudCount > 0))
+    {
+        float volDist = distance(u_CameraPosition, tileHit.worldPos);
+        float volDith = wl_hash12(vec2(pixelCoords) + 7.3);
+        float volSunVis = wl_godray_visibility(lightRay.Origin, lightRay.Direction, volDist);
+        finalPixelColor = wl_apply_volumetrics(lightRay.Origin, lightRay.Direction, volDist, finalPixelColor, volDith, volSunVis);
+    }
     imageStore(img_Bloom, pixelCoords, vec4(finalPixelColor, 1.0));
 }
 

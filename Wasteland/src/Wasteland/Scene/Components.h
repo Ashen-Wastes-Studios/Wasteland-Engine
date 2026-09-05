@@ -356,4 +356,57 @@ namespace Wasteland
 		VolumetricCloudsComponent() = default;
 		VolumetricCloudsComponent(const VolumetricCloudsComponent &other) = default;
 	};
+
+	// --- Analytic Light Components ---
+	// Gathered every frame by the Scene and uploaded to Renderer3D (up to
+	// Renderer3D::MaxAnalyticLights, first-submitted wins). Unlike emissive
+	// materials they need no geometry. Aim with the entity rotation: light
+	// travels along local -Z. Shadowed in the Nova path; unshadowed in the
+	// raster preview path (which has no shadow maps).
+
+	struct DirectionalLightComponent
+	{
+		glm::vec3 Color = {1.0f, 0.96f, 0.9f};
+		float Intensity = 1.5f;
+
+		DirectionalLightComponent() = default;
+		DirectionalLightComponent(const DirectionalLightComponent &other) = default;
+	};
+
+	struct PointLightComponent
+	{
+		glm::vec3 Color = {1.0f, 0.9f, 0.8f};
+		float Intensity = 5.0f;
+		float Range = 10.0f; // 0 = infinite
+		float Falloff = 2.0f; // Windowing exponent (higher = tighter pool)
+
+		PointLightComponent() = default;
+		PointLightComponent(const PointLightComponent &other) = default;
+	};
+
+	struct SpotLightComponent
+	{
+		glm::vec3 Color = {1.0f, 0.95f, 0.85f};
+		float Intensity = 8.0f;
+		float Range = 15.0f; // 0 = infinite
+		float Falloff = 2.0f;
+		float InnerAngle = 25.0f; // Degrees, hot core (clamped <= outer)
+		float OuterAngle = 40.0f; // Degrees, cone edge
+
+		SpotLightComponent() = default;
+		SpotLightComponent(const SpotLightComponent &other) = default;
+	};
+
+	struct AreaLightComponent
+	{
+		glm::vec3 Color = {1.0f, 1.0f, 1.0f};
+		float Intensity = 4.0f;
+		float Width = 2.0f;  // Rect size in world units (local XY plane)
+		float Height = 2.0f;
+		float Range = 12.0f; // 0 = infinite
+		bool DoubleSided = false; // Emit from both rect faces
+
+		AreaLightComponent() = default;
+		AreaLightComponent(const AreaLightComponent &other) = default;
+	};
 }

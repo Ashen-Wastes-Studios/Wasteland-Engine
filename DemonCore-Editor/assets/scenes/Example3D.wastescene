@@ -25,7 +25,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 1
+      DisplacementScale: 0.300000012
     RigidBody3DComponent:
       BodyType: Dynamic
       GravityScale: 1
@@ -67,7 +67,7 @@ Entities:
       Metallic: 0
       Roughness: 0.5
       EmissionColor: [0.737024248, 1, 0.441176474, 1]
-      EmissionIntensity: 2
+      EmissionIntensity: 1
       DisplacementScale: 0
   - Entity: 7087185800274467715
     TagComponent:
@@ -94,7 +94,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 1
+      DisplacementScale: 0.300000012
     RigidBody3DComponent:
       BodyType: Dynamic
       GravityScale: 1
@@ -134,7 +134,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 1
+      DisplacementScale: 0.0500000007
     RigidBody3DComponent:
       BodyType: Static
       GravityScale: 1
@@ -195,7 +195,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 1
+      DisplacementScale: 0.0500000007
   - Entity: 13623424219446870359
     TagComponent:
       Tag: Sphere
@@ -224,7 +224,7 @@ Entities:
       Roughness: 1
       EmissionColor: [1, 1, 1, 1]
       EmissionIntensity: 0
-      DisplacementScale: 1
+      DisplacementScale: 0.300000012
     RigidBody3DComponent:
       BodyType: Dynamic
       GravityScale: 1
@@ -271,8 +271,18 @@ Entities:
       Color: [0.699999988, 0.75, 0.800000012, 1]
       Density: 0.0500000007
       Anisotropy: 0.300000012
-      HeightFalloff: 0.150000006
+      HeightFalloff: 0.300000012
       NoiseStrength: 0.5
       NoiseScale: 0.25
       WindSpeed: 0.0500000007
       MaxSteps: 12
+  - Entity: 17897628911760291305
+    TagComponent:
+      Tag: Directional Light
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [0.737254918, 1, 0.443137258, 1]
+      Intensity: 1.5
