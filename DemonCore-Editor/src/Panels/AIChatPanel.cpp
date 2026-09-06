@@ -6,6 +6,9 @@
 
 #include <imgui/imgui.h>
 
+#include <fstream>
+#include <sstream>
+
 namespace Wasteland
 {
 
@@ -20,9 +23,10 @@ namespace Wasteland
 	}
 
 	std::string AIChatPanel::BuildRequestBody(const std::string &model, float temperature,
-		const std::string &systemPrompt, const std::vector<ChatMessage> &history)
+		const std::string &systemPrompt, const std::vector<ChatMessage> &history, size_t maxHistory, bool stream)
 	{
-		std::string body = "{\"model\":\"" + JsonMini::Escape(model) + "\",\"stream\":false,\"temperature\":" +
+		std::string body = "{\"model\":\"" + JsonMini::Escape(model) + "\",\"stream\":" +
+			(stream ? "true" : "false") + ",\"temperature\":" +
 			std::to_string(temperature) + ",\"messages\":[";
 		bool first = true;
 		if (!systemPrompt.empty())
@@ -30,8 +34,8 @@ namespace Wasteland
 			body += "{\"role\":\"system\",\"content\":\"" + JsonMini::Escape(systemPrompt) + "\"}";
 			first = false;
 		}
-		// Bound request size: last 30 exchanges.
-		size_t start = history.size() > 30 ? history.size() - 30 : 0;
+		// Bound request size: recent exchanges only (tighter when engine context is included).
+		size_t start = history.size() > maxHistory ? history.size() - maxHistory : 0;
 		for (size_t i = start; i < history.size(); i++)
 		{
 			const auto &m = history[i];
@@ -78,6 +82,39 @@ namespace Wasteland
 		return true;
 	}
 
+	void AIChatPanel::LoadEngineContext()
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		fs::path path = fs::path("assets") / "ai" / "engine_reference.md";
+		auto stamp = fs::last_write_time(path, ec);
+		if (ec)
+		{
+			m_EngineContextCache.clear();
+			m_EngineContextChars = 0;
+			m_EngineContextHaveTime = false;
+			m_EngineContextError = "assets/ai/engine_reference.md not found.";
+			return;
+		}
+		if (m_EngineContextHaveTime && stamp == m_EngineContextTime && !m_EngineContextCache.empty())
+			return; // Unchanged.
+		std::ifstream file(path);
+		if (!file.is_open())
+		{
+			m_EngineContextCache.clear();
+			m_EngineContextChars = 0;
+			m_EngineContextError = "Could not open assets/ai/engine_reference.md.";
+			return;
+		}
+		std::stringstream ss;
+		ss << file.rdbuf();
+		m_EngineContextCache = ss.str();
+		m_EngineContextChars = (long)m_EngineContextCache.size();
+		m_EngineContextError.clear();
+		m_EngineContextTime = stamp;
+		m_EngineContextHaveTime = true;
+	}
+
 	void AIChatPanel::LaunchWorker()
 	{
 		if (m_Worker.joinable())
@@ -94,11 +131,19 @@ namespace Wasteland
 			std::lock_guard<std::mutex> lock(m_Mutex);
 			history = m_Messages;
 		}
+		// Ground the model in the engine's scripting API when enabled.
+		std::string effectiveSystem = system;
+		size_t maxHistory = 30;
+		if (m_UseEngineContext && !m_EngineContextCache.empty())
+		{
+			effectiveSystem += "\n\n--- Wasteland engine scripting reference ---\n" + m_EngineContextCache;
+			maxHistory = 12; // Leave context-window room for local models.
+		}
 		// The new user message was already appended before launch.
 		m_Sending.store(true);
 		m_Status = "Sending...";
 
-		m_Worker = std::thread([this, key, base, model, temp, system, history]() {
+		m_Worker = std::thread([this, key, base, model, temp, effectiveSystem, history, maxHistory]() {
 			std::string endpoint = base;
 			while (!endpoint.empty() && endpoint.back() == '/')
 				endpoint.pop_back();
@@ -107,37 +152,79 @@ namespace Wasteland
 			HttpHeaders headers;
 			if (!key.empty())
 				headers.emplace_back("Authorization", "Bearer " + key);
-			HttpResult r = HttpClient::PostJson(endpoint, BuildRequestBody(model, temp, system, history), headers);
+
+			// Placeholder message, filled in as tokens stream in.
+			{
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				m_Messages.push_back({"assistant", ""});
+				m_Status = "Receiving...";
+				m_ScrollToBottom = true;
+			}
+
+			auto appendDelta = [this](const std::string &delta) {
+				if (delta.empty())
+					return;
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+				{
+					m_Messages.back().Text += delta;
+					m_ScrollToBottom = true;
+				}
+			};
+
+			// SSE framing: "data: {...}\n" lines, "[DONE]" at the end.
+			std::string parseBuf;
+			std::string streamError;
+			long status = 0;
+			std::string reqError = HttpClient::PostStream(
+				endpoint, BuildRequestBody(model, temp, effectiveSystem, history, maxHistory, true), headers,
+				[&parseBuf, &appendDelta, &streamError](const char *data, size_t len) {
+					parseBuf.append(data, len);
+					size_t pos = 0;
+					while ((pos = parseBuf.find('\n')) != std::string::npos)
+					{
+						std::string line = parseBuf.substr(0, pos);
+						parseBuf.erase(0, pos + 1);
+						if (!line.empty() && line.back() == '\r')
+							line.pop_back();
+						if (line.rfind("data:", 0) != 0)
+							continue;
+						std::string payload = line.substr(5);
+						size_t b = payload.find_first_not_of(" 	");
+						payload = (b == std::string::npos) ? "" : payload.substr(b);
+						if (payload.empty() || payload == "[DONE]")
+							continue;
+						std::string delta;
+						if (JsonMini::ExtractString(payload, "content", delta))
+							appendDelta(delta);
+						else if (payload.find("\"error\"") != std::string::npos)
+						{
+							std::string msg;
+							if (JsonMini::ExtractString(payload, "message", msg))
+								streamError = msg;
+						}
+					}
+				},
+				status);
 
 			std::lock_guard<std::mutex> lock(m_Mutex);
-			if (r.Succeeded)
-			{
-				std::string content, err;
-				if (ParseResponseContent(r.Body, content, err))
-				{
-					m_Messages.push_back({"assistant", content});
-					m_Status = "Idle.";
-				}
+			bool haveText = !m_Messages.empty() && m_Messages.back().Role == "assistant" &&
+				!m_Messages.back().Text.empty();
+			auto setError = [this](const std::string &err) {
+				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+					m_Messages.back() = {"error", err};
 				else
-				{
 					m_Messages.push_back({"error", err});
-					m_Status = err;
-				}
-			}
+				m_Status = err;
+			};
+			if (!reqError.empty() && !haveText)
+				setError(reqError);
+			else if (!streamError.empty() && !haveText)
+				setError(streamError);
+			else if (!reqError.empty())
+				m_Status = "Idle (stream ended early: " + reqError + ").";
 			else
-			{
-				std::string detail = r.Error;
-				if (!r.Body.empty())
-				{
-					std::string apiErr;
-					if (JsonMini::ExtractString(r.Body.substr(0, r.Body.find("\"choices\"") == std::string::npos ? r.Body.size() : r.Body.find("\"choices\"")), "message", apiErr))
-						detail += ": " + apiErr;
-					else if (detail.find("HTTP") == 0)
-						detail += " — " + r.Body.substr(0, 200);
-				}
-				m_Messages.push_back({"error", detail});
-				m_Status = detail;
-			}
+				m_Status = "Idle.";
 			m_Sending.store(false);
 			m_ScrollToBottom = true;
 		});
@@ -171,6 +258,8 @@ namespace Wasteland
 		if (!m_Visible)
 			return;
 
+		LoadEngineContext();
+
 		if (!m_SettingsLoaded)
 		{
 			ApiKeyStore &store = ApiKeyStore::Instance();
@@ -195,14 +284,14 @@ namespace Wasteland
 			ImGui::InputText("API key", m_KeyBuf, sizeof(m_KeyBuf), keyFlags);
 			ImGui::SameLine();
 			ImGui::Checkbox("Show", &m_ShowKey);
-			ImGui::TextWrapped("Works with OpenAI or any OpenAI-compatible server (e.g. a local llama.cpp server — leave the key empty for local servers). Key file: %%APPDATA%%\\Wasteland\\ai_keys.cfg (never committed).");
+			ImGui::TextWrapped("Defaults to a local LM Studio server (localhost:1234, key left empty). Point the base URL at OpenAI or any OpenAI-compatible API instead, add its key, and Save. Key file: %%APPDATA%%\\Wasteland\\ai_keys.cfg (never committed).");
 
 			if (ImGui::Button("Save settings"))
 			{
 				ApiKeyStore &store = ApiKeyStore::Instance();
 				store.OpenAIKey = m_KeyBuf;
-				store.OpenAIBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://api.openai.com/v1";
-				store.OpenAIModel = m_ModelBuf[0] ? m_ModelBuf : "gpt-4o-mini";
+				store.OpenAIBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "http://localhost:1234/v1";
+				store.OpenAIModel = m_ModelBuf[0] ? m_ModelBuf : "local-model";
 				store.SystemPrompt = m_SystemBuf;
 				store.Temperature = m_Temp;
 				store.Save();
@@ -216,6 +305,15 @@ namespace Wasteland
 				ApiKeyStore::Instance().Save();
 				m_Status = "API key cleared.";
 			}
+		}
+
+		if (ImGui::CollapsingHeader("Engine context"))
+		{
+			ImGui::Checkbox("Include Wasteland scripting reference", &m_UseEngineContext);
+			if (m_EngineContextError.empty())
+				ImGui::TextWrapped("Reference loaded: %ld chars from assets/ai/engine_reference.md — edit that file to teach it more. History trims while on, for small local context windows.", m_EngineContextChars);
+			else
+				ImGui::TextWrapped("Reference unavailable: %s", m_EngineContextError.c_str());
 		}
 
 		ImGui::Separator();
@@ -269,7 +367,6 @@ namespace Wasteland
 		ImGui::SameLine();
 		if (ImGui::Button("Send") || submit)
 			SendCurrentInput();
-		ImGui::EndDisabled();
 		ImGui::SameLine();
 		if (ImGui::Button("Clear chat"))
 		{
@@ -277,6 +374,7 @@ namespace Wasteland
 			m_Messages.clear();
 			m_Status = "Idle.";
 		}
+		ImGui::EndDisabled();
 
 		ImGui::End();
 	}

@@ -57,8 +57,15 @@ namespace Wasteland
 
 		std::string LastErrorString(const char *what, DWORD code)
 		{
-			char buf[128];
-			snprintf(buf, sizeof(buf), "%s failed (code %lu)", what, (unsigned long)code);
+			const char *hint = "";
+			if (code == 12002)
+				hint = " — timed out. Local server? Make sure LM Studio is running, a model is loaded, and its server is Started; verify the base URL/port";
+			else if (code == 12029)
+				hint = " — cannot connect. Is the server running? Check the base URL/port";
+			else if (code == 12007)
+				hint = " — host name not resolved. Check the base URL";
+			char buf[320];
+			snprintf(buf, sizeof(buf), "%s failed (code %lu)%s", what, (unsigned long)code, hint);
 			return std::string(buf);
 		}
 
@@ -175,7 +182,11 @@ namespace Wasteland
 				}
 
 				WinHttpHandles h;
-				h.Session = WinHttpOpen(L"Wasteland-Editor/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+				// Loopback must not go through the system proxy: auto-detect/WPAD
+				// hangs or times out local servers (12002).
+				bool loopback = (host == L"localhost" || host == L"::1" || host.rfind(L"127.", 0) == 0);
+				DWORD access = loopback ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+				h.Session = WinHttpOpen(L"Wasteland-Editor/1.0", access,
 					WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 				if (!h.Session)
 				{
@@ -435,6 +446,97 @@ namespace Wasteland
 		return Perform("POST", url, h, jsonBody, {}, nullptr, nullptr, nullptr);
 	}
 
+	std::string HttpClient::PostStream(const std::string &url, const std::string &jsonBody, const HttpHeaders &headers,
+		std::function<void(const char *data, size_t len)> onChunk, long &statusOut)
+	{
+		statusOut = 0;
+		std::wstring host, path;
+		INTERNET_PORT port = 0;
+		bool secure = false;
+		if (!CrackUrl(url, host, port, path, secure))
+			return "Invalid URL";
+
+		WinHttpHandles h;
+		bool loopback = (host == L"localhost" || host == L"::1" || host.rfind(L"127.", 0) == 0);
+		DWORD access = loopback ? WINHTTP_ACCESS_TYPE_NO_PROXY : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+		h.Session = WinHttpOpen(L"Wasteland-Editor/1.0", access,
+			WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+		if (!h.Session)
+			return LastErrorString("WinHttpOpen", GetLastError());
+		// Generous receive timeout: it only applies to gaps between packets,
+		// so slow first tokens (model load) don't abort the request.
+		WinHttpSetTimeouts(h.Session, 15000, 15000, 30000, 300000);
+
+		h.Connect = WinHttpConnect(h.Session, host.c_str(), port, 0);
+		if (!h.Connect)
+			return LastErrorString("WinHttpConnect", GetLastError());
+
+		DWORD flags = secure ? WINHTTP_FLAG_SECURE : 0;
+		h.Request = WinHttpOpenRequest(h.Connect, L"POST", path.c_str(),
+			nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+		if (!h.Request)
+			return LastErrorString("WinHttpOpenRequest", GetLastError());
+
+		std::wstring headerBlock;
+		for (auto &kv : headers)
+		{
+			headerBlock += ToWide(kv.first);
+			headerBlock += L": ";
+			headerBlock += ToWide(kv.second);
+			headerBlock += L"\r\n";
+		}
+		headerBlock += L"Content-Type: application/json\r\n";
+		headerBlock += L"Accept: text/event-stream\r\n";
+
+		DWORD bodyLen = (DWORD)jsonBody.size();
+		if (!WinHttpSendRequest(h.Request, headerBlock.c_str(), (DWORD)-1,
+				(LPVOID)(bodyLen ? jsonBody.data() : nullptr), bodyLen, bodyLen, 0))
+			return LastErrorString("WinHttpSendRequest", GetLastError());
+		if (!WinHttpReceiveResponse(h.Request, nullptr))
+			return LastErrorString("WinHttpReceiveResponse", GetLastError());
+
+		long status = 0;
+		if (!ReadStatus(h.Request, status))
+			return LastErrorString("WinHttpQueryHeaders(status)", GetLastError());
+		statusOut = status;
+		if (status < 200 || status >= 300)
+		{
+			std::string err;
+			for (;;)
+			{
+				DWORD available = 0;
+				if (!WinHttpQueryDataAvailable(h.Request, &available) || available == 0)
+					break;
+				size_t base = err.size();
+				err.resize(base + available);
+				DWORD read = 0;
+				if (!WinHttpReadData(h.Request, &err[base], available, &read))
+					break;
+				err.resize(base + read);
+				if (read == 0 || err.size() > 8192)
+					break;
+			}
+			std::string detail = "HTTP " + std::to_string(status);
+			if (!err.empty())
+				detail += ": " + err.substr(0, 300);
+			return detail;
+		}
+
+		for (;;)
+		{
+			DWORD available = 0;
+			if (!WinHttpQueryDataAvailable(h.Request, &available))
+				return LastErrorString("WinHttpQueryDataAvailable", GetLastError());
+			if (available == 0)
+				return ""; // Clean end of stream.
+			std::vector<char> chunk(available);
+			DWORD read = 0;
+			if (!WinHttpReadData(h.Request, chunk.data(), available, &read) || read == 0)
+				return LastErrorString("WinHttpReadData", GetLastError());
+			onChunk(chunk.data(), read);
+		}
+	}
+
 	void HttpClient::DownloadFile(const std::string &url, const std::filesystem::path &destPath, const HttpHeaders &headers,
 		std::atomic<uint64_t> &downloaded, std::atomic<uint64_t> &total,
 		std::atomic<bool> &cancel, std::atomic<bool> &finished, std::string &errorOut)
@@ -458,6 +560,13 @@ namespace Wasteland
 	HttpResult HttpClient::PostJson(const std::string &, const std::string &, const HttpHeaders &)
 	{
 		return HttpResult{false, 0, "", "HTTPS client requires Windows (WinHTTP)"};
+	}
+
+	std::string HttpClient::PostStream(const std::string &, const std::string &, const HttpHeaders &,
+		std::function<void(const char *, size_t)>, long &statusOut)
+	{
+		statusOut = 0;
+		return "HTTPS client requires Windows (WinHTTP)";
 	}
 
 	void HttpClient::DownloadFile(const std::string &, const std::filesystem::path &, const HttpHeaders &,

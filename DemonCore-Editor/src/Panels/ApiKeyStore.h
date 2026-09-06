@@ -21,8 +21,8 @@ namespace Wasteland
 		static std::filesystem::path FilePath();
 
 		std::string OpenAIKey;
-		std::string OpenAIBaseURL = "https://api.openai.com/v1";
-		std::string OpenAIModel = "gpt-4o-mini";
+		std::string OpenAIBaseURL = "http://localhost:1234/v1";
+		std::string OpenAIModel = "local-model";
 		float Temperature = 0.7f;
 		std::string SystemPrompt = "You are a helpful assistant inside the Wasteland game engine editor.";
 		std::string HuggingFaceToken;

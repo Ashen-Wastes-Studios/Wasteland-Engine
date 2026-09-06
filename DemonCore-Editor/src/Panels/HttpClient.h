@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,14 @@ namespace Wasteland
 	public:
 		static HttpResult Get(const std::string &url, const HttpHeaders &headers = {});
 		static HttpResult PostJson(const std::string &url, const std::string &jsonBody, const HttpHeaders &headers = {});
+
+		// Streaming POST for SSE-style endpoints (chat completions with
+		// "stream":true). Calls onChunk per received block until the server
+		// closes the stream. Returns "" on success, else an error message.
+		// statusOut receives the HTTP status (0 if no response). No redirect
+		// handling — chat endpoints don't redirect.
+		static std::string PostStream(const std::string &url, const std::string &jsonBody, const HttpHeaders &headers,
+			std::function<void(const char *data, size_t len)> onChunk, long &statusOut);
 
 		// Blocking download. Streams to destPath (.part then rename).
 		// Updates downloaded/total bytes, polls cancel per chunk, sets finished on exit.
