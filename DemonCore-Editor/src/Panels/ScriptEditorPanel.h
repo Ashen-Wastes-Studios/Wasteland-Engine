@@ -23,6 +23,9 @@ namespace Wasteland
 		bool IsOpen() const { return m_FileOpen; }
 		const std::filesystem::path &GetFilePath() const { return m_CurrentFilePath; }
 
+		bool IsVisible() const { return m_Visible && m_ShowPanel; }
+		void SetVisible(bool visible) { m_Visible = visible; m_ShowPanel = visible; }
+
 	private:
 		void SetupPythonLanguage();
 
@@ -30,6 +33,7 @@ namespace Wasteland
 		std::filesystem::path m_CurrentFilePath;
 		bool m_FileOpen = false;
 		bool m_ShowPanel = true;
+		bool m_Visible = true;
 	};
 
 }

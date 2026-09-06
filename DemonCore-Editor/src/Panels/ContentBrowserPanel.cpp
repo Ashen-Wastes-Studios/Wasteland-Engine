@@ -17,7 +17,10 @@ namespace Wasteland
 
     void ContentBrowserPanel::OnImGuiRender()
     {
-        ImGui::Begin("Content Browser");
+        if (!m_Visible)
+            return;
+
+        ImGui::Begin("Content Browser", &m_Visible);
 
         if (m_CurrentDirectory != std::filesystem::path(g_AssetPath))
         {

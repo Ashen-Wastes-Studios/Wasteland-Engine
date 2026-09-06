@@ -174,7 +174,12 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\EditorLayer.h" />
+    <ClInclude Include="src\Panels\AIChatPanel.h" />
+    <ClInclude Include="src\Panels\ApiKeyStore.h" />
     <ClInclude Include="src\Panels\ContentBrowserPanel.h" />
+    <ClInclude Include="src\Panels\HttpClient.h" />
+    <ClInclude Include="src\Panels\JsonMini.h" />
+    <ClInclude Include="src\Panels\ModelDownloaderPanel.h" />
     <ClInclude Include="src\Panels\SceneHierarchyPanel.h" />
     <ClInclude Include="src\Panels\ScriptEditorPanel.h" />
     <ClInclude Include="src\Panels\ScriptInspectorPanel.h" />
@@ -182,7 +187,12 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
   <ItemGroup>
     <ClCompile Include="src\DemonCoreEditorApp.cpp" />
     <ClCompile Include="src\EditorLayer.cpp" />
+    <ClCompile Include="src\Panels\AIChatPanel.cpp" />
+    <ClCompile Include="src\Panels\ApiKeyStore.cpp" />
     <ClCompile Include="src\Panels\ContentBrowserPanel.cpp" />
+    <ClCompile Include="src\Panels\HttpClient.cpp" />
+    <ClCompile Include="src\Panels\JsonMini.cpp" />
+    <ClCompile Include="src\Panels\ModelDownloaderPanel.cpp" />
     <ClCompile Include="src\Panels\SceneHierarchyPanel.cpp" />
     <ClCompile Include="src\Panels\ScriptEditorPanel.cpp" />
     <ClCompile Include="src\Panels\ScriptInspectorPanel.cpp" />

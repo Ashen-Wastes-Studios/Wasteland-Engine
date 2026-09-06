@@ -5,6 +5,8 @@
 #include "Panels/ContentBrowserPanel.h"
 #include "Panels/ScriptEditorPanel.h"
 #include "Panels/ScriptInspectorPanel.h"
+#include "Panels/AIChatPanel.h"
+#include "Panels/ModelDownloaderPanel.h"
 
 #include <Wasteland/Renderer/Texture.h>
 
@@ -86,11 +88,17 @@ namespace Wasteland
 
 		bool m_ShowPhysicsColliders = false;
 
+		bool m_ShowViewport = true;
+		bool m_ShowStats = true;
+		bool m_ShowSettings = true;
+
 		// Panels
 		SceneHierarchyPanel m_SceneHierarchyPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;
 		ScriptEditorPanel m_ScriptEditorPanel;
 		ScriptInspectorPanel m_ScriptInspectorPanel;
+		AIChatPanel m_AIChatPanel;
+		ModelDownloaderPanel m_ModelDownloaderPanel;
 
 		enum class SceneState
 		{

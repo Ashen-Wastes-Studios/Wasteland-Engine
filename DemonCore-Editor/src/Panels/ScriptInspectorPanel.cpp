@@ -27,7 +27,10 @@ namespace Wasteland
 
 	void ScriptInspectorPanel::OnImGuiRender()
 	{
-		ImGui::Begin("Script Inspector");
+		if (!m_Visible)
+			return;
+
+		ImGui::Begin("Script Inspector", &m_Visible);
 
 		if (!m_Entity.IsValid())
 		{

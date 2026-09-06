@@ -22,6 +22,8 @@
 
 #include "Wasteland/Utils/PlatformUtils.h"
 
+#include "Panels/ApiKeyStore.h"
+
 #include "ImGuizmo.h"
 
 #include "Wasteland/Math/Math.h"
@@ -463,6 +465,8 @@ static bool HasGLExtension(const char *name)
 	{
 		WL_PROFILE_FUNCTION();
 
+		ApiKeyStore::Instance().Load();
+
 		m_CheckerboardTexture = nullptr;
 
 		FramebufferSpecification fbSpec;
@@ -688,6 +692,37 @@ static bool HasGLExtension(const char *name)
 					ImGui::EndMenu();
 				}
 
+				if (ImGui::BeginMenu("View"))
+				{
+					ImGui::MenuItem("Viewport", nullptr, &m_ShowViewport);
+					bool hierarchy = m_SceneHierarchyPanel.IsHierarchyVisible();
+					if (ImGui::MenuItem("Scene Hierarchy", nullptr, &hierarchy))
+						m_SceneHierarchyPanel.SetHierarchyVisible(hierarchy);
+					bool properties = m_SceneHierarchyPanel.IsPropertiesVisible();
+					if (ImGui::MenuItem("Properties", nullptr, &properties))
+						m_SceneHierarchyPanel.SetPropertiesVisible(properties);
+					bool browser = m_ContentBrowserPanel.IsVisible();
+					if (ImGui::MenuItem("Content Browser", nullptr, &browser))
+						m_ContentBrowserPanel.SetVisible(browser);
+					bool scriptEditor = m_ScriptEditorPanel.IsVisible();
+					if (ImGui::MenuItem("Script Editor", nullptr, &scriptEditor))
+						m_ScriptEditorPanel.SetVisible(scriptEditor);
+					bool inspector = m_ScriptInspectorPanel.IsVisible();
+					if (ImGui::MenuItem("Script Inspector", nullptr, &inspector))
+						m_ScriptInspectorPanel.SetVisible(inspector);
+					ImGui::MenuItem("Stats", nullptr, &m_ShowStats);
+					ImGui::MenuItem("Settings", nullptr, &m_ShowSettings);
+					bool chatVisible = m_AIChatPanel.IsVisible();
+					if (ImGui::MenuItem("AI Chatbot", nullptr, &chatVisible))
+						m_AIChatPanel.SetVisible(chatVisible);
+
+					bool dlVisible = m_ModelDownloaderPanel.IsVisible();
+					if (ImGui::MenuItem("Model Downloader", nullptr, &dlVisible))
+						m_ModelDownloaderPanel.SetVisible(dlVisible);
+
+					ImGui::EndMenu();
+				}
+
 				ImGui::EndMenuBar();
 			}
 
@@ -698,7 +733,12 @@ static bool HasGLExtension(const char *name)
 			m_ScriptInspectorPanel.OnImGuiRender();
 			m_ScriptEditorPanel.OnImGuiRender();
 
-			ImGui::Begin("Stats");
+			m_AIChatPanel.OnImGuiRender();
+			m_ModelDownloaderPanel.OnImGuiRender();
+
+			if (m_ShowStats)
+			{
+				ImGui::Begin("Stats");
 
 			std::string name = "None";
 			if (m_HoveredEntity)
@@ -761,8 +801,11 @@ static bool HasGLExtension(const char *name)
 			ImGui::Text("Indices: %d", stats3D.GetTotalIndexCount());
 
 			ImGui::End();
+			}
 
-			ImGui::Begin("Settings");
+			if (m_ShowSettings)
+			{
+				ImGui::Begin("Settings");
 
 			ImGui::Checkbox("Show physics colliders", &m_ShowPhysicsColliders);
 
@@ -950,9 +993,12 @@ static bool HasGLExtension(const char *name)
 			ImGui::TextWrapped("Add Volumetric Fog / Volumetric Clouds components to an entity; its Transform defines the volume box.");
 
 			ImGui::End();
+			}
 
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});
-			ImGui::Begin("Viewport");
+			if (m_ShowViewport)
+			{
+				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0, 0});
+				ImGui::Begin("Viewport");
 
 			ImVec2 minBound = ImGui::GetCursorScreenPos();
 
@@ -1031,6 +1077,7 @@ static bool HasGLExtension(const char *name)
 
 			ImGui::End();
 			ImGui::PopStyleVar();
+			}
 
 			UI_Toolbar();
 

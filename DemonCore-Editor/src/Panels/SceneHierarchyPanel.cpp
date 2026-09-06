@@ -37,7 +37,9 @@ namespace Wasteland
 
 	void SceneHierarchyPanel::OnImGuiRender()
 	{
-		ImGui::Begin("Scene Hierarchy");
+		if (m_HierarchyVisible)
+		{
+			ImGui::Begin("Scene Hierarchy", &m_HierarchyVisible);
 
 		if (m_Context)
 		{
@@ -65,8 +67,11 @@ namespace Wasteland
 			}
 		}
 		ImGui::End();
+		}
 
-		ImGui::Begin("Properties");
+		if (m_PropertiesVisible)
+		{
+			ImGui::Begin("Properties", &m_PropertiesVisible);
 		if (m_SelectionContext)
 		{
 			if (!m_Context || !m_Context->m_Registry.valid(m_SelectionContext))
@@ -267,6 +272,7 @@ namespace Wasteland
 		}
 
 		ImGui::End();
+		}
 	}
 
 	void SceneHierarchyPanel::SetSelectedEntity(Entity entity)

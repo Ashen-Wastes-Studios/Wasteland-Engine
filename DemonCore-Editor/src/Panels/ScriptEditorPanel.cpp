@@ -105,6 +105,9 @@ namespace Wasteland
 
 	void ScriptEditorPanel::OnImGuiRender()
 	{
+		if (!m_Visible)
+			return;
+
 		if (!m_ShowPanel)
 			return;
 
