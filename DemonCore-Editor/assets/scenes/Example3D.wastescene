@@ -326,3 +326,36 @@ Entities:
       Density: 1
       Friction: 0.5
       Restitution: 0
+  - Entity: 18142478746486953813
+    TagComponent:
+      Tag: Ocean
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [10000, 1, 10000]
+    WaterComponent:
+      Enabled: true
+      BodyType: Ocean
+      ShallowColor: [0.150000006, 0.449999988, 0.649999976, 1]
+      DeepColor: [0.00499999989, 0.0799999982, 0.219999999, 1]
+      FoamColor: [0.899999976, 0.949999988, 1, 1]
+      WaterDepth: 6
+      WaveAmplitude: 0.349999994
+      WaveLength: 12
+      WaveSpeed: 1.20000005
+      WaveDirection: [1, 0.25]
+      Chop: 0.699999988
+      Steepness: 0.100000001
+      FlowDirection: [1, 0.25]
+      FlowSpeed: 0.300000012
+      FoamAmount: 0.400000006
+      FoamScale: 1
+      ShoreFoam: 0.5
+      ShoreWidth: 1
+      Transparency: 0.850000024
+      Roughness: 0.0799999982
+      Metallic: 0
+      Segments: 32
+      TimeScale: 1
+      Buoyancy: 1
+      WaterDensity: 1

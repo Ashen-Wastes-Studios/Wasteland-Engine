@@ -117,6 +117,36 @@ namespace Wasteland
         static float GetVolumetricStepScale();
         static void SetVolumetricStepScale(float scale);
 
+        // Global atmospheric fog: distance + height haze applied to all pixels,
+        // independent of box fog volumes. Gives distant terrain a natural fade.
+        static bool IsGlobalFogEnabled();
+        static void SetGlobalFogEnabled(bool enabled);
+        static float GetGlobalFogDensity();
+        static void SetGlobalFogDensity(float density);
+        static float GetGlobalFogHeightFalloff();
+        static void SetGlobalFogHeightFalloff(float falloff);
+        static glm::vec3 GetGlobalFogColor();
+        static void SetGlobalFogColor(const glm::vec3 &color);
+        static float GetGlobalFogBaseHeight();
+        static void SetGlobalFogBaseHeight(float height);
+        static float GetGlobalFogDistanceAttenuation();
+        static void SetGlobalFogDistanceAttenuation(float atten);
+
+        // Screen-space god rays: radial blur from the sun's screen position.
+        // Computes light shafts from any directional light (the primary sun).
+        static bool IsGodRaysEnabled();
+        static void SetGodRaysEnabled(bool enabled);
+        static float GetGodRayIntensity();
+        static void SetGodRayIntensity(float intensity);
+        static float GetGodRayDecay();
+        static void SetGodRayDecay(float decay);
+        static int GetGodRaySamples();
+        static void SetGodRaySamples(int samples);
+        static float GetGodRayDensity();
+        static void SetGodRayDensity(float density);
+        static glm::vec3 GetGodRayColor();
+        static void SetGodRayColor(const glm::vec3 &color);
+
         // Analytic lights (directional/spot/point/area components). Submitted
         // per-frame by the Scene; first MaxAnalyticLights win. Evaluated with
         // shadows in the Nova path alongside emissive-geometry lights.
@@ -125,6 +155,16 @@ namespace Wasteland
         static void SubmitPointLight(const glm::mat4 &transform, const PointLightComponent &light);
         static void SubmitSpotLight(const glm::mat4 &transform, const SpotLightComponent &light);
         static void SubmitAreaLight(const glm::mat4 &transform, const AreaLightComponent &light);
+
+        // Water surfaces (WaterComponent). Submitted per-frame by the Scene;
+        // the entity Transform defines the surface: Translation.y is the still
+        // water level, Scale.x/z are the surface extents (1x1 XZ plane at
+        // local y=0). The raster path draws a CPU-displaced grid using the
+        // component's wave field (matches gameplay sampling exactly); the
+        // Nova path-tracer gets a thin-box instance with water material
+        // (flat surface, wave displacement is raster-only).
+        static constexpr int MaxWaterSurfaces = 8;
+        static void DrawWaterPlane(const glm::mat4 &transform, const WaterComponent &water, int entityID = -1);
 
         // Neural Rendering (OpenGL GLSL MLP: neural texture detail + neural indirect lighting)
         static bool IsNeuralRenderingEnabled();

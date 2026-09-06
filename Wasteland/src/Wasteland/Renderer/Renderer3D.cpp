@@ -478,6 +478,40 @@ namespace Wasteland
         glm::vec3 EffSunDir = glm::vec3(0.2873f, 0.9578f, 0.3831f);
         glm::vec3 EffSunColor = glm::vec3(1.15f, 1.05f, 0.95f);
 
+        // Global atmospheric fog (distance haze for all pixels)
+        bool GlobalFogEnabled = false;
+        float GlobalFogDensity = 0.001f;
+        float GlobalFogHeightFalloff = 1.0f;
+        glm::vec3 GlobalFogColor = glm::vec3(0.5f, 0.6f, 0.7f);
+        float GlobalFogBaseHeight = 0.0f;
+        float GlobalFogDistAtten = 1.0f;
+
+        // Screen-space god rays (radial blur from sun)
+        bool GodRaysEnabled = false;
+        float GodRayIntensity = 0.5f;
+        float GodRayDecay = 0.95f;
+        int GodRaySamples = 24;
+        float GodRayDensity = 1.0f;
+        glm::vec3 GodRayColor = glm::vec3(1.2f, 1.1f, 0.9f);
+        glm::vec2 GodSunScreenPos = glm::vec2(0.5f);
+        bool GodSunValid = false;
+
+        // Uniform locations for new features
+        int Loc_GlobalFogEnabled;
+        int Loc_GlobalFogDensity;
+        int Loc_GlobalFogHeightFalloff;
+        int Loc_GlobalFogColor;
+        int Loc_GlobalFogBaseHeight;
+        int Loc_GlobalFogDistAtten;
+        int Loc_GodRaysEnabled;
+        int Loc_GodSunScreenPos;
+        int Loc_GodSunValid;
+        int Loc_GodRayIntensity;
+        int Loc_GodRayDecay;
+        int Loc_GodRaySamples;
+        int Loc_GodRayDensity;
+        int Loc_GodRayColor;
+
         // Analytic component lights submitted per-frame by the Scene.
         std::vector<AnalyticLightData> AnalyticLights;
 
@@ -914,6 +948,22 @@ namespace Wasteland
         cacheAnalyticLocations(rtProg, 0);
         cacheAnalyticLocations(s_Data.BasicShader->GetRendererID(), 1);
 
+        // Cache uniform locations for global fog and god rays (Nova only)
+        s_Data.Loc_GlobalFogEnabled = glGetUniformLocation(rtProg, "u_GlobalFogEnabled");
+        s_Data.Loc_GlobalFogDensity = glGetUniformLocation(rtProg, "u_GlobalFogDensity");
+        s_Data.Loc_GlobalFogHeightFalloff = glGetUniformLocation(rtProg, "u_GlobalFogHeightFalloff");
+        s_Data.Loc_GlobalFogColor = glGetUniformLocation(rtProg, "u_GlobalFogColor");
+        s_Data.Loc_GlobalFogBaseHeight = glGetUniformLocation(rtProg, "u_GlobalFogBaseHeight");
+        s_Data.Loc_GlobalFogDistAtten = glGetUniformLocation(rtProg, "u_GlobalFogDistAtten");
+        s_Data.Loc_GodRaysEnabled = glGetUniformLocation(rtProg, "u_GodRaysEnabled");
+        s_Data.Loc_GodSunScreenPos = glGetUniformLocation(rtProg, "u_GodSunScreenPos");
+        s_Data.Loc_GodSunValid = glGetUniformLocation(rtProg, "u_GodSunValid");
+        s_Data.Loc_GodRayIntensity = glGetUniformLocation(rtProg, "u_GodRayIntensity");
+        s_Data.Loc_GodRayDecay = glGetUniformLocation(rtProg, "u_GodRayDecay");
+        s_Data.Loc_GodRaySamples = glGetUniformLocation(rtProg, "u_GodRaySamples");
+        s_Data.Loc_GodRayDensity = glGetUniformLocation(rtProg, "u_GodRayDensity");
+        s_Data.Loc_GodRayColor = glGetUniformLocation(rtProg, "u_GodRayColor");
+
         glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
         glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
 
@@ -1330,6 +1380,52 @@ namespace Wasteland
             UploadVolumetricUniforms(0);
             UploadAnalyticLights(0);
 
+            // Upload global fog uniforms
+            if (s_Data.Loc_GlobalFogEnabled >= 0)
+                glUniform1i(s_Data.Loc_GlobalFogEnabled, s_Data.GlobalFogEnabled ? 1 : 0);
+            if (s_Data.Loc_GlobalFogDensity >= 0)
+                glUniform1f(s_Data.Loc_GlobalFogDensity, s_Data.GlobalFogDensity);
+            if (s_Data.Loc_GlobalFogHeightFalloff >= 0)
+                glUniform1f(s_Data.Loc_GlobalFogHeightFalloff, s_Data.GlobalFogHeightFalloff);
+            if (s_Data.Loc_GlobalFogColor >= 0)
+                glUniform3f(s_Data.Loc_GlobalFogColor, s_Data.GlobalFogColor.x, s_Data.GlobalFogColor.y, s_Data.GlobalFogColor.z);
+            if (s_Data.Loc_GlobalFogBaseHeight >= 0)
+                glUniform1f(s_Data.Loc_GlobalFogBaseHeight, s_Data.GlobalFogBaseHeight);
+            if (s_Data.Loc_GlobalFogDistAtten >= 0)
+                glUniform1f(s_Data.Loc_GlobalFogDistAtten, s_Data.GlobalFogDistAtten);
+
+            // Compute sun screen position for god rays
+            s_Data.GodSunValid = false;
+            if (s_Data.GodRaysEnabled && s_Data.EffSunDir.y > 0.0f)
+            {
+                // Project sun direction to screen space (assume it's far away)
+                glm::vec4 sunClip = s_Data.CurrentViewProjection * glm::vec4(s_Data.EffSunDir * 1000.0f, 1.0f);
+                if (sunClip.w > 0.0f)
+                {
+                    glm::vec2 sunNDC = glm::vec2(sunClip.x, sunClip.y) / sunClip.w;
+                    s_Data.GodSunScreenPos = sunNDC * 0.5f + 0.5f;
+                    s_Data.GodSunValid = true;
+                }
+            }
+
+            // Upload god ray uniforms
+            if (s_Data.Loc_GodRaysEnabled >= 0)
+                glUniform1i(s_Data.Loc_GodRaysEnabled, s_Data.GodRaysEnabled ? 1 : 0);
+            if (s_Data.Loc_GodSunScreenPos >= 0)
+                glUniform2f(s_Data.Loc_GodSunScreenPos, s_Data.GodSunScreenPos.x, s_Data.GodSunScreenPos.y);
+            if (s_Data.Loc_GodSunValid >= 0)
+                glUniform1i(s_Data.Loc_GodSunValid, s_Data.GodSunValid ? 1 : 0);
+            if (s_Data.Loc_GodRayIntensity >= 0)
+                glUniform1f(s_Data.Loc_GodRayIntensity, s_Data.GodRayIntensity);
+            if (s_Data.Loc_GodRayDecay >= 0)
+                glUniform1f(s_Data.Loc_GodRayDecay, s_Data.GodRayDecay);
+            if (s_Data.Loc_GodRaySamples >= 0)
+                glUniform1i(s_Data.Loc_GodRaySamples, s_Data.GodRaySamples);
+            if (s_Data.Loc_GodRayDensity >= 0)
+                glUniform1f(s_Data.Loc_GodRayDensity, s_Data.GodRayDensity);
+            if (s_Data.Loc_GodRayColor >= 0)
+                glUniform3f(s_Data.Loc_GodRayColor, s_Data.GodRayColor.x, s_Data.GodRayColor.y, s_Data.GodRayColor.z);
+
             // View matrices must be uploaded BEFORE pass 0: velocity
             // reconstructs with the inverse and reprojects with the previous
             // matrix, and pass 0 previously ran on last frame's uploads (one
@@ -1412,6 +1508,16 @@ namespace Wasteland
                                              : s_Data.CPUFlushTimeEMA * 0.95 + drsCpuMs * 0.05;
             }
             UpdateDynamicResolution();
+
+            // Pass 10: God rays (screen-space radial blur from sun)
+            if (s_Data.GodRaysEnabled && s_Data.GodSunValid)
+            {
+                glUniform1i(s_Data.Loc_PassID, 10);
+                uint32_t grGroupsX = (s_Data.RayTracingWidth + 7) / 8;
+                uint32_t grGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+                glDispatchCompute(grGroupsX, grGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
 
             s_Data.RayTracingShader->Unbind();
 
@@ -1901,6 +2007,34 @@ namespace Wasteland
         s_Data.FrameIndex = 0;
     }
 
+    // Global atmospheric fog
+    bool Renderer3D::IsGlobalFogEnabled() { return s_Data.GlobalFogEnabled; }
+    void Renderer3D::SetGlobalFogEnabled(bool enabled) { s_Data.GlobalFogEnabled = enabled; s_Data.FrameIndex = 0; }
+    float Renderer3D::GetGlobalFogDensity() { return s_Data.GlobalFogDensity; }
+    void Renderer3D::SetGlobalFogDensity(float density) { s_Data.GlobalFogDensity = glm::max(density, 0.0f); s_Data.FrameIndex = 0; }
+    float Renderer3D::GetGlobalFogHeightFalloff() { return s_Data.GlobalFogHeightFalloff; }
+    void Renderer3D::SetGlobalFogHeightFalloff(float falloff) { s_Data.GlobalFogHeightFalloff = glm::max(falloff, 0.0f); s_Data.FrameIndex = 0; }
+    glm::vec3 Renderer3D::GetGlobalFogColor() { return s_Data.GlobalFogColor; }
+    void Renderer3D::SetGlobalFogColor(const glm::vec3 &color) { s_Data.GlobalFogColor = color; s_Data.FrameIndex = 0; }
+    float Renderer3D::GetGlobalFogBaseHeight() { return s_Data.GlobalFogBaseHeight; }
+    void Renderer3D::SetGlobalFogBaseHeight(float height) { s_Data.GlobalFogBaseHeight = height; s_Data.FrameIndex = 0; }
+    float Renderer3D::GetGlobalFogDistanceAttenuation() { return s_Data.GlobalFogDistAtten; }
+    void Renderer3D::SetGlobalFogDistanceAttenuation(float atten) { s_Data.GlobalFogDistAtten = glm::max(atten, 0.0f); s_Data.FrameIndex = 0; }
+
+    // God rays
+    bool Renderer3D::IsGodRaysEnabled() { return s_Data.GodRaysEnabled; }
+    void Renderer3D::SetGodRaysEnabled(bool enabled) { s_Data.GodRaysEnabled = enabled; }
+    float Renderer3D::GetGodRayIntensity() { return s_Data.GodRayIntensity; }
+    void Renderer3D::SetGodRayIntensity(float intensity) { s_Data.GodRayIntensity = glm::max(intensity, 0.0f); }
+    float Renderer3D::GetGodRayDecay() { return s_Data.GodRayDecay; }
+    void Renderer3D::SetGodRayDecay(float decay) { s_Data.GodRayDecay = glm::clamp(decay, 0.0f, 1.0f); }
+    int Renderer3D::GetGodRaySamples() { return s_Data.GodRaySamples; }
+    void Renderer3D::SetGodRaySamples(int samples) { s_Data.GodRaySamples = glm::clamp(samples, 1, 64); }
+    float Renderer3D::GetGodRayDensity() { return s_Data.GodRayDensity; }
+    void Renderer3D::SetGodRayDensity(float density) { s_Data.GodRayDensity = glm::max(density, 0.0f); }
+    glm::vec3 Renderer3D::GetGodRayColor() { return s_Data.GodRayColor; }
+    void Renderer3D::SetGodRayColor(const glm::vec3 &color) { s_Data.GodRayColor = color; }
+
     static void PushAnalyticLight(const AnalyticLightData &v)
     {
         if (s_Data.AnalyticLights.size() >= (size_t)Renderer3D::MaxAnalyticLights)
@@ -2355,6 +2489,184 @@ namespace Wasteland
             s_Data.m_SceneInstances.push_back(instance);
             s_Data.m_SceneDirty = true;
             return;
+        }
+    }
+
+    void Renderer3D::DrawWaterPlane(const glm::mat4 &transform, const WaterComponent &water, int entityID)
+    {
+        if (!water.Enabled)
+            return;
+
+        int N = water.Segments;
+        if (N < 1)
+            N = 1;
+        if (N > 64)
+            N = 64; // batch + CPU cost cap (UI allows up to 128, clamped here)
+
+        float maxH = water.MaxWaveHeight();
+        glm::vec3 worldScale = GetWorldScale(transform);
+        float scaleY = glm::max(worldScale.y, 0.001f);
+        float padLocalY = maxH / scaleY + 0.05f;
+
+        if (!IsAABBInFrustum(s_Data.FrustumPlanes, glm::vec3(-0.5f, -padLocalY, -0.5f), glm::vec3(0.5f, padLocalY, 0.5f), transform))
+            return;
+
+        uint32_t side = (uint32_t)(N + 1);
+        uint32_t needVerts = side * side;
+        uint32_t needIdx = (uint32_t)(N * N * 6);
+        if (s_Data.SphereVertexCount + needVerts >= s_Data.MaxVertices ||
+            s_Data.SphereIndexCount + needIdx >= s_Data.MaxIndices)
+        {
+            Flush();
+            FlushAndReset();
+        }
+
+        glm::mat4 invTransform = FastTRSInverse(transform);
+        glm::mat3 normalMatrix = glm::transpose(glm::mat3(invTransform));
+
+        float foamAmt = glm::clamp(water.FoamAmount, 0.0f, 1.0f);
+        float shoreAmt = glm::clamp(water.ShoreFoam, 0.0f, 1.0f);
+        float shoreWidth = glm::max(water.ShoreWidth, 0.001f);
+        float rough = glm::clamp(water.Roughness, 0.0f, 1.0f);
+        float metal = glm::clamp(water.Metallic, 0.0f, 1.0f);
+        float clarity = glm::clamp(water.Transparency, 0.0f, 1.0f);
+
+        // Spectral LOD: don't feed the mesh spectrum it can't resolve.
+        // Gameplay queries keep the full field (minWavelength = 0).
+        float cellSize = glm::max(worldScale.x, worldScale.z) / (float)N;
+        float minWavelength = cellSize * 2.0f;
+        glm::vec2 flowVel = water.SampleFlow();
+        float flowMag = glm::length(flowVel);
+
+        uint32_t batchBase = s_Data.SphereVertexCount;
+        for (int j = 0; j <= N; j++)
+        {
+            for (int i = 0; i <= N; i++)
+            {
+                float u = (float)i / (float)N;
+                float v = (float)j / (float)N;
+                float lx = u - 0.5f;
+                float lz = v - 0.5f;
+
+                glm::vec4 wp4 = transform * glm::vec4(lx, 0.0f, lz, 1.0f);
+                float h = 0.0f, dispX = 0.0f, dispZ = 0.0f;
+                glm::vec3 simN(0.0f, 1.0f, 0.0f);
+                water.EvaluateSurface(wp4.x, wp4.z, minWavelength, h, dispX, dispZ, simN);
+                // Gerstner horizontal chop: vertices bunch toward crests.
+                // (Culling above conservatively covers this band via MaxWaveHeight.)
+                glm::vec3 worldPos = glm::vec3(wp4.x + dispX, wp4.y + h, wp4.z + dispZ);
+
+                glm::vec3 worldN = glm::normalize(normalMatrix * simN);
+
+                float crest = water.CrestFactorAt(wp4.x, wp4.z, minWavelength);
+
+                // Whitecaps: crest-driven, streaked along the current so rivers
+                // read as flowing instead of boiling. Detail pattern rides the
+                // same advection as the waves, so foam sticks to crests.
+                // Kept broad (multi-meter): fine sparkle lives in the fragment
+                // ripple stage; vertex-level high frequencies would alias into
+                // quilting at typical cell sizes.
+                glm::vec2 fp = glm::vec2(wp4.x, wp4.z) - flowVel * water.Time;
+                // FoamScale survives here as a mild breakup-scale multiplier;
+                // clamped so the pattern stays LOD-safe (fine sparkle lives
+                // in the fragment ripple stage, which can't see uniforms).
+                float fs = 0.75f + 0.25f * glm::clamp(water.FoamScale, 0.01f, 4.0f);
+                float detail = 0.5f + 0.5f * sinf(fp.x * (0.9f * fs) + water.Time * 1.1f) *
+                                                 sinf((fp.x * 0.3f + fp.y) * (0.8f * fs) - water.Time * 0.9f);
+                float foamMask = 0.0f;
+                if (foamAmt > 0.001f)
+                {
+                    float edge = 1.0f - foamAmt * 0.55f;
+                    foamMask = glm::clamp((crest * (0.7f + 0.6f * detail) - edge) / glm::max(1.0f - edge, 0.001f), 0.0f, 1.0f);
+                }
+
+                // Shoreline foamline: distance from the footprint rect edge in
+                // world units. Agitated by flow + surf so river banks foam and
+                // lake edges lap gently.
+                if (shoreAmt > 0.001f)
+                {
+                    float edgeUV = glm::min(glm::min(u, 1.0f - u), glm::min(v, 1.0f - v));
+                    float edgeWorld = edgeUV * glm::min(worldScale.x, worldScale.z);
+                    float shoreBand = 1.0f - glm::clamp(edgeWorld / shoreWidth, 0.0f, 1.0f);
+                    float agitation = glm::clamp(0.3f + flowMag * 0.4f + crest * 0.5f, 0.0f, 1.0f);
+                    float lap = 0.65f + 0.35f * sinf(water.Time * 1.9f + (edgeWorld / shoreWidth) * 4.0f);
+                    foamMask = glm::max(foamMask, shoreAmt * shoreBand * shoreBand * agitation * lap);
+                }
+
+                glm::vec3 base = glm::mix(water.DeepColor, water.ShallowColor, glm::clamp(0.35f + 0.45f * crest, 0.0f, 1.0f));
+                base = glm::mix(base, water.ShallowColor, clarity * 0.25f); // opaque pipeline: clarity tints toward shallow
+                base = glm::mix(base, water.FoamColor, glm::clamp(foamMask, 0.0f, 1.0f));
+
+                // Foam is matte: lift roughness with coverage so whitecaps and
+                // foamlines don't glint like the water around them.
+                float vertRough = glm::mix(rough, 0.85f, glm::clamp(foamMask, 0.0f, 1.0f));
+
+                s_Data.SphereVertexBufferPtr->Position = worldPos;
+                s_Data.SphereVertexBufferPtr->Color = glm::vec4(base, 1.0f);
+                s_Data.SphereVertexBufferPtr->Normal = worldN;
+                s_Data.SphereVertexBufferPtr->TexCoord = glm::vec2(u, v);
+                s_Data.SphereVertexBufferPtr->TexIndex = 0.0f;
+                s_Data.SphereVertexBufferPtr->TilingFactor = 1.0f;
+                s_Data.SphereVertexBufferPtr->EntityID = entityID;
+                s_Data.SphereVertexBufferPtr->Metallic = metal;
+                s_Data.SphereVertexBufferPtr->Roughness = vertRough;
+                s_Data.SphereVertexBufferPtr->Displacement = 0.0f;
+                // Water marker for the Basic raster shader: negative bump
+                // routes the fragment through the mirror + pixel-ripple path
+                // (the relief gate needs values > 0.001, so this opts out).
+                s_Data.SphereVertexBufferPtr->BumpStrength = -1.0f;
+                s_Data.SphereVertexBufferPtr++;
+            }
+        }
+        for (int j = 0; j < N; j++)
+        {
+            for (int i = 0; i < N; i++)
+            {
+                uint32_t a = batchBase + (uint32_t)(j * side + i);
+                uint32_t b = a + 1;
+                uint32_t c = a + side;
+                uint32_t d = c + 1;
+                *s_Data.SphereIndexBufferPtr++ = a;
+                *s_Data.SphereIndexBufferPtr++ = c;
+                *s_Data.SphereIndexBufferPtr++ = d;
+                *s_Data.SphereIndexBufferPtr++ = d;
+                *s_Data.SphereIndexBufferPtr++ = b;
+                *s_Data.SphereIndexBufferPtr++ = a;
+            }
+        }
+        s_Data.SphereVertexCount += needVerts;
+        s_Data.SphereIndexCount += needIdx;
+        s_Data.Stats.QuadCount += needIdx / 6;
+
+        if (s_Data.RayTracingEnabled)
+        {
+            // Nova path-tracer: flat thin-box instance with water material.
+            // (Wave displacement is raster-only; the box sits at still level
+            // with thickness covering the wave band so it never z-fights.)
+            RayTracingInstance instance = {};
+            float thick = glm::max(maxH * 2.0f, 0.05f);
+            glm::mat4 boxLocal = glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, thick / glm::max(worldScale.y, 0.001f), 1.0f));
+            instance.WorldTransform = transform * boxLocal;
+            instance.InvTransform = FastTRSInverse(instance.WorldTransform);
+            glm::vec3 flatAlbedo = glm::mix(water.DeepColor, water.ShallowColor, 0.45f + clarity * 0.15f);
+            instance.Albedo = glm::vec4(flatAlbedo, 1.0f);
+            // Mirror path (matches the raster water branch): F0 picks up the
+            // water tint and the env reflection takes over.
+            instance.MaterialParams = glm::vec4(1.0f, rough, 0.0f, 0.0f);
+            instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
+            instance.Max = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+            instance.Emission = glm::vec4(0.0f);
+            instance.TextureID = -1;
+            instance.PackedMaterialMapID = -1;
+            instance.TextureScale = glm::vec4(1.0f);
+            // Water marker for the Nova path-tracer: z = 1 flags the water
+            // branch, w carries max crest height (world units) for
+            // absolute-height foam. Static per surface (no BVH churn).
+            instance.DisplacementParams = glm::vec4(0.0f, 0.0f, 1.0f, glm::max(maxH, 0.05f));
+            instance.MaxDistance = 1000.0f;
+            instance.LODLevel = 0;
+            s_Data.m_SceneInstances.push_back(instance);
+            s_Data.m_SceneDirty = true;
         }
     }
 

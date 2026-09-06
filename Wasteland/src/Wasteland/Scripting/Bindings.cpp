@@ -64,11 +64,55 @@ PYBIND11_MODULE(Wasteland, m)
         .def("HasTag", [](Wasteland::Entity &e)
              { return e.HasComponent<Wasteland::TagComponent>(); })
         .def("GetTag", [](Wasteland::Entity &e) -> Wasteland::TagComponent &
-             { return e.GetComponent<Wasteland::TagComponent>(); }, py::return_value_policy::reference);
+             { return e.GetComponent<Wasteland::TagComponent>(); }, py::return_value_policy::reference)
+        .def("HasWater", [](Wasteland::Entity &e)
+             { return e.HasComponent<Wasteland::WaterComponent>(); })
+        .def("GetWater", [](Wasteland::Entity &e) -> Wasteland::WaterComponent &
+             { return e.GetComponent<Wasteland::WaterComponent>(); }, py::return_value_policy::reference)
+        .def("GetWaterHeightAt", [](Wasteland::Entity &e, const glm::vec3 &pos)
+             {
+                 float height = 0.0f;
+                 glm::vec2 flow(0.0f);
+                 bool hit = e.GetWaterHeightAt(pos, height, &flow);
+                 return py::make_tuple(hit, height, flow); }, py::arg("pos"))
+        .def("IsUnderwater", [](Wasteland::Entity &e, const glm::vec3 &pos, float margin)
+             { return e.IsUnderwater(pos, margin); }, py::arg("pos"), py::arg("margin") = 0.0f);
+
+    py::enum_<Wasteland::WaterBodyType>(m, "WaterBodyType")
+        .value("Lake", Wasteland::WaterBodyType::Lake)
+        .value("River", Wasteland::WaterBodyType::River)
+        .value("Ocean", Wasteland::WaterBodyType::Ocean);
+
+    py::class_<Wasteland::WaterComponent>(m, "WaterComponent")
+        .def(py::init<>())
+        .def_readwrite("Enabled", &Wasteland::WaterComponent::Enabled)
+        .def_readwrite("Type", &Wasteland::WaterComponent::Type)
+        .def_readwrite("WaveAmplitude", &Wasteland::WaterComponent::WaveAmplitude)
+        .def_readwrite("WaveLength", &Wasteland::WaterComponent::WaveLength)
+        .def_readwrite("WaveSpeed", &Wasteland::WaterComponent::WaveSpeed)
+        .def_readwrite("Chop", &Wasteland::WaterComponent::Chop)
+        .def_readwrite("Steepness", &Wasteland::WaterComponent::Steepness)
+        .def_readwrite("FlowSpeed", &Wasteland::WaterComponent::FlowSpeed)
+        .def_readwrite("FoamAmount", &Wasteland::WaterComponent::FoamAmount)
+        .def_readwrite("ShoreFoam", &Wasteland::WaterComponent::ShoreFoam)
+        .def_readwrite("Buoyancy", &Wasteland::WaterComponent::Buoyancy)
+        .def_readwrite("WaterDensity", &Wasteland::WaterComponent::WaterDensity)
+        .def_readwrite("TimeScale", &Wasteland::WaterComponent::TimeScale)
+        .def_readwrite("Time", &Wasteland::WaterComponent::Time)
+        .def("SampleHeightAt", &Wasteland::WaterComponent::SampleHeightAt, py::arg("worldX"), py::arg("worldZ"), py::arg("minWavelength") = 0.0f)
+        .def("SampleFlow", &Wasteland::WaterComponent::SampleFlow);
 
     py::class_<Wasteland::Scene, std::shared_ptr<Wasteland::Scene>>(m, "Scene")
         .def("CreateEntity", &Wasteland::Scene::CreateEntity, py::arg("name") = std::string())
-        .def("DestroyEntity", &Wasteland::Scene::DestroyEntity);
+        .def("DestroyEntity", &Wasteland::Scene::DestroyEntity)
+        .def("GetWaterHeightAt", [](Wasteland::Scene &s, const glm::vec3 &pos)
+             {
+                 float height = 0.0f;
+                 glm::vec2 flow(0.0f);
+                 bool hit = s.GetWaterHeightAt(pos, height, &flow);
+                 return py::make_tuple(hit, height, flow); }, py::arg("pos"))
+        .def("IsUnderwater", [](Wasteland::Scene &s, const glm::vec3 &pos, float margin)
+             { return s.IsUnderwater(pos, margin); }, py::arg("pos"), py::arg("margin") = 0.0f);
 
     py::class_<Wasteland::Timestep>(m, "Timestep")
         .def(py::init<float>(), py::arg("time") = 0.0f)

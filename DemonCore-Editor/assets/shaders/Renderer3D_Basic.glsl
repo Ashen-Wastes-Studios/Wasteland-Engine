@@ -681,6 +681,8 @@ void main()
     vec3 lightDir = normalize(vec3(0.3, 1.0, 0.4));
     vec3 norm0 = normalize(Input.Normal);
     vec3 V = normalize(u_CameraPosition - Input.WorldPos);
+    // Water marker: water verts arrive with BumpStrength = -1 (the relief
+    // path above already skipped them: its gate needs values > 0.001).
 
     // ---- Neural relief: UV-space height march (parallax) + gradient normal
     // + light self-shadow. Distance- and grazing-faded, zero taps when the
@@ -876,6 +878,32 @@ void main()
         texColor.rgb = mix(texColor.rgb, texColor.rgb * vec3(1.10, 1.03, 0.92), ridge * 0.65);
     }
 
+    // ---- Water: mirror + pixel ripple detail (Unreal-style) ----
+    // Dielectric water would get no sky reflection from the metal-gated env
+    // term below, so route water through the mirror path instead: diffuse
+    // dies (water has none), F0 picks up the water tint, and the sky mirror
+    // + sun glints take over. norm (Gerstner mesh normal) is augmented with
+    // animated pixel-level ripple octaves so chop survives at any mesh
+    // density; the existing fresnel/spec/analytic-light terms then respond
+    // to the perturbed normal with zero further changes.
+    bool wlWater = (Input.BumpStrength < -0.5);
+    if (wlWater)
+    {
+        vec2 wpuv = Input.WorldPos.xz;
+        float wdist = length(u_CameraPosition - Input.WorldPos);
+        float wfade = clamp(1.0 - (wdist - 25.0) / 60.0, 0.0, 1.0);
+        if (wfade > 0.001)
+        {
+            float wt = u_Time;
+            vec2 wg = vec2(0.0);
+            wg += vec2(0.96, 0.28) * (cos(dot(vec2(0.96, 0.28), wpuv) * 2.1 + wt * 1.6) * 0.22);
+            wg += vec2(-0.42, 0.91) * (cos(dot(vec2(-0.42, 0.91), wpuv) * 3.7 - wt * 2.3 + 1.7) * 0.13);
+            wg += vec2(0.66, -0.75) * (cos(dot(vec2(0.66, -0.75), wpuv) * 7.9 + wt * 3.4 + 4.2) * 0.07);
+            norm = normalize(norm + vec3(-wg.x, 0.0, -wg.y) * (0.55 * wfade));
+        }
+        metallic = 1.0;
+    }
+
     // Metallic PBR terms (shared by neural + classic paths). Diffuse dies
     // out on metals; reflection + specular take over. No shadow maps on the
     // raster path — true shadows live in the Nova ray-trace pipeline.
@@ -894,8 +922,11 @@ void main()
 
     if (u_NeuralEnabled == 1)
     {
-        vec3 detail = wl_neural_tex_detail(reliefUV, norm);
-        texColor.rgb *= mix(vec3(1.0), detail, clamp(u_NeuralTexStrength, 0.0, 1.0));
+        if (!wlWater)
+        {
+            vec3 detail = wl_neural_tex_detail(reliefUV, norm);
+            texColor.rgb *= mix(vec3(1.0), detail, clamp(u_NeuralTexStrength, 0.0, 1.0));
+        }
 
         vec3 namb = wl_neural_ambient(norm, texColor.rgb);
         float k = clamp(u_NeuralLightStrength, 0.0, 1.0);
@@ -911,7 +942,8 @@ void main()
             matGlint = g;
             matWrap = w;
         }
-        texColor.rgb = mix(texColor.rgb, matAlbedo, km);
+        if (!wlWater)
+            texColor.rgb = mix(texColor.rgb, matAlbedo, km);
         // Re-derive F0 from the neural albedo so flakes tint reflections.
         vec3 nF0 = mix(vec3(0.04), texColor.rgb, metallic);
         vec3 nF = nF0 + (1.0 - nF0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);

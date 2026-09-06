@@ -72,6 +72,11 @@ namespace Wasteland
 			return m_EntityHandle != entt::null && m_Scene != nullptr && m_Scene->m_Registry.valid(m_EntityHandle);
 		}
 
+		// Water queries forwarded to the owning scene (used by C++ and scripts
+		// for buoyancy: outHeight = still level + wave height, outFlow = current).
+		bool GetWaterHeightAt(const glm::vec3 &worldPos, float &outHeight, glm::vec2 *outFlow = nullptr);
+		bool IsUnderwater(const glm::vec3 &worldPos, float margin = 0.0f);
+
 		bool operator==(const Entity &other) const
 		{
 			return m_EntityHandle == other.m_EntityHandle && other.m_Scene;

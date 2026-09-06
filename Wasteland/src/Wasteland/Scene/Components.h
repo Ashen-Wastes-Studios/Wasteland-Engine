@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -357,7 +359,289 @@ namespace Wasteland
 		VolumetricCloudsComponent(const VolumetricCloudsComponent &other) = default;
 	};
 
-	// --- Analytic Light Components ---
+	// --- Water Simulation Components ---
+// Entity Transform defines the water body: Translation.y = still water level,
+// Scale.x/z = surface extents (a 1x1 XZ plane at local y=0, scaled by Scale).
+// Rivers are directional: FlowDirection/FlowSpeed advect the waves and drive
+// foam; lakes are calm presets; oceans are large high-amplitude presets.
+// CPU-simulated Gerstner spectrum (6 directional components with physical
+// dispersion + horizontal chop) so gameplay queries (buoyancy, height
+// sampling) and the raster mesh agree; the mesh additionally applies the
+// Gerstner horizontal displacement for true sharp-crested waves.
+
+enum class WaterBodyType
+{
+	Lake = 0,
+	River = 1,
+	Ocean = 2
+};
+
+struct WaterComponent
+{
+	bool Enabled = true;
+	WaterBodyType Type = WaterBodyType::Lake;
+
+	glm::vec3 ShallowColor = {0.25f, 0.5f, 0.65f};
+	glm::vec3 DeepColor = {0.02f, 0.15f, 0.3f};
+	glm::vec3 FoamColor = {0.9f, 0.95f, 1.0f};
+
+	float WaterDepth = 2.0f;      // Absorption depth for shallow/deep gradient
+	float WaveAmplitude = 0.05f;  // World units, primary wave height
+	float WaveLength = 3.0f;      // World units, primary wavelength (> 0.01)
+	float WaveSpeed = 0.6f;       // Phase speed multiplier
+	glm::vec2 WaveDirection = {1.0f, 0.3f};
+	float Chop = 0.2f;            // Secondary detail waves (0 = glassy .. 1 = choppy)
+	float Steepness = 0.1f;       // Gerstner horizontal chop (0 = sine swell .. 1 = sharp crests)
+
+	glm::vec2 FlowDirection = {1.0f, 0.0f}; // River current dir in world XZ
+	float FlowSpeed = 0.0f;       // World units/second advection (rivers > 0)
+	float FoamAmount = 0.15f;     // 0 = none .. 1 = heavy foam on crests
+	float FoamScale = 1.0f;       // Foam pattern frequency multiplier
+	float ShoreFoam = 0.5f;       // Bank/shore foamline (0 = none .. 1 = strong)
+	float ShoreWidth = 1.0f;      // World-unit width of the shoreline foam band
+
+	float Transparency = 0.75f;   // 0 = opaque .. 1 = clear (tints raster albedo toward shallow)
+	float Roughness = 0.1f;       // Specular sharpness (0 = mirror .. 1 = matte)
+	float Metallic = 0.0f;
+
+	int Segments = 48;            // Surface grid resolution per side (1 .. 128)
+	float TimeScale = 1.0f;       // Simulation speed multiplier
+
+	float Buoyancy = 1.0f;        // Upward force scale for gameplay scripts
+	float WaterDensity = 1.0f;    // Drag/density scale for gameplay scripts
+
+	float Time = 0.0f;            // Runtime accumulator (not serialized)
+
+	WaterComponent() = default;
+	WaterComponent(const WaterComponent &other) = default;
+
+	static void ApplyPreset(WaterComponent &water, WaterBodyType type)
+	{
+		water.Type = type;
+		switch (type)
+		{
+		case WaterBodyType::Lake:
+			water.ShallowColor = {0.25f, 0.5f, 0.65f};
+			water.DeepColor = {0.02f, 0.15f, 0.3f};
+			water.WaterDepth = 2.0f;
+			water.WaveAmplitude = 0.05f;
+			water.WaveLength = 3.0f;
+			water.WaveSpeed = 0.6f;
+			water.WaveDirection = {1.0f, 0.3f};
+			water.Chop = 0.2f;
+			water.Steepness = 0.1f;
+			water.FlowDirection = {1.0f, 0.0f};
+			water.FlowSpeed = 0.0f;
+			water.FoamAmount = 0.15f;
+			water.ShoreFoam = 0.5f;
+			water.ShoreWidth = 1.0f;
+			water.Transparency = 0.75f;
+			water.Roughness = 0.1f;
+			break;
+		case WaterBodyType::River:
+			water.ShallowColor = {0.3f, 0.55f, 0.6f};
+			water.DeepColor = {0.03f, 0.2f, 0.25f};
+			water.WaterDepth = 1.2f;
+			water.WaveAmplitude = 0.08f;
+			water.WaveLength = 2.0f;
+			water.WaveSpeed = 1.6f;
+			water.WaveDirection = {1.0f, 0.0f};
+			water.Chop = 0.5f;
+			water.Steepness = 0.35f;
+			water.FlowDirection = {1.0f, 0.0f};
+			water.FlowSpeed = 1.5f;
+			water.FoamAmount = 0.5f;
+			water.ShoreFoam = 0.7f;
+			water.ShoreWidth = 0.8f;
+			water.Transparency = 0.6f;
+			water.Roughness = 0.15f;
+			break;
+		case WaterBodyType::Ocean:
+			water.ShallowColor = {0.15f, 0.45f, 0.65f};
+			water.DeepColor = {0.005f, 0.08f, 0.22f};
+			water.WaterDepth = 6.0f;
+			water.WaveAmplitude = 0.35f;
+			water.WaveLength = 12.0f;
+			water.WaveSpeed = 1.2f;
+			water.WaveDirection = {1.0f, 0.25f};
+			water.Chop = 0.7f;
+			water.Steepness = 0.6f;
+			water.FlowDirection = {1.0f, 0.25f};
+			water.FlowSpeed = 0.3f;
+			water.FoamAmount = 0.4f;
+			water.ShoreFoam = 0.3f;
+			water.ShoreWidth = 2.0f;
+			water.Transparency = 0.85f;
+			water.Roughness = 0.08f;
+			break;
+		}
+	}
+
+	// --- Directional wave spectrum (6 components, heightfield) ---
+	// Amplitudes follow a Phillips-style falloff from the primary swell;
+	// Chop scales the high-frequency detail (0 = glassy single swell).
+	// Each component carries a 2nd harmonic for peaked crests / flat
+	// troughs, and deep-water dispersion ω=sqrt(g·k) so long swells
+	// outrun chop — the same field drives gameplay queries and the mesh.
+	static constexpr int WaveComponentCount = 6;
+	static float SpectrumLengthRatio(int i)
+	{
+		constexpr float ratios[WaveComponentCount] = {1.0f, 0.55f, 0.32f, 0.19f, 0.11f, 0.06f};
+		return ratios[i < 0 ? 0 : (i >= WaveComponentCount ? WaveComponentCount - 1 : i)];
+	}
+	static float SpectrumShare(int i)
+	{
+		constexpr float shares[WaveComponentCount] = {0.55f, 0.22f, 0.11f, 0.06f, 0.035f, 0.025f};
+		return shares[i < 0 ? 0 : (i >= WaveComponentCount ? WaveComponentCount - 1 : i)];
+	}
+	static float SpectrumFanAngle(int i)
+	{
+		constexpr float angles[WaveComponentCount] = {0.0f, 0.40f, -0.54f, 0.82f, -1.01f, 1.24f};
+		return angles[i < 0 ? 0 : (i >= WaveComponentCount ? WaveComponentCount - 1 : i)];
+	}
+	static float SpectrumPhaseOffset(int i)
+	{
+		constexpr float phases[WaveComponentCount] = {0.0f, 1.3f, 4.1f, 2.2f, 5.0f, 0.7f};
+		return phases[i < 0 ? 0 : (i >= WaveComponentCount ? WaveComponentCount - 1 : i)];
+	}
+
+	// Total possible crest height (culling padding + foam normalization)
+	float MaxWaveHeight() const
+	{
+		return WaveAmplitude * (0.55f + 0.45f * glm::clamp(Chop, 0.0f, 1.0f));
+	}
+
+	// Advected sample position: the current carries the wave field with it
+	glm::vec2 AdvectedPos(glm::vec2 worldXZ) const
+	{
+		float flowLen = glm::length(FlowDirection);
+		if (FlowSpeed > 0.0001f && flowLen > 0.0001f)
+			return worldXZ - (FlowDirection / flowLen) * (FlowSpeed * Time);
+		return worldXZ;
+	}
+
+	// Evaluates the Gerstner surface in one trig pass: vertical height +
+	// horizontal chop displacement (outDispX/Z, world units) + analytic
+	// Gerstner normal. minWavelength fades out components shorter than the
+	// mesh can resolve (spectral LOD: pass ~2x the mesh cell size from the
+	// renderer; 0 keeps the full spectrum for gameplay queries).
+	void EvaluateSurface(float worldX, float worldZ, float minWavelength, float &outHeight, float &outDispX, float &outDispZ, glm::vec3 &outNormal) const
+	{
+		outHeight = 0.0f;
+		outDispX = 0.0f;
+		outDispZ = 0.0f;
+		outNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+		if (!Enabled || WaveAmplitude <= 0.00001f)
+			return;
+		glm::vec2 p = AdvectedPos({worldX, worldZ});
+
+		glm::vec2 d1 = WaveDirection;
+		if (glm::length2(d1) < 1e-8f)
+			d1 = {1.0f, 0.0f};
+		d1 = glm::normalize(d1);
+
+		float chop = glm::clamp(Chop, 0.0f, 1.0f);
+		float steep = glm::clamp(Steepness, 0.0f, 1.0f);
+		float baseLen = glm::max(WaveLength, 0.1f);
+		float t = Time * WaveSpeed;
+
+		float nx = 0.0f, ny = 1.0f, nz = 0.0f;
+		for (int i = 0; i < WaveComponentCount; i++)
+		{
+			float li = baseLen * SpectrumLengthRatio(i);
+			float fade = 1.0f;
+			if (minWavelength > 0.00001f && li < minWavelength * 2.0f)
+			{
+				if (li <= minWavelength)
+					continue;
+				fade = (li - minWavelength) / minWavelength; // 0..1 across the Nyquist band
+			}
+			float amp = WaveAmplitude * SpectrumShare(i) * (i == 0 ? 1.0f : chop) * fade;
+			if (amp <= 0.0000001f)
+				continue;
+			float k = 6.2831853f / li;
+			if (k > 40.0f)
+				k = 40.0f;
+			float omega = sqrtf(9.81f * k); // deep-water dispersion: swells outrun chop
+			if (omega > 25.0f)
+				omega = 25.0f;
+
+			float ca = cosf(SpectrumFanAngle(i));
+			float sa = sinf(SpectrumFanAngle(i));
+			glm::vec2 dir(d1.x * ca - d1.y * sa, d1.x * sa + d1.y * ca);
+
+			float sharp = (i == 0 ? 0.6f : 1.0f) * chop; // 2nd-harmonic crest sharpening
+			float norm = 1.0f + 0.5f * sharp;
+			float phi = k * glm::dot(dir, p) - omega * t;
+			float s1 = sinf(phi);
+			float c1 = cosf(phi);
+			float harmonic = 2.0f * phi + SpectrumPhaseOffset(i);
+			float s2 = sinf(harmonic);
+			float c2 = cosf(harmonic);
+
+			float wa = k * amp;
+			// Per-wave Gerstner Q: equal-steepness distribution (GPU Gems),
+			// clamped so crests sharpen without looping over.
+			float qi = steep / (wa * (float)WaveComponentCount + 1e-6f);
+			if (qi > 1.0f)
+				qi = 1.0f;
+			if (qi < 0.0f)
+				qi = 0.0f;
+
+			float shapeS = (s1 + 0.5f * sharp * s2) / norm;
+			float shapeC = (c1 + sharp * c2) / norm;
+			outHeight += amp * shapeS;
+			outDispX += dir.x * (qi * amp) * shapeC;
+			outDispZ += dir.y * (qi * amp) * shapeC;
+			nx += -dir.x * wa * shapeC;
+			nz += -dir.y * wa * shapeC;
+			ny += -qi * wa * shapeS;
+		}
+		outNormal = glm::vec3(nx, ny, nz);
+		if (glm::length2(outNormal) < 1e-10f)
+			outNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+		else
+			outNormal = glm::normalize(outNormal);
+	}
+
+	// Heightfield column height (no horizontal displacement): what gameplay
+	// queries and buoyancy use — stable by construction, matches the mesh
+	// surface to within the chop offset.
+	float SampleHeightAt(float worldX, float worldZ, float minWavelength = 0.0f) const
+	{
+		float h = 0.0f, dx = 0.0f, dz = 0.0f;
+		glm::vec3 n(0.0f, 1.0f, 0.0f);
+		EvaluateSurface(worldX, worldZ, minWavelength, h, dx, dz, n);
+		return h;
+	}
+
+	glm::vec3 SampleNormalAt(float worldX, float worldZ, float minWavelength = 0.0f) const
+	{
+		float h = 0.0f, dx = 0.0f, dz = 0.0f;
+		glm::vec3 n(0.0f, 1.0f, 0.0f);
+		EvaluateSurface(worldX, worldZ, minWavelength, h, dx, dz, n);
+		return n;
+	}
+
+	// 0 = trough .. 1 = crest, for foam whitening
+	float CrestFactorAt(float worldX, float worldZ, float minWavelength = 0.0f) const
+	{
+		float maxH = MaxWaveHeight();
+		if (maxH <= 0.00001f)
+			return 0.0f;
+		return glm::clamp(SampleHeightAt(worldX, worldZ, minWavelength) / maxH * 0.5f + 0.5f, 0.0f, 1.0f);
+	}
+
+	glm::vec2 SampleFlow() const
+	{
+		float flowLen = glm::length(FlowDirection);
+		if (flowLen < 0.0001f || FlowSpeed <= 0.00001f)
+			return glm::vec2(0.0f);
+		return (FlowDirection / flowLen) * FlowSpeed;
+	}
+};
+
+// --- Analytic Light Components ---
 	// Gathered every frame by the Scene and uploaded to Renderer3D (up to
 	// Renderer3D::MaxAnalyticLights, first-submitted wins). Unlike emissive
 	// materials they need no geometry. Aim with the entity rotation: light

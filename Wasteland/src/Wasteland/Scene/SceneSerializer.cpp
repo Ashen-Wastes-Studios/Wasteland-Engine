@@ -131,6 +131,26 @@ namespace Wasteland
 		return RigidBody3DType::Static;
 	}
 
+
+	static std::string WaterBodyTypeToString(WaterBodyType type)
+	{
+		switch (type)
+		{
+		case WaterBodyType::Lake:  return "Lake";
+		case WaterBodyType::River: return "River";
+		case WaterBodyType::Ocean: return "Ocean";
+		}
+		return "Lake";
+	}
+
+
+	static WaterBodyType WaterBodyTypeFromString(const std::string &str)
+	{
+		if (str == "River") return WaterBodyType::River;
+		if (str == "Ocean") return WaterBodyType::Ocean;
+		return WaterBodyType::Lake;
+	}
+
 	static std::string RigidBody2DBodyTypeToString(Rigidbody2DComponent::BodyType bodyType)
 	{
 		switch (bodyType)
@@ -489,6 +509,39 @@ namespace Wasteland
 			out << YAML::Key << "Height" << YAML::Value << light.Height;
 			out << YAML::Key << "Range" << YAML::Value << light.Range;
 			out << YAML::Key << "DoubleSided" << YAML::Value << light.DoubleSided;
+			out << YAML::EndMap;
+		}
+
+		if (entity.HasComponent<WaterComponent>())
+		{
+			out << YAML::Key << "WaterComponent";
+			out << YAML::BeginMap;
+			auto &water = entity.GetComponent<WaterComponent>();
+			out << YAML::Key << "Enabled" << YAML::Value << water.Enabled;
+			out << YAML::Key << "BodyType" << YAML::Value << WaterBodyTypeToString(water.Type);
+			out << YAML::Key << "ShallowColor" << YAML::Value << glm::vec4(water.ShallowColor, 1.0f);
+			out << YAML::Key << "DeepColor" << YAML::Value << glm::vec4(water.DeepColor, 1.0f);
+			out << YAML::Key << "FoamColor" << YAML::Value << glm::vec4(water.FoamColor, 1.0f);
+			out << YAML::Key << "WaterDepth" << YAML::Value << water.WaterDepth;
+			out << YAML::Key << "WaveAmplitude" << YAML::Value << water.WaveAmplitude;
+			out << YAML::Key << "WaveLength" << YAML::Value << water.WaveLength;
+			out << YAML::Key << "WaveSpeed" << YAML::Value << water.WaveSpeed;
+			out << YAML::Key << "WaveDirection" << YAML::Value << water.WaveDirection;
+			out << YAML::Key << "Chop" << YAML::Value << water.Chop;
+			out << YAML::Key << "Steepness" << YAML::Value << water.Steepness;
+			out << YAML::Key << "FlowDirection" << YAML::Value << water.FlowDirection;
+			out << YAML::Key << "FlowSpeed" << YAML::Value << water.FlowSpeed;
+			out << YAML::Key << "FoamAmount" << YAML::Value << water.FoamAmount;
+			out << YAML::Key << "FoamScale" << YAML::Value << water.FoamScale;
+			out << YAML::Key << "ShoreFoam" << YAML::Value << water.ShoreFoam;
+			out << YAML::Key << "ShoreWidth" << YAML::Value << water.ShoreWidth;
+			out << YAML::Key << "Transparency" << YAML::Value << water.Transparency;
+			out << YAML::Key << "Roughness" << YAML::Value << water.Roughness;
+			out << YAML::Key << "Metallic" << YAML::Value << water.Metallic;
+			out << YAML::Key << "Segments" << YAML::Value << water.Segments;
+			out << YAML::Key << "TimeScale" << YAML::Value << water.TimeScale;
+			out << YAML::Key << "Buoyancy" << YAML::Value << water.Buoyancy;
+			out << YAML::Key << "WaterDensity" << YAML::Value << water.WaterDensity;
 			out << YAML::EndMap;
 		}
 
@@ -869,6 +922,62 @@ namespace Wasteland
 						light.Range = areaLightComponent["Range"].as<float>();
 					if (areaLightComponent["DoubleSided"])
 						light.DoubleSided = areaLightComponent["DoubleSided"].as<bool>();
+				}
+
+				auto waterComponent = entity["WaterComponent"];
+				if (waterComponent)
+				{
+					auto &water = deserializedEntity.AddComponent<WaterComponent>();
+					if (waterComponent["Enabled"])
+						water.Enabled = waterComponent["Enabled"].as<bool>();
+					if (waterComponent["BodyType"])
+						water.Type = WaterBodyTypeFromString(waterComponent["BodyType"].as<std::string>());
+					if (waterComponent["ShallowColor"])
+						water.ShallowColor = glm::vec3(waterComponent["ShallowColor"].as<glm::vec4>());
+					if (waterComponent["DeepColor"])
+						water.DeepColor = glm::vec3(waterComponent["DeepColor"].as<glm::vec4>());
+					if (waterComponent["FoamColor"])
+						water.FoamColor = glm::vec3(waterComponent["FoamColor"].as<glm::vec4>());
+					if (waterComponent["WaterDepth"])
+						water.WaterDepth = waterComponent["WaterDepth"].as<float>();
+					if (waterComponent["WaveAmplitude"])
+						water.WaveAmplitude = waterComponent["WaveAmplitude"].as<float>();
+					if (waterComponent["WaveLength"])
+						water.WaveLength = waterComponent["WaveLength"].as<float>();
+					if (waterComponent["WaveSpeed"])
+						water.WaveSpeed = waterComponent["WaveSpeed"].as<float>();
+					if (waterComponent["WaveDirection"])
+						water.WaveDirection = waterComponent["WaveDirection"].as<glm::vec2>();
+					if (waterComponent["Chop"])
+						water.Chop = waterComponent["Chop"].as<float>();
+					if (waterComponent["Steepness"])
+						water.Steepness = waterComponent["Steepness"].as<float>();
+					if (waterComponent["FlowDirection"])
+						water.FlowDirection = waterComponent["FlowDirection"].as<glm::vec2>();
+					if (waterComponent["FlowSpeed"])
+						water.FlowSpeed = waterComponent["FlowSpeed"].as<float>();
+					if (waterComponent["FoamAmount"])
+						water.FoamAmount = waterComponent["FoamAmount"].as<float>();
+					if (waterComponent["FoamScale"])
+						water.FoamScale = waterComponent["FoamScale"].as<float>();
+					if (waterComponent["ShoreFoam"])
+						water.ShoreFoam = waterComponent["ShoreFoam"].as<float>();
+					if (waterComponent["ShoreWidth"])
+						water.ShoreWidth = waterComponent["ShoreWidth"].as<float>();
+					if (waterComponent["Transparency"])
+						water.Transparency = waterComponent["Transparency"].as<float>();
+					if (waterComponent["Roughness"])
+						water.Roughness = waterComponent["Roughness"].as<float>();
+					if (waterComponent["Metallic"])
+						water.Metallic = waterComponent["Metallic"].as<float>();
+					if (waterComponent["Segments"])
+						water.Segments = waterComponent["Segments"].as<int>();
+					if (waterComponent["TimeScale"])
+						water.TimeScale = waterComponent["TimeScale"].as<float>();
+					if (waterComponent["Buoyancy"])
+						water.Buoyancy = waterComponent["Buoyancy"].as<float>();
+					if (waterComponent["WaterDensity"])
+						water.WaterDensity = waterComponent["WaterDensity"].as<float>();
 				}
 
 				auto scriptComponent = entity["ScriptComponent"];

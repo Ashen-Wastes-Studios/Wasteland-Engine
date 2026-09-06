@@ -11,6 +11,9 @@
 #include "ScriptableEntity.h"
 #include "Wasteland/Scripting/ScriptEngine.h"
 
+#include <cfloat>
+#include <glm/gtc/matrix_inverse.hpp>
+
 // Box2D
 #include "box2d/b2_world.h"
 #include "box2d/b2_body.h"
@@ -236,6 +239,7 @@ namespace Wasteland
 		CopyComponent<PointLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<SpotLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<AreaLightComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		CopyComponent<WaterComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
@@ -292,6 +296,9 @@ namespace Wasteland
 
 	void Scene::OnUpdateRuntime(Timestep ts)
 	{
+		// Water simulation always advances (drives waves + gameplay queries)
+		UpdateWater(ts);
+
 		// Update scripts
 		{
 			m_Registry.view<NativeScriptComponent>().each([=](auto entity, auto &nsc)
@@ -414,6 +421,7 @@ namespace Wasteland
 			Renderer3D::BeginScene(mainCamera->GetProjection(), cameraTransform);
 			SubmitVolumetricVolumes();
 			SubmitSceneLights();
+			SubmitWaterSurfaces();
 
 			// Draw Cubes
 			{
@@ -467,6 +475,9 @@ namespace Wasteland
 
 	void Scene::OnUpdateSimulation(Timestep ts, EditorCamera &camera)
 	{
+		// Water simulation always advances (drives waves + gameplay queries)
+		UpdateWater(ts);
+
 		// Physics
 		{
 			const int32_t velocityIterations = 6;
@@ -522,6 +533,9 @@ namespace Wasteland
 
 	void Scene::OnUpdateEditor(Timestep ts, EditorCamera &camera)
 	{
+		// Water preview animates in the editor viewport
+		UpdateWater(ts);
+
 		// Render
 		RenderScene(camera);
 	}
@@ -567,6 +581,7 @@ namespace Wasteland
 		CopyComponentIfExists<PointLightComponent>(newEntity, entity);
 		CopyComponentIfExists<SpotLightComponent>(newEntity, entity);
 		CopyComponentIfExists<AreaLightComponent>(newEntity, entity);
+		CopyComponentIfExists<WaterComponent>(newEntity, entity);
 
 		CopyComponentIfExists<NativeScriptComponent>(newEntity, entity);
 		CopyComponentIfExists<ScriptComponent>(newEntity, entity);
@@ -803,6 +818,86 @@ namespace Wasteland
 		}
 	}
 
+
+	void Scene::UpdateWater(Timestep ts)
+	{
+		float dt = ts.GetSeconds();
+		if (dt <= 0.0f)
+			return;
+		auto view = m_Registry.view<WaterComponent>();
+		for (auto entity : view)
+		{
+			auto &water = view.get<WaterComponent>(entity);
+			if (!water.Enabled)
+				continue;
+			water.Time += dt * water.TimeScale;
+			// Guard against float precision decay on very long sessions
+			if (water.Time > 86400.0f)
+				water.Time = fmodf(water.Time, 86400.0f);
+		}
+	}
+
+
+	void Scene::SubmitWaterSurfaces()
+	{
+		auto view = m_Registry.view<TransformComponent, WaterComponent>();
+		for (auto entity : view)
+		{
+			auto &tc = view.get<TransformComponent>(entity);
+			auto &water = view.get<WaterComponent>(entity);
+			Renderer3D::DrawWaterPlane(tc.GetTransform(), water, (int)entity);
+		}
+	}
+
+
+	bool Scene::GetWaterHeightAt(const glm::vec3 &worldPos, float &outHeight, glm::vec2 *outFlow)
+	{
+		bool found = false;
+		float bestHeight = -FLT_MAX;
+		glm::vec2 bestFlow(0.0f);
+
+		auto view = m_Registry.view<TransformComponent, WaterComponent>();
+		for (auto entity : view)
+		{
+			auto &tc = view.get<TransformComponent>(entity);
+			auto &water = view.get<WaterComponent>(entity);
+			if (!water.Enabled)
+				continue;
+
+			// Footprint test in the water body's local space (unit XZ plane).
+			// Full inverse handles rotation/scale; waves are a world-Y offset.
+			glm::mat4 inv = glm::inverse(tc.GetTransform());
+			glm::vec4 local = inv * glm::vec4(worldPos, 1.0f);
+			if (local.x < -0.5f || local.x > 0.5f || local.z < -0.5f || local.z > 0.5f)
+				continue;
+
+			float surfaceY = tc.Translation.y + water.SampleHeightAt(worldPos.x, worldPos.z);
+			if (!found || surfaceY > bestHeight)
+			{
+				bestHeight = surfaceY;
+				bestFlow = water.SampleFlow();
+				found = true;
+			}
+		}
+
+		if (found)
+		{
+			outHeight = bestHeight;
+			if (outFlow)
+				*outFlow = bestFlow;
+		}
+		return found;
+	}
+
+
+	bool Scene::IsUnderwater(const glm::vec3 &worldPos, float margin)
+	{
+		float height = 0.0f;
+		if (!GetWaterHeightAt(worldPos, height))
+			return false;
+		return worldPos.y < height - margin;
+	}
+
 	void Scene::RenderScene(EditorCamera &camera)
 	{
 		// Render 2D
@@ -840,6 +935,7 @@ namespace Wasteland
 		Renderer3D::BeginScene(camera);
 		SubmitVolumetricVolumes();
 		SubmitSceneLights();
+		SubmitWaterSurfaces();
 
 		// Draw Cubes
 		{
@@ -1020,6 +1116,16 @@ namespace Wasteland
 	template <>
 	void Scene::OnComponentAdded<AreaLightComponent>(Entity entity, AreaLightComponent &component)
 	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<WaterComponent>(Entity entity, WaterComponent &component)
+	{
+		// NOTE: do NOT apply presets here — AddOrReplaceComponent (duplicate /
+		// deserialization) also runs this handler, and a preset would wipe the
+		// source values. Member defaults already describe a calm lake; the
+		// editor UI applies River/Ocean presets on demand. Just reset runtime.
+		component.Time = 0.0f;
 	}
 
 }

@@ -2,6 +2,8 @@
 
 #include <entt/entt.hpp>
 
+#include <glm/glm.hpp>
+
 #include "Wasteland/Core/Timestep.h"
 #include "Wasteland/Renderer/EditorCamera.h"
 #include "Wasteland/Core/UUID.h"
@@ -43,6 +45,13 @@ namespace Wasteland
 		Entity GetPrimaryCameraEntity();
 		bool IsEntityValid(Entity entity) const;
 
+		// --- Water simulation queries (for gameplay/buoyancy scripts) ---
+		// Returns true when worldPos is inside an enabled water body footprint.
+		// outHeight = still level (Translation.y) + simulated wave height.
+		// outFlow = river current velocity (world XZ), zero for still lakes.
+		bool GetWaterHeightAt(const glm::vec3 &worldPos, float &outHeight, glm::vec2 *outFlow = nullptr);
+		bool IsUnderwater(const glm::vec3 &worldPos, float margin = 0.0f);
+
 		template <typename... T>
 		auto GetAllEntitiesWith()
 		{
@@ -68,6 +77,13 @@ namespace Wasteland
 	// Gathers analytic light components and submits them to Renderer3D.
 	// Called alongside SubmitVolumetricVolumes at every 3D render site.
 	void SubmitSceneLights();
+
+	// Advances every WaterComponent's Time accumulator. Called at the top of
+	// each update path so editor previews animate and runtime simulates.
+	void UpdateWater(Timestep ts);
+	// Draws all enabled water surfaces via Renderer3D::DrawWaterPlane.
+	// Called between BeginScene/EndScene at every 3D render site.
+	void SubmitWaterSurfaces();
 
 	private:
 		entt::registry m_Registry;

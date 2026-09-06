@@ -990,6 +990,70 @@ static bool HasGLExtension(const char *name)
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Global multiplier for per-volume march steps.\nLower it if volumetrics cost too much performance.");
 
+			// Global atmospheric fog controls
+			bool globalFog = Wasteland::Renderer3D::IsGlobalFogEnabled();
+			if (ImGui::Checkbox("Global Fog", &globalFog))
+			{
+				Wasteland::Renderer3D::SetGlobalFogEnabled(globalFog);
+			}
+			if (ImGui::IsItemHovered())
+			 ImGui::SetTooltip("Distance-based haze applied to ALL surfaces\n(independent of box volumes).");
+			if (Wasteland::Renderer3D::IsGlobalFogEnabled())
+			{
+				float density = Wasteland::Renderer3D::GetGlobalFogDensity();
+				if (ImGui::SliderFloat("  Density", &density, 0.0001f, 0.05f, "%.4f"))
+				{
+					Wasteland::Renderer3D::SetGlobalFogDensity(density);
+				}
+				float atten = Wasteland::Renderer3D::GetGlobalFogDistanceAttenuation();
+				if (ImGui::SliderFloat("  Distance Atten", &atten, 0.01f, 5.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetGlobalFogDistanceAttenuation(atten);
+				}
+				float baseHeight = Wasteland::Renderer3D::GetGlobalFogBaseHeight();
+				if (ImGui::SliderFloat("  Base Height", &baseHeight, -100.0f, 500.0f, "%.1f"))
+				{
+					Wasteland::Renderer3D::SetGlobalFogBaseHeight(baseHeight);
+				}
+				float heightFalloff = Wasteland::Renderer3D::GetGlobalFogHeightFalloff();
+				if (ImGui::SliderFloat("  Height Falloff", &heightFalloff, 0.01f, 10.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetGlobalFogHeightFalloff(heightFalloff);
+				}
+			}
+
+			// God rays controls
+			bool godRays = Wasteland::Renderer3D::IsGodRaysEnabled();
+			if (ImGui::Checkbox("God Rays", &godRays))
+			{
+				Wasteland::Renderer3D::SetGodRaysEnabled(godRays);
+			}
+			if (ImGui::IsItemHovered())
+			 ImGui::SetTooltip("Screen-space light shafts from the sun.");
+			if (Wasteland::Renderer3D::IsGodRaysEnabled())
+			{
+				float intensity = Wasteland::Renderer3D::GetGodRayIntensity();
+				if (ImGui::SliderFloat("  Intensity", &intensity, 0.0f, 2.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetGodRayIntensity(intensity);
+				}
+				float decay = Wasteland::Renderer3D::GetGodRayDecay();
+				if (ImGui::SliderFloat("  Decay", &decay, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetGodRayDecay(decay);
+				}
+				int samples = Wasteland::Renderer3D::GetGodRaySamples();
+				if (ImGui::SliderInt("  Samples", &samples, 1, 64))
+				{
+					Wasteland::Renderer3D::SetGodRaySamples(samples);
+				}
+				float density = Wasteland::Renderer3D::GetGodRayDensity();
+				if (ImGui::SliderFloat("  Density", &density, 0.0f, 5.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetGodRayDensity(density);
+				}
+			}
+
 			ImGui::TextWrapped("Add Volumetric Fog / Volumetric Clouds components to an entity; its Transform defines the volume box.");
 
 			ImGui::End();

@@ -258,6 +258,15 @@ namespace Wasteland
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<WaterComponent>())
+				{
+					if (ImGui::MenuItem("Water (Lake / River / Ocean)"))
+					{
+						m_SelectionContext.AddComponent<WaterComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<ScriptComponent>())
 				{
 					if (ImGui::MenuItem("Script Component"))
@@ -1293,6 +1302,140 @@ namespace Wasteland
 
 			if (removeComponent)
 				entity.RemoveComponent<AreaLightComponent>();
+		}
+
+		if (entity.HasComponent<WaterComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(WaterComponent).hash_code(), treeNodeFlags, "Water");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &water = entity.GetComponent<WaterComponent>();
+
+				ImGui::Checkbox("Enabled", &water.Enabled);
+
+				const char *bodyTypeStrings[] = {"Lake", "River", "Ocean"};
+				const char *currentBodyTypeString = bodyTypeStrings[(int)water.Type];
+				if (ImGui::BeginCombo("Body Type", currentBodyTypeString))
+				{
+					for (int i = 0; i < 3; i++)
+					{
+						bool isSelected = currentBodyTypeString == bodyTypeStrings[i];
+						if (ImGui::Selectable(bodyTypeStrings[i], isSelected))
+						{
+							WaterComponent::ApplyPreset(water, (WaterBodyType)i);
+							if (entity.HasComponent<TransformComponent>())
+							{
+								auto &tc = entity.GetComponent<TransformComponent>();
+								if (tc.Scale.x < 1.0f || tc.Scale.z < 1.0f)
+								{
+									// Oceans/rivers usually span large areas; grow a
+									// default-size plane so the preset is visible.
+									if ((WaterBodyType)i == WaterBodyType::Ocean)
+									{
+										tc.Scale.x = glm::max(tc.Scale.x, 60.0f);
+										tc.Scale.z = glm::max(tc.Scale.z, 60.0f);
+									}
+									else if ((WaterBodyType)i == WaterBodyType::River)
+									{
+										tc.Scale.x = glm::max(tc.Scale.x, 30.0f);
+										tc.Scale.z = glm::max(tc.Scale.z, 6.0f);
+									}
+									else
+									{
+										tc.Scale.x = glm::max(tc.Scale.x, 10.0f);
+										tc.Scale.z = glm::max(tc.Scale.z, 10.0f);
+									}
+								}
+							}
+						}
+
+						if (isSelected)
+							ImGui::SetItemDefaultFocus();
+					}
+
+					ImGui::EndCombo();
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Switching type applies that body's preset values.\nThe entity Transform defines the surface:\nTranslation.y = still water level, Scale.x/z = extents.");
+
+				if (ImGui::CollapsingHeader("Appearance"))
+				{
+					ImGui::ColorEdit3("Shallow Color", glm::value_ptr(water.ShallowColor));
+					ImGui::ColorEdit3("Deep Color", glm::value_ptr(water.DeepColor));
+					ImGui::ColorEdit3("Foam Color", glm::value_ptr(water.FoamColor));
+					ImGui::DragFloat("Water Depth", &water.WaterDepth, 0.1f, 0.1f, 50.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Absorption depth for the shallow/deep gradient.\nDeeper water tints toward Deep Color.");
+					ImGui::SliderFloat("Transparency", &water.Transparency, 0.0f, 1.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Opaque pipeline: tints the raster albedo toward\nshallow (true alpha blending is not supported yet).");
+					ImGui::SliderFloat("Roughness", &water.Roughness, 0.0f, 1.0f);
+					ImGui::SliderFloat("Metallic", &water.Metallic, 0.0f, 1.0f);
+				}
+
+				if (ImGui::CollapsingHeader("Waves"))
+				{
+					ImGui::DragFloat("Amplitude", &water.WaveAmplitude, 0.01f, 0.0f, 5.0f);
+					ImGui::DragFloat("Length", &water.WaveLength, 0.1f, 0.1f, 100.0f);
+					ImGui::DragFloat("Speed", &water.WaveSpeed, 0.05f, 0.0f, 10.0f);
+					ImGui::DragFloat2("Direction", glm::value_ptr(water.WaveDirection), 0.05f);
+					ImGui::SliderFloat("Chop", &water.Chop, 0.0f, 1.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Secondary detail waves. 0 = glassy single swell,\n1 = fully choppy. Same field drives gameplay\nheight queries and the rendered mesh.");
+					ImGui::SliderFloat("Steepness", &water.Steepness, 0.0f, 1.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Gerstner horizontal chop: bunches vertices toward\ncrests for sharp peaked waves (0 = sine swell).");
+				}
+
+				if (ImGui::CollapsingHeader("Flow & Foam"))
+				{
+					ImGui::DragFloat2("Flow Direction", glm::value_ptr(water.FlowDirection), 0.05f);
+					ImGui::DragFloat("Flow Speed", &water.FlowSpeed, 0.05f, 0.0f, 20.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("River current: advects the wave field and is\nreported by GetWaterHeightAt for gameplay drift.");
+					ImGui::SliderFloat("Foam Amount", &water.FoamAmount, 0.0f, 1.0f);
+					ImGui::DragFloat("Foam Scale", &water.FoamScale, 0.05f, 0.01f, 10.0f);
+					ImGui::SliderFloat("Shore Foam", &water.ShoreFoam, 0.0f, 1.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Foamline along the footprint edges (banks/shore).\nAgitated by flow and surf; rivers foam at banks,\nlake edges lap gently.");
+					ImGui::DragFloat("Shore Width", &water.ShoreWidth, 0.05f, 0.05f, 10.0f);
+				}
+
+				if (ImGui::CollapsingHeader("Simulation & Mesh"))
+				{
+					ImGui::DragInt("Segments", &water.Segments, 1.0f, 1, 128);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Surface grid resolution per side.\nClamped to 64 in the renderer for batch/CPU cost.");
+					ImGui::DragFloat("Time Scale", &water.TimeScale, 0.05f, 0.0f, 10.0f);
+					ImGui::DragFloat("Buoyancy", &water.Buoyancy, 0.05f, 0.0f, 10.0f);
+					ImGui::DragFloat("Density", &water.WaterDensity, 0.05f, 0.0f, 10.0f);
+					if (ImGui::IsItemHovered())
+						ImGui::SetTooltip("Buoyancy/Density are gameplay scales read by\nscripts via GetWaterHeightAt / IsUnderwater.");
+					ImGui::Text("Sim Time: %.2f s", (double)water.Time);
+				}
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<WaterComponent>();
 		}
 
 		if (entity.HasComponent<ScriptComponent>())
