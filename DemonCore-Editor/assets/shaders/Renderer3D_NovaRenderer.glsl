@@ -39,6 +39,7 @@ struct RayTracingInstance
     int PackedMaterialMapID;
     vec4 TextureScale;
     vec4 DisplacementParams;
+    vec4 WaveParams;  // x=amplitude, y=wavelength, z=speed, w=chop; water only
 };
 
 layout(std430, binding = 1) buffer SceneInstances
@@ -163,7 +164,7 @@ float wl_softsign(float x) { return x / (1.0f + abs(x)); }
 ivec2 wl_trace_extent(ivec2 fullSize)
 {
     ivec2 t = ivec2(vec2(fullSize) * u_RenderScale);
-    return ivec2(max(t.x, 1f), max(t.y, 1f));
+    return ivec2(max(t.x, 1), max(t.y, 1));
 }
 
 // Trace G-buffers (depth/normal) live full-size with valid data in the trace
@@ -891,6 +892,117 @@ struct HitInfo {
     vec3 f0Tint; // neural material specular tint, 1.0f = classic F0
 };
 
+// ---- Gerstner wave spectrum (matches WaterComponent::EvaluateSurface) ----
+// 6 directional components, Phillips-style falloff, deep-water dispersion.
+// Returns world-space height and normal perturbation at a world XZ position.
+// baseDir = normalized primary swell direction; flowVel advects the sample
+// (matches the CPU AdvectedPos) so rivers carry their waves downstream.
+void EvaluateGerstnerWaves(vec2 worldXZ, float time, float amplitude, float wavelength,
+                           float speed, float chop, float steepness, float minWavelength,
+                           vec2 baseDir, vec2 flowVel,
+                           out float outHeight, out vec3 outNormal)
+{
+    outHeight = 0.0f;
+    outNormal = vec3(0.0f, 1.0f, 0.0f);
+    if (amplitude <= 0.00001f)
+        return;
+
+    // Spectrum tables (length ratios, amplitude shares, fan angles, phase offsets)
+    // Mirrors CPU-side WaterComponent::SpectrumLengthRatio/Share/FanAngle/PhaseOffset
+    float baseLen = max(wavelength, 0.1f);
+    float t = time * speed;
+    float steep = clamp(steepness, 0.0f, 1.0f);
+    float chopK = clamp(chop, 0.0f, 1.0f);
+    vec2 d1 = baseDir;
+    if (dot(d1, d1) < 1e-8f)
+        d1 = vec2(1.0f, 0.3f);
+    d1 = normalize(d1);
+    vec2 p = worldXZ - flowVel * time;
+
+    float nx = 0.0f, ny = 1.0f, nz = 0.0f;
+    for (int i = 0; i < 6; i++)
+    {
+        // Length ratio per component
+        float lenRatio = 1.0f;
+        if (i == 1) lenRatio = 0.55f;
+        else if (i == 2) lenRatio = 0.32f;
+        else if (i == 3) lenRatio = 0.19f;
+        else if (i == 4) lenRatio = 0.11f;
+        else if (i == 5) lenRatio = 0.06f;
+
+        float li = baseLen * lenRatio;
+
+        // Spectral LOD: fade components shorter than minWavelength
+        float fade = 1.0f;
+        if (minWavelength > 0.00001f && li < minWavelength * 2.0f)
+        {
+            if (li <= minWavelength)
+                continue;
+            fade = (li - minWavelength) / minWavelength;
+        }
+
+        // Amplitude share per component
+        float share = 0.55f;
+        if (i == 1) share = 0.22f;
+        else if (i == 2) share = 0.11f;
+        else if (i == 3) share = 0.06f;
+        else if (i == 4) share = 0.035f;
+        else if (i == 5) share = 0.025f;
+
+        float amp = amplitude * share * (i == 0 ? 1.0f : chopK) * fade;
+        if (amp <= 0.0000001f)
+            continue;
+
+        float k = 6.2831853f / li;
+        if (k > 40.0f) k = 40.0f;
+        float omega = sqrt(9.81f * k);
+        if (omega > 25.0f) omega = 25.0f;
+
+        // Fan angle per component
+        float angle = 0.0f;
+        if (i == 1) angle = 0.40f;
+        else if (i == 2) angle = -0.54f;
+        else if (i == 3) angle = 0.82f;
+        else if (i == 4) angle = -1.01f;
+        else if (i == 5) angle = 1.24f;
+
+        // Phase offset per component
+        float phaseOff = 0.0f;
+        if (i == 1) phaseOff = 1.3f;
+        else if (i == 2) phaseOff = 4.1f;
+        else if (i == 3) phaseOff = 2.2f;
+        else if (i == 4) phaseOff = 5.0f;
+        else if (i == 5) phaseOff = 0.7f;
+
+        // Direction: fan from primary wave direction
+        float ca = cos(angle);
+        float sa = sin(angle);
+        vec2 dir = vec2(d1.x * ca - d1.y * sa, d1.x * sa + d1.y * ca);
+
+        float sharp = (i == 0 ? 0.6f : 1.0f) * chopK;
+        float norm = 1.0f + 0.5f * sharp;
+        float phi = mod(k * dot(dir, p) - omega * t, 6.2831853f);
+        float s1 = sin(phi);
+        float c1 = cos(phi);
+        float harmonic = 2.0f * phi + phaseOff;
+        float s2 = sin(harmonic);
+        float c2 = cos(harmonic);
+
+        float wa = k * amp;
+        float qi = steep / (wa * 6.0f + 1e-6f);
+        if (qi > 1.0f) qi = 1.0f;
+        if (qi < 0.0f) qi = 0.0f;
+
+        float shapeS = (s1 + 0.5f * sharp * s2) / norm;
+        float shapeC = (c1 + sharp * c2) / norm;
+        outHeight += amp * shapeS;
+        nx += -dir.x * wa * shapeC;
+        nz += -dir.y * wa * shapeC;
+        ny += -qi * wa * shapeS;
+    }
+    outNormal = normalize(vec3(nx, ny, nz));
+}
+
 void ComputeTangentFrame(vec3 localHitPos, vec3 localNormal, int shapeType, vec4 texScaleFull,
                          out vec3 T, out vec3 B, out vec2 uvScale)
 {
@@ -1273,14 +1385,16 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 sampledAlbedo = textureLod(u_SceneTextures[inst.TextureID], uv, mipLevel).rgb;
 
             info.albedo = sampledAlbedo * inst.Albedo.rgb;
+            // Water marker: skip neural blocks for water (waves handle their own shading)
+            bool wlWater = (inst.DisplacementParams.z > 0.5f);
             // Neural texture detail: MLP-synthesized micro-surface (OpenGL neural path)
-            if (u_NeuralEnabled == 1 && u_NeuralTexStrength > 0.001f)
+            if (!wlWater && u_NeuralEnabled == 1 && u_NeuralTexStrength > 0.001f)
                 info.albedo *= mix(vec3(1.0f), wl_neural_tex_detail(uv, info.normal), clamp(u_NeuralTexStrength, 0.0f, 1.0f));
             info.metal = clamp(inst.MaterialParams.x, 0.0f, 1.0f);
             info.rough = inst.MaterialParams.y > 0.0f ? inst.MaterialParams.y : 0.5f;
             info.f0Tint = vec3(1.0f);
             // Neural material: learned PBR params feed the GGX BRDF (OpenGL neural path)
-            if (u_NeuralEnabled == 1 && u_NeuralMatStrength > 0.001f)
+            if (!wlWater && u_NeuralEnabled == 1 && u_NeuralMatStrength > 0.001f)
             {
                 float nmk = clamp(u_NeuralMatStrength, 0.0f, 1.0f);
                 vec3 nma = info.albedo;
@@ -1292,6 +1406,90 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 info.metal = mix(info.metal, nmm, nmk);
                 info.rough = mix(info.rough, nmr, nmk);
                 info.f0Tint = mix(vec3(1.0f), nmf, nmk);
+            }
+
+            // ---- Water: Gerstner swell + ripple detail + whitecaps ----
+            // Water marker: DisplacementParams.z > 0.5 flags water surfaces.
+            // The geometric box stays flat (no per-pixel ray re-intersection);
+            // realism comes from an accurate wave normal driving the mirror
+            // reflection, pixel-level ripple octaves for close-up glitter, and
+            // noise-broken crest foam. Packed auxiliaries (see DrawWaterPlane
+            // Nova path): TextureScale.xy = swell dir, .zw = flow velocity,
+            // DisplacementParams.x = foam amount.
+            if (wlWater)
+            {
+                float wAmplitude = inst.WaveParams.x;
+                float wLength = inst.WaveParams.y;
+                float wSpeed = inst.WaveParams.z;
+                float wChop = clamp(inst.WaveParams.w, 0.0f, 1.0f);
+                // Steepness rides in MaterialParams.w (free for cubes);
+                // .z stays 0 so the shape discriminator keeps HitCube.
+                float wSteep = inst.MaterialParams.w;
+                vec2 wBaseDir = inst.TextureScale.xy;
+                vec2 wFlow = inst.TextureScale.zw;
+                float wFoamAmt = clamp(inst.DisplacementParams.x, 0.0f, 1.0f);
+                float wDist = distance(info.worldPos, u_CameraPosition);
+                // Up-facing weight: only the surface skin takes wave normals;
+                // the thin-box sides keep their geometric normal.
+                float wUpWeight = clamp(info.normal.y, 0.0f, 1.0f);
+                // Quality-scaled distance cutoff: skip waves on far water
+                float waveMaxDist = 80.0f;
+                if (u_QualityLevel == 0) waveMaxDist = 30.0f;
+                else if (u_QualityLevel == 1) waveMaxDist = 50.0f;
+                else if (u_QualityLevel == 2) waveMaxDist = 80.0f;
+                else waveMaxDist = 120.0f;
+                float wH = 0.0f;
+                vec3 wN = vec3(0.0f, 1.0f, 0.0f);
+                if (wDist < waveMaxDist && wUpWeight > 0.001f)
+                {
+                    // Distance-based spectral LOD: fade high-frequency
+                    // components that would alias at this distance
+                    // (matches CPU-side LOD)
+                    float minWavelength = wDist * 0.2f;
+                    EvaluateGerstnerWaves(info.worldPos.xz, u_Time, wAmplitude, wLength,
+                                          wSpeed, wChop, wSteep, minWavelength,
+                                          wBaseDir, wFlow, wH, wN);
+                    // Blend-replace: the old add-and-halve flattened swell
+                    // (up + up = up), hiding waves from reflections.
+                    info.normal = normalize(mix(info.normal, wN, wUpWeight));
+                }
+                // Ripple detail: pixel-level chop octaves (mirrors the Basic
+                // raster path) so the mirror breaks into sun glitter near the
+                // camera instead of staying a flat sheet.
+                vec2 wRippleGrad = vec2(0.0f);
+                float wRippleFade = clamp(1.0f - (wDist - 25.0f) / 60.0f, 0.0f, 1.0f) * wUpWeight;
+                if (wRippleFade > 0.001f && wChop > 0.001f)
+                {
+                    vec2 ruv = info.worldPos.xz - wFlow * u_Time;
+                    float wt = u_Time;
+                    wRippleGrad += vec2(0.96, 0.28) * (cos(dot(vec2(0.96, 0.28), ruv) * 2.1 + wt * 1.6) * 0.22);
+                    wRippleGrad += vec2(-0.42, 0.91) * (cos(dot(vec2(-0.42, 0.91), ruv) * 3.7 - wt * 2.3 + 1.7) * 0.13);
+                    wRippleGrad += vec2(0.66, -0.75) * (cos(dot(vec2(0.66, -0.75), ruv) * 7.9 + wt * 3.4 + 4.2) * 0.07);
+                    float wRippleStrength = 0.55 * wRippleFade * (0.25f + 0.75f * wChop);
+                    info.normal = normalize(info.normal + vec3(-wRippleGrad.x, 0.0f, -wRippleGrad.y) * wRippleStrength);
+                }
+                // Whitecaps: crest-gated, broken by advected cell noise so foam
+                // reads as patches instead of clean bands. FoamAmount gates
+                // coverage, so calm lakes stay glassy.
+                float wMaxH = max(inst.DisplacementParams.w, 0.05f);
+                float wCrest = smoothstep(wMaxH * 0.5f, wMaxH * 0.9f, wH);
+                float wFoamMask = 0.0f;
+                if (wFoamAmt > 0.001f && wCrest > 0.001f)
+                {
+                    vec2 fuv = info.worldPos.xz * 0.9f - wFlow * (u_Time * 0.7f) + vec2(u_Time * 0.03f, -u_Time * 0.021f);
+                    float breakup = wl_hash12(floor(fuv * 3.0f)) * 0.6f + wl_hash12(floor(fuv * 7.0f + 13.1f)) * 0.4f;
+                    float wFoamN = breakup * 0.7f + wCrest * 0.3f;
+                    wFoamMask = smoothstep(1.0f - wFoamAmt, 1.01f - wFoamAmt * 0.5f, wFoamN);
+                }
+                wFoamMask = clamp(wFoamMask, 0.0f, 1.0f);
+                info.albedo = mix(info.albedo, vec3(0.9f, 0.95f, 1.0f), wFoamMask * 0.85f);
+                // Ripple slopes roughen the mirror into glitter; foam is matte.
+                // Crests themselves stay glossy so swells catch the sun.
+                float wRippleMag = clamp(length(wRippleGrad), 0.0f, 1.0f);
+                info.rough = clamp(info.rough + wRippleMag * 0.12f * wRippleFade, 0.0f, 1.0f);
+                info.rough = mix(info.rough, 0.85f, wFoamMask);
+                // Water is a mirror: metallic = 1.0
+                info.metal = 1.0f;
             }
             // Relief weathering: dust settles in pits, sun bleaches ridge tops.
             // Displacement-gated: only set when the relief march ran with push.
@@ -1374,10 +1572,10 @@ vec3 ComputeDirectLighting(HitInfo h, vec3 V, uint lightSeed, bool skipEnv) {
     {
         evalCount = 2;
         lightStart = int(lightSeed % uint(lightsToSample));
-        lightStride = lightsToSample / 2;
+        lightStride = int(float(lightsToSample) / 2.0);
         if (lightStride < 1) lightStride = 1;
     }
-    float lightScale = float(lightsToSample) / float(max(evalCount, 1f));
+    float lightScale = float(lightsToSample) / float(max(evalCount, 1.0f));
 
     for (int k = 0; k < evalCount; k++) {
         int li = (lightStart + k * lightStride) % lightsToSample;
@@ -1879,7 +2077,7 @@ void RunBilateralBlur() {
     vec3 centerNormal = texture(s_NormalBuffer, wl_buf_uv(uv)).rgb * 2.0f - 1.0f;
     float centerLuma = GetLuminance(centerColor);
 
-    int step = int(max(1f, u_StepSize));
+    int step = int(max(1.0f, float(u_StepSize)));
     vec3 totalColor = vec3(0.0f);
     float totalWeight = 0.0f;
 

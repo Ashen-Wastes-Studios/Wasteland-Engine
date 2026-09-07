@@ -46,6 +46,7 @@ namespace Wasteland
         int PackedMaterialMapID;
         glm::vec4 TextureScale;
         glm::vec4 DisplacementParams;
+        glm::vec4 WaveParams;  // x=amplitude, y=wavelength, z=speed, w=chop; water only
     };
 
     // BVH node layout for GPU (std430 SSBO, 32 bytes per node)
@@ -2652,17 +2653,31 @@ namespace Wasteland
             instance.Albedo = glm::vec4(flatAlbedo, 1.0f);
             // Mirror path (matches the raster water branch): F0 picks up the
             // water tint and the env reflection takes over.
-            instance.MaterialParams = glm::vec4(1.0f, rough, 0.0f, 0.0f);
+            // Steepness rides in MaterialParams.w (.z must stay 0 = cube shape).
+            instance.MaterialParams = glm::vec4(1.0f, rough, 0.0f, water.Steepness);
             instance.Min = glm::vec4(-0.5f, -0.5f, -0.5f, 1.0f);
             instance.Max = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
             instance.Emission = glm::vec4(0.0f);
             instance.TextureID = -1;
             instance.PackedMaterialMapID = -1;
-            instance.TextureScale = glm::vec4(1.0f);
+            // Nova water packing (water has no albedo texture, so TextureScale
+            // is free): xy = normalized swell direction, zw = flow velocity
+            // (world units/sec, matches the CPU AdvectedPos). The shader reads
+            // these for the Gerstner spectrum, ripple detail, and foam drift.
+            glm::vec2 wDir = water.WaveDirection;
+            if (glm::length2(wDir) < 1e-8f)
+                wDir = glm::vec2(1.0f, 0.3f);
+            wDir = glm::normalize(wDir);
+            glm::vec2 wFlow = water.SampleFlow();
+            instance.TextureScale = glm::vec4(wDir.x, wDir.y, wFlow.x, wFlow.y);
             // Water marker for the Nova path-tracer: z = 1 flags the water
             // branch, w carries max crest height (world units) for
-            // absolute-height foam. Static per surface (no BVH churn).
-            instance.DisplacementParams = glm::vec4(0.0f, 0.0f, 1.0f, glm::max(maxH, 0.05f));
+            // absolute-height foam. x carries foam amount (ApplyPOM early-outs
+            // on TextureID == -1, so the relief march never runs on water).
+            // Static per surface (no BVH churn).
+            instance.DisplacementParams = glm::vec4(glm::clamp(water.FoamAmount, 0.0f, 1.0f), 0.0f, 1.0f, glm::max(maxH, 0.05f));
+            // WaveParams: x=amplitude, y=wavelength, z=speed, w=chop.
+            instance.WaveParams = glm::vec4(water.WaveAmplitude, water.WaveLength, water.WaveSpeed, water.Chop);
             instance.MaxDistance = 1000.0f;
             instance.LODLevel = 0;
             s_Data.m_SceneInstances.push_back(instance);

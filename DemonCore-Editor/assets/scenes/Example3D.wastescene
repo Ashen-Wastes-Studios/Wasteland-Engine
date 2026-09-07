@@ -345,17 +345,17 @@ Entities:
       WaveSpeed: 1.20000005
       WaveDirection: [1, 0.25]
       Chop: 0.699999988
-      Steepness: 0.100000001
+      Steepness: 0.600000024
       FlowDirection: [1, 0.25]
       FlowSpeed: 0.300000012
       FoamAmount: 0.400000006
       FoamScale: 1
-      ShoreFoam: 0.5
-      ShoreWidth: 1
+      ShoreFoam: 0.300000012
+      ShoreWidth: 2
       Transparency: 0.850000024
       Roughness: 0.0799999982
       Metallic: 0
-      Segments: 32
+      Segments: 48
       TimeScale: 1
       Buoyancy: 1
       WaterDensity: 1
