@@ -1307,6 +1307,8 @@ namespace Wasteland
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
             glActiveTexture(GL_TEXTURE0 + 4);
             glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
+            glActiveTexture(GL_TEXTURE0 + 8);
+            glBindTexture(GL_TEXTURE_2D, s_Data.RayTracingTexture);
             glActiveTexture(GL_TEXTURE0 + 10);
             glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
 
