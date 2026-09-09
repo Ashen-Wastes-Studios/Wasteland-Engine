@@ -358,7 +358,7 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandL
     }
 }
 
-static void ImGui_ImplDX12_CreateFontsTexture()
+static bool ImGui_ImplDX12_CreateFontsTexture()
 {
     // Build texture atlas
     ImGuiIO& io = ImGui::GetIO();
@@ -392,6 +392,8 @@ static void ImGui_ImplDX12_CreateFontsTexture()
         ID3D12Resource* pTexture = nullptr;
         bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pTexture));
+        if (!pTexture)
+            return false;
 
         UINT uploadPitch = (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
         UINT uploadSize = height * uploadPitch;
@@ -415,11 +417,22 @@ static void ImGui_ImplDX12_CreateFontsTexture()
         HRESULT hr = bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !uploadBuffer)
+        {
+            if (pTexture) pTexture->Release();
+            return false;
+        }
 
         void* mapped = nullptr;
         D3D12_RANGE range = { 0, uploadSize };
         hr = uploadBuffer->Map(0, &range, &mapped);
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !mapped)
+        {
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
         for (int y = 0; y < height; y++)
             memcpy((void*) ((uintptr_t) mapped + y * uploadPitch), pixels + y * width * 4, width * 4);
         uploadBuffer->Unmap(0, &range);
@@ -449,6 +462,12 @@ static void ImGui_ImplDX12_CreateFontsTexture()
         ID3D12Fence* fence = nullptr;
         hr = bd->pd3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !fence)
+        {
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         HANDLE event = CreateEvent(0, 0, 0, 0);
         IM_ASSERT(event != nullptr);
@@ -461,20 +480,54 @@ static void ImGui_ImplDX12_CreateFontsTexture()
         ID3D12CommandQueue* cmdQueue = nullptr;
         hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !cmdQueue)
+        {
+            fence->Release();
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         ID3D12CommandAllocator* cmdAlloc = nullptr;
         hr = bd->pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !cmdAlloc)
+        {
+            cmdQueue->Release();
+            fence->Release();
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         ID3D12GraphicsCommandList* cmdList = nullptr;
         hr = bd->pd3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !cmdList)
+        {
+            cmdAlloc->Release();
+            cmdQueue->Release();
+            fence->Release();
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
         cmdList->ResourceBarrier(1, &barrier);
 
         hr = cmdList->Close();
         IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr))
+        {
+            cmdList->Release();
+            cmdAlloc->Release();
+            cmdQueue->Release();
+            fence->Release();
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         cmdQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&cmdList);
         hr = cmdQueue->Signal(fence, 1);
@@ -513,6 +566,7 @@ static void ImGui_ImplDX12_CreateFontsTexture()
     // [Solution 4] command-line: add '/D ImTextureID=ImU64' to your cl.exe command-line (this is what we do in the example_win32_direct12/build_win32.bat file)
     static_assert(sizeof(ImTextureID) >= sizeof(bd->hFontSrvGpuDescHandle.ptr), "Can't pack descriptor handle into TexID, 32-bit not supported yet.");
     io.Fonts->SetTexID((ImTextureID)bd->hFontSrvGpuDescHandle.ptr);
+    return true;
 }
 
 bool    ImGui_ImplDX12_CreateDeviceObjects()
@@ -744,7 +798,8 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
     if (result_pipeline_state != S_OK)
         return false;
 
-    ImGui_ImplDX12_CreateFontsTexture();
+    if (!ImGui_ImplDX12_CreateFontsTexture())
+        return false;
 
     return true;
 }

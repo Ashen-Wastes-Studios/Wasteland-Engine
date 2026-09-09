@@ -108,7 +108,6 @@ namespace Wasteland
 				m_Window->BeginFrame();
 				{
 					WL_PROFILE_SCOPE("LayerStack OnUpdate");
-
 					for (Layer *layer : m_LayerStack)
 						layer->OnUpdate(timestep);
 				}
@@ -124,9 +123,9 @@ namespace Wasteland
 				}
 
 				m_ImGuiLayer->Begin();
+				if (m_ImGuiLayer->HasBackend())
 				{
 					WL_PROFILE_SCOPE("LayerStack OnImGuiRender");
-
 					for (Layer *layer : m_LayerStack)
 						layer->OnImGuiRender();
 				}

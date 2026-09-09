@@ -31,7 +31,7 @@ namespace Wasteland {
 	{
 		int width, height, channels;
 		stbi_set_flip_vertically_on_load(1);
-		stbi_uc* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+		stbi_uc* data = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
 
 		if (!data)
 		{
@@ -48,7 +48,7 @@ namespace Wasteland {
 		CreateSampler();
 
 		// Upload texture data
-		int bpp = channels;
+		int bpp = 4;
 		uint32_t size = width * height * bpp;
 		SetData(data, size);
 
@@ -136,8 +136,19 @@ namespace Wasteland {
 			return;
 		}
 
-		// Upload texture data (arraySlice=0, mipLevel=0)
-		cmd->writeTexture(m_Texture, 0, 0, data, m_Width * 4); // Assuming RGBA8
+		if (size != uint64_t(m_Width) * m_Height * 4)
+		{
+			WL_CORE_ERROR("NVRHITexture2D::SetData: Expected a full RGBA8 image");
+			return;
+		}
+		const bool transient = !context->IsCommandListOpen();
+		if (transient) cmd->open();
+		cmd->writeTexture(m_Texture, 0, 0, data, m_Width * 4);
+		if (transient)
+		{
+			cmd->close();
+			context->GetDevice()->executeCommandList(cmd);
+		}
 	}
 
 	void NVRHITexture2D::Bind(uint32_t slot) const

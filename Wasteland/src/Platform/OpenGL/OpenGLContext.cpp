@@ -12,6 +12,20 @@ namespace Wasteland {
 		WL_CORE_ASSERT(windowHandle, "Window handle is null!");
 	}
 
+
+	OpenGLContext::~OpenGLContext()
+	{
+		// Detach our context from the calling thread if it is current.
+		// Destroying a window whose context is current (glfwDestroyWindow in
+		// the GL -> NO_API switch path) is forbidden by GLFW and corrupts
+		// driver state in nvoglv64.dll — the same binary that implements
+		// Vulkan — crashing later Vulkan calls (seen as an AV in
+		// nvrhi::vulkan::Queue::Queue's semaphore creation).
+		if (m_WindowHandle && glfwGetCurrentContext() == m_WindowHandle)
+			glfwMakeContextCurrent(nullptr);
+		m_WindowHandle = nullptr;
+	}
+
 	void OpenGLContext::Init()
 	{
 		WL_PROFILE_FUNCTION();

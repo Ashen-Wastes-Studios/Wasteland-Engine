@@ -100,6 +100,14 @@ namespace Wasteland
 		}
 
 		nvrhi::TextureHandle backBuffer = m_Context->GetCurrentBackBuffer();
+		// When an editor framebuffer is bound, clear its color attachment 0
+		// instead of the swapchain backbuffer (that's the render target now).
+		if (m_Context->HasRenderTargetOverride())
+		{
+			auto fb = m_Context->GetCurrentFramebuffer();
+			if (fb && !fb->getDesc().colorAttachments.empty())
+				backBuffer = fb->getDesc().colorAttachments[0].texture;
+		}
 		if (!backBuffer)
 		{
 			WL_CORE_ERROR("Clear: No backbuffer available");
@@ -108,11 +116,18 @@ namespace Wasteland
 
 	// Batched frame: BeginFrame() already opened the command list, ExecuteNVRHICommandList() will close+execute.
 		// Do NOT open/close here — per-draw open/close overwrites m_ActiveCommandList and loses previous draws.
+		auto clearDepth = [&]()
+		{
+			auto fb = m_Context->GetCurrentFramebuffer();
+			if (fb && fb->getDesc().depthAttachment.texture)
+				cmd->clearDepthStencilTexture(fb->getDesc().depthAttachment.texture, nvrhi::AllSubresources, true, 1.0f, false, 0);
+		};
 		if (!m_Context->IsCommandListOpen())
 		{
 			WL_CORE_WARN("Clear: Command list not open (missing BeginFrame), recording with transient open/close");
 			cmd->open();
-			cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
+			clearDepth();
+		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
 								   nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
 			cmd->close();
 			// Transient: execute immediately since we are outside batched frame
@@ -120,6 +135,7 @@ namespace Wasteland
 				dev->executeCommandList(cmd);
 			return;
 		}
+		clearDepth();
 		cmd->clearTextureFloat(backBuffer, nvrhi::AllSubresources,
 							   nvrhi::Color(m_ClearColor.r, m_ClearColor.g, m_ClearColor.b, m_ClearColor.a));
 	}
@@ -129,6 +145,8 @@ namespace Wasteland
 		PipelineKey key;
 		key.shaderPtr = shader.get();
 		key.vertexArrayPtr = vertexArray.get();
+		if (auto fb = m_Context->GetCurrentFramebuffer())
+			key.framebufferInfo = fb->getFramebufferInfo();
 
 		auto it = m_PipelineCache.find(key);
 		if (it != m_PipelineCache.end())
@@ -167,10 +185,15 @@ namespace Wasteland
 		pipelineDesc.VS = nvrhiShader->GetVertexShader();
 		pipelineDesc.PS = nvrhiShader->GetPixelShader();
 		pipelineDesc.inputLayout = inputLayout;
+		if (nvrhiShader->GetBindingLayout())
+			pipelineDesc.addBindingLayout(nvrhiShader->GetBindingLayout());
 
 		// Render state
-		pipelineDesc.renderState.rasterState.cullMode = nvrhi::RasterCullMode::Back;
+		pipelineDesc.renderState.rasterState.cullMode = nvrhi::RasterCullMode::None;
 		pipelineDesc.renderState.rasterState.fillMode = nvrhi::RasterFillMode::Solid;
+		pipelineDesc.renderState.depthStencilState.depthTestEnable = true;
+		pipelineDesc.renderState.depthStencilState.depthWriteEnable = true;
+		pipelineDesc.renderState.depthStencilState.depthFunc = nvrhi::ComparisonFunc::LessOrEqual;
 
 		// Blend state
 		pipelineDesc.renderState.blendState.targets[0].blendEnable = true;
@@ -238,20 +261,18 @@ namespace Wasteland
 			setDesc.addItem(nvrhi::BindingSetItem::ConstantBuffer(1, psCB));
 		}
 
-		// Bind active textures (e.g. for Renderer2D texture slots)
+		// Bind all active textures to the shared t0[32] array. Always provide
+		// slot 0's sampler, even if the caller has no non-empty texture list.
 		for (size_t i = 0; i < m_ActiveTextures.size(); i++)
 		{
-			if (m_ActiveTextures[i])
+			if (!m_ActiveTextures[i])
+				continue;
+			auto nvrhiTex = std::dynamic_pointer_cast<NVRHITexture2D>(m_ActiveTextures[i]);
+			if (nvrhiTex && nvrhiTex->GetTexture())
 			{
-				auto nvrhiTex = std::dynamic_pointer_cast<NVRHITexture2D>(m_ActiveTextures[i]);
-				if (nvrhiTex && nvrhiTex->GetTexture())
-				{
-					setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(0, nvrhiTex->GetTexture()).setArrayElement(static_cast<uint32_t>(i)));
-					if (i == 0 && nvrhiTex->GetSampler())
-					{
-						setDesc.addItem(nvrhi::BindingSetItem::Sampler(0, nvrhiTex->GetSampler()));
-					}
-				}
+				setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(0, nvrhiTex->GetTexture()).setArrayElement(static_cast<uint32_t>(i)));
+				if (i == 0 && nvrhiTex->GetSampler())
+					setDesc.addItem(nvrhi::BindingSetItem::Sampler(0, nvrhiTex->GetSampler()));
 			}
 		}
 
@@ -331,6 +352,7 @@ namespace Wasteland
 			{
 				state.vertexBuffers.push_back(nvrhi::VertexBufferBinding()
 												  .setBuffer(nvrhiVB->GetBuffer())
+													  .setSlot(static_cast<uint32_t>(i))
 												  .setOffset(0));
 			}
 		}
@@ -341,9 +363,21 @@ namespace Wasteland
 								.setOffset(0)
 								.setFormat(nvrhi::Format::R32_UINT);
 
-		// Set viewport
-		state.viewport.addViewport(nvrhi::Viewport(static_cast<float>(m_Context->GetWidth()), static_cast<float>(m_Context->GetHeight())));
-		state.viewport.addScissorRect(nvrhi::Rect(m_Context->GetWidth(), m_Context->GetHeight()));
+		// Set viewport from the actual render target (editor framebuffer when
+		// bound; otherwise the swapchain), not always the window size
+		uint32_t vpWidth = m_Context->GetWidth();
+		uint32_t vpHeight = m_Context->GetHeight();
+		if (state.framebuffer)
+		{
+			const auto &fbInfo = state.framebuffer->getFramebufferInfo();
+			if (fbInfo.width > 0 && fbInfo.height > 0)
+			{
+				vpWidth = fbInfo.width;
+				vpHeight = fbInfo.height;
+			}
+		}
+		state.viewport.addViewport(nvrhi::Viewport(static_cast<float>(vpWidth), static_cast<float>(vpHeight)));
+		state.viewport.addScissorRect(nvrhi::Rect(vpWidth, vpHeight));
 
 		// Batched frame: BeginFrame already opened, Execute will close+execute.
 		// Fallback for outside-frame calls (e.g. init) uses transient open/close+execute.
@@ -351,7 +385,8 @@ namespace Wasteland
 		{
 			WL_CORE_WARN("DrawIndexed: Command list not open, using transient open/close");
 			cmd->open();
-			cmd->setGraphicsState(state);
+			std::static_pointer_cast<NVRHIShader>(m_CurrentShader)->UploadConstants(cmd);
+		cmd->setGraphicsState(state);
 			uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 			cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
 			cmd->close();
@@ -359,6 +394,7 @@ namespace Wasteland
 				dev->executeCommandList(cmd);
 			return;
 		}
+		std::static_pointer_cast<NVRHIShader>(m_CurrentShader)->UploadConstants(cmd);
 		cmd->setGraphicsState(state);
 		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));

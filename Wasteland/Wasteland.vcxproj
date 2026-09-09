@@ -159,6 +159,8 @@
     <ClInclude Include="src\Platform\Linux\LinuxWindow.h" />
     <ClInclude Include="src\Platform\Mac\MacInput.h" />
     <ClInclude Include="src\Platform\Mac\MacWindow.h" />
+    <ClInclude Include="src\Platform\NVRHI\DX11Nova.h" />
+    <ClInclude Include="src\Platform\NVRHI\DX12Nova.h" />
     <ClInclude Include="src\Platform\NVRHI\NVRHIBuffer.h" />
     <ClInclude Include="src\Platform\NVRHI\NVRHIContext.h" />
     <ClInclude Include="src\Platform\NVRHI\NVRHIFramebuffer.h" />
@@ -650,6 +652,7 @@
     <ClCompile Include="src\Platform\Mac\MacInput.cpp" />
     <ClCompile Include="src\Platform\Mac\MacPlatformUtils.cpp" />
     <ClCompile Include="src\Platform\Mac\MacWindow.cpp" />
+    <ClCompile Include="src\Platform\NVRHI\DX12Nova.cpp" />
     <ClCompile Include="src\Platform\NVRHI\NVRHIBuffer.cpp" />
     <ClCompile Include="src\Platform\NVRHI\NVRHIContext.cpp" />
     <ClCompile Include="src\Platform\NVRHI\NVRHIFramebuffer.cpp" />

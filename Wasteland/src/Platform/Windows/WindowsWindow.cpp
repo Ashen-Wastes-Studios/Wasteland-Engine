@@ -227,6 +227,12 @@ namespace Wasteland
 	{
 		WL_PROFILE_FUNCTION();
 
+		// Never destroy a window while its GL context is current on this thread:
+		// glfwDestroyWindow with a current context is undefined behavior and
+		// corrupts nvoglv64.dll state (it also implements Vulkan), crashing later
+		// Vulkan init. OpenGLContext's dtor detaches too; this covers ordering.
+		glfwMakeContextCurrent(nullptr);
+
 		if (m_OpenGLContext)
 		{
 			delete m_OpenGLContext;
@@ -402,9 +408,26 @@ namespace Wasteland
 			NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
 			if (nvrhiAPI)
 				nvrhiAPI->ClearCachedResources();
-		}
+			}
 
-		// Create NVRHI context if needed and not already created
+			// Shut down the ImGui renderer backend while the OLD context is still
+			// alive. Its Shutdown releases backend device objects owned by the old
+			// context (e.g. ImGui_ImplVulkan_Shutdown touches the descriptor pool /
+			// render pass that die with the old NVRHIContext). Running it after the
+			// old context is deleted is use-after-destroy (crashed in
+			// PerformBackendSwitch after Vulkan -> DX switches). The deferred
+			// SwitchBackend(api) below then only has to init the new backend
+			// (ShutdownBackend is a no-op when no backend is current). The window-
+			// recreate path above already did this; the None guard makes a second
+			// call here harmless.
+			if (Application::IsInitialized())
+			{
+			ImGuiLayer *preSwitchImgui = Application::Get().GetImGuiLayer();
+			if (preSwitchImgui)
+				preSwitchImgui->ShutdownBackendForWindowRecreate();
+			}
+
+			// Create NVRHI context if needed and not already created
 		if ((api == RendererAPI::API::NVRHI_DX11 ||
 			 api == RendererAPI::API::NVRHI_DX12 ||
 			 api == RendererAPI::API::NVRHI_Vulkan) &&
@@ -469,6 +492,20 @@ namespace Wasteland
 	void WindowsWindow::Shutdown()
 	{
 		WL_PROFILE_FUNCTION();
+
+		// Release renderer-cached NVRHI resources BEFORE destroying contexts:
+		// anything still referenced (pipelines, buffers, textures) keeps the
+		// NVRHI Device alive past native teardown, and the driver then destroys
+		// a device with live children (VUID spam + AV in nvoglv64). Switches
+		// already do this in ExecuteSwitch; shutdown must too.
+		if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+			m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+			m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+		{
+			NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
+			if (nvrhiAPI)
+				nvrhiAPI->ClearCachedResources();
+		}
 
 		DestroyContexts();
 		glfwDestroyWindow(m_Window);

@@ -96,6 +96,12 @@
     <ClInclude Include="src\Platform\Mac\MacWindow.h">
       <Filter>src\Platform\Mac</Filter>
     </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\DX11Nova.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\DX12Nova.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
     <ClInclude Include="src\Platform\NVRHI\NVRHIBuffer.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
@@ -1564,6 +1570,9 @@
     </ClCompile>
     <ClCompile Include="src\Platform\Mac\MacWindow.cpp">
       <Filter>src\Platform\Mac</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\NVRHI\DX12Nova.cpp">
+      <Filter>src\Platform\NVRHI</Filter>
     </ClCompile>
     <ClCompile Include="src\Platform\NVRHI\NVRHIBuffer.cpp">
       <Filter>src\Platform\NVRHI</Filter>

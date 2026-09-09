@@ -1,4 +1,8 @@
 #include "wlpch.h"
+#include "Platform/NVRHI/DX11Nova.h"
+#include "Platform/NVRHI/DX12Nova.h"
+#include "Platform/NVRHI/NVRHIContext.h"
+#include "Platform/NVRHI/NVRHIRendererAPI.h"
 #include "Renderer3D.h"
 
 #include "VertexArray.h"
@@ -318,7 +322,7 @@ namespace Wasteland
 
         std::array<Ref<Texture2D>, MaxTextureSlots> TextureSlots;
         uint32_t TextureSlotIndex = 1;
-        std::unordered_map<uint32_t, int> TextureSlotMap;
+        std::unordered_map<uintptr_t, int> TextureSlotMap;
 
         bool RayTracingEnabled = true;
         bool RayTracingAccumulate = true;
@@ -546,11 +550,20 @@ namespace Wasteland
     };
 
     static Renderer3DData s_Data;
+    static std::unique_ptr<DX11Nova> s_Nova;
+    static std::unique_ptr<DX12Nova> s_Nova12;
+
+    // Returns the active Nova instance (DX11 or DX12 variant)
+    static bool HasNova() { return s_Nova != nullptr || s_Nova12 != nullptr; }
+    static DX11Nova* GetNovaDX11() { return s_Nova.get(); }
+    static DX12Nova* GetNovaDX12() { return s_Nova12.get(); }
 
     static void ApplyQualityPreset();
     static void DetectGPUTier();
     static void UpdateDynamicResolution();
     static bool SceneInstancesChanged();
+    static bool Renderer3DGLAvailable();
+    static bool Renderer3DNVRHIAvailable();
 
     static glm::mat4 FastTRSInverse(const glm::mat4 &m)
     {
@@ -597,7 +610,7 @@ namespace Wasteland
 
     static int FindOrAddTextureSlot(const Ref<Texture2D> &texture)
     {
-        uint32_t id = texture->GetRendererID();
+        uintptr_t id = texture->GetNativeSRV() ? (uintptr_t)texture->GetNativeSRV() : texture->GetRendererID();
         auto it = s_Data.TextureSlotMap.find(id);
         if (it != s_Data.TextureSlotMap.end())
             return it->second;
@@ -612,8 +625,14 @@ namespace Wasteland
         return slot;
     }
 
+    static bool Renderer3DGLAvailable();
+
     static void ClearAccumulationBuffers()
     {
+        if(s_Nova) s_Nova->Clear();
+        if(s_Nova12) s_Nova12->Clear();
+        if (!Renderer3DGLAvailable())
+            return;
         float clearColor[] = {0.0f, 0.0f, 0.0f, 0.0f};
 
         for (int i = 0; i < 2; i++)
@@ -896,6 +915,45 @@ namespace Wasteland
         // --- SHADER & UTILS ---
         s_Data.BasicShader = Shader::Create("assets/shaders/Renderer3D_Basic.glsl");
 
+        // Native NVRHI path: Basic.hlsl is a complete raster 3D path. Do not
+        // touch any OpenGL objects/uniform APIs when running DX11/DX12/Vulkan.
+        if (Renderer3DNVRHIAvailable())
+        {
+            uint32_t whiteTextureData = 0xffffffff;
+            Ref<Texture2D> whiteTexture = Texture2D::Create(1, 1);
+            whiteTexture->SetData(&whiteTextureData, sizeof(uint32_t));
+            s_Data.TextureSlots[0] = whiteTexture;
+            if(RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX11) {
+                            auto ctx=NVRHIRendererAPI::GetCurrentContext();
+                            try {
+                                s_Nova=std::make_unique<DX11Nova>();
+                                s_Nova->Init((ID3D11Device*)ctx->GetD3D11Device(), (ID3D11DeviceContext*)ctx->GetD3D11Context());
+                                s_Nova->Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+                            } catch (const std::exception& e) {
+                                WL_CORE_ERROR("DX11 Nova init failed (raster fallback): {0}", e.what());
+                                s_Nova.reset();
+                                s_Data.RayTracingEnabled=false;
+                            }
+                            ApplyQualityPreset();
+                        } else if(RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX12) {
+                            auto ctx=NVRHIRendererAPI::GetCurrentContext();
+                            try {
+                                s_Nova12=std::make_unique<DX12Nova>();
+                                s_Nova12->Init((ID3D12Device*)ctx->GetD3D12Device(), (ID3D12CommandQueue*)ctx->GetD3D12CommandQueue());
+                                s_Nova12->Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+                            } catch (const std::exception& e) {
+                                WL_CORE_ERROR("DX12 Nova init failed (raster fallback): {0}", e.what());
+                                s_Nova12.reset();
+                                s_Data.RayTracingEnabled=false;
+                            }
+                            ApplyQualityPreset();
+                        } else s_Data.RayTracingEnabled=false;
+            s_Data.CubeVertexBufferPtr = s_Data.CubeVertexBufferBase;
+            s_Data.SphereVertexBufferPtr = s_Data.SphereVertexBufferBase;
+            s_Data.SphereIndexBufferPtr = s_Data.SphereIndexBufferBase;
+            return;
+        }
+
         s_Data.RayTracingOutput = Texture2D::Create(s_Data.RayTracingWidth, s_Data.RayTracingHeight);
         s_Data.RayTracingShader = Shader::Create("assets/shaders/Renderer3D_NovaRenderer.glsl");
 
@@ -1045,6 +1103,15 @@ namespace Wasteland
         ApplyQualityPreset();
     }
 
+    void Renderer3D::RecreateResources()
+    {
+        // Renderer2D has the same API-switch problem: Ref<> handles own
+        // backend-specific GPU objects. Rebuild all 3D resources after the
+        // GLFW/renderer API switch while reusing CPU batch memory.
+        Shutdown();
+        Init();
+    }
+
     void Renderer3D::Shutdown()
     {
         WL_PROFILE_FUNCTION();
@@ -1052,6 +1119,9 @@ namespace Wasteland
         delete[] s_Data.SphereVertexBufferBase;
         delete[] s_Data.SphereIndexBufferBase;
 
+        s_Nova.reset();
+        s_Nova12.reset();
+        if(Renderer3DGLAvailable()) {
         glDeleteBuffers(1, &s_Data.SceneInstanceBufferID);
         glDeleteBuffers(1, &s_Data.BVHBufferID);
         glDeleteBuffers(1, &s_Data.LightListBufferID);
@@ -1069,6 +1139,17 @@ namespace Wasteland
             s_Data.DRSTimerQueries[0] = s_Data.DRSTimerQueries[1] = s_Data.DRSTimerQueries[2] = 0;
         }
 
+        }
+        s_Data.SceneInstanceBufferID=s_Data.BVHBufferID=s_Data.LightListBufferID=0;
+        s_Data.AccumulationTexture=s_Data.BloomTextureID=s_Data.BloomTempTextureID=0;
+        s_Data.VelocityTextureID=s_Data.AlbedoTextureID=s_Data.TraceGBufferTextureID=0;
+        s_Data.AccumulationTextures[0]=s_Data.AccumulationTextures[1]=0;
+        s_Data.DRSTimerQueries[0]=s_Data.DRSTimerQueries[1]=s_Data.DRSTimerQueries[2]=0;
+        s_Data.CubeVertexBufferBase=s_Data.SphereVertexBufferBase=nullptr;
+        s_Data.SphereIndexBufferBase=nullptr;
+        s_Data.m_PrevSceneInstances.clear();
+        s_Data.TextureSlots.fill(nullptr);
+        s_Data.TextureSlotMap.clear();
         s_Data.CubeVertexArray = nullptr;
         s_Data.CubeVertexBuffer = nullptr;
         s_Data.SphereVertexArray = nullptr;
@@ -1079,10 +1160,24 @@ namespace Wasteland
         s_Data.RayTracingOutput = nullptr;
     }
 
+    static bool Renderer3DGLAvailable()
+    {
+        return RendererAPI::GetAPI() == RendererAPI::API::OpenGL;
+    }
+
+    static bool Renderer3DNVRHIAvailable()
+    {
+        return RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX11 ||
+               RendererAPI::GetAPI() == RendererAPI::API::NVRHI_DX12 ||
+               RendererAPI::GetAPI() == RendererAPI::API::NVRHI_Vulkan;
+    }
+
     void Renderer3D::BeginScene(const Camera &camera, const glm::mat4 &transform)
     {
         WL_PROFILE_FUNCTION();
 
+        if (!Renderer3DGLAvailable() && !Renderer3DNVRHIAvailable())
+            return;
         // New frame: drop last frame's volumes (kept across mid-frame overflow
         // flushes, unlike the geometry batches reset in FlushAndReset).
         s_Data.FogVolumes.clear();
@@ -1133,10 +1228,11 @@ namespace Wasteland
         s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
         s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
 
+        if(Renderer3DGLAvailable()) {
         s_Data.RayTracingShader->Bind();
         glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
         glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
-
+        }
         FlushAndReset();
     }
 
@@ -1144,6 +1240,8 @@ namespace Wasteland
     {
         WL_PROFILE_FUNCTION();
 
+        if (!Renderer3DGLAvailable() && !Renderer3DNVRHIAvailable())
+            return;
         // New frame: drop last frame's volumes (kept across mid-frame overflow
         // flushes, unlike the geometry batches reset in FlushAndReset).
         s_Data.FogVolumes.clear();
@@ -1176,9 +1274,12 @@ namespace Wasteland
         s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
         s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
 
-        s_Data.RayTracingShader->Bind();
-        glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
-        glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
+        if (Renderer3DGLAvailable())
+        {
+            s_Data.RayTracingShader->Bind();
+            glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
+            glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
+        }
 
         FlushAndReset();
     }
@@ -1189,8 +1290,247 @@ namespace Wasteland
         Flush();
     }
 
-    void Renderer3D::Flush()
+        static void FlushDX11Nova()
     {
+        auto& n=*s_Nova;
+        n.Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+        if(SceneInstancesChanged() || s_Data.FrameIndex==0) {
+            BuildAndFlattenBVH(s_Data.m_SceneInstances,s_Data.m_BVHNodes,s_Data.m_BVHPrimOrder);
+            s_Data.m_ReorderedInstances.resize(s_Data.m_BVHPrimOrder.size());
+            s_Data.m_LightIndices.clear();
+            for(size_t i=0;i<s_Data.m_BVHPrimOrder.size();++i) {
+                auto& v=s_Data.m_ReorderedInstances[i];v=s_Data.m_SceneInstances[s_Data.m_BVHPrimOrder[i]];
+                if(v.Emission.w>0) s_Data.m_LightIndices.push_back((int)i);
+            }
+            n.Upload(0,s_Data.m_ReorderedInstances.data(),(UINT)s_Data.m_ReorderedInstances.size(),sizeof(RayTracingInstance));
+            n.Upload(1,s_Data.m_BVHNodes.data(),(UINT)s_Data.m_BVHNodes.size(),sizeof(BVHNodeGPU));
+            n.Upload(2,s_Data.m_LightIndices.data(),(UINT)s_Data.m_LightIndices.size(),sizeof(int));
+            s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
+            s_Data.FrameIndex=0;
+        }
+        n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
+        n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
+        n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
+        n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
+        n.Set("u_CameraMoved",s_Data.CurrentViewProjection!=s_Data.PrevViewProjection?1.0f:0.0f);
+        n.Set("u_AccumulationAlpha",s_Data.RayTracingAccumulate?glm::max(0.02f,1.0f/(s_Data.FrameIndex+1)):1.0f);
+        n.Set("u_CameraPosition",s_Data.CurrentCameraPosition);
+        n.Set("u_InverseViewProjection",s_Data.InverseViewProjection);
+        n.Set("u_PrevViewProjection",s_Data.PrevViewProjection);
+        n.Set("u_ViewProjection",s_Data.CurrentViewProjection);
+        n.Set("u_SkyBottomColor",s_Data.SkyBottomColor);
+        n.Set("u_SkyTopColor",s_Data.SkyTopColor);
+        n.Set("u_RenderScale",s_Data.RenderScale);
+        n.Set("u_MaxBounces",s_Data.MaxBounces);
+        n.Set("u_MaxLights",s_Data.MaxLights);
+        n.Set("u_IndirectRays",s_Data.IndirectRays);
+        n.Set("u_SamplesPerPixel",s_Data.SamplesPerPixel);
+        n.Set("u_NeuralTexStrength",s_Data.NeuralTextureStrength);
+        n.Set("u_NeuralLightStrength",s_Data.NeuralLightStrength);
+        n.Set("u_NeuralMatStrength",s_Data.NeuralMaterialStrength);
+        n.Set("u_GlobalFogDensity",s_Data.GlobalFogDensity);
+        n.Set("u_GlobalFogHeightFalloff",s_Data.GlobalFogHeightFalloff);
+        n.Set("u_GlobalFogColor",s_Data.GlobalFogColor);
+        n.Set("u_GlobalFogBaseHeight",s_Data.GlobalFogBaseHeight);
+        n.Set("u_GlobalFogDistAtten",s_Data.GlobalFogDistAtten);
+        n.Set("u_GodRayIntensity",s_Data.GodRayIntensity);
+        n.Set("u_GodRayDecay",s_Data.GodRayDecay);
+        n.Set("u_GodRaySamples",s_Data.GodRaySamples);
+        n.Set("u_GodRayDensity",s_Data.GodRayDensity);
+        n.Set("u_GodRayColor",s_Data.GodRayColor);
+        n.Set("u_NeuralEnabled",(int)s_Data.NeuralEnabled);
+        n.Set("u_GlobalFogEnabled",(int)s_Data.GlobalFogEnabled);
+        n.Set("u_GodRaysEnabled",(int)s_Data.GodRaysEnabled);
+        n.Set("u_FogEnabled",(int)s_Data.VolFogEnabled);
+        n.Set("u_CloudEnabled",(int)s_Data.VolCloudsEnabled);
+        s_Data.EffSunDir=s_Data.SunDirection;s_Data.EffSunColor=glm::vec3(1.15f,1.05f,0.95f);
+        for(const auto& l:s_Data.AnalyticLights) if(l.Type==0) {s_Data.EffSunDir=l.Direction;s_Data.EffSunColor=l.Color*glm::max(l.Intensity,0.0f);break;}
+        n.Set("u_SunDirection",s_Data.EffSunDir);n.Set("u_SunLightColor",s_Data.EffSunColor);
+        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));
+        float stepFactor=s_Data.CurrentQualityPreset==QualityPreset::Low?0.5f:(s_Data.CurrentQualityPreset==QualityPreset::Medium?0.75f:1.0f);
+        int fc=(int)glm::min(s_Data.FogVolumes.size(),size_t(4));n.Set("u_FogCount",fc);
+        for(int i=0;i<fc;++i) {const auto& v=s_Data.FogVolumes[i];
+            n.Set("u_FogMin",v.Min,i);n.Set("u_FogMax",v.Max,i);n.Set("u_FogColor",v.Color,i);
+            n.Set("u_FogData",glm::vec4(v.Density,v.Anisotropy,v.NoiseStrength,v.NoiseScale),i);
+            n.Set("u_FogData2",glm::vec4(v.WindSpeed,v.HeightFalloff,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f),v.Enabled?1.0f:0.0f),i);
+        }
+        int cc=(int)glm::min(s_Data.CloudVolumes.size(),size_t(2));n.Set("u_CloudCount",cc);
+        for(int i=0;i<cc;++i) {const auto& v=s_Data.CloudVolumes[i];
+            n.Set("u_CloudMin",v.Min,i);n.Set("u_CloudMax",v.Max,i);n.Set("u_CloudColor",v.Color,i);n.Set("u_CloudAmbient",v.Ambient,i);
+            n.Set("u_CloudData",glm::vec4(v.Coverage,v.Density,v.NoiseScale,v.Detail),i);
+            n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
+            n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
+        }
+        int lc=(int)glm::min(s_Data.AnalyticLights.size(),size_t(8));n.Set("u_ALightCount",lc);
+        for(int i=0;i<lc;++i) {const auto& v=s_Data.AnalyticLights[i];
+            n.Set("u_ALightPos",v.Position,i);n.Set("u_ALightDir",v.Direction,i);n.Set("u_ALightColor",v.Color,i);
+            n.Set("u_ALightData",glm::vec4(v.Type,v.Intensity,v.Range,v.Falloff),i);
+            n.Set("u_ALightData2",glm::vec4(v.InnerCos,v.OuterCos,v.AreaSize,v.DoubleSided),i);
+        }
+        auto sun=s_Data.CurrentViewProjection*glm::vec4(s_Data.CurrentCameraPosition+s_Data.EffSunDir*1000.0f,1);
+        s_Data.GodSunValid=sun.w>0 && s_Data.EffSunDir.y>0;
+        if(s_Data.GodSunValid)s_Data.GodSunScreenPos=glm::vec2(sun)/sun.w*0.5f+0.5f;
+        n.Set("u_GodSunValid",(int)s_Data.GodSunValid);n.Set("u_GodSunScreenPos",s_Data.GodSunScreenPos);
+        std::vector<ID3D11ShaderResourceView*> textures;
+        for(UINT i=0;i<s_Data.TextureSlotIndex;++i)textures.push_back((ID3D11ShaderResourceView*)s_Data.TextureSlots[i]->GetNativeSRV());
+        auto pass=[&](int p,bool full=false){n.Dispatch(p,full?s_Data.RayTracingWidth:s_Data.ComputeWidth,full?s_Data.RayTracingHeight:s_Data.ComputeHeight,textures);};
+        pass(1);pass(0);pass(2);n.CommitHistory();
+        if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
+        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
+        if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
+        ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
+    }
+
+    static void FlushDX12Nova()
+    {
+        auto& n=*s_Nova12;
+        n.Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+        if(SceneInstancesChanged() || s_Data.FrameIndex==0) {
+            BuildAndFlattenBVH(s_Data.m_SceneInstances,s_Data.m_BVHNodes,s_Data.m_BVHPrimOrder);
+            s_Data.m_ReorderedInstances.resize(s_Data.m_BVHPrimOrder.size());
+            s_Data.m_LightIndices.clear();
+            for(size_t i=0;i<s_Data.m_BVHPrimOrder.size();++i) {
+                auto& v=s_Data.m_ReorderedInstances[i];v=s_Data.m_SceneInstances[s_Data.m_BVHPrimOrder[i]];
+                if(v.Emission.w>0) s_Data.m_LightIndices.push_back((int)i);
+            }
+            n.Upload(0,s_Data.m_ReorderedInstances.data(),(UINT)s_Data.m_ReorderedInstances.size(),sizeof(RayTracingInstance));
+            n.Upload(1,s_Data.m_BVHNodes.data(),(UINT)s_Data.m_BVHNodes.size(),sizeof(BVHNodeGPU));
+            n.Upload(2,s_Data.m_LightIndices.data(),(UINT)s_Data.m_LightIndices.size(),sizeof(int));
+            s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
+            s_Data.FrameIndex=0;
+        }
+        n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
+        n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
+        n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
+        n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
+        n.Set("u_CameraMoved",s_Data.CurrentViewProjection!=s_Data.PrevViewProjection?1.0f:0.0f);
+        n.Set("u_AccumulationAlpha",s_Data.RayTracingAccumulate?glm::max(0.02f,1.0f/(s_Data.FrameIndex+1)):1.0f);
+        n.Set("u_CameraPosition",s_Data.CurrentCameraPosition);
+        n.Set("u_InverseViewProjection",s_Data.InverseViewProjection);
+        n.Set("u_PrevViewProjection",s_Data.PrevViewProjection);
+        n.Set("u_ViewProjection",s_Data.CurrentViewProjection);
+        n.Set("u_SkyBottomColor",s_Data.SkyBottomColor);
+        n.Set("u_SkyTopColor",s_Data.SkyTopColor);
+        n.Set("u_RenderScale",s_Data.RenderScale);
+        n.Set("u_MaxBounces",s_Data.MaxBounces);
+        n.Set("u_MaxLights",s_Data.MaxLights);
+        n.Set("u_IndirectRays",s_Data.IndirectRays);
+        n.Set("u_SamplesPerPixel",s_Data.SamplesPerPixel);
+        n.Set("u_NeuralTexStrength",s_Data.NeuralTextureStrength);
+        n.Set("u_NeuralLightStrength",s_Data.NeuralLightStrength);
+        n.Set("u_NeuralMatStrength",s_Data.NeuralMaterialStrength);
+        n.Set("u_GlobalFogDensity",s_Data.GlobalFogDensity);
+        n.Set("u_GlobalFogHeightFalloff",s_Data.GlobalFogHeightFalloff);
+        n.Set("u_GlobalFogColor",s_Data.GlobalFogColor);
+        n.Set("u_GlobalFogBaseHeight",s_Data.GlobalFogBaseHeight);
+        n.Set("u_GlobalFogDistAtten",s_Data.GlobalFogDistAtten);
+        n.Set("u_GodRayIntensity",s_Data.GodRayIntensity);
+        n.Set("u_GodRayDecay",s_Data.GodRayDecay);
+        n.Set("u_GodRaySamples",s_Data.GodRaySamples);
+        n.Set("u_GodRayDensity",s_Data.GodRayDensity);
+        n.Set("u_GodRayColor",s_Data.GodRayColor);
+        n.Set("u_NeuralEnabled",(int)s_Data.NeuralEnabled);
+        n.Set("u_GlobalFogEnabled",(int)s_Data.GlobalFogEnabled);
+        n.Set("u_GodRaysEnabled",(int)s_Data.GodRaysEnabled);
+        n.Set("u_FogEnabled",(int)s_Data.VolFogEnabled);
+        n.Set("u_CloudEnabled",(int)s_Data.VolCloudsEnabled);
+        s_Data.EffSunDir=s_Data.SunDirection;s_Data.EffSunColor=glm::vec3(1.15f,1.05f,0.95f);
+        for(const auto& l:s_Data.AnalyticLights) if(l.Type==0) {s_Data.EffSunDir=l.Direction;s_Data.EffSunColor=l.Color*glm::max(l.Intensity,0.0f);break;}
+        n.Set("u_SunDirection",s_Data.EffSunDir);n.Set("u_SunLightColor",s_Data.EffSunColor);
+        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));
+        float stepFactor=s_Data.CurrentQualityPreset==QualityPreset::Low?0.5f:(s_Data.CurrentQualityPreset==QualityPreset::Medium?0.75f:1.0f);
+        int fc=(int)glm::min(s_Data.FogVolumes.size(),size_t(4));n.Set("u_FogCount",fc);
+        for(int i=0;i<fc;++i) {const auto& v=s_Data.FogVolumes[i];
+            n.Set("u_FogMin",v.Min,i);n.Set("u_FogMax",v.Max,i);n.Set("u_FogColor",v.Color,i);
+            n.Set("u_FogData",glm::vec4(v.Density,v.Anisotropy,v.NoiseStrength,v.NoiseScale),i);
+            n.Set("u_FogData2",glm::vec4(v.WindSpeed,v.HeightFalloff,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f),v.Enabled?1.0f:0.0f),i);
+        }
+        int cc=(int)glm::min(s_Data.CloudVolumes.size(),size_t(2));n.Set("u_CloudCount",cc);
+        for(int i=0;i<cc;++i) {const auto& v=s_Data.CloudVolumes[i];
+            n.Set("u_CloudMin",v.Min,i);n.Set("u_CloudMax",v.Max,i);n.Set("u_CloudColor",v.Color,i);n.Set("u_CloudAmbient",v.Ambient,i);
+            n.Set("u_CloudData",glm::vec4(v.Coverage,v.Density,v.NoiseScale,v.Detail),i);
+            n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
+            n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
+        }
+        int lc=(int)glm::min(s_Data.AnalyticLights.size(),size_t(8));n.Set("u_ALightCount",lc);
+        for(int i=0;i<lc;++i) {const auto& v=s_Data.AnalyticLights[i];
+            n.Set("u_ALightPos",v.Position,i);n.Set("u_ALightDir",v.Direction,i);n.Set("u_ALightColor",v.Color,i);
+            n.Set("u_ALightData",glm::vec4(v.Type,v.Intensity,v.Range,v.Falloff),i);
+            n.Set("u_ALightData2",glm::vec4(v.InnerCos,v.OuterCos,v.AreaSize,v.DoubleSided),i);
+        }
+        auto sun=s_Data.CurrentViewProjection*glm::vec4(s_Data.CurrentCameraPosition+s_Data.EffSunDir*1000.0f,1);
+        s_Data.GodSunValid=sun.w>0 && s_Data.EffSunDir.y>0;
+        if(s_Data.GodSunValid)s_Data.GodSunScreenPos=glm::vec2(sun)/sun.w*0.5f+0.5f;
+        n.Set("u_GodSunValid",(int)s_Data.GodSunValid);n.Set("u_GodSunScreenPos",s_Data.GodSunScreenPos);
+        std::vector<ID3D12Resource*> textures;
+        for(UINT i=0;i<s_Data.TextureSlotIndex;++i)textures.push_back((ID3D12Resource*)s_Data.TextureSlots[i]->GetNativeSRV());
+        auto pass=[&](int p,bool full=false){n.Dispatch(p,full?s_Data.RayTracingWidth:s_Data.ComputeWidth,full?s_Data.RayTracingHeight:s_Data.ComputeHeight,textures);};
+        pass(1);pass(0);pass(2);n.CommitHistory();
+        if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
+        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
+        if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
+        ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
+    }
+
+void Renderer3D::Flush()
+    {
+        if (!Renderer3DGLAvailable() && !Renderer3DNVRHIAvailable())
+            return;
+
+        if(s_Nova && s_Data.RayTracingEnabled) {
+            try { FlushDX11Nova(); return; }
+            catch (const std::exception& e) {
+                WL_CORE_ERROR("DX11 Nova dispatch failed, disabling ray tracing: {0}", e.what());
+                s_Nova.reset();
+                s_Data.RayTracingEnabled=false;
+            }
+        }
+
+        if(s_Nova12 && s_Data.RayTracingEnabled) {
+            try { FlushDX12Nova(); return; }
+            catch (const std::exception& e) {
+                WL_CORE_ERROR("DX12 Nova dispatch failed, disabling ray tracing: {0}", e.what());
+                s_Nova12.reset();
+                s_Data.RayTracingEnabled=false;
+            }
+        }
+
+        // Native NVRHI path uses the existing Basic HLSL raster shader and
+        // the same CPU-generated cube/sphere batches. Nova remains GL-only.
+        if (Renderer3DNVRHIAvailable())
+        {
+            if (!s_Data.BasicShader)
+                return;
+            s_Data.BasicShader->Bind();
+            s_Data.BasicShader->SetFloat3("u_CameraPosition", s_Data.CurrentCameraPosition);
+            s_Data.BasicShader->SetFloat3("u_SkyBottomColor", s_Data.SkyBottomColor);
+            s_Data.BasicShader->SetFloat3("u_SkyTopColor", s_Data.SkyTopColor);
+            if (s_Data.TextureSlotIndex > 0)
+            {
+                std::vector<Ref<Texture2D>> activeTexs(s_Data.TextureSlotIndex);
+                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                    activeTexs[i] = s_Data.TextureSlots[i];
+                RenderCommand::SetActiveTextures(activeTexs);
+            }
+            if (s_Data.CubeIndexCount)
+            {
+                const uint32_t bytes = (uint32_t)((uint8_t *)s_Data.CubeVertexBufferPtr - (uint8_t *)s_Data.CubeVertexBufferBase);
+                s_Data.CubeVertexBuffer->SetData(s_Data.CubeVertexBufferBase, bytes);
+                RenderCommand::DrawIndexed(s_Data.CubeVertexArray, s_Data.CubeIndexCount);
+                s_Data.Stats.DrawCalls++;
+            }
+            if (s_Data.SphereIndexCount)
+            {
+                const uint32_t vbytes = (uint32_t)((uint8_t *)s_Data.SphereVertexBufferPtr - (uint8_t *)s_Data.SphereVertexBufferBase);
+                const uint32_t ibytes = (uint32_t)(s_Data.SphereIndexBufferPtr - s_Data.SphereIndexBufferBase) * sizeof(uint32_t);
+                s_Data.SphereVertexBuffer->SetData(s_Data.SphereVertexBufferBase, vbytes);
+                s_Data.SphereIndexBuffer->SetData(s_Data.SphereIndexBufferBase, ibytes);
+                RenderCommand::DrawIndexed(s_Data.SphereVertexArray, s_Data.SphereIndexCount);
+                s_Data.Stats.DrawCalls++;
+            }
+            return;
+        }
+
         if (s_Data.RayTracingEnabled)
         {
             if (s_Data.m_SceneInstances.empty())
@@ -1303,6 +1643,10 @@ namespace Wasteland
             uint32_t readIdx = s_Data.CurrentAccumulationIndex;
             uint32_t writeIdx = 1 - s_Data.CurrentAccumulationIndex;
 
+            // Refresh the renderer-owned output ID before binding it as both a
+            // sampler and image. Resize() recreates the GL texture in-place.
+            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
+
             glActiveTexture(GL_TEXTURE0 + 3);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
             glActiveTexture(GL_TEXTURE0 + 4);
@@ -1332,7 +1676,6 @@ namespace Wasteland
                 accumulationAlpha = glm::clamp(accumulationAlpha, 0.02f, 1.0f);
             }
 
-            s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
             GLboolean layered = GL_FALSE;
 
             // FIX: Bind missing velocity (unit 5) and bloom temp (unit 7) image units
@@ -1609,7 +1952,7 @@ namespace Wasteland
     }
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
-    void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled; }
+    void Renderer3D::SetRayTracingEnabled(bool enabled) { s_Data.RayTracingEnabled = enabled && (Renderer3DGLAvailable() || s_Nova != nullptr || s_Nova12 != nullptr); s_Data.FrameIndex=0; ClearAccumulationBuffers(); }
     static void UpdateComputeResolution()
     {
         s_Data.ComputeWidth = (uint32_t)(s_Data.RayTracingWidth * s_Data.RenderScale);
@@ -1792,9 +2135,37 @@ namespace Wasteland
         s_Data.FrameIndex = 0;
         ClearAccumulationBuffers();
     }
-    uint32_t Renderer3D::GetRayTraceTargetID() { return s_Data.RayTracingOutput->GetRendererID(); }
-    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
+    void* Renderer3D::GetRayTraceTargetNativeSRV() {
+        if (s_Nova) return s_Nova->Output();
+        if (s_Nova12) return s_Nova12->Output();
+        return nullptr;
+    }
+    uint32_t Renderer3D::GetRayTraceTargetID()
     {
+        // GL-only resource; return 0 (invalid) under NVRHI APIs so panels draw
+        // nothing instead of handing a stale GL texture id to the ImGui backend.
+        if (!Renderer3DGLAvailable() || !s_Data.RayTracingOutput)
+            return 0;
+        return s_Data.RayTracingOutput->GetRendererID();
+    }
+    void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
+        {
+            if(s_Nova && width && height) {
+                if(width!=s_Data.RayTracingWidth || height!=s_Data.RayTracingHeight) {
+                    s_Data.RayTracingWidth=width;s_Data.RayTracingHeight=height;
+                    UpdateComputeResolution();s_Nova->Resize(width,height);s_Data.FrameIndex=0;
+                }
+                return;
+            }
+            if(s_Nova12 && width && height) {
+                if(width!=s_Data.RayTracingWidth || height!=s_Data.RayTracingHeight) {
+                    s_Data.RayTracingWidth=width;s_Data.RayTracingHeight=height;
+                    UpdateComputeResolution();s_Nova12->Resize(width,height);s_Data.FrameIndex=0;
+                }
+                return;
+            }
+        if (!Renderer3DGLAvailable())
+            return;
         if (width == 0 || height == 0)
             return;
 
@@ -2153,7 +2524,20 @@ namespace Wasteland
     }
 
     void Renderer3D::GenerateMaterialMaps(const std::string &texturePath, float normalStrength, float roughBias)
-    {
+        {
+            if(s_Nova) {
+                auto input=Texture2D::Create(texturePath);
+                s_Nova->Set("u_NormalStrength",normalStrength);s_Nova->Set("u_RoughnessBias",roughBias);s_Nova->Set("u_AOIntensity",1.0f);
+                s_Nova->Dispatch(9,s_Data.RayTracingWidth,s_Data.RayTracingHeight,{(ID3D11ShaderResourceView*)input->GetNativeSRV()});
+                return;
+            }
+            if(s_Nova12) {
+                auto input=Texture2D::Create(texturePath);
+                s_Nova12->Set("u_NormalStrength",normalStrength);s_Nova12->Set("u_RoughnessBias",roughBias);s_Nova12->Set("u_AOIntensity",1.0f);
+                s_Nova12->Dispatch(9,s_Data.RayTracingWidth,s_Data.RayTracingHeight,{(ID3D12Resource*)input->GetNativeSRV()});
+                return;
+            }
+            if(!Renderer3DGLAvailable()) return;
         s_Data.RayTracingShader->Bind();
 
         s_Data.RayTracingShader->SetFloat("u_NormalStrength", normalStrength);

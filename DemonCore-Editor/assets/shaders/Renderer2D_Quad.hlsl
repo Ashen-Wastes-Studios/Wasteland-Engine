@@ -64,8 +64,22 @@ PSOutput main(PSInput input)
 {
     PSOutput output;
 
+    // FXC (SM 5.0) requires literal indices into sampler/texture arrays
+    // (X3512), so select the slot with an unrolled loop instead of
+    // u_Textures[texIndex]. SampleLevel avoids needing gradients in a loop.
     int texIndex = clamp(int(input.TexIndex), 0, 31);
-    output.Color = u_Textures[texIndex].Sample(u_Sampler, input.TexCoord * input.TilingFactor) * input.Color;
+    float4 texColor = float4(1.0, 1.0, 1.0, 1.0);
+    [unroll]
+    for (int i = 0; i < 32; i++)
+    {
+        if (i == texIndex)
+        {
+            texColor = u_Textures[i].SampleLevel(u_Sampler, input.TexCoord * input.TilingFactor, 0.0f);
+            break;
+        }
+    }
+
+    output.Color = texColor * input.Color;
     output.EntityID = input.EntityID;
 
     return output;

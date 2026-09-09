@@ -501,6 +501,11 @@ static bool HasGLExtension(const char *name)
 
 		if (m_FramebufferAPI != RendererAPI::GetAPI())
 		{
+			// GPU objects of the old API are dead: rebuild the 2D renderer's
+			// shaders/buffers against the new API before recreating the framebuffer
+			// (Renderer2D::Init runs inside, resetting the stats it needs).
+			Renderer2D::RecreateResources();
+			Renderer3D::RecreateResources();
 			FramebufferSpecification spec = m_Framebuffer->GetSpecification();
 			m_Framebuffer = Framebuffer::Create(spec);
 			m_FramebufferAPI = RendererAPI::GetAPI();
@@ -1078,16 +1083,19 @@ static bool HasGLExtension(const char *name)
 			m_ViewportBounds[1] = {maxBound.x, maxBound.y};
 
 			uint32_t textureID = 0;
+			void *textureSRV = nullptr;
 			if (Wasteland::Renderer3D::IsRayTracingEnabled())
 			{
 				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
+                textureSRV = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
 			}
 			else
 			{
 				textureID = m_Framebuffer->GetColorAttachmentRendererID();
+				textureSRV = m_Framebuffer->GetColorAttachmentNativeSRV(0);
 			}
 
-			ImGui::Image(reinterpret_cast<void *>(static_cast<uintptr_t>(textureID)),
+			ImGui::Image(textureSRV ? textureSRV : reinterpret_cast<void *>(static_cast<uintptr_t>(textureID)),
 						 ImVec2{m_ViewportSize.x, m_ViewportSize.y},
 						 ImVec2{0, 1}, ImVec2{1, 0});
 
@@ -1178,7 +1186,8 @@ static bool HasGLExtension(const char *name)
 			ImGui::ColorEdit4("Square Color", glm::value_ptr(m_SquareColor));
 
 			uint32_t textureID = m_CheckerboardTexture->GetRendererID();
-			ImGui::Image((void *)textureID, ImVec2{1280.0f, 720.0f}, ImVec2{0, 1}, ImVec2{1, 0});
+			void *srv = m_CheckerboardTexture->GetNativeSRV();
+			ImGui::Image(srv ? srv : (void *)textureID, ImVec2{1280.0f, 720.0f}, ImVec2{0, 1}, ImVec2{1, 0});
 			ImGui::End();
 		}
 	}

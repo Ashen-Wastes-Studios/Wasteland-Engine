@@ -25,6 +25,34 @@ namespace Wasteland {
 		}
 	}
 
+	// HLSL input semantics required by D3D11 input layouts. NVRHI passes the
+	// attribute name straight through as SemanticName, so engine-side names
+	// (a_Position, a_TexCoord, ...) must be translated to match the .hlsl
+	// shaders' declared semantics (POSITION, TEXCOORD, ...) or
+	// CreateInputLayout fails with E_INVALIDARG.
+	static const char *ToHLSLSemantic(const std::string &name)
+	{
+		if (name == "a_Position")      return "POSITION";
+		if (name == "a_Normal")        return "NORMAL";
+		if (name == "a_Tangent")       return "TANGENT";
+		if (name == "a_Bitangent")     return "BINORMAL";
+		if (name == "a_TexCoord")      return "TEXCOORD";
+		if (name == "a_Color")         return "COLOR";
+		if (name == "a_TexIndex")      return "TEXINDEX";
+		if (name == "a_TilingFactor")  return "TILINGFACTOR";
+		if (name == "a_EntityID")      return "ENTITYID";
+		if (name == "a_LocalPosition") return "LOCALPOSITION";
+		if (name == "a_WorldPosition") return "POSITION";
+		if (name == "a_Thickness")     return "THICKNESS";
+		if (name == "a_Fade")          return "FADE";
+		if (name == "a_Metallic")      return "METALLIC";
+		if (name == "a_Roughness")     return "ROUGHNESS";
+		if (name == "a_Displacement")  return "DISPLACEMENT";
+		if (name == "a_BumpStrength")  return "BUMPSTRENGTH";
+		// Fall back to the name itself (shader may use it verbatim)
+		return name.c_str();
+	}
+
 	NVRHIVertexArray::NVRHIVertexArray()
 	{
 	}
@@ -74,12 +102,15 @@ namespace Wasteland {
 				for (const auto& element : layout)
 				{
 					nvrhi::VertexAttributeDesc desc;
-					desc.name = element.Name.c_str();
+					// ToHLSLSemantic returns either a literal or element.Name's own
+					// storage — both outlive the layout (VB owns the layout strings)
+					desc.name = ToHLSLSemantic(element.Name);
 					desc.format = ShaderDataTypeToNVRHIFormat(element.Type);
 					desc.offset = element.Offset;
 					desc.bufferIndex = bufferIndex;
+					desc.elementStride = layout.GetStride();
 					desc.arraySize = 1;
-					
+
 					m_InputLayout.push_back(desc);
 					offset += element.Size;
 				}

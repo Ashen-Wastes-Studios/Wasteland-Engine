@@ -86,6 +86,33 @@ namespace Wasteland {
 
 	static Renderer2DData s_Data;
 
+	void Renderer2D::RecreateResources()
+	{
+		WL_PROFILE_FUNCTION();
+
+		// Called after a renderer-API switch: the old GPU objects (VAOs, VBOs,
+		// shaders, white texture) belong to the previous graphics context and are
+		// invalid there. Drop the handles and rebuild against the new API.
+		// CPU-side staging buffers (QuadVertexBufferBase etc.) are reused as-is.
+		s_Data.QuadVertexArray = nullptr;
+		s_Data.CircleVertexArray = nullptr;
+		s_Data.LineVertexArray = nullptr;
+		s_Data.QuadVertexBuffer = nullptr;
+		s_Data.CircleVertexBuffer = nullptr;
+		s_Data.LineVertexBuffer = nullptr;
+		s_Data.WhiteTexture = nullptr;
+		s_Data.QuadShader = nullptr;
+		s_Data.CircleShader = nullptr;
+		s_Data.LineShader = nullptr;
+		s_Data.QuadIndexCount = 0;
+		s_Data.CircleIndexCount = 0;
+		s_Data.LineVertexCount = 0;
+		s_Data.TextureSlotIndex = 1;
+		memset(s_Data.TextureSlots.data(), 0, s_Data.TextureSlots.size() * sizeof(Ref<Texture2D>));
+
+		Init();
+	}
+
 	void Renderer2D::Init()
 	{
 		WL_PROFILE_FUNCTION();
@@ -164,15 +191,20 @@ namespace Wasteland {
 
 		s_Data.QuadShader = Shader::Create("assets/shaders/Renderer2D_Quad.glsl");
 		s_Data.QuadShader->Bind();
-		s_Data.QuadShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
-
 		s_Data.CircleShader = Shader::Create("assets/shaders/Renderer2D_Circle.glsl");
 		s_Data.CircleShader->Bind();
-		s_Data.CircleShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
-
 		s_Data.LineShader = Shader::Create("assets/shaders/Renderer2D_Line.glsl");
 		s_Data.LineShader->Bind();
-		s_Data.LineShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
+
+		// GL-only: wire u_Texture to consecutive units. HLSL shaders bind the
+		// texture array via register t0 + the NVRHI binding set, so there is no
+		// u_Texture uniform to reflect (setting it would log a warning).
+		if (RendererAPI::GetAPI() == RendererAPI::API::OpenGL)
+		{
+			s_Data.QuadShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
+			s_Data.CircleShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
+			s_Data.LineShader->SetIntArray("u_Texture", samplers, s_Data.MaxTextureSlots);
+		}
 
 		// Set all texture slots to 0
 		s_Data.TextureSlots[0] = s_Data.WhiteTexture;

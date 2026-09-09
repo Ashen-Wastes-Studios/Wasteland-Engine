@@ -20,6 +20,7 @@ namespace Wasteland {
 		virtual void ClearAttachment(uint32_t attachmentIndex, int value) override;
 
 		virtual uint32_t GetColorAttachmentRendererID(uint32_t index = 0) const override;
+		virtual void *GetColorAttachmentNativeSRV(uint32_t index = 0) const override;
 
 		virtual const FramebufferSpecification& GetSpecification() const override { return m_Specification; }
 
@@ -35,6 +36,10 @@ namespace Wasteland {
 		nvrhi::FramebufferHandle m_Framebuffer;
 		std::vector<nvrhi::TextureHandle> m_ColorTextures;
 		nvrhi::TextureHandle m_DepthTexture;
+		// Dedicated non-immediate command list for blocking pixel readback
+		// (the batched immediate list must not be opened twice per frame)
+		nvrhi::CommandListHandle m_ReadbackCommandList;
+		nvrhi::StagingTextureHandle m_ReadbackStagingTexture;
 	};
 
 }

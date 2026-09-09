@@ -65,6 +65,10 @@ namespace Wasteland
 
 		virtual uint32_t GetColorAttachmentRendererID(uint32_t index = 0) const = 0;
 
+		// Native GPU view of a color attachment for immediate ImGui texture use
+		// (D3D11 SRV pointer under NVRHI; nullptr for OpenGL / unsupported).
+		virtual void *GetColorAttachmentNativeSRV(uint32_t index = 0) const { return nullptr; }
+
 		virtual const FramebufferSpecification &GetSpecification() const = 0;
 
 		static Ref<Framebuffer> Create(const FramebufferSpecification &spec);

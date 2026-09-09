@@ -17,6 +17,35 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+// NVRHI message callback: routes backend errors (failed Map, invalid params...)
+// into the engine log. Without this the device's messageCallback is null and
+// every backend error path dereferences it and crashes.
+namespace
+{
+	class NVRHILogCallback : public nvrhi::IMessageCallback
+	{
+	public:
+		void message(nvrhi::MessageSeverity severity, const char *messageText) override
+		{
+			switch (severity)
+			{
+			case nvrhi::MessageSeverity::Info:
+				WL_CORE_TRACE("NVRHI: {0}", messageText);
+				break;
+			case nvrhi::MessageSeverity::Warning:
+				WL_CORE_WARN("NVRHI: {0}", messageText);
+				break;
+			case nvrhi::MessageSeverity::Error:
+			case nvrhi::MessageSeverity::Fatal:
+			default:
+				WL_CORE_ERROR("NVRHI: {0}", messageText);
+				break;
+			}
+		}
+	};
+	NVRHILogCallback s_NVRHILogCallback;
+}
+
 // DirectX headers
 #include <d3d11.h>
 #include <d3d12.h>
@@ -61,7 +90,20 @@ namespace Wasteland
 	for (auto* rtv : m_D3D11RTVs) if (rtv) rtv->Release();
 	m_D3D11RTVs.clear();
 
-		// Release NVRHI objects
+		// Release NVRHI objects — order matters: every handle that keeps the
+		// NVRHI Device alive (backbuffers, framebuffers, render-target
+		// override, command list) must be released BEFORE the native device
+		// is destroyed below. Otherwise the NVRHI Device object (with its
+		// Queue timeline semaphores) outlives vkDestroyDevice / the D3D
+		// Release calls: the driver then destroys a device with live
+		// children (validation errors + hard AV in nvoglv64, and the
+		// corrupted driver state poisons the NEXT device creation, which
+		// crashes in nvrhi::vulkan::Queue::Queue).
+		m_ActiveRenderTarget = nullptr;
+		m_BackBufferFramebuffers.clear();
+		m_BackBuffers.clear();
+		m_VkFramebuffers.clear();
+		m_VkBackBuffers.clear();
 		m_CommandList = nullptr;
 		m_Device = nullptr;
 
@@ -84,76 +126,81 @@ namespace Wasteland
 		}
 		else if (m_API == RendererAPI::API::NVRHI_Vulkan)
 		{
-			// Release Vulkan synchronization objects - guard against null device if creation failed
-			VkDevice device = m_VkDevice;
-			if (device)
-			{
-				for (size_t i = 0; i < m_VkFences.size(); i++)
-				{
-					if (m_VkFences[i] != VK_NULL_HANDLE)
-						vkDestroyFence(device, m_VkFences[i], nullptr);
-				}
-				for (size_t i = 0; i < m_VkImageAvailableSemaphores.size(); i++)
-				{
-					if (m_VkImageAvailableSemaphores[i] != VK_NULL_HANDLE)
-						vkDestroySemaphore(device, m_VkImageAvailableSemaphores[i], nullptr);
-				}
-				for (size_t i = 0; i < m_VkRenderFinishedSemaphores.size(); i++)
-				{
-					if (m_VkRenderFinishedSemaphores[i] != VK_NULL_HANDLE)
-						vkDestroySemaphore(device, m_VkRenderFinishedSemaphores[i], nullptr);
-				}
-
-				// Destroy command pool
-				if (m_VkCommandPool != VK_NULL_HANDLE)
-					vkDestroyCommandPool(device, m_VkCommandPool, nullptr);
-
-				// Destroy image views
-				for (size_t i = 0; i < m_VkSwapchainImageViews.size(); i++)
-				{
-					if (m_VkSwapchainImageViews[i] != VK_NULL_HANDLE)
-						vkDestroyImageView(device, m_VkSwapchainImageViews[i], nullptr);
-				}
-
-				// Destroy swapchain
-				if (m_VkSwapchain != VK_NULL_HANDLE)
-					vkDestroySwapchainKHR(device, m_VkSwapchain, nullptr);
-			}
-			else
-			{
-				// Device was never created - just clear vectors
-				m_VkFences.clear();
-				m_VkImageAvailableSemaphores.clear();
-				m_VkRenderFinishedSemaphores.clear();
-				m_VkSwapchainImageViews.clear();
-				m_VkSwapchain = VK_NULL_HANDLE;
-			}
-
-			// Destroy device
-			if (m_VkDevice != VK_NULL_HANDLE)
-			{
-				vkDeviceWaitIdle(m_VkDevice);
-				vkDestroyDevice(m_VkDevice, nullptr);
-			}
-
-			// Destroy surface
-			if (m_VkSurface != VK_NULL_HANDLE)
-			{
-				VkInstance instance = m_VkInstance;
-				if (instance != VK_NULL_HANDLE)
-					vkDestroySurfaceKHR(instance, m_VkSurface, nullptr);
-			}
-
-			// Destroy instance
-			if (m_VkInstance != VK_NULL_HANDLE)
-			{
-				vkDestroyInstance(m_VkInstance, nullptr);
-			}
+			DestroyVulkan();
 		}
 	}
 
-	void NVRHIContext::Init()
-	{
+		void NVRHIContext::DestroyVulkan()
+		{
+		// Tear down all Vulkan natives. Safe on partial state (failed init) and
+		// resets every handle so a retry starts clean. NVRHI handles must already
+		// be released by the caller (see destructor ordering).
+		VkDevice device = m_VkDevice;
+		if (device)
+		{
+			for (size_t i = 0; i < m_VkFences.size(); i++)
+			{
+				if (m_VkFences[i] != VK_NULL_HANDLE)
+					vkDestroyFence(device, m_VkFences[i], nullptr);
+			}
+			for (size_t i = 0; i < m_VkImageAvailableSemaphores.size(); i++)
+			{
+				if (m_VkImageAvailableSemaphores[i] != VK_NULL_HANDLE)
+					vkDestroySemaphore(device, m_VkImageAvailableSemaphores[i], nullptr);
+			}
+			for (size_t i = 0; i < m_VkRenderFinishedSemaphores.size(); i++)
+			{
+				if (m_VkRenderFinishedSemaphores[i] != VK_NULL_HANDLE)
+					vkDestroySemaphore(device, m_VkRenderFinishedSemaphores[i], nullptr);
+			}
+
+			if (m_VkCommandPool != VK_NULL_HANDLE)
+				vkDestroyCommandPool(device, m_VkCommandPool, nullptr);
+
+			for (size_t i = 0; i < m_VkSwapchainImageViews.size(); i++)
+			{
+				if (m_VkSwapchainImageViews[i] != VK_NULL_HANDLE)
+					vkDestroyImageView(device, m_VkSwapchainImageViews[i], nullptr);
+			}
+
+			if (m_VkSwapchain != VK_NULL_HANDLE)
+				vkDestroySwapchainKHR(device, m_VkSwapchain, nullptr);
+		}
+
+		m_VkFences.clear();
+		m_VkImageAvailableSemaphores.clear();
+		m_VkRenderFinishedSemaphores.clear();
+		m_VkSwapchainImageViews.clear();
+		m_VkSwapchainImages.clear();
+		m_VkSwapchain = VK_NULL_HANDLE;
+		m_VkCommandPool = VK_NULL_HANDLE;
+
+		if (m_VkDevice != VK_NULL_HANDLE)
+		{
+			vkDeviceWaitIdle(m_VkDevice);
+			vkDestroyDevice(m_VkDevice, nullptr);
+			m_VkDevice = VK_NULL_HANDLE;
+		}
+		m_VkGraphicsQueue = VK_NULL_HANDLE;
+		m_VkPresentQueue = VK_NULL_HANDLE;
+		m_VkPhysicalDevice = VK_NULL_HANDLE;
+
+		if (m_VkSurface != VK_NULL_HANDLE)
+		{
+			if (m_VkInstance != VK_NULL_HANDLE)
+				vkDestroySurfaceKHR(m_VkInstance, m_VkSurface, nullptr);
+			m_VkSurface = VK_NULL_HANDLE;
+		}
+
+		if (m_VkInstance != VK_NULL_HANDLE)
+		{
+			vkDestroyInstance(m_VkInstance, nullptr);
+			m_VkInstance = VK_NULL_HANDLE;
+		}
+	}
+
+		void NVRHIContext::Init()
+		{
 		WL_PROFILE_FUNCTION();
 
 		// Get window size
@@ -172,7 +219,7 @@ namespace Wasteland
 			CreateDeviceDX12();
 			break;
 		case RendererAPI::API::NVRHI_Vulkan:
-			CreateDeviceVulkan();
+			CreateDeviceVulkanWithRetry();
 			break;
 		default:
 			WL_CORE_ASSERT(false, "Unsupported NVRHI API");
@@ -180,7 +227,7 @@ namespace Wasteland
 		}
 
 		CreateSwapChain();
-		if (m_API == RendererAPI::API::NVRHI_Vulkan)
+		if (m_API == RendererAPI::API::NVRHI_Vulkan && m_Device)
 		{
 			// Vulkan swapchain is created inside CreateDeviceVulkan after device creation
 			// and uses native Vulkan APIs rather than DXGI
@@ -188,6 +235,14 @@ namespace Wasteland
 		}
 		// Note: CreateSwapChain() already calls CreateBackBufferFramebuffers() for DX11/DX12
 		// so no second call here (was double-init causing needless Release/GetBuffer)
+
+		// Any of the Create* paths above can fail gracefully (logged); never
+		// dereference a null device here.
+		if (!m_Device)
+		{
+			WL_CORE_ERROR("NVRHI Context initialization failed: no device (see errors above)");
+			return;
+		}
 
 		// Create command list
 		m_CommandList = m_Device->createCommandList();
@@ -204,9 +259,12 @@ namespace Wasteland
 		ID3D11DeviceContext *context = nullptr;
 
 		UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-#ifdef WL_DEBUG
-		creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+		// Debug layer only on explicit opt-in: the D3D11 debug layer itself crashes
+		// in d3d11.dll on driver 591.59 with FLIP_DISCARD swapchains (faults inside
+		// DrawIndexed validation), so WL_DEBUG no longer enables it automatically.
+		char d3dDebugEnv[8] = {};
+		if (GetEnvironmentVariableA("WL_D3D_DEBUG", d3dDebugEnv, sizeof(d3dDebugEnv)) && d3dDebugEnv[0] == '1')
+			creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
 
 		D3D_FEATURE_LEVEL featureLevels[] = {
 			D3D_FEATURE_LEVEL_11_1,
@@ -248,6 +306,7 @@ namespace Wasteland
 		// Create NVRHI device
 		nvrhi::d3d11::DeviceDesc deviceDesc;
 		deviceDesc.context = context;
+		deviceDesc.messageCallback = &s_NVRHILogCallback;
 		m_Device = nvrhi::d3d11::createDevice(deviceDesc);
 
 		WL_CORE_INFO("D3D11 device created successfully");
@@ -287,7 +346,11 @@ namespace Wasteland
 				IID_PPV_ARGS(&device));
 		}
 
-		WL_CORE_ASSERT(SUCCEEDED(hr), "Failed to create D3D12 device");
+		if (FAILED(hr) || !device)
+		{
+			WL_CORE_ERROR("Failed to create D3D12 device (HRESULT 0x{0:X})", (uint32_t)hr);
+			return;
+		}
 
 		// Create command queue
 		D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -302,6 +365,7 @@ namespace Wasteland
 		nvrhi::d3d12::DeviceDesc deviceDesc;
 		deviceDesc.pDevice = device;
 		deviceDesc.pGraphicsCommandQueue = commandQueue;
+		deviceDesc.errorCB = &s_NVRHILogCallback;
 		m_Device = nvrhi::d3d12::createDevice(deviceDesc);
 
 		// Create descriptor heap for ImGui (SRV heap for font texture)
@@ -442,7 +506,7 @@ namespace Wasteland
 		WL_PROFILE_FUNCTION();
 
 		VkInstance instance = m_VkInstance;
-		VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+		VkSurfaceKHR surface = static_cast<VkSurfaceKHR>(m_VkSurface);
 
 		// Enumerate physical devices
 		uint32_t deviceCount = 0;
@@ -456,31 +520,120 @@ namespace Wasteland
 		std::vector<VkPhysicalDevice> devices(deviceCount);
 		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-		// Prefer discrete GPU
-		for (const auto &device : devices)
-		{
-			VkPhysicalDeviceProperties properties;
-			vkGetPhysicalDeviceProperties(device, &properties);
-
-			VkPhysicalDeviceFeatures features;
-			vkGetPhysicalDeviceFeatures(device, &features);
-
-			if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+		// Suitability check: the chosen GPU must have a graphics queue, a queue
+		// that can present to our surface, the swapchain extension, and timeline
+		// semaphores (core in 1.2+ / KHR on 1.1) which NVRHI unconditionally
+		// requires — its Queue ctor throws (fatal, see CreateDeviceVulkan) if the
+		// timeline feature wasn't enabled on the device.
+		auto IsDeviceSuitable = [&](VkPhysicalDevice dev, const char *name) -> bool {
+			uint32_t qCount = 0;
+			vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
+			if (qCount == 0)
 			{
-				physicalDevice = device;
-				m_VkPhysicalDevice = physicalDevice;
-				WL_CORE_INFO("Selected discrete GPU: {0}", properties.deviceName);
-				return true;
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: no queue families", name);
+				return false;
+			}
+			std::vector<VkQueueFamilyProperties> qProps(qCount);
+			vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, qProps.data());
+
+			bool hasGraphics = false, hasPresent = false;
+			for (uint32_t i = 0; i < qCount; i++)
+			{
+				if (qProps[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+					hasGraphics = true;
+				if (surface != VK_NULL_HANDLE)
+				{
+					VkBool32 presentSupport = VK_FALSE;
+					vkGetPhysicalDeviceSurfaceSupportKHR(dev, i, surface, &presentSupport);
+					if (presentSupport)
+						hasPresent = true;
+				}
+			}
+			if (!hasGraphics)
+			{
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: no graphics queue family", name);
+				return false;
+			}
+			if (surface != VK_NULL_HANDLE && !hasPresent)
+			{
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: no present support for window surface", name);
+				return false;
+			}
+
+			uint32_t extCount = 0;
+			vkEnumerateDeviceExtensionProperties(dev, nullptr, &extCount, nullptr);
+			std::vector<VkExtensionProperties> exts(extCount);
+			vkEnumerateDeviceExtensionProperties(dev, nullptr, &extCount, exts.data());
+			bool hasSwapchain = false;
+			for (auto &e : exts)
+			{
+				if (strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0)
+				{
+					hasSwapchain = true;
+					break;
+				}
+			}
+			if (!hasSwapchain)
+			{
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: missing VK_KHR_swapchain", name);
+				return false;
+			}
+
+			VkPhysicalDeviceVulkan12Features f12 = {};
+			f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+			VkPhysicalDeviceTimelineSemaphoreFeatures fKHR = {};
+			fKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+			VkPhysicalDeviceVulkan13Features f13 = {};
+			f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+			f12.pNext = &fKHR;
+			fKHR.pNext = &f13;
+			VkPhysicalDeviceFeatures2 f2 = {};
+			f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			f2.pNext = &f12;
+			vkGetPhysicalDeviceFeatures2(dev, &f2);
+			if (!f12.timelineSemaphore && !fKHR.timelineSemaphore)
+			{
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: no timeline semaphore support (NVRHI requires it)", name);
+				return false;
+			}
+			if (!f13.synchronization2)
+			{
+				WL_CORE_WARN("  Vulkan GPU '{0}' rejected: no synchronization2 support (NVRHI uses vkCmdPipelineBarrier2)", name);
+				return false;
+			}
+			return true;
+		};
+
+		// Two passes: prefer a suitable discrete GPU, fall back to any suitable GPU.
+		VkPhysicalDevice chosen = VK_NULL_HANDLE;
+		for (int pass = 0; pass < 2 && chosen == VK_NULL_HANDLE; pass++)
+		{
+			for (const auto &dev : devices)
+			{
+				VkPhysicalDeviceProperties properties;
+				vkGetPhysicalDeviceProperties(dev, &properties);
+				bool isDiscrete = (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU);
+				if ((pass == 0) != isDiscrete)
+					continue;
+				if (IsDeviceSuitable(dev, properties.deviceName))
+				{
+					chosen = dev;
+					break;
+				}
 			}
 		}
 
-		// Fall back to first available
-		physicalDevice = devices[0];
-		m_VkPhysicalDevice = physicalDevice;
+		if (chosen == VK_NULL_HANDLE)
+		{
+			WL_CORE_ERROR("Failed to find a suitable Vulkan GPU (need graphics+present queues, swapchain + timeline semaphore support)");
+			return false;
+		}
+
+		m_VkPhysicalDevice = chosen;
 
 		VkPhysicalDeviceProperties properties;
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-		WL_CORE_INFO("Selected GPU: {0}", properties.deviceName);
+		vkGetPhysicalDeviceProperties(chosen, &properties);
+		WL_CORE_INFO("Selected Vulkan GPU: {0}", properties.deviceName);
 
 		return true;
 	}
@@ -681,6 +834,9 @@ namespace Wasteland
 		// VUID-VkDeviceCreateInfo-pNext-02830 and triggers validation error (seen on 591.59).
 		VkPhysicalDeviceVulkan12Features enabledVulkan12Features = {};
 		VkPhysicalDeviceTimelineSemaphoreFeatures enabledTimelineFeaturesKHR = {};
+		VkPhysicalDeviceVulkan13Features enabledVulkan13Features = {};
+		enabledVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+		enabledVulkan13Features.synchronization2 = VK_TRUE;
 		void *deviceCreatePNext = nullptr;
 		// Remember which path provided the feature so we enable the matching struct only
 		bool timelineViaVulkan12 = vulkan12FeaturesQuery.timelineSemaphore == VK_TRUE;
@@ -713,6 +869,16 @@ namespace Wasteland
 		{
 			WL_CORE_ERROR("Vulkan device does not support timeline semaphores — NVRHI Vulkan backend requires it. Device creation will proceed but NVRHI Queue creation will crash.");
 		}
+		// NVRHI unconditionally records vkCmdPipelineBarrier2 (synchronization2,
+		// core in 1.3): chain the 1.3 enable struct onto whichever timeline
+		// head was selected above. Chaining distinct core structs is legal;
+		// only duplicating the timeline structs violates VUID-02830.
+		if (deviceCreatePNext == &enabledVulkan12Features)
+			enabledVulkan12Features.pNext = &enabledVulkan13Features;
+		else if (deviceCreatePNext == &enabledTimelineFeaturesKHR)
+			enabledTimelineFeaturesKHR.pNext = &enabledVulkan13Features;
+		if (deviceCreatePNext)
+			WL_CORE_INFO("Enabling synchronization2 via VkPhysicalDeviceVulkan13Features (core 1.3)");
 
 		// Device create info
 		VkDeviceCreateInfo createInfo = {};
@@ -758,6 +924,33 @@ namespace Wasteland
 		WL_CORE_INFO("Vulkan device created successfully");
 	}
 
+	void NVRHIContext::CreateDeviceVulkanWithRetry()
+	{
+		// A freshly created VkDevice can come up lost (post-TDR recovery,
+		// driver hiccup under load): NVRHI's first semaphore creation
+		// then throws ErrorDeviceLost. Tear everything down and try
+		// once more from scratch before giving up.
+		for (int attempt = 0; attempt < 2; ++attempt)
+		{
+			if (attempt > 0)
+			{
+				WL_CORE_WARN("Vulkan device creation failed, retrying from scratch (attempt {0})", attempt + 1);
+				m_ActiveRenderTarget = nullptr;
+				m_BackBufferFramebuffers.clear();
+				m_BackBuffers.clear();
+				m_VkFramebuffers.clear();
+				m_VkBackBuffers.clear();
+				m_CommandList = nullptr;
+				m_Device = nullptr;
+				DestroyVulkan();
+			}
+			CreateDeviceVulkan();
+			if (m_Device)
+				return;
+		}
+		WL_CORE_ERROR("Vulkan device creation failed after retry; backend unavailable");
+	}
+
 	void NVRHIContext::CreateDeviceVulkan()
 	{
 		WL_PROFILE_FUNCTION();
@@ -769,7 +962,7 @@ namespace Wasteland
 		appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
 		appInfo.pEngineName = "Wasteland Engine";
 		appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.apiVersion = VK_API_VERSION_1_2;
+		appInfo.apiVersion = VK_API_VERSION_1_3;
 
 		// Get required extensions from GLFW
 		uint32_t glfwExtensionCount = 0;
@@ -863,18 +1056,44 @@ namespace Wasteland
 		VULKAN_HPP_DEFAULT_DISPATCHER.init(m_VkInstance, vkGetInstanceProcAddr, m_VkDevice);
 
 		// Create NVRHI Vulkan device
-		nvrhi::vulkan::DeviceDesc deviceDesc;
-		deviceDesc.instance = static_cast<VkInstance>(m_VkInstance);
-		deviceDesc.physicalDevice = static_cast<VkPhysicalDevice>(m_VkPhysicalDevice);
-		deviceDesc.device = static_cast<VkDevice>(m_VkDevice);
-		deviceDesc.graphicsQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
-		deviceDesc.graphicsQueueIndex = m_VkGraphicsQueueFamilyIndex;
-		deviceDesc.transferQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
-		deviceDesc.transferQueueIndex = m_VkGraphicsQueueFamilyIndex;
-		deviceDesc.computeQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
-		deviceDesc.computeQueueIndex = m_VkGraphicsQueueFamilyIndex;
+			nvrhi::vulkan::DeviceDesc deviceDesc;
+			deviceDesc.errorCB = &s_NVRHILogCallback;
+			deviceDesc.instance = static_cast<VkInstance>(m_VkInstance);
+			deviceDesc.physicalDevice = static_cast<VkPhysicalDevice>(m_VkPhysicalDevice);
+			deviceDesc.device = static_cast<VkDevice>(m_VkDevice);
+			deviceDesc.graphicsQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
+			deviceDesc.graphicsQueueIndex = m_VkGraphicsQueueFamilyIndex;
+			deviceDesc.transferQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
+			deviceDesc.transferQueueIndex = m_VkGraphicsQueueFamilyIndex;
+			deviceDesc.computeQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
+			deviceDesc.computeQueueIndex = m_VkGraphicsQueueFamilyIndex;
 
-		m_Device = nvrhi::vulkan::createDevice(deviceDesc);
+			if (m_VkGraphicsQueue == VK_NULL_HANDLE)
+			{
+				WL_CORE_ERROR("Cannot create NVRHI Vulkan device: graphics queue is null (queue family {0})", m_VkGraphicsQueueFamilyIndex);
+				return;
+			}
+
+			// NVRHI's Queue ctor creates an internal timeline semaphore and lets the
+			// vk:: exception escape on failure — without this guard that is an
+			// unhandled crash in vk::detail::throwResultException (the stack in the
+			// bug report). Log it and fail gracefully instead.
+			try
+			{
+				m_Device = nvrhi::vulkan::createDevice(deviceDesc);
+			}
+			catch (const std::exception &e)
+			{
+				WL_CORE_ERROR("nvrhi::vulkan::createDevice threw: {0} (timeline semaphore creation failed — device lacks the enabled feature?)", e.what());
+				m_Device = nullptr;
+				return;
+			}
+			catch (...)
+			{
+				WL_CORE_ERROR("nvrhi::vulkan::createDevice threw an unknown exception");
+				m_Device = nullptr;
+				return;
+			}
 
 		if (!m_Device)
 		{
@@ -920,23 +1139,36 @@ namespace Wasteland
 			return;
 		}
 
-		// Describe swap chain - must be explicit for FLIP_DISCARD (Scaling/AlphaMode)
-		// Use B8G8R8A8_UNORM - more widely supported for FLIP on D3D11, and BufferCount=2 is minimum for FLIP
+		// Describe swap chain.
+		// DX11 uses the legacy bitblt model (DXGI_SWAP_EFFECT_DISCARD): the FLIP
+		// model is broken on driver 591.59 — a freshly created FLIP_DISCARD
+		// swapchain fails GetBuffer(1) with DXGI_ERROR_INVALID_CALL, and ImGui's
+		// first DrawIndexed faults inside d3d11.dll. Legacy bitblt is the most
+		// battle-tested D3D11 configuration. DX12 keeps FLIP_DISCARD (required for
+		// its present model and unaffected by the issue).
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
 		swapChainDesc.BufferCount = 2;
 		swapChainDesc.Width = m_Width;
 		swapChainDesc.Height = m_Height;
 		swapChainDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 		swapChainDesc.SampleDesc.Count = 1;
 		swapChainDesc.SampleDesc.Quality = 0;
-		swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
 		swapChainDesc.Stereo = FALSE;
-		swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-		swapChainDesc.Flags = 0;
+		if (m_API == RendererAPI::API::NVRHI_DX12)
+		{
+			swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+			swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+			swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+		}
+		else // DX11 legacy bitblt
+		{
+			swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+			swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+			swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+		}
 
-		WL_CORE_INFO("CreateSwapChain: Requesting {0}x{1} BufferCount={2} Format=B8G8R8A8_UNORM FlipDiscard Scaling=STRETCH Alpha=IGNORE", m_Width, m_Height, swapChainDesc.BufferCount);
+		WL_CORE_INFO("CreateSwapChain: Requesting {0}x{1} BufferCount={2} SwapEffect={3}", m_Width, m_Height, swapChainDesc.BufferCount, (int)swapChainDesc.SwapEffect);
 
 		IDXGISwapChain1 *swapChain1 = nullptr;
 
@@ -1020,12 +1252,23 @@ namespace Wasteland
 			return;
 		}
 
-		// Get backbuffers from swapchain - query actual desc to sanity-check hardcoded 2
-		const uint32_t bufferCount = 2;
+		// Get backbuffers from swapchain.
+		// BufferCount from the desc is NOT the number of GetBuffer-accessible
+		// buffers: legacy bitblt chains (DISCARD/SEQUENTIAL) only expose buffer 0
+		// — GetBuffer(1) returns DXGI_ERROR_INVALID_CALL by spec. FLIP chains
+		// expose all of them.
+		uint32_t bufferCount = 2;
 		{
 			DXGI_SWAP_CHAIN_DESC1 scDesc{}; static_cast<IDXGISwapChain3*>(m_DXGISwapChain3)->GetDesc1(&scDesc);
-			if (scDesc.BufferCount != bufferCount)
-				WL_CORE_WARN("CreateBackBufferFramebuffers: SwapChain BufferCount={0} != expected {1}", scDesc.BufferCount, bufferCount);
+			if (scDesc.SwapEffect == DXGI_SWAP_EFFECT_DISCARD || scDesc.SwapEffect == DXGI_SWAP_EFFECT_SEQUENTIAL)
+			{
+				bufferCount = 1;
+				WL_CORE_INFO("CreateBackBufferFramebuffers: bitblt swapchain - using 1 accessible backbuffer (BufferCount={0})", scDesc.BufferCount);
+			}
+			else if (scDesc.BufferCount > 0)
+			{
+				bufferCount = scDesc.BufferCount;
+			}
 		}
 		m_BackBuffers.resize(bufferCount);
 		m_BackBufferFramebuffers.resize(bufferCount);
@@ -1079,6 +1322,8 @@ namespace Wasteland
 				desc.height = m_Height;
 				desc.format = nvrhi::Format::BGRA8_UNORM;
 				desc.isRenderTarget = true;
+				desc.initialState = nvrhi::ResourceStates::RenderTarget;
+				desc.keepInitialState = true;
 
 				// NVRHI RefCountPtr will AddRef internally, so just hand off
 				// and Release our GetBuffer() reference
@@ -1141,6 +1386,8 @@ namespace Wasteland
 				desc.height = m_Height;
 				desc.format = nvrhi::Format::BGRA8_UNORM;
 				desc.isRenderTarget = true;
+				desc.initialState = nvrhi::ResourceStates::RenderTarget;
+				desc.keepInitialState = true;
 
 				// NVRHI RefCountPtr will AddRef internally, so just hand off
 				// and Release our GetBuffer() reference
@@ -1347,6 +1594,8 @@ namespace Wasteland
 			desc.height = m_Height;
 			desc.format = nvrhi::Format::SBGRA8_UNORM;
 			desc.isRenderTarget = true;
+			desc.initialState = nvrhi::ResourceStates::RenderTarget;
+			desc.keepInitialState = true;
 
 			m_VkBackBuffers[i] = m_Device->createHandleForNativeTexture(
 				nvrhi::ObjectTypes::VK_Image,
@@ -1464,6 +1713,10 @@ namespace Wasteland
 
 	nvrhi::FramebufferHandle NVRHIContext::GetCurrentFramebuffer() const
 	{
+		// Editor framebuffer Bind() override wins over the swapchain backbuffer
+		if (m_ActiveRenderTarget)
+			return m_ActiveRenderTarget;
+
 		if (m_API == RendererAPI::API::NVRHI_Vulkan)
 		{
 			if (m_VkFramebuffers.empty())
@@ -1660,7 +1913,14 @@ namespace Wasteland
 			if (m_Device)
 				m_Device->waitForIdle();
 
-			HRESULT hr = static_cast<IDXGISwapChain3 *>(m_DXGISwapChain3)->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+			// Preserve the created swapchain's parameters: BufferCount=0 and
+			// DXGI_FORMAT_UNKNOWN mean "keep current" — correct for both legacy
+			// bitblt (DX11) and FLIP_DISCARD (DX12) chains regardless of what the
+			// driver actually created.
+			IDXGISwapChain3 *sc = static_cast<IDXGISwapChain3 *>(m_DXGISwapChain3);
+			DXGI_SWAP_CHAIN_DESC1 cur{};
+			sc->GetDesc1(&cur);
+			HRESULT hr = sc->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, cur.Flags);
 			if (FAILED(hr))
 				{
 				WL_CORE_ERROR("ResizeBuffers({0}x{1}) failed: HRESULT 0x{2:X} ({2}) - likely leaked backbuffer refs or minimized window", width, height, (uint32_t)hr);
@@ -1669,10 +1929,10 @@ namespace Wasteland
 			}
 
 			CreateBackBufferFramebuffers();
-		}
-	}
+			}
+			}
 
-	void NVRHIContext::BeginFrame()
+			void NVRHIContext::BeginFrame()
 	{
 		WL_PROFILE_FUNCTION();
 		if (m_API != RendererAPI::API::NVRHI_Vulkan)
@@ -1740,7 +2000,17 @@ namespace Wasteland
 			if (cmd)
 				vkResetCommandBuffer(cmd, 0);
 		}
-	}
+
+		// Open the NVRHI command list exactly like the DX path above: every
+		// writeBuffer/clear/draw must be inside open/close. Vulkan previously
+		// returned before opening it, so the first constant-buffer upload on a
+		// real scene aborted in NVRHI's writeBuffer (assert(m_CurrentCmdBuf)).
+		if (m_Device && m_CommandList && !m_CommandListOpen)
+		{
+			m_CommandList->open();
+			m_CommandListOpen = true;
+		}
+		}
 
 	void NVRHIContext::ExecuteNVRHICommandList()
 	{

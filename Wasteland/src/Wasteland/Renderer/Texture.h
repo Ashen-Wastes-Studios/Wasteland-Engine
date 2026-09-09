@@ -29,6 +29,11 @@ namespace Wasteland {
 		static Ref<Texture2D> Create(const std::string& path);
 
 		virtual void Resize(uint32_t width, uint32_t height) = 0;
+
+		// Native GPU view of this texture for ImGui texture submission under
+		// NVRHI APIs (returns an ID3D11ShaderResourceView* on DX11; nullptr
+		// elsewhere, where integer GetRendererID() is used instead).
+		virtual void *GetNativeSRV() const { return nullptr; }
 	};
 
 }

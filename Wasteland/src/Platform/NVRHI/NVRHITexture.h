@@ -32,6 +32,14 @@ namespace Wasteland {
 		nvrhi::TextureHandle GetTexture() const { return m_Texture; }
 		nvrhi::SamplerHandle GetSampler() const { return m_Sampler; }
 
+		// Native D3D11 SRV for ImGui texture submission (DX11 mode)
+		virtual void *GetNativeSRV() const override
+		{
+			if (!m_Texture)
+				return nullptr;
+			return m_Texture->getNativeView(nvrhi::ObjectTypes::D3D11_ShaderResourceView).pointer;
+		}
+
 	private:
 		void CreateTexture(uint32_t width, uint32_t height);
 		void CreateSampler();

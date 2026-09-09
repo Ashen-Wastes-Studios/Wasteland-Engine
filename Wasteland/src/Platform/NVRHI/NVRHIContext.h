@@ -28,6 +28,11 @@ namespace Wasteland
 		nvrhi::ICommandList *GetCommandList() const { return m_CommandList; }
 		nvrhi::FramebufferHandle GetCurrentFramebuffer() const;
 		nvrhi::TextureHandle GetCurrentBackBuffer() const;
+		// Render-target override set by NVRHIFramebuffer::Bind/Unbind so scene
+		// draws (and Clear) go to the editor viewport framebuffer instead of the
+		// swapchain backbuffer. Null = swapchain backbuffer.
+		void SetRenderTargetFramebuffer(const nvrhi::FramebufferHandle &fb) { m_ActiveRenderTarget = fb; }
+		bool HasRenderTargetOverride() const { return static_cast<bool>(m_ActiveRenderTarget); }
 		uint32_t GetCurrentBackBufferIndex() const { return m_CurrentBackBufferIndex; }
 		uint32_t GetWidth() const { return m_Width; }
 		uint32_t GetHeight() const { return m_Height; }
@@ -95,10 +100,12 @@ namespace Wasteland
 		void CreateDeviceDX11();
 		void CreateDeviceDX12();
 		void CreateDeviceVulkan();
+	void CreateDeviceVulkanWithRetry();
 		void CreateSwapChain();
 		void CreateBackBufferFramebuffers();
 		void CreateVulkanSwapChain();
 		void DestroyVulkanSwapChain();
+		void DestroyVulkan();
 
 		// Vulkan-specific helpers
 		bool SelectVulkanPhysicalDevice();
@@ -130,6 +137,7 @@ namespace Wasteland
 		std::vector<nvrhi::TextureHandle> m_BackBuffers;
 		std::vector<nvrhi::FramebufferHandle> m_BackBufferFramebuffers;
 		uint32_t m_CurrentBackBufferIndex = 0;
+		nvrhi::FramebufferHandle m_ActiveRenderTarget;
 
 		// DX11 / DX12 native objects
 		void *m_D3D11Device = nullptr;

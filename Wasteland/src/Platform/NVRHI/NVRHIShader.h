@@ -34,6 +34,8 @@ namespace Wasteland {
 		nvrhi::ShaderHandle GetPixelShader() const { return m_PixelShader; }
 		nvrhi::ShaderHandle GetComputeShader() const { return m_ComputeShader; }
 		
+		void UploadConstants(nvrhi::ICommandList* cmd) const;
+
 		// Constant buffer accessors
 		nvrhi::BufferHandle GetVSConstantBuffer() const { return m_VSConstantBuffer; }
 		nvrhi::BufferHandle GetPSConstantBuffer() const { return m_PSConstantBuffer; }
@@ -46,7 +48,7 @@ namespace Wasteland {
 		void CompileCompute(const std::string& computeSrc);
 		void CreateConstantBuffers();
 		void CreateBindingLayout();
-		void ReflectShaderConstants(nvrhi::ShaderHandle shader, bool isVertexShader);
+		void ReflectShaderConstants(const void* bytecode, size_t bytecodeSize, bool isVertexShader);
 		void SetUniformData(const std::string& name, const void* data, size_t size) const;
 		
 		std::string ReadFile(const std::string& filepath);

@@ -27,6 +27,8 @@ namespace Wasteland
     public:
         static void Init();
         static void Shutdown();
+        // Rebuild native GPU resources after switching rendering APIs.
+        static void RecreateResources();
 
         static void BeginScene(const Camera &camera, const glm::mat4 &transform);
         static void BeginScene(const EditorCamera &camera);
@@ -58,6 +60,7 @@ namespace Wasteland
         static bool IsRayTracingAccumulate();
         static void SetRayTracingAccumulate(bool enabled);
         static uint32_t GetRayTraceTargetID();
+        static void* GetRayTraceTargetNativeSRV();
         static void ResizeRayTraceTarget(uint32_t width, uint32_t height);
         static float GetRenderScale();
         static void SetRenderScale(float scale);

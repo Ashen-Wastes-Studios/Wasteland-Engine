@@ -107,14 +107,23 @@ namespace Wasteland {
 		while (pos != std::string::npos)
 		{
 			size_t eol = source.find_first_of("\r\n", pos);
-			WL_CORE_ASSERT(eol != std::string::npos, "Syntax error");
+			if (eol == std::string::npos)
+			{
+				WL_CORE_ERROR("Shader type directive has no body in {0}", m_Name);
+				return {};
+			}
 			size_t begin = pos + typeTokenLength + 1;
 			std::string type = source.substr(begin, eol - begin);
 
 			size_t nextLinePos = source.find_first_not_of("\r\n", eol);
+			if (nextLinePos == std::string::npos)
+			{
+				WL_CORE_ERROR("Empty shader stage in {0}", m_Name);
+				return {};
+			}
 			pos = source.find(typeToken, nextLinePos);
-			shaderSources[type] = source.substr(nextLinePos, 
-				pos - (nextLinePos == std::string::npos ? source.size() - 1 : nextLinePos));
+			const size_t end = pos == std::string::npos ? source.size() : pos;
+			shaderSources[type] = source.substr(nextLinePos, end - nextLinePos);
 		}
 
 		return shaderSources;
@@ -151,13 +160,20 @@ namespace Wasteland {
 			return;
 		}
 
+		if (errorBlob)
+		{
+			WL_CORE_WARN("Vertex shader compiler diagnostics for {0}:\n{1}", m_Name, (char*)errorBlob->GetBufferPointer());
+			errorBlob->Release();
+			errorBlob = nullptr;
+		}
+
 		nvrhi::ShaderDesc vsDesc;
 		vsDesc.shaderType = nvrhi::ShaderType::Vertex;
 		vsDesc.debugName = m_Name + "_VS";
 		m_VertexShader = device->createShader(vsDesc, vertexBlob->GetBufferPointer(), vertexBlob->GetBufferSize());
 		
 		// Reflect vertex shader constants
-		ReflectShaderConstants(m_VertexShader, true);
+		ReflectShaderConstants(vertexBlob->GetBufferPointer(), vertexBlob->GetBufferSize(), true);
 
 		// Compile pixel shader
 		ID3DBlob* pixelBlob = nullptr;
@@ -182,13 +198,20 @@ namespace Wasteland {
 			return;
 		}
 
+		if (errorBlob)
+		{
+			WL_CORE_WARN("Pixel shader compiler diagnostics for {0}:\n{1}", m_Name, (char*)errorBlob->GetBufferPointer());
+			errorBlob->Release();
+			errorBlob = nullptr;
+		}
+
 		nvrhi::ShaderDesc psDesc;
 		psDesc.shaderType = nvrhi::ShaderType::Pixel;
 		psDesc.debugName = m_Name + "_PS";
 		m_PixelShader = device->createShader(psDesc, pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize());
 		
 		// Reflect pixel shader constants
-		ReflectShaderConstants(m_PixelShader, false);
+		ReflectShaderConstants(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), false);
 
 		// Create constant buffers
 		CreateConstantBuffers();
@@ -227,6 +250,13 @@ namespace Wasteland {
 			return;
 		}
 
+		if (errorBlob)
+		{
+			WL_CORE_WARN("Compute shader compiler diagnostics for {0}:\n{1}", m_Name, (char*)errorBlob->GetBufferPointer());
+			errorBlob->Release();
+			errorBlob = nullptr;
+		}
+
 		nvrhi::ShaderDesc csDesc;
 		csDesc.shaderType = nvrhi::ShaderType::Compute;
 		csDesc.debugName = m_Name + "_CS";
@@ -249,12 +279,7 @@ namespace Wasteland {
 			desc.debugName = m_Name + "_VS_CB";
 			m_VSConstantBuffer = device->createBuffer(desc);
 			
-			// Upload initial data
-			auto* context = NVRHIRendererAPI::GetCurrentContext();
-			if (context && context->GetCommandList())
-			{
-				context->GetCommandList()->writeBuffer(m_VSConstantBuffer, m_VSConstantData.data(), m_VSConstantData.size());
-			}
+			m_VSConstantsDirty = true;
 		}
 
 		// Create pixel shader constant buffer
@@ -266,12 +291,7 @@ namespace Wasteland {
 			desc.debugName = m_Name + "_PS_CB";
 			m_PSConstantBuffer = device->createBuffer(desc);
 			
-			// Upload initial data
-			auto* context = NVRHIRendererAPI::GetCurrentContext();
-			if (context && context->GetCommandList())
-			{
-				context->GetCommandList()->writeBuffer(m_PSConstantBuffer, m_PSConstantData.data(), m_PSConstantData.size());
-			}
+			m_PSConstantsDirty = true;
 		}
 
 		// Create binding layout
@@ -300,19 +320,20 @@ namespace Wasteland {
 			layoutDesc.addItem(nvrhi::BindingLayoutItem::ConstantBuffer(1));
 		}
 
+		// Renderer2D and Renderer3D_Basic share a 32-entry texture array at t0
+		// and one sampler at s0. Keeping this in the common NVRHI layout makes
+		// both paths use the same binding contract.
+		layoutDesc.addItem(nvrhi::BindingLayoutItem::Texture_SRV(0).setSize(32));
+		layoutDesc.addItem(nvrhi::BindingLayoutItem::Sampler(0));
+
 		// Create binding layout
 		m_BindingLayout = device->createBindingLayout(layoutDesc);
 	}
 
-	void NVRHIShader::ReflectShaderConstants(nvrhi::ShaderHandle shader, bool isVertexShader)
+	void NVRHIShader::ReflectShaderConstants(const void* bytecode, size_t bytecodeSize, bool isVertexShader)
 	{
-		if (!shader)
-			return;
-
-		// Get shader bytecode
-		const void* bytecode = nullptr;
-		size_t bytecodeSize = 0;
-		shader->getBytecode(&bytecode, &bytecodeSize);
+		// D3D11 NVRHI retains bytecode only for VS input layouts, not PS.
+		// Reflect the compiler blob before releasing it, for every stage.
 
 		if (!bytecode || bytecodeSize == 0)
 			return;
@@ -372,11 +393,13 @@ namespace Wasteland {
 			nvrhiAPI->SetCurrentShader(Ref<Shader>(const_cast<NVRHIShader*>(this), [](NVRHIShader*){}));
 		}
 
-		// Upload dirty constant buffers
-		auto* context = NVRHIRendererAPI::GetCurrentContext();
-		if (context && context->GetCommandList())
+	}
+
+	void NVRHIShader::UploadConstants(nvrhi::ICommandList* cmd) const
+	{
+		// Setters normally run AFTER Bind; upload immediately before drawing.
+		if (cmd)
 		{
-			nvrhi::ICommandList* cmd = context->GetCommandList();
 			
 			if (m_VSConstantsDirty && m_VSConstantBuffer && !m_VSConstantData.empty())
 			{
@@ -410,7 +433,7 @@ namespace Wasteland {
 		std::vector<uint8_t>& constantData = info.isVS ? m_VSConstantData : m_PSConstantData;
 		bool& dirtyFlag = info.isVS ? m_VSConstantsDirty : m_PSConstantsDirty;
 
-		if (info.offset + size > constantData.size())
+		if (size > info.size || info.offset + size > constantData.size())
 		{
 			WL_CORE_ERROR("Uniform '{0}' data exceeds constant buffer size", name);
 			return;

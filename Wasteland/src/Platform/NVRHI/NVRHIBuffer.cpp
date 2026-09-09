@@ -30,9 +30,11 @@ namespace Wasteland {
 		nvrhi::BufferDesc desc;
 		desc.byteSize = size;
 		desc.isVertexBuffer = true;
-		desc.canHaveRawViews = true;
-		desc.cpuAccess = nvrhi::CpuAccessMode::Write;
+		desc.canHaveRawViews = false;
+		desc.cpuAccess = nvrhi::CpuAccessMode::None;
 		desc.debugName = "VertexBuffer";
+		desc.initialState = nvrhi::ResourceStates::VertexBuffer;
+		desc.keepInitialState = true;
 
 		m_Buffer = device->createBuffer(desc);
 		if (!m_Buffer)
@@ -54,9 +56,11 @@ namespace Wasteland {
 		nvrhi::BufferDesc desc;
 		desc.byteSize = size;
 		desc.isVertexBuffer = true;
-		desc.canHaveRawViews = true;
-		desc.cpuAccess = nvrhi::CpuAccessMode::Write;
+		desc.canHaveRawViews = false;
+		desc.cpuAccess = nvrhi::CpuAccessMode::None;
 		desc.debugName = "VertexBuffer";
+		desc.initialState = nvrhi::ResourceStates::VertexBuffer;
+		desc.keepInitialState = true;
 
 		m_Buffer = device->createBuffer(desc);
 		if (!m_Buffer)
@@ -130,9 +134,11 @@ namespace Wasteland {
 		nvrhi::BufferDesc desc;
 		desc.byteSize = size;
 		desc.isIndexBuffer = true;
-		desc.canHaveRawViews = true;
-		desc.cpuAccess = nvrhi::CpuAccessMode::Write;
+		desc.canHaveRawViews = false;
+		desc.cpuAccess = nvrhi::CpuAccessMode::None;
 		desc.debugName = "IndexBuffer";
+		desc.initialState = nvrhi::ResourceStates::IndexBuffer;
+		desc.keepInitialState = true;
 
 		m_Buffer = device->createBuffer(desc);
 		if (!m_Buffer)
@@ -208,6 +214,8 @@ namespace Wasteland {
 		desc.canHaveRawViews = true;
 		desc.cpuAccess = nvrhi::CpuAccessMode::Write;
 		desc.debugName = "StructuredBuffer";
+		desc.initialState = nvrhi::ResourceStates::ShaderResource;
+		desc.keepInitialState = true;
 
 		m_Buffer = device->createBuffer(desc);
 		if (!m_Buffer)

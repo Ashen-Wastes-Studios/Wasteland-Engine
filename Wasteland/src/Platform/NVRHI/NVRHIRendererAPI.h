@@ -48,10 +48,12 @@ namespace Wasteland {
 		{
 			const void* shaderPtr;
 			const void* vertexArrayPtr;
+			nvrhi::FramebufferInfo framebufferInfo;
 			
 			bool operator==(const PipelineKey& other) const
 			{
-				return shaderPtr == other.shaderPtr && vertexArrayPtr == other.vertexArrayPtr;
+				return shaderPtr == other.shaderPtr && vertexArrayPtr == other.vertexArrayPtr
+					&& framebufferInfo == other.framebufferInfo;
 			}
 		};
 
