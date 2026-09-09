@@ -119,7 +119,18 @@ namespace Wasteland
 				{
 					auto *nvrhiCtx = dynamic_cast<NVRHIContext *>(m_Window->GetCurrentContext());
 					if (nvrhiCtx)
+					{
+						if (nvrhiCtx->IsDeviceLost())
+						{
+							// Device is dead (TDR, driver crash, GPU reset). Skip
+							// the entire frame — don't render scene or ImGui.
+							// Attempt Vulkan recovery; DX11/DX12 need a restart.
+							nvrhiCtx->RecoverDevice();
+							m_Window->OnUpdate();
+							continue;
+						}
 						nvrhiCtx->ExecuteNVRHICommandList();
+					}
 				}
 
 				m_ImGuiLayer->Begin();

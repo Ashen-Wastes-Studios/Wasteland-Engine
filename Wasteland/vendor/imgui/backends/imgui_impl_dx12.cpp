@@ -363,9 +363,21 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
     // Build texture atlas
     ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
-    unsigned char* pixels;
-    int width, height;
+    if (!bd || !bd->pd3dDevice)
+        return false;
+    unsigned char* pixels = nullptr;
+    int width = 0, height = 0;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    // Guard the upload memcpy below: a cleared-but-unbuilt atlas (or a
+    // mid-switch Clear() racing this call) yields null pixels / 0 dims and
+    // faults inside ucrtbase memcpy. Fail gracefully so the caller falls back.
+    if (!pixels || width <= 0 || height <= 0 || width > 16384 || height > 16384)
+        return false;
+    // If the GPU already hung (TDR), every call below fails and the
+    // IM_ASSERTs turn into a process abort. Bail early so the caller can
+    // fall back to another backend instead of crashing inside ucrtbase.
+    if (FAILED(bd->pd3dDevice->GetDeviceRemovedReason()))
+        return false;
 
     // Upload texture to graphics system
     {
@@ -390,9 +402,9 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
         desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
         ID3D12Resource* pTexture = nullptr;
-        bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
+        HRESULT hrTex = bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pTexture));
-        if (!pTexture)
+        if (FAILED(hrTex) || !pTexture)
             return false;
 
         UINT uploadPitch = (width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
@@ -461,7 +473,6 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
 
         ID3D12Fence* fence = nullptr;
         hr = bd->pd3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-        IM_ASSERT(SUCCEEDED(hr));
         if (FAILED(hr) || !fence)
         {
             uploadBuffer->Release();
@@ -475,11 +486,13 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
         D3D12_COMMAND_QUEUE_DESC queueDesc = {};
         queueDesc.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;
         queueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.NodeMask = 1;
+        // Single-adapter device: NodeMask must be 0. NodeMask=1 addresses a
+        // second physical node and makes CreateCommandQueue fail with
+        // E_INVALIDARG (previously tripped IM_ASSERT -> abort in ucrtbase).
+        queueDesc.NodeMask = 0;
 
         ID3D12CommandQueue* cmdQueue = nullptr;
         hr = bd->pd3dDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&cmdQueue));
-        IM_ASSERT(SUCCEEDED(hr));
         if (FAILED(hr) || !cmdQueue)
         {
             fence->Release();
@@ -490,7 +503,6 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
 
         ID3D12CommandAllocator* cmdAlloc = nullptr;
         hr = bd->pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
-        IM_ASSERT(SUCCEEDED(hr));
         if (FAILED(hr) || !cmdAlloc)
         {
             cmdQueue->Release();
@@ -502,7 +514,6 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
 
         ID3D12GraphicsCommandList* cmdList = nullptr;
         hr = bd->pd3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
-        IM_ASSERT(SUCCEEDED(hr));
         if (FAILED(hr) || !cmdList)
         {
             cmdAlloc->Release();
@@ -517,7 +528,6 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
         cmdList->ResourceBarrier(1, &barrier);
 
         hr = cmdList->Close();
-        IM_ASSERT(SUCCEEDED(hr));
         if (FAILED(hr))
         {
             cmdList->Release();
@@ -531,7 +541,17 @@ static bool ImGui_ImplDX12_CreateFontsTexture()
 
         cmdQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&cmdList);
         hr = cmdQueue->Signal(fence, 1);
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr))
+        {
+            cmdList->Release();
+            cmdAlloc->Release();
+            cmdQueue->Release();
+            CloseHandle(event);
+            fence->Release();
+            uploadBuffer->Release();
+            pTexture->Release();
+            return false;
+        }
 
         fence->SetEventOnCompletion(1, event);
         WaitForSingleObject(event, INFINITE);
@@ -668,7 +688,7 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
     memset(&psoDesc, 0, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-    psoDesc.NodeMask = 1;
+    psoDesc.NodeMask = 0;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.pRootSignature = bd->pRootSignature;
     psoDesc.SampleMask = UINT_MAX;
@@ -974,7 +994,7 @@ static void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
         desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         desc.NumDescriptors = bd->numFramesInFlight;
         desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        desc.NodeMask = 1;
+        desc.NodeMask = 0;
 
         HRESULT hr = bd->pd3dDevice->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&vd->RtvDescHeap));
         IM_ASSERT(hr == S_OK);

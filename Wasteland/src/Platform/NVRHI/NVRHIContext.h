@@ -92,6 +92,13 @@ namespace Wasteland
 		void ExecuteNVRHICommandList();
 		bool IsCommandListOpen() const { return m_CommandListOpen; }
 
+		// Device loss detection (TDR, driver crash, GPU reset). When true the
+		// native device is dead and all GPU operations must be skipped until
+		// RecoverDevice() re-creates the device and swapchain.
+		bool IsDeviceLost() const { return m_IsDeviceLost; }
+		void RecoverDevice();
+		void SetDeviceLost() { m_IsDeviceLost = true; }
+
 		// Vulkan ImGui lifecycle (called by ImGuiLayer)
 		bool InitVulkanImGuiResources();
 		void ShutdownVulkanImGuiResources();
@@ -203,7 +210,10 @@ namespace Wasteland
 
 		// NVRHI command list frame state (DX11/DX12/Vulkan)
 		bool m_CommandListOpen = false;
+		bool m_IsDeviceLost = false;
 		bool m_VkValidationLayersEnabled = false;
+
+		// Allow the anonymous log callback to mark device loss
 		uint32_t m_Width = 0;
 		uint32_t m_Height = 0;
 	};

@@ -25,6 +25,8 @@ namespace
 	class NVRHILogCallback : public nvrhi::IMessageCallback
 	{
 	public:
+		void *context = nullptr; // NVRHIContext* (void* to avoid header dependency in anonymous namespace)
+
 		void message(nvrhi::MessageSeverity severity, const char *messageText) override
 		{
 			switch (severity)
@@ -39,6 +41,15 @@ namespace
 			case nvrhi::MessageSeverity::Fatal:
 			default:
 				WL_CORE_ERROR("NVRHI: {0}", messageText);
+				// NVRHI catches vk::DeviceLostError / DX12 GetDeviceRemovedReason
+				// internally and routes them here as Error severity. Mark the
+				// owning context as lost so the frame loop can skip rendering
+				// and trigger recovery instead of cascading into backend init
+				// failures ("No backend initialized, skipping frame").
+				if (context && strstr(messageText, "Device Removed!"))
+				{
+					static_cast<class Wasteland::NVRHIContext*>(context)->SetDeviceLost();
+				}
 				break;
 			}
 		}
@@ -246,6 +257,9 @@ namespace Wasteland
 
 		// Create command list
 		m_CommandList = m_Device->createCommandList();
+
+		// Route NVRHI device-removal messages to m_IsDeviceLost
+		s_NVRHILogCallback.context = this;
 
 		WL_CORE_INFO("NVRHI Context initialized successfully");
 	}
@@ -2015,6 +2029,11 @@ namespace Wasteland
 	void NVRHIContext::ExecuteNVRHICommandList()
 	{
 		WL_PROFILE_FUNCTION();
+		if (m_IsDeviceLost)
+		{
+			m_CommandListOpen = false;
+			return;
+		}
 		if (!m_Device || !m_CommandList)
 			return;
 		if (!m_CommandListOpen)
@@ -2029,6 +2048,46 @@ namespace Wasteland
 		m_CommandList->close();
 		m_CommandListOpen = false;
 		m_Device->executeCommandList(m_CommandList);
+	}
+
+
+
+	void NVRHIContext::RecoverDevice()
+	{
+		WL_PROFILE_FUNCTION();
+		if (!m_IsDeviceLost)
+			return;
+
+		if (m_API == RendererAPI::API::NVRHI_Vulkan)
+		{
+			WL_CORE_INFO("NVRHI: Attempting Vulkan device recovery...");
+			DestroyVulkan();
+			m_IsDeviceLost = false;
+			CreateDeviceVulkanWithRetry();
+
+			if (!m_Device)
+			{
+				WL_CORE_ERROR("NVRHI: Vulkan device recovery failed; backend remains lost");
+				m_IsDeviceLost = true;
+				return;
+			}
+
+			CreateVulkanSwapChain();
+			if (IsVulkanImGuiInitialized())
+			{
+				CreateVulkanImGuiFramebuffers();
+				CreateVulkanImGuiCommandPoolAndBuffers();
+			}
+
+			m_CommandList = m_Device->createCommandList();
+			s_NVRHILogCallback.context = this;
+			WL_CORE_INFO("NVRHI: Vulkan device recovery complete");
+		}
+		else
+		{
+			WL_CORE_ERROR("NVRHI: Device recovery for {0} requires engine-level device recreation. Please restart.",
+				m_API == RendererAPI::API::NVRHI_DX11 ? "DX11" : "DX12");
+		}
 	}
 
 	VkFramebuffer NVRHIContext::GetVkCurrentImGuiFramebuffer() const

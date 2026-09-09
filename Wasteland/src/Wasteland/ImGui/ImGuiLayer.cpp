@@ -207,7 +207,7 @@ namespace Wasteland
    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = graphicsContext->GetD3D12ImGuiSRVHeapCPU();
    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = graphicsContext->GetD3D12ImGuiSRVHeapGPU();
 
-   if (!device || !commandQueue || !srvHeap)
+   if (!device || !commandQueue || !srvHeap || cpuHandle.ptr == 0 || gpuHandle.ptr == 0)
    {
     WL_CORE_ERROR("ImGui: Failed to get DX12 device/command queue/descriptor heap, falling back to OpenGL");
     if (FallbackToOpenGL())
@@ -215,6 +215,41 @@ namespace Wasteland
     else
      m_CurrentBackend = RendererAPI::API::None;
     break;
+   }
+
+   // A previous half-initialized DX12 backend leaves BackendRendererUserData
+   // set (ImGui_ImplDX12_Init always succeeds after allocating it). Re-init
+   // without shutdown leaks/corrupts it and the next CreateFontsTexture faults
+   // on stale state. Tear it down first.
+   if (ImGui::GetIO().BackendRendererUserData != nullptr)
+   {
+    WL_CORE_WARN("ImGui: Stale DX12 renderer backend data found, shutting down before re-init");
+    ImGui_ImplDX12_Shutdown();
+   }
+
+   // Validate the font atlas BEFORE CreateDeviceObjects: its internal upload
+   // does memcpy(pixels) with no null check (faults inside ucrtbase). Rebuild
+   // here so the backend only sees a valid atlas.
+   {
+    unsigned char *fontPixels = nullptr;
+    int fontW = 0, fontH = 0;
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontW, &fontH);
+    if (!fontPixels || fontW <= 0 || fontH <= 0)
+    {
+     WL_CORE_WARN("ImGui: Font atlas empty before DX12 init, rebuilding default font");
+     ImGui::GetIO().Fonts->Clear();
+     ImGui::GetIO().Fonts->AddFontDefault();
+     ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontW, &fontH);
+    }
+    if (!fontPixels || fontW <= 0 || fontH <= 0 || fontW > 16384 || fontH > 16384)
+    {
+     WL_CORE_ERROR("ImGui: Font atlas invalid ({0}x{1}), cannot init DX12 backend", fontW, fontH);
+     if (FallbackToOpenGL())
+      m_CurrentBackend = RendererAPI::API::OpenGL;
+     else
+      m_CurrentBackend = RendererAPI::API::None;
+     break;
+    }
    }
 
    // Validate device
@@ -240,6 +275,8 @@ namespace Wasteland
    if (!ImGui_ImplDX12_Init(device, 2, DXGI_FORMAT_R8G8B8A8_UNORM, srvHeap, cpuHandle, gpuHandle))
    {
     WL_CORE_ERROR("ImGui: DX12 Init failed, falling back to OpenGL");
+    if (ImGui::GetIO().BackendRendererUserData != nullptr)
+     ImGui_ImplDX12_Shutdown();
     if (FallbackToOpenGL())
      m_CurrentBackend = RendererAPI::API::OpenGL;
     else
@@ -250,6 +287,7 @@ namespace Wasteland
    if (!ImGui_ImplDX12_CreateDeviceObjects())
    {
     WL_CORE_ERROR("ImGui: DX12 CreateDeviceObjects failed, falling back to OpenGL");
+    ImGui_ImplDX12_Shutdown();
     if (FallbackToOpenGL())
      m_CurrentBackend = RendererAPI::API::OpenGL;
     else
