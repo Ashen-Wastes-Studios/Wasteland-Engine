@@ -183,6 +183,7 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ClInclude Include="src\Panels\SceneHierarchyPanel.h" />
     <ClInclude Include="src\Panels\ScriptEditorPanel.h" />
     <ClInclude Include="src\Panels\ScriptInspectorPanel.h" />
+    <ClInclude Include="src\Panels\ToolServer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\DemonCoreEditorApp.cpp" />
@@ -196,6 +197,7 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ClCompile Include="src\Panels\SceneHierarchyPanel.cpp" />
     <ClCompile Include="src\Panels\ScriptEditorPanel.cpp" />
     <ClCompile Include="src\Panels\ScriptInspectorPanel.cpp" />
+    <ClCompile Include="src\Panels\ToolServer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Wasteland\Wasteland.vcxproj">

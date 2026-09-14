@@ -42,6 +42,15 @@ namespace Wasteland
 
 		void DuplicateEntity(Entity entity);
 
+		// Re-create every MaterialComponent texture from its saved TexturePath
+		// under the current RendererAPI. GPU texture objects die with their
+		// backend (GL names are meaningless after the context is destroyed,
+		// NVRHI handles hold a dead device), so after a runtime API switch
+		// the stale Refs must be reloaded or every textured draw samples
+		// null/dead data. Textures are also re-deduped into the renderers'
+		// slots on next submit (slot maps are cleared by RecreateResources).
+		void ReloadMaterialTextures();
+
 		Entity GetPrimaryCameraEntity();
 		bool IsEntityValid(Entity entity) const;
 

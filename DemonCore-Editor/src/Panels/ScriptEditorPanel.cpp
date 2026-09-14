@@ -4,6 +4,8 @@
 #include <imgui/imgui.h>
 #include <imgui/TextEditor.h>
 
+#include "Wasteland/Utils/PlatformUtils.h"
+
 #include <fstream>
 #include <sstream>
 
@@ -33,7 +35,7 @@ namespace Wasteland
 			R"(([a-zA-Z_][a-zA-Z0-9_]*))", TextEditor::PaletteIndex::Identifier));
 
 		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, TextEditor::PaletteIndex>(
-			R"((\"([^\"\\]|\\.)*\"|\'([^\'\\]|\\.)*\'))", TextEditor::PaletteIndex::String));
+			R"((\"([^\"\\]|\\.)*\"|'([^'\\]|\\.)*'))", TextEditor::PaletteIndex::String));
 
 		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, TextEditor::PaletteIndex>(
 			R"(([0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?|0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+))", TextEditor::PaletteIndex::Number));
@@ -42,7 +44,7 @@ namespace Wasteland
 			R"((#[^\n]*)+)", TextEditor::PaletteIndex::Comment));
 
 		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, TextEditor::PaletteIndex>(
-			R"(([\[\]\{\}\(\)\,\.\:\;\=\+\-\*\/\%\<\>\!\&\|\^~]))", TextEditor::PaletteIndex::Punctuation));
+			R"(([\{\}\(\)\,\.\:\;\=\+\-\*\/\%\<\>\!\&\|\^~]))", TextEditor::PaletteIndex::Punctuation));
 
 		return langDef;
 	}
@@ -103,12 +105,32 @@ namespace Wasteland
 		m_CurrentFilePath.clear();
 	}
 
+	void ScriptEditorPanel::ReloadFile()
+	{
+		if (!m_FileOpen)
+			return;
+		std::ifstream file(m_CurrentFilePath);
+		if (!file.is_open())
+			return;
+		std::stringstream ss;
+		ss << file.rdbuf();
+		file.close();
+		m_Editor->SetText(ss.str());
+	}
+
+	std::string ScriptEditorPanel::GetCurrentText() const
+	{
+		return m_Editor->GetText();
+	}
+
+	void ScriptEditorPanel::SetText(const std::string &text)
+	{
+		m_Editor->SetText(text);
+	}
+
 	void ScriptEditorPanel::OnImGuiRender()
 	{
-		if (!m_Visible)
-			return;
-
-		if (!m_ShowPanel)
+		if (!m_Visible || !m_ShowPanel)
 			return;
 
 		std::string windowTitle = "Script Editor";
@@ -117,37 +139,31 @@ namespace Wasteland
 
 		ImGui::Begin(windowTitle.c_str(), &m_ShowPanel);
 
+		if (ImGui::Button("Open"))
+		{
+			std::string filepath = FileDialogs::OpenFile("Python Script (*.py)\0*.py\0");
+			if (!filepath.empty())
+				OpenFile(filepath);
+		}
+
 		if (m_FileOpen)
 		{
+			ImGui::SameLine();
 			if (ImGui::Button("Save"))
 				SaveFile();
-
+			ImGui::SameLine();
+			if (ImGui::Button("Reload"))
+				ReloadFile();
 			ImGui::SameLine();
 			if (ImGui::Button("Close"))
 				CloseFile();
 
-			ImGui::SameLine();
-			if (m_Editor->IsTextChanged())
-				ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "(unsaved changes)");
+			ImVec2 size = ImGui::GetContentRegionAvail();
+			m_Editor->Render("ScriptEditor", size, true);
 		}
 		else
 		{
-			ImGui::TextDisabled("No file open. Use Scripts > Open to edit a file.");
-		}
-
-		ImGui::Separator();
-
-		if (m_FileOpen)
-		{
-			auto cursorPos = m_Editor->GetCursorPosition();
-			ImGui::Text("Line %d, Col %d", cursorPos.mLine + 1, cursorPos.mColumn + 1);
-			ImGui::SameLine(ImGui::GetWindowWidth() - 120.0f);
-			ImGui::Text("Lines: %d", m_Editor->GetTotalLines());
-
-			ImGui::Separator();
-
-			auto contentSize = ImGui::GetContentRegionAvail();
-			m_Editor->Render("##TextEditor", contentSize);
+			ImGui::TextDisabled("No script open. Open a .py file to edit.");
 		}
 
 		ImGui::End();

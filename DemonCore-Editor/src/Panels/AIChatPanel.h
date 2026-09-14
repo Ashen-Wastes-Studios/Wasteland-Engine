@@ -12,12 +12,15 @@ namespace Wasteland
 
 	struct ChatMessage
 	{
-		std::string Role; // "user" | "assistant" | "error"
+		std::string Role; // "user" | "assistant" | "error" | "tool"
 		std::string Text;
+		std::string ToolName; // populated when Role == "tool"
 	};
 
 	// "AI Chatbot" viewport: chat UI over any OpenAI-compatible
 	// /chat/completions endpoint. Key + settings via ApiKeyStore.
+	// Agentic mode: when enabled, the AI can call tools (file ops, memory)
+	// and iterate until the task is done.
 	class AIChatPanel
 	{
 	public:
@@ -29,13 +32,21 @@ namespace Wasteland
 		bool IsVisible() const { return m_Visible; }
 		void SetVisible(bool visible) { m_Visible = visible; }
 
+		// Bridge: called by EditorLayer when a file is written by the AI.
+		void NotifyFileWritten(const std::string &path);
+
 	private:
 		void SendCurrentInput();
 		void LaunchWorker();
-		void LoadEngineContext(); // UI thread: (re)load reference file if changed
+		void LoadEngineContext();
+		void AgentLoop();
+		void ExecuteToolCall(const std::string &toolName, const std::string &argsJson);
+		void RenderMessage(const ChatMessage &m);
 		static std::string BuildRequestBody(const std::string &model, float temperature,
 			const std::string &systemPrompt, const std::vector<ChatMessage> &history, size_t maxHistory, bool stream);
 		static bool ParseResponseContent(const std::string &body, std::string &outContent, std::string &outError);
+		static std::string ExtractToolCall(const std::string &text, std::string &outToolName, std::string &outArgs);
+		static std::string StripToolCalls(const std::string &text);
 
 	private:
 		bool m_Visible = true;
@@ -46,6 +57,11 @@ namespace Wasteland
 		std::thread m_Worker;
 		std::string m_Status = "Idle. Set your API key below, then ask anything.";
 		bool m_ScrollToBottom = false;
+
+		// Agentic mode
+		bool m_AgenticMode = true;
+		int m_AgentIterations = 0;
+		static const int kMaxAgentIterations = 10;
 
 		// Local editable copies of settings (Save pushes to ApiKeyStore + disk).
 		char m_KeyBuf[512] = {0};
@@ -63,6 +79,10 @@ namespace Wasteland
 		bool m_EngineContextHaveTime = false;
 		long m_EngineContextChars = 0;
 		std::string m_EngineContextError;
+
+		// Pending file opens from tool calls (drained on UI thread).
+		std::vector<std::string> m_PendingFileOpens;
+		std::mutex m_PendingMutex;
 	};
 
 }

@@ -92,6 +92,10 @@ namespace Wasteland
 		bool m_ShowStats = true;
 		bool m_ShowSettings = true;
 
+		// Pending file opens from AI tool calls (drained on UI thread).
+		std::vector<std::string> m_PendingFileOpens;
+		std::mutex m_PendingFileOpensMutex;
+
 		// Panels
 		SceneHierarchyPanel m_SceneHierarchyPanel;
 		ContentBrowserPanel m_ContentBrowserPanel;

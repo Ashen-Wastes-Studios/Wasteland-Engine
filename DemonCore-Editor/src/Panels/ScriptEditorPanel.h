@@ -19,9 +19,12 @@ namespace Wasteland
 		void OpenFile(const std::filesystem::path &path);
 		void SaveFile();
 		void CloseFile();
+		void ReloadFile();
 
 		bool IsOpen() const { return m_FileOpen; }
 		const std::filesystem::path &GetFilePath() const { return m_CurrentFilePath; }
+		std::string GetCurrentText() const;
+		void SetText(const std::string &text);
 
 		bool IsVisible() const { return m_Visible && m_ShowPanel; }
 		void SetVisible(bool visible) { m_Visible = visible; m_ShowPanel = visible; }

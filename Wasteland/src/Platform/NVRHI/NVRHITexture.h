@@ -43,6 +43,7 @@ namespace Wasteland {
 	private:
 		void CreateTexture(uint32_t width, uint32_t height);
 		void CreateSampler();
+		void UploadMipChain(nvrhi::ICommandList* cmd, const void* baseData);
 
 		const std::string m_Path;
 		uint32_t m_Width, m_Height;

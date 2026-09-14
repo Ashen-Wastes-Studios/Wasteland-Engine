@@ -3,11 +3,13 @@
 #include "ApiKeyStore.h"
 #include "HttpClient.h"
 #include "JsonMini.h"
+#include "ToolServer.h"
 
 #include <imgui/imgui.h>
 
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 
 namespace Wasteland
 {
@@ -26,7 +28,7 @@ namespace Wasteland
 		const std::string &systemPrompt, const std::vector<ChatMessage> &history, size_t maxHistory, bool stream)
 	{
 		std::string body = "{\"model\":\"" + JsonMini::Escape(model) + "\",\"stream\":" +
-			(stream ? "true" : "false") + ",\"temperature\":" +
+			(stream ? "true" : "false") + "\",\"temperature\":" +
 			std::to_string(temperature) + ",\"messages\":[";
 		bool first = true;
 		if (!systemPrompt.empty())
@@ -34,7 +36,6 @@ namespace Wasteland
 			body += "{\"role\":\"system\",\"content\":\"" + JsonMini::Escape(systemPrompt) + "\"}";
 			first = false;
 		}
-		// Bound request size: recent exchanges only (tighter when engine context is included).
 		size_t start = history.size() > maxHistory ? history.size() - maxHistory : 0;
 		for (size_t i = start; i < history.size(); i++)
 		{
@@ -42,6 +43,14 @@ namespace Wasteland
 			std::string role = (m.Role == "user") ? "user" : "assistant";
 			if (m.Role == "error")
 				continue;
+			if (m.Role == "tool")
+			{
+				if (!first)
+					body += ",";
+				body += "{\"role\":\"assistant\",\"content\":\"[Tool: " + JsonMini::Escape(m.ToolName) + " result]\\n" + JsonMini::Escape(m.Text) + "\"}";
+				first = false;
+				continue;
+			}
 			if (!first)
 				body += ",";
 			body += "{\"role\":\"" + role + "\",\"content\":\"" + JsonMini::Escape(m.Text) + "\"}";
@@ -53,7 +62,6 @@ namespace Wasteland
 
 	bool AIChatPanel::ParseResponseContent(const std::string &body, std::string &outContent, std::string &outError)
 	{
-		// Surface API errors first: {"error": {"message": "..."}}
 		size_t errPos = body.find("\"error\"");
 		if (errPos != std::string::npos)
 		{
@@ -82,6 +90,55 @@ namespace Wasteland
 		return true;
 	}
 
+	std::string AIChatPanel::ExtractToolCall(const std::string &text, std::string &outToolName, std::string &outArgs)
+	{
+		size_t start = text.find("<tool_call");
+		if (start == std::string::npos)
+			return "";
+		size_t nameStart = text.find("name=\"", start);
+		if (nameStart == std::string::npos)
+			return "";
+		nameStart += 6;
+		size_t nameEnd = text.find("\"", nameStart);
+		if (nameEnd == std::string::npos)
+			return "";
+		outToolName = text.substr(nameStart, nameEnd - nameStart);
+
+		size_t tagEnd = text.find(">", nameEnd);
+		if (tagEnd == std::string::npos)
+			return "";
+		size_t argsStart = text.find("<args>", tagEnd);
+		if (argsStart != std::string::npos)
+		{
+			argsStart += 6;
+			size_t argsEnd = text.find("</args>", argsStart);
+			if (argsEnd != std::string::npos)
+				outArgs = text.substr(argsStart, argsEnd - argsStart);
+		}
+
+		size_t callEnd = text.find("</tool_call>", tagEnd);
+		if (callEnd == std::string::npos)
+			return "";
+		return text.substr(start, callEnd + 12 - start);
+	}
+
+	std::string AIChatPanel::StripToolCalls(const std::string &text)
+	{
+		std::string result = text;
+		while (true)
+		{
+			size_t start = result.find("<tool_call");
+			if (start == std::string::npos)
+				break;
+			size_t end = result.find("</tool_call>", start);
+			if (end == std::string::npos)
+				break;
+			end += 12;
+			result.erase(start, end - start);
+		}
+		return result;
+	}
+
 	void AIChatPanel::LoadEngineContext()
 	{
 		namespace fs = std::filesystem;
@@ -97,7 +154,7 @@ namespace Wasteland
 			return;
 		}
 		if (m_EngineContextHaveTime && stamp == m_EngineContextTime && !m_EngineContextCache.empty())
-			return; // Unchanged.
+			return;
 		std::ifstream file(path);
 		if (!file.is_open())
 		{
@@ -131,19 +188,37 @@ namespace Wasteland
 			std::lock_guard<std::mutex> lock(m_Mutex);
 			history = m_Messages;
 		}
-		// Ground the model in the engine's scripting API when enabled.
+		bool agentic = m_AgenticMode;
+		std::string toolDefs = ToolServer::Instance().GetToolDefinitionsJson();
+		std::string memoryContent;
+		if (agentic)
+		{
+			memoryContent = ToolServer::Instance().ExecuteTool("memory_read", "{}");
+		}
+
 		std::string effectiveSystem = system;
 		size_t maxHistory = 30;
 		if (m_UseEngineContext && !m_EngineContextCache.empty())
 		{
 			effectiveSystem += "\n\n--- Wasteland engine scripting reference ---\n" + m_EngineContextCache;
-			maxHistory = 12; // Leave context-window room for local models.
+			maxHistory = 12;
 		}
-		// The new user message was already appended before launch.
+		if (agentic)
+		{
+			effectiveSystem += "\n\n## Available Tools\nYou have access to tools for file operations and memory. When you need to use a tool, output a tool call in this format:\n<tool_call name=\"TOOL_NAME\"><args>JSON_ARGS</args></tool_call>\n\nAvailable tools:\n" + toolDefs + "\n\n";
+			effectiveSystem += "After each tool result, decide if you need more tools or can give a final answer.\n";
+			effectiveSystem += "Always explain what you are about to do before calling a tool.";
+			maxHistory = 20;
+			if (!memoryContent.empty() && memoryContent.find("(memory") != 0)
+			{
+				effectiveSystem += "\n\n## Your Memory\n" + memoryContent + "\n";
+			}
+		}
+
 		m_Sending.store(true);
 		m_Status = "Sending...";
 
-		m_Worker = std::thread([this, key, base, model, temp, effectiveSystem, history, maxHistory]() {
+		m_Worker = std::thread([this, key, base, model, temp, effectiveSystem, history, maxHistory, agentic]() {
 			std::string endpoint = base;
 			while (!endpoint.empty() && endpoint.back() == '/')
 				endpoint.pop_back();
@@ -153,7 +228,6 @@ namespace Wasteland
 			if (!key.empty())
 				headers.emplace_back("Authorization", "Bearer " + key);
 
-			// Placeholder message, filled in as tokens stream in.
 			{
 				std::lock_guard<std::mutex> lock(m_Mutex);
 				m_Messages.push_back({"assistant", ""});
@@ -161,24 +235,12 @@ namespace Wasteland
 				m_ScrollToBottom = true;
 			}
 
-			auto appendDelta = [this](const std::string &delta) {
-				if (delta.empty())
-					return;
-				std::lock_guard<std::mutex> lock(m_Mutex);
-				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
-				{
-					m_Messages.back().Text += delta;
-					m_ScrollToBottom = true;
-				}
-			};
-
-			// SSE framing: "data: {...}\n" lines, "[DONE]" at the end.
 			std::string parseBuf;
 			std::string streamError;
 			long status = 0;
 			std::string reqError = HttpClient::PostStream(
 				endpoint, BuildRequestBody(model, temp, effectiveSystem, history, maxHistory, true), headers,
-				[&parseBuf, &appendDelta, &streamError](const char *data, size_t len) {
+				[&parseBuf, this, &streamError](const char *data, size_t len) {
 					parseBuf.append(data, len);
 					size_t pos = 0;
 					while ((pos = parseBuf.find('\n')) != std::string::npos)
@@ -190,13 +252,20 @@ namespace Wasteland
 						if (line.rfind("data:", 0) != 0)
 							continue;
 						std::string payload = line.substr(5);
-						size_t b = payload.find_first_not_of(" 	");
+						size_t b = payload.find_first_not_of(" \t");
 						payload = (b == std::string::npos) ? "" : payload.substr(b);
 						if (payload.empty() || payload == "[DONE]")
 							continue;
 						std::string delta;
 						if (JsonMini::ExtractString(payload, "content", delta))
-							appendDelta(delta);
+						{
+							std::lock_guard<std::mutex> lock(m_Mutex);
+							if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+							{
+								m_Messages.back().Text += delta;
+								m_ScrollToBottom = true;
+							}
+						}
 						else if (payload.find("\"error\"") != std::string::npos)
 						{
 							std::string msg;
@@ -207,10 +276,92 @@ namespace Wasteland
 				},
 				status);
 
+			if (agentic)
+			{
+				std::string responseText;
+				{
+					std::lock_guard<std::mutex> lock(m_Mutex);
+					if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+						responseText = m_Messages.back().Text;
+				}
+
+				int iterations = 0;
+				while (iterations++ < kMaxAgentIterations)
+				{
+					std::string toolName, argsJson;
+					std::string toolCallText = ExtractToolCall(responseText, toolName, argsJson);
+					if (toolCallText.empty())
+						break;
+
+					std::string result = ToolServer::Instance().ExecuteTool(toolName, argsJson);
+
+					{
+						std::lock_guard<std::mutex> lock(m_Mutex);
+						m_Messages.push_back({"tool", result, toolName});
+						m_Messages.push_back({"assistant", ""});
+						m_Status = "Tool '" + toolName + "' executed. Thinking...";
+						m_ScrollToBottom = true;
+					}
+
+					std::vector<ChatMessage> updatedHistory;
+					{
+						std::lock_guard<std::mutex> lock(m_Mutex);
+						updatedHistory = m_Messages;
+					}
+
+					parseBuf.clear();
+					streamError.clear();
+					status = 0;
+					HttpClient::PostStream(
+						endpoint, BuildRequestBody(model, temp, effectiveSystem, updatedHistory, maxHistory, true), headers,
+						[&parseBuf, this, &streamError](const char *data, size_t len) {
+							parseBuf.append(data, len);
+							size_t pos = 0;
+							while ((pos = parseBuf.find('\n')) != std::string::npos)
+							{
+								std::string line = parseBuf.substr(0, pos);
+								parseBuf.erase(0, pos + 1);
+								if (!line.empty() && line.back() == '\r')
+									line.pop_back();
+								if (line.rfind("data:", 0) != 0)
+									continue;
+								std::string payload = line.substr(5);
+								size_t b = payload.find_first_not_of(" \t");
+								payload = (b == std::string::npos) ? "" : payload.substr(b);
+								if (payload.empty() || payload == "[DONE]")
+									continue;
+								std::string delta;
+								if (JsonMini::ExtractString(payload, "content", delta))
+								{
+									std::lock_guard<std::mutex> lock(m_Mutex);
+									if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+									{
+										m_Messages.back().Text += delta;
+										m_ScrollToBottom = true;
+									}
+								}
+								else if (payload.find("\"error\"") != std::string::npos)
+								{
+									std::string msg;
+									if (JsonMini::ExtractString(payload, "message", msg))
+										streamError = msg;
+								}
+							}
+						},
+						status);
+
+					{
+						std::lock_guard<std::mutex> lock(m_Mutex);
+						if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+							responseText = m_Messages.back().Text;
+					}
+				}
+			}
+
 			std::lock_guard<std::mutex> lock(m_Mutex);
 			bool haveText = !m_Messages.empty() && m_Messages.back().Role == "assistant" &&
 				!m_Messages.back().Text.empty();
-			auto setError = [this](const std::string &err) {
+			auto setErr = [this](const std::string &err) {
 				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
 					m_Messages.back() = {"error", err};
 				else
@@ -218,9 +369,9 @@ namespace Wasteland
 				m_Status = err;
 			};
 			if (!reqError.empty() && !haveText)
-				setError(reqError);
+				setErr(reqError);
 			else if (!streamError.empty() && !haveText)
-				setError(streamError);
+				setErr(streamError);
 			else if (!reqError.empty())
 				m_Status = "Idle (stream ended early: " + reqError + ").";
 			else
@@ -235,7 +386,6 @@ namespace Wasteland
 		if (m_Sending.load())
 			return;
 		std::string text = m_InputBuf;
-		// trim
 		size_t b = text.find_first_not_of(" \t\r\n");
 		if (b == std::string::npos)
 			return;
@@ -253,12 +403,66 @@ namespace Wasteland
 		LaunchWorker();
 	}
 
+	void AIChatPanel::NotifyFileWritten(const std::string &path)
+	{
+		std::lock_guard<std::mutex> lock(m_PendingMutex);
+		m_PendingFileOpens.push_back(path);
+	}
+
+	void AIChatPanel::RenderMessage(const ChatMessage &m)
+	{
+		if (m.Role == "user")
+		{
+			ImVec4 color(0.55f, 0.85f, 1.0f, 1.0f);
+			(void)color;
+			(void)ImGui::TextColored(color, "You:");
+			(void)ImGui::TextWrapped("%s", m.Text.c_str());
+		}
+		else if (m.Role == "tool")
+		{
+			ImVec4 color(0.6f, 0.8f, 1.0f, 1.0f);
+			char buf[512];
+			_snprintf_s(buf, sizeof(buf), "[Tool: %s]", m.ToolName.c_str());
+			(void)color;
+			(void)ImGui::TextColored(color, "%s", buf);
+			(void)ImGui::TextWrapped("%s", m.Text.c_str());
+		}
+		else if (m.Role == "error")
+		{
+			(void)ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "Error:");
+			(void)ImGui::TextWrapped("%s", m.Text.c_str());
+		}
+		else
+		{
+			std::string displayText = StripToolCalls(m.Text);
+			if (!displayText.empty())
+			{
+				ImVec4 color(0.65f, 1.0f, 0.65f, 1.0f);
+				(void)color;
+				(void)ImGui::TextColored(color, "AI:");
+				(void)ImGui::TextWrapped("%s", displayText.c_str());
+			}
+		}
+	}
+
 	void AIChatPanel::OnImGuiRender()
 	{
 		if (!m_Visible)
 			return;
 
 		LoadEngineContext();
+
+		{
+			std::lock_guard<std::mutex> lock(m_PendingMutex);
+			if (!m_PendingFileOpens.empty())
+			{
+				for (const auto &p : m_PendingFileOpens)
+				{
+					WL_CORE_INFO("Tool wrote file: {0}", p);
+				}
+				m_PendingFileOpens.clear();
+			}
+		}
 
 		if (!m_SettingsLoaded)
 		{
@@ -271,21 +475,51 @@ namespace Wasteland
 			m_SettingsLoaded = true;
 		}
 
-		ImGui::Begin("AI Chatbot", &m_Visible);
+		if (!ImGui::Begin("AI Chatbot", &m_Visible))
+		{
+			ImGui::End();
+			return;
+		}
 
 		if (ImGui::CollapsingHeader("Settings & API Key"))
 		{
-			ImGui::InputText("Base URL", m_BaseURLBuf, sizeof(m_BaseURLBuf));
-			ImGui::InputText("Model", m_ModelBuf, sizeof(m_ModelBuf));
-			ImGui::SliderFloat("Temperature", &m_Temp, 0.0f, 2.0f);
-			ImGui::InputTextMultiline("System prompt", m_SystemBuf, sizeof(m_SystemBuf), ImVec2(-FLT_MIN, 60));
+			if (ImGui::Checkbox("Agent Mode (tools + memory)", &m_AgenticMode))
+			{
+				if (m_AgenticMode)
+					m_Status = "Agent mode ON. AI can edit files and remember things.";
+				else
+					m_Status = "Agent mode OFF. Normal chat.";
+			}
 
-			ImGuiInputTextFlags keyFlags = m_ShowKey ? ImGuiInputTextFlags_None : ImGuiInputTextFlags_Password;
-			ImGui::InputText("API key", m_KeyBuf, sizeof(m_KeyBuf), keyFlags);
-			ImGui::SameLine();
-			ImGui::Checkbox("Show", &m_ShowKey);
-			ImGui::TextWrapped("Defaults to a local LM Studio server (localhost:1234, key left empty). Point the base URL at OpenAI or any OpenAI-compatible API instead, add its key, and Save. Key file: %%APPDATA%%\\Wasteland\\ai_keys.cfg (never committed).");
+			if (ImGui::CollapsingHeader("Engine context"))
+			{
+				if (ImGui::Checkbox("Include Wasteland scripting reference", &m_UseEngineContext))
+				{
+				}
+				if (!m_EngineContextError.empty())
+				{
+				}
+			}
 
+			if (ImGui::InputText("Base URL", m_BaseURLBuf, sizeof(m_BaseURLBuf)))
+			{
+			}
+			if (ImGui::InputText("Model", m_ModelBuf, sizeof(m_ModelBuf)))
+			{
+			}
+			if (ImGui::SliderFloat("Temperature", &m_Temp, 0.0f, 2.0f))
+			{
+			}
+			if (ImGui::InputTextMultiline("System prompt", m_SystemBuf, sizeof(m_SystemBuf), ImVec2(-FLT_MIN, 60)))
+			{
+			}
+
+			if (ImGui::InputText("API key", m_KeyBuf, sizeof(m_KeyBuf), m_ShowKey ? 0 : ImGuiInputTextFlags_Password))
+			{
+			}
+			if (ImGui::SameLine(); ImGui::Checkbox("Show", &m_ShowKey))
+			{
+			}
 			if (ImGui::Button("Save settings"))
 			{
 				ApiKeyStore &store = ApiKeyStore::Instance();
@@ -297,8 +531,7 @@ namespace Wasteland
 				store.Save();
 				m_Status = "Settings saved.";
 			}
-			ImGui::SameLine();
-			if (ImGui::Button("Clear key"))
+			if (ImGui::SameLine(); ImGui::Button("Clear key"))
 			{
 				m_KeyBuf[0] = '\0';
 				ApiKeyStore::Instance().OpenAIKey.clear();
@@ -306,77 +539,57 @@ namespace Wasteland
 				m_Status = "API key cleared.";
 			}
 		}
-
-		if (ImGui::CollapsingHeader("Engine context"))
+		else
 		{
-			ImGui::Checkbox("Include Wasteland scripting reference", &m_UseEngineContext);
-			if (m_EngineContextError.empty())
-				ImGui::TextWrapped("Reference loaded: %ld chars from assets/ai/engine_reference.md — edit that file to teach it more. History trims while on, for small local context windows.", m_EngineContextChars);
-			else
-				ImGui::TextWrapped("Reference unavailable: %s", m_EngineContextError.c_str());
+			if (ImGui::Button("Agent ON"))
+				m_AgenticMode = true;
+			if (ImGui::SameLine(); ImGui::Button("Agent OFF"))
+				m_AgenticMode = false;
 		}
 
-		ImGui::Separator();
-
-		// History (locked copy for rendering).
-		std::vector<ChatMessage> messages;
-		std::string status;
+		ImGui::BeginChild("##chat_scroll", ImVec2(0, -60), true);
 		{
 			std::lock_guard<std::mutex> lock(m_Mutex);
-			messages = m_Messages;
-			status = m_Status;
-		}
-		float footerH = ImGui::GetFrameHeightWithSpacing() * 2 + 8;
-		ImGui::BeginChild("##chat_scroll", ImVec2(0, -footerH), true);
-		for (auto &m : messages)
-		{
-			if (m.Role == "user")
+			for (const auto &m : m_Messages)
 			{
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.85f, 1.0f, 1.0f));
-				ImGui::TextUnformatted("You:");
-				ImGui::PopStyleColor();
+				RenderMessage(m);
+				(void)ImGui::Separator();
 			}
-			else if (m.Role == "error")
+			if (m_ScrollToBottom)
 			{
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.45f, 1.0f));
-				ImGui::TextUnformatted("Error:");
-				ImGui::PopStyleColor();
+				ImGui::SetScrollHereY(1.0f);
+				m_ScrollToBottom = false;
 			}
-			else
-			{
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 1.0f, 0.65f, 1.0f));
-				ImGui::TextUnformatted("Assistant:");
-				ImGui::PopStyleColor();
-			}
-			ImGui::TextWrapped("%s", m.Text.c_str());
-			ImGui::Separator();
-		}
-		if (m_ScrollToBottom)
-		{
-			ImGui::SetScrollHereY(1.0f);
-			m_ScrollToBottom = false;
 		}
 		ImGui::EndChild();
-
-		ImGui::TextWrapped("Status: %s", status.c_str());
+		{
+			const char *statusFmt = "Status: %s";
+			(void)ImGui::TextWrapped(statusFmt, m_Status.c_str());
+		}
 
 		bool sending = m_Sending.load();
-		ImGui::BeginDisabled(sending);
-		bool submit = ImGui::InputText("##chat_input", m_InputBuf, sizeof(m_InputBuf),
-			ImGuiInputTextFlags_EnterReturnsTrue);
-		ImGui::SameLine();
-		if (ImGui::Button("Send") || submit)
-			SendCurrentInput();
-		ImGui::SameLine();
-		if (ImGui::Button("Clear chat"))
+		if (sending)
 		{
-			std::lock_guard<std::mutex> lock(m_Mutex);
-			m_Messages.clear();
-			m_Status = "Idle.";
+			if (ImGui::Button("Cancel"))
+			{
+				m_Sending = false;
+				m_Status = "Canceled.";
+			}
 		}
-		ImGui::EndDisabled();
+		else
+		{
+			bool submit = ImGui::InputText("##chat_input", m_InputBuf, sizeof(m_InputBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+			if (ImGui::Button("Send") || submit)
+				SendCurrentInput();
+			if (ImGui::Button("Clear chat"))
+			{
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				m_Messages.clear();
+				m_Status = "Idle.";
+			}
+		}
 
-		ImGui::End();
+	 ImGui::End();
 	}
 
 }

@@ -23,6 +23,7 @@
 #include "Wasteland/Utils/PlatformUtils.h"
 
 #include "Panels/ApiKeyStore.h"
+#include "Panels/ToolServer.h"
 
 #include "ImGuizmo.h"
 
@@ -467,6 +468,20 @@ static bool HasGLExtension(const char *name)
 
 		ApiKeyStore::Instance().Load();
 
+		// Bridge: when AI tools write files, auto-open in Script Editor.
+		// Queue the path; the UI thread drains in OnImGuiRender (ImGui is single-threaded).
+		ToolServer::Instance().SetFileWrittenCallback([this](const std::string &path) {
+			std::filesystem::path p(path);
+			if (p.extension() == ".py")
+			{
+				std::lock_guard<std::mutex> lock(m_PendingFileOpensMutex);
+				m_PendingFileOpens.push_back(p.string());
+			}
+		});
+
+		// Give ToolServer access to the active scene for entity inspection
+		ToolServer::Instance().SetScene(m_ActiveScene.get());
+
 		m_CheckerboardTexture = nullptr;
 
 		FramebufferSpecification fbSpec;
@@ -506,6 +521,13 @@ static bool HasGLExtension(const char *name)
 			// (Renderer2D::Init runs inside, resetting the stats it needs).
 			Renderer2D::RecreateResources();
 			Renderer3D::RecreateResources();
+			// Material textures are backend GPU objects loaded at scene
+			// deserialization: re-create them under the new API or every
+			// textured draw samples stale (dead GL names / null SRVs).
+			if (m_ActiveScene)
+				m_ActiveScene->ReloadMaterialTextures();
+			if (m_EditorScene && m_EditorScene != m_ActiveScene)
+				m_EditorScene->ReloadMaterialTextures();
 			FramebufferSpecification spec = m_Framebuffer->GetSpecification();
 			m_Framebuffer = Framebuffer::Create(spec);
 			m_FramebufferAPI = RendererAPI::GetAPI();
@@ -731,7 +753,17 @@ static bool HasGLExtension(const char *name)
 				ImGui::EndMenuBar();
 			}
 
-			m_SceneHierarchyPanel.OnImGuiRender();
+			// Drain pending file opens from AI tool calls (must be on UI thread).
+		{
+			std::lock_guard<std::mutex> lock(m_PendingFileOpensMutex);
+			for (const auto &p : m_PendingFileOpens)
+			{
+				m_ScriptEditorPanel.OpenFile(p);
+			}
+			m_PendingFileOpens.clear();
+		}
+
+		m_SceneHierarchyPanel.OnImGuiRender();
 			m_ContentBrowserPanel.OnImGuiRender();
 
 			m_ScriptInspectorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());

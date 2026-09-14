@@ -763,6 +763,15 @@ namespace Wasteland
 		// the device without the feature — nvrhi::vulkan::Queue then crashed in nvoglv64.dll when creating its
 		// internal timeline semaphore.
 		VkPhysicalDeviceFeatures deviceFeatures = {};
+		// Scene samplers request 16x anisotropy (GL parity). The feature must
+		// be enabled or vkCreateSampler fails on aniso samplers. Enable only
+		// when supported so device creation never regresses.
+		{
+			VkPhysicalDeviceFeatures supported = {};
+			vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
+			if (supported.samplerAnisotropy)
+				deviceFeatures.samplerAnisotropy = VK_TRUE;
+		}
 		// --- Diagnostic dump ---
 		{
 			VkPhysicalDeviceProperties propsDbg = {};

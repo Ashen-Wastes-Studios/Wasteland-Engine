@@ -127,10 +127,11 @@ void DX12Nova::CreateRootSignature()
     rootParams[7].InitAsDescriptorTable(1, &ranges[3]);
 
     D3D12_STATIC_SAMPLER_DESC samplerDesc = {};
-    samplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+    samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+    samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+    samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+    samplerDesc.MaxAnisotropy = 16;
     samplerDesc.ShaderRegister = 0;
     samplerDesc.RegisterSpace = 0;
     samplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;

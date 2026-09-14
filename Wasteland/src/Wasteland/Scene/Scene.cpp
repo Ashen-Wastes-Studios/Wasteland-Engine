@@ -12,6 +12,7 @@
 #include "Wasteland/Scripting/ScriptEngine.h"
 
 #include <cfloat>
+#include <filesystem>
 #include <glm/gtc/matrix_inverse.hpp>
 
 // Box2D
@@ -602,6 +603,29 @@ namespace Wasteland
 	bool Scene::IsEntityValid(Entity entity) const
 	{
 		return m_Registry.valid(entity);
+	}
+
+	void Scene::ReloadMaterialTextures()
+	{
+		uint32_t reloaded = 0, missing = 0;
+		auto view = m_Registry.view<MaterialComponent>();
+		for (auto e : view)
+		{
+			auto &mc = view.get<MaterialComponent>(e);
+			if (mc.TexturePath.empty())
+				continue;
+			if (!std::filesystem::is_regular_file(mc.TexturePath))
+			{
+				missing++;
+				continue;
+			}
+			mc.Texture = Texture2D::Create(mc.TexturePath);
+			if (mc.Texture)
+				reloaded++;
+			else
+				missing++;
+		}
+		WL_CORE_INFO("Scene::ReloadMaterialTextures: reloaded {0} material textures ({1} missing)", reloaded, missing);
 	}
 
 	void Scene::OnPhysics2DStart()

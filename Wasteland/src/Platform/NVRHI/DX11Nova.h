@@ -46,7 +46,7 @@ public:
         auto cb=reflection->GetConstantBufferByName("NovaConstants"); D3D11_SHADER_BUFFER_DESC desc={}; Check(cb->GetDesc(&desc)); bytes.resize(desc.Size);
         for(UINT j=0;j<desc.Variables;++j) { D3D11_SHADER_VARIABLE_DESC v={}; Check(cb->GetVariableByIndex(j)->GetDesc(&v)); variables[v.Name]=v; }
         D3D11_BUFFER_DESC bd={}; bd.ByteWidth=(desc.Size+15)&~15u; bd.BindFlags=D3D11_BIND_CONSTANT_BUFFER; Check(device->CreateBuffer(&bd,nullptr,&constants));
-        D3D11_SAMPLER_DESC sd={}; sd.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR; sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_WRAP; sd.MaxLOD=D3D11_FLOAT32_MAX; Check(device->CreateSamplerState(&sd,&sampler));
+        D3D11_SAMPLER_DESC sd={}; sd.Filter=D3D11_FILTER_ANISOTROPIC; sd.AddressU=sd.AddressV=sd.AddressW=D3D11_TEXTURE_ADDRESS_MIRROR; sd.MaxAnisotropy=16; sd.MaxLOD=D3D11_FLOAT32_MAX; Check(device->CreateSamplerState(&sd,&sampler));
     }
     void Resize(UINT w,UINT h) {
         if(!w||!h||(width==w&&height==h)) return;
