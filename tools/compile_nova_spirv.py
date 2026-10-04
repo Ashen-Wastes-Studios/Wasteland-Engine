@@ -35,6 +35,7 @@ collision. Run --deploy to copy the .spv into both bin trees.
 
 import argparse
 import collections
+import json
 import os
 import re
 import shutil
@@ -176,6 +177,87 @@ def deploy():
         print("  deployed -> %s" % dst_dir)
 
 
+def spirv_cb_offsets(spv_path):
+    """Per-member byte offsets of NovaConstants as the SPIR-V actually sees them."""
+    cross = os.path.join(VULKAN_BIN, "spirv-cross.exe")
+    if not os.path.exists(cross):
+        print("  (spirv-cross.exe missing -- skipping constant buffer cross-check)")
+        return None
+    r = subprocess.run([cross, spv_path, "--reflect"], capture_output=True, text=True,
+                       errors="replace")
+    try:
+        j = json.loads(r.stdout)
+    except ValueError:
+        print("  (spirv-cross produced no JSON -- skipping cross-check)")
+        return None
+    ubos = j.get("ubos") or []
+    if not ubos:
+        return None
+    blk = ubos[0]
+    ty = j.get("types", {}).get(blk.get("type"), {})
+    members = {m["name"]: m.get("offset") for m in ty.get("members", [])}
+    return members, blk.get("block_size")
+
+
+def dxc_cb_offsets():
+    """The same offsets as the DX12/fxc path sees them (D3D cbuffer packing)."""
+    fxc = None
+    for base, _dirs, files in os.walk(r"C:\Program Files (x86)\Windows Kits\10\bin"):
+        if "fxc.exe" in files:
+            fxc = os.path.join(base, "fxc.exe")
+    if not fxc:
+        return None, None
+    tmp_bin = os.path.join(os.path.dirname(SPIRV), "_layoutcheck.bin")
+    r = subprocess.run([fxc, "/T", "cs_5_0", "/E", "main", SRC, "/Fo", tmp_bin],
+                       capture_output=True, text=True, errors="replace")
+    if r.returncode != 0 or not os.path.exists(tmp_bin):
+        return None, None
+    out = subprocess.run([fxc, "/dumpbin", tmp_bin], capture_output=True, text=True,
+                         errors="replace").stdout
+    os.remove(tmp_bin)
+    offsets, inside = {}, False
+    for line in out.split("\n"):
+        if "cbuffer NovaConstants" in line:
+            inside = True
+            continue
+        if inside:
+            if line.strip().startswith("// }"):
+                break
+            # Arrays matter most here: a float3 array packs with a 16-byte
+            # stride under both D3D and std140, but a float2 or bool array is
+            # where the two rules are most likely to diverge. Match the array
+            # suffix so those members are actually compared.
+            m = re.search(r"(\w+)(?:\[\d+\])?;\s*//\s*Offset:\s*(\d+)", line)
+            if m:
+                offsets[m.group(1)] = int(m.group(2))
+    return offsets, out
+
+
+def check_constant_buffer(spv_path):
+    """The Vulkan path writes the constant buffer from a CPU-side table using D3D
+    offsets, while the SPIR-V reads it with whatever layout DXC chose. If those
+    two disagree every uniform is silently garbage, so verify them directly."""
+    spirv = spirv_cb_offsets(spv_path)
+    d3d, _dump = dxc_cb_offsets()
+    if spirv is None or d3d is None:
+        print("constant buffer: cross-check skipped (missing tool)")
+        return True
+    members, block_size = spirv
+    shared = sorted(set(members) & set(d3d))
+    bad = [(n, d3d[n], members[n]) for n in shared if d3d[n] != members[n]]
+    only_d3d = sorted(set(d3d) - set(members))
+    print("constant buffer: %d shared members, block_size=%s" % (len(shared), block_size))
+    if bad:
+        print("  LAYOUT MISMATCH (Vulkan would read every uniform at the wrong offset):")
+        for n, a, b in bad[:12]:
+            print("     %-32s d3d=%-6d spirv=%d" % (n, a, b))
+        return False
+    if only_d3d:
+        print("  (stripped by the compiler, not read: %s)" % ", ".join(only_d3d))
+    print("  D3D and SPIR-V offsets agree for all %d members" % len(shared))
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--check-only", action="store_true",
@@ -188,7 +270,9 @@ def main():
         compile_spv()
     if not os.path.exists(SPIRV):
         sys.exit("no .spv to check at %s" % SPIRV)
-    if not check_bindings(SPIRV):
+    ok = check_bindings(SPIRV)
+    ok = check_constant_buffer(SPIRV) and ok
+    if not ok:
         sys.exit(1)
     if args.deploy:
         deploy()
