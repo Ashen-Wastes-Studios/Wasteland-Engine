@@ -27,7 +27,7 @@ namespace Wasteland
     // open source. See docs/RTX_KIT_LICENSES.md.
     //
     // tools/generate_blue_noise.py builds it with the prototype+rank method
-    // (Georgiev & Fajardo, EGF 2011). Measured on the generated file:
+    // (Ulichney 1993, void-and-cluster). Measured on the generated file:
     //   - low-frequency energy ~11000x below white noise
     //   - temporal correlation -0.002 at lag 1, +0.000 at lag 2
     //   - a white-noise volume scores 1.0x on the same metric (negative

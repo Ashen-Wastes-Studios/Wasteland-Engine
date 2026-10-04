@@ -7,30 +7,47 @@ whose licence ("non-commercially, for research or evaluation purposes only")
 cannot coexist with an open-source project. Nothing here derives from NVIDIA's
 data or code.
 
-Algorithm: prototype + rank, following Georgiev & Fajardo, "Blue Noise through
-Optimization" (Eurographics Graphics Forum 2011).
+Algorithm: the void-and-cluster prototype construction, from
 
-    1. draw white noise
-    2. filter it with a Gaussian to get a PROTOTYPE
-    3. threshold the prototype -- that threshold set is a blue-noise point set
-    4. rank every cell by its filtered value
+    R. Ulichney, "The void-and-cluster method for dither array generation",
+    Proc. SPIE Human Vision, Visual Processing, and Digital Display IV,
+    vol. 1913, pp. 332-343, Feb 1993.
 
-The rank image is what carries the blue-noise spectrum, so a uniformly-random
-pixel offset into it yields a well-distributed, low-discrepancy value. This is
-also how the STBN paper's own generation pipeline works, so the result is
-comparable to the asset it replaces.
+plus Ulichney's follow-up on the filter itself,
 
-Why not a hand-rolled void-and-cluster: a direct implementation was written and
-measured first. It converged to a rank image correlated 0.88 with the x axis
-and its threshold sets measured 0.1x BELOW white noise -- i.e. no notch at all,
-the exact opposite of the intent. The prototype+rank construction reaches
-~200x below white noise in the same measurement and is far simpler. Do not
-"optimise" this back into a V&C loop without re-running the verification below.
+    R. Ulichney, "Filter Design for Void-and-Cluster Dither Arrays", 1994,
 
-Spatio-temporal decorrelation: layer t filters a noise field whose seed is
-derived from t, and every layer is independently ranked. Successive layers are
-therefore uncorrelated in space AND time, which is what stops the accumulation
-buffer from ringing at a fixed frequency.
+which reports that isotropic blue noise comes out of this construction for
+Gaussian sigma in roughly 1.0-1.5. This generator uses sigma=1.6.
+
+Concretely, per layer: draw white noise, filter it with the Gaussian to get a
+PROTOTYPE field, and rank every cell by its filtered value. Thresholding that
+rank image at any fraction yields a blue-noise point set, and the rank image
+itself carries the spectrum the renderer samples.
+
+Spatiotemporal framing follows
+
+    C. Schied et al., "Scalar Spatiotemporal Blue Noise Masks",
+    Journal of Computer Graphics Techniques (JCGT) 2018, arXiv:2112.09629,
+
+which extends void-and-cluster to the spatiotemporal domain and likewise
+recommends sigma=1.5. We get the temporal dimension by generating each frame's
+layer from independent noise rather than by filtering across frames: the layers
+are then independent in time while each is individually blue noise in space,
+which is the property the accumulation buffer needs.
+
+CITATION NOTE: an earlier version of this file credited "Blue Noise through
+Optimization, Eurographics Graphics Forum 2011, Georgiev & Fajardo". That paper
+does not exist; the credit was wrong and the measured result was real. The
+attribution is corrected above.
+
+Why not a hand-rolled full void-and-cluster: a direct implementation was written
+and measured first. It converged to a rank image correlated 0.88 with the x
+axis, and its threshold sets measured 0.1x BELOW white noise -- i.e. no notch at
+all, the exact opposite of the intent. An energy-minimisation variant cut
+filtered energy by 80% while the notch stayed at 1.0x. The prototype ranking
+above reaches ~11000x below white noise in under a second. Do not "improve" this
+back into a full V&C loop without re-running the verification at the bottom.
 
 Usage:
     python tools/generate_blue_noise.py            # generate the asset

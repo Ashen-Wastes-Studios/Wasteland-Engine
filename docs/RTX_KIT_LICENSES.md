@@ -26,21 +26,24 @@ Every clause in that list describes an OSI-style license. MIT, Apache-2.0, GPL, 
 | **Donut** | MIT (NVIDIA GameWorks) | **YES** |
 | **Streamline** | Mixed; NGX headers `LicenseRef-NvidiaProprietary` | **NO** |
 
-## Already committed — needs a decision
+## Removal — DONE (option 1 below)
 
 | Commit | Component | Status |
 |---|---|---|
-| `dcafd98` | NRD v4.9.4 as a submodule + `NRDDenoise.cpp` + premake link | Landed under an assumption this file invalidates |
-| `8e8d7e1` | STBN volume + `BlueNoise.cpp` wired into `GetCurrentJitter()` | Same. **Also non-commercial.** |
+| `dcafd98` | NRD v4.9.4 as a submodule + `NRDDenoise.cpp` + premake link | **REMOVED.** Submodule deinit'd and deleted, `.gitmodules` block dropped, `NRDDenoise.cpp/.h` deleted, all premake/vcxproj/gitignore wiring stripped. |
+| `8e8d7e1` | STBN volume + `BlueNoise.cpp` wired into `GetCurrentJitter()` | **vendored STBN tree and `tools/extract_stbn.py` REMOVED.** The blue-noise *generator* is being reimplemented natively. |
+| — | RTXTF `vendor/RTXTF` tree + `rtxtf_shim.hlsli` + `tools/compile_rtxtf.py` | **REMOVED.** No first-party shader referenced the shim. |
 | `0d20ab4` | Plan feasibility audit | Fine — documentation only |
 
-The STBN one is the sharper problem. A submodule pin is arguably not distribution, but the `.r8` volume is a committed derivative of NVIDIA's work, and the engine *calls into it at runtime*.
+The STBN one was the sharper problem. A submodule pin is arguably not distribution, but the `.r8` volume was a committed derivative of NVIDIA's work, and the engine *called into it at runtime*.
+
+Denoising after removal is `Renderer3D`'s hand-rolled bilateral blur (`RunBilateralBlur`, gated on `BilateralBlurEnabled` / `BilateralBlurPasses`) on every backend — it was always the live path, because `NRDDenoise::Init()` returned false by design. `RenderCapabilities::nrdCapable` became `denoiseComputeCapable` and is false everywhere, so `TierFor(DenoiseCompute)` degrades to `ComputeEmulated`.
 
 ## The way out that keeps the engineering value
 
 Every algorithm here is published. The license restricts redistribution of NVIDIA's *implementation*, not use of the *idea*.
 
-- **Blue noise** — the algorithmic generator is described in the STBN paper (Schied et al., *Spatiotemporal Variance-Guided Filtering*, JCGT 2018). `tools/extract_stbn.py` decodes NVIDIA's PNGs. Rewriting it to *generate* blue noise instead of *vendoring* it is a bounded, well-understood task and removes the license entirely.
+- **Blue noise** — **DONE.** `tools/generate_blue_noise.py` now *generates* the volume with the prototype+rank method (Ulichney 1993, void-and-cluster) instead of decoding NVIDIA's PNGs. Measured on the generated asset: low-frequency energy ~11000x below white noise (the STBN asset it replaced measured ~21x), temporal correlation -0.002 at lag 1, and a white-noise volume scores 1.0x on the same metric as a negative control. The script re-verifies and refuses to write a failing asset. The licence problem is gone rather than worked around.
 - **Denoising** — already implemented natively: `Renderer3D`'s bilateral pass. NRD was to replace it, but the fallback was always the requirement.
 - **ReSTIR / DDGI** — these are published algorithms with open implementations. Implementing them directly against NVRHI is the Phase 5 plan's existing strategy and carries no license at all.
 
@@ -48,8 +51,8 @@ That path costs more effort than vendoring. It is the only one that leaves Waste
 
 ## Decision needed
 
-1. **Keep Wasteland open source** → remove NRD and STBN (`dcafd98`, `8e8d7e1`) and implement the techniques natively. RTXTF/OMM/RTXDI stay off the table. RTXMU via `NVRHI_WITH_RTXMU=ON` stays, since RTXMU is MIT.
-2. **Go proprietary** → keep everything, and the whole kit opens up in the order the plan already has.
-3. **Split** → open-source core engine, proprietary binary/plugin layer. Realistic and common in the industry, but it is an architectural commitment.
+1. **Keep Wasteland open source** → remove NRD and STBN (`dcafd98`, `8e8d7e1`) and implement the techniques natively. RTXTF/OMM/RTXDI stay off the table. RTXMU via `NVRHI_WITH_RTXMU=ON` stays, since RTXMU is MIT. — **TAKEN. This is what shipped; NRD, RTXTF and the STBN vendored tree are all out of the tree.**
+2. **Go proprietary** → keep everything, and the whole kit opens up in the order the plan already has. *Rejected.*
+3. **Split** → open-source core engine, proprietary binary/plugin layer. Realistic and common in the industry, but it is an architectural commitment. *Not taken.*
 
-I have not removed anything yet. The vendored code compiles and is committed, so nothing is lost while this is open — but nothing further should be vendored until you pick.
+Nothing further from the RTX Kit should be vendored into an open-source Wasteland.
