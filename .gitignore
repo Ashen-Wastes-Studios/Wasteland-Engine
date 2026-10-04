@@ -373,3 +373,7 @@ FodyWeavers.xsd
 *.json
 
 test_timeline.cpp
+# NRD build outputs (regenerate with tools/build_nrd.py)
+Wasteland/vendor/NRD/_Build/
+Wasteland/vendor/NRD/_Bin/
+Wasteland/vendor/NRD/_Shaders/
