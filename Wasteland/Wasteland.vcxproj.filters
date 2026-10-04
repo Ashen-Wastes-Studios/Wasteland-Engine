@@ -25,6 +25,15 @@
     <Filter Include="src\Wasteland">
       <UniqueIdentifier>{BF3F73F7-2B00-EF2D-F43A-38AB60BA330A}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Wasteland\Age">
+      <UniqueIdentifier>{3BEF95FA-A705-9490-F07C-1FB25CD26418}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\Animation">
+      <UniqueIdentifier>{6EF3CDE1-DA2A-1679-E334-7A9C4FEB3C72}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\Audio">
+      <UniqueIdentifier>{0061D6F7-6CC2-B305-F52F-FAB76190EAC4}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Wasteland\Core">
       <UniqueIdentifier>{7713554D-63F7-15A3-CC57-10F6B85A0025}</UniqueIdentifier>
     </Filter>
@@ -40,6 +49,12 @@
     <Filter Include="src\Wasteland\Math">
       <UniqueIdentifier>{F8535A4D-E437-1BA3-4D98-15F6399B0525}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Wasteland\Navigation">
+      <UniqueIdentifier>{9EF0DF3D-8A15-2FBE-B360-144E9FE42DDC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\Project">
+      <UniqueIdentifier>{053364C3-719F-1FBE-3A93-B71BA6BE4126}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Wasteland\Renderer">
       <UniqueIdentifier>{45AAF71C-31A4-206F-1A11-B77F06AA86DB}</UniqueIdentifier>
     </Filter>
@@ -51,6 +66,9 @@
     </Filter>
     <Filter Include="src\Wasteland\Utils">
       <UniqueIdentifier>{5FD43FF9-CB35-1D07-54A3-63B9C00354C6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\VisualBlocks">
+      <UniqueIdentifier>{60969EA2-4CA6-4A73-B55F-AF91A18E390C}</UniqueIdentifier>
     </Filter>
     <Filter Include="vendor">
       <UniqueIdentifier>{B3738122-9F15-ACF8-88D0-BF4C74113349}</UniqueIdentifier>
@@ -153,6 +171,69 @@
     <ClInclude Include="src\Wasteland.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\AgeAuditLog.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\AgeBand.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\AgeService.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\AppleAgeSignalProvider.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\Attestation.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\GooglePlayAgeSignalProvider.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\GuardianPolicy.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\GuardianToolsLayer.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\GuardianToolsView.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\IAgeAssuranceProvider.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\JurisdictionPolicy.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Age\SafetyProfile.h">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\AnimationClip.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\AnimationCurve.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\AnimationStateMachine.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\Animator.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\Skeleton.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\SkinnedMesh.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Audio\AudioClip.h">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Audio\AudioSystem.h">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Audio\Mixer.h">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Core\Application.h">
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
@@ -160,6 +241,12 @@
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Core\EntryPoint.h">
+      <Filter>src\Wasteland\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Core\Gamepad.h">
+      <Filter>src\Wasteland\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Core\GamepadButtonCodes.h">
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Core\Input.h">
@@ -210,6 +297,12 @@
     <ClInclude Include="src\Wasteland\Math\Math.h">
       <Filter>src\Wasteland\Math</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Navigation\NavMesh.h">
+      <Filter>src\Wasteland\Navigation</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\Project.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\Buffer.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -225,10 +318,19 @@
     <ClInclude Include="src\Wasteland\Renderer\GraphicsContext.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\MeshLoader.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCamera.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCameraController.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\ProceduralMeshes.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\RenderCapabilities.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\RenderCommand.h">
@@ -258,10 +360,16 @@
     <ClInclude Include="src\Wasteland\Renderer\VertexArray.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Scene\BehaviorTreeSystem.h">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\Components.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\Entity.h">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Scene\SaveGame.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\Scene.h">
@@ -276,11 +384,32 @@
     <ClInclude Include="src\Wasteland\Scene\ScriptableEntity.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Scripting\BindingsAge.h">
+      <Filter>src\Wasteland\Scripting</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Scripting\ScriptEngine.h">
       <Filter>src\Wasteland\Scripting</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Utils\PlatformUtils.h">
       <Filter>src\Wasteland\Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\BehaviorTree.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\Compiler.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\Graph.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\GraphSerializer.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\NodeRegistry.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\VisualBlocks\Validator.h">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
     </ClInclude>
     <ClInclude Include="src\wlpch.h">
       <Filter>src</Filter>
@@ -1628,7 +1757,70 @@
     <ClCompile Include="src\Platform\Windows\WindowsWindow.cpp">
       <Filter>src\Platform\Windows</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\AgeAuditLog.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\AgeBand.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\AgeService.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\AppleAgeSignalProvider.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\Attestation.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\GooglePlayAgeSignalProvider.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\GuardianPolicy.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\GuardianToolsLayer.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\GuardianToolsView.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\JurisdictionPolicy.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Age\SafetyProfile.cpp">
+      <Filter>src\Wasteland\Age</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\AnimationClip.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\AnimationCurve.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\AnimationStateMachine.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\Animator.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\Skeleton.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\SkinnedMesh.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Audio\AudioClip.cpp">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Audio\AudioSystem.cpp">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Audio\Mixer.cpp">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Core\Application.cpp">
+      <Filter>src\Wasteland\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Core\Gamepad.cpp">
       <Filter>src\Wasteland\Core</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Core\Layer.cpp">
@@ -1652,6 +1844,12 @@
     <ClCompile Include="src\Wasteland\Math\Math.cpp">
       <Filter>src\Wasteland\Math</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Navigation\NavMesh.cpp">
+      <Filter>src\Wasteland\Navigation</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\Project.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\Buffer.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
@@ -1661,10 +1859,19 @@
     <ClCompile Include="src\Wasteland\Renderer\Framebuffer.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Renderer\MeshLoader.cpp">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\OrthographicCamera.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\OrthographicCameraController.cpp">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Renderer\ProceduralMeshes.cpp">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Renderer\RenderCapabilities.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\RenderCommand.cpp">
@@ -1694,7 +1901,13 @@
     <ClCompile Include="src\Wasteland\Renderer\VertexArray.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Scene\BehaviorTreeSystem.cpp">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\Entity.cpp">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Scene\SaveGame.cpp">
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\Scene.cpp">
@@ -1709,8 +1922,38 @@
     <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp">
       <Filter>src\Wasteland\Scripting</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Scripting\BindingsAge.cpp">
+      <Filter>src\Wasteland\Scripting</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Scripting\ScriptEngine.cpp">
       <Filter>src\Wasteland\Scripting</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\BehaviorTree.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\Compiler.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\Graph.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\GraphSerializer.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibrary.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibraryFlow.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibraryV1.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\NodeRegistry.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\Validator.cpp">
+      <Filter>src\Wasteland\VisualBlocks</Filter>
     </ClCompile>
     <ClCompile Include="src\wlpch.cpp">
       <Filter>src</Filter>

@@ -4,6 +4,7 @@
 #include "Platform/NVRHI/NVRHIContext.h"
 #include "Platform/NVRHI/NVRHIRendererAPI.h"
 #include "Renderer3D.h"
+#include "Wasteland/Renderer/RenderCapabilities.h"
 
 #include "VertexArray.h"
 #include "Shader.h"
@@ -861,10 +862,15 @@ namespace Wasteland
     }
 
     void Renderer3D::Init()
-    {
-        WL_PROFILE_FUNCTION();
+        {
+            WL_PROFILE_FUNCTION();
 
-        BufferLayout layout = {
+            // Probe the active backend before anything else so every feature below
+            // can ask GetRenderCapabilities() instead of branching on the API enum.
+            // RecreateResources() funnels through Init(), so an API switch re-probes.
+            RefreshRenderCapabilities();
+
+            BufferLayout layout = {
             {ShaderDataType::Float3, "a_Position"},
             {ShaderDataType::Float4, "a_Color"},
             {ShaderDataType::Float3, "a_Normal"},
@@ -941,6 +947,10 @@ namespace Wasteland
                                 s_Nova12=std::make_unique<DX12Nova>();
                                 s_Nova12->Init((ID3D12Device*)ctx->GetD3D12Device(), (ID3D12CommandQueue*)ctx->GetD3D12CommandQueue());
                                 s_Nova12->Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+                                WL_CORE_ERROR("WLDIAG DX12Nova alive: api={0} nova12={1} rtEnabled={2} rw={3} rh={4}",
+                                    (int)RendererAPI::GetAPI(), (int)(s_Nova12 != nullptr),
+                                    (int)s_Data.RayTracingEnabled,
+                                    s_Data.RayTracingWidth, s_Data.RayTracingHeight);
                             } catch (const std::exception& e) {
                                 WL_CORE_ERROR("DX12 Nova init failed (raster fallback): {0}", e.what());
                                 s_Nova12.reset();
