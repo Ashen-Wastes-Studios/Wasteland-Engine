@@ -5,6 +5,7 @@
 #include "Platform/NVRHI/NVRHIRendererAPI.h"
 #include "Renderer3D.h"
 #include "Wasteland/Renderer/RenderCapabilities.h"
+#include "Wasteland/Renderer/BlueNoise.h"
 
 #include "VertexArray.h"
 #include "Shader.h"
@@ -869,6 +870,12 @@ namespace Wasteland
             // can ask GetRenderCapabilities() instead of branching on the API enum.
             // RecreateResources() funnels through Init(), so an API switch re-probes.
             RefreshRenderCapabilities();
+
+            // STBN blue-noise volume, used by GetCurrentJitter on every backend.
+            // Loaded here rather than lazily so a missing asset is reported once
+            // at startup instead of silently degrading every frame; Load() falls
+            // back to a hash sampler if the file is absent.
+            BlueNoise::Load();
 
             BufferLayout layout = {
             {ShaderDataType::Float3, "a_Position"},
@@ -2541,12 +2548,17 @@ void Renderer3D::Flush()
 
     glm::vec2 Renderer3D::GetCurrentJitter(int frameIndex, glm::vec2 viewportSize)
     {
-        int index = (frameIndex % 16) + 1;
-
-        float jitterX = Halton(index, 2) - 0.5f;
-        float jitterY = Halton(index, 3) - 0.5f;
-
-        return glm::vec2(jitterX * 2.0f / viewportSize.x, jitterY * 2.0f / viewportSize.y);
+        // STBN spatio-temporal blue noise instead of Halton(2,3). The old
+        // sequence was 'frameIndex % 16', so it repeated exactly every 16
+        // frames -- the same 16 structured artefacts recurred in the
+        // accumulation buffer. STBN gives 64 decorrelated frames with ~21x
+        // low-frequency suppression, and works identically on every backend
+        // including OpenGL because the jitter is a CPU-side uniform.
+        float jitterX = 0.0f, jitterY = 0.0f;
+        BlueNoise::Jitter(static_cast<uint32_t>(frameIndex),
+                          static_cast<uint32_t>(viewportSize.x),
+                          static_cast<uint32_t>(viewportSize.y), jitterX, jitterY);
+        return glm::vec2(jitterX, jitterY);
     }
 
     void Renderer3D::GenerateMaterialMaps(const std::string &texturePath, float normalStrength, float roughBias)

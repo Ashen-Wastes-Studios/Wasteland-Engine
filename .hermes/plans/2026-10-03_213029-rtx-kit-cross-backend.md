@@ -374,7 +374,28 @@ Each task is independent; order by value.
 
 | Task | Component | Prereq | Notes |
 |---|---|---|---|
-| 4.1 | **STBN** blue noise | none | Header-only, works on **every** backend including OpenGL. Cheapest item in the kit — improves sampling on TierC too. Do first. |
+| 4.1 | **STBN** blue noise | none | **DONE.** Vendor + `BlueNoise.h/.cpp` + `tools/extract_stbn.py`. Works on every backend including OpenGL (TierC) because the jitter is a CPU-side uniform. Replaced `GetCurrentJitter`'s Halton(2,3). |
+
+### RTX Kit feasibility audit (findings, not speculation)
+
+The RTX Kit umbrella (`NVIDIA-RTX/RTX-Kit`) lists 14 components. They are **not** uniform, and several are effectively locked away from a custom NVRHI engine. Graded by what is actually adoptable here:
+
+| Component | Status for a custom NVRHI engine |
+|---|---|
+| **STBN** | **Adopted.** Only data files needed; no build system change. Done above. |
+| **NRD** | **Adopted.** Vendored + built + link-verified (Task 1.1). Needs a hand-written NVRHI instance wrapper (NRD's own integration is NRI-bound). |
+| **RTXTF** | **Adoptable.** Near-header-only shader library — no engine build changes. Verified on import. |
+| **RTXMU** | **Via NVRHI**, not vendored standalone. `NVRHI_WITH_RTXMU=ON` exposes compaction through the abstraction this engine already uses. Rebuild NVRHI rather than hand-rolling. |
+| RTXNTC / RTXNS | Neural models (ONNX weights) fetched separately, neural shading is Vulkan-only. Heavy. |
+| RTXTS | Distributed via NVIDIA SDK Manager with an account login. |
+| RTXMG | Unreal/NvRTX first. Large; deferred per plan. |
+| RTXDI / RTXGI / RTXPT | Reference implementations built around NRI + Unreal integration patterns. Substantial adaptation effort; the algorithms (ReSTIR reservoirs, DDGI probes) are implementable directly against NVRHI instead, which is what Phase 5 does for TierC. |
+| RTXCR | Character rendering (hair/skin) — needs RTXPT + Unreal integration. Out of scope. |
+| Streamline | Its own plugin framework; DLSS/MFG integration, not a rendering feature. |
+| OMM | Builds on RTXMG clustering. |
+
+**Bottom line:** the kit is not a menu of drop-in modules. STBN, NRD, RTXTF and (via NVRHI) RTXMU are genuinely usable now; the rest are Unreal/NRI-shaped, and the practical route for their algorithms is to implement the well-documented techniques directly against NVRHI -- which is already the plan's Phase 5 strategy.
+
 | 4.2 | **RTXDI** ReSTIR DI | 2.4 | Reservoir + neighbor-offset buffers. `Renderer3D_NovaRenderer.glsl` already enumerates analytic lights (`MaxAnalyticLights = 8`, `Renderer3D.h:209`) — that light list is the DI input. |
 | 4.3 | **RTXGI** DDGI | 2.4 | Irradiance probes. Replaces the current sky/ambient model on DX12/Vulkan; TierC keeps raymarched probes. |
 | 4.4 | **RTXPT** | 2.4 + 4.2 | Reference real-time path tracer. Supersedes Nova on TierA. |

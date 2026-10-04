@@ -306,6 +306,9 @@
     <ClInclude Include="src\Wasteland\Project\Project.h">
       <Filter>src\Wasteland\Project</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\BlueNoise.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\Buffer.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -1858,6 +1861,9 @@
     </ClCompile>
     <ClCompile Include="src\Wasteland\Project\Project.cpp">
       <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Renderer\BlueNoise.cpp">
+      <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\Buffer.cpp">
       <Filter>src\Wasteland\Renderer</Filter>

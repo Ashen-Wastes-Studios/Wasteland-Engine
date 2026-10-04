@@ -223,6 +223,7 @@
     <ClInclude Include="src\Wasteland\Math\Math.h" />
     <ClInclude Include="src\Wasteland\Navigation\NavMesh.h" />
     <ClInclude Include="src\Wasteland\Project\Project.h" />
+    <ClInclude Include="src\Wasteland\Renderer\BlueNoise.h" />
     <ClInclude Include="src\Wasteland\Renderer\Buffer.h" />
     <ClInclude Include="src\Wasteland\Renderer\Camera.h" />
     <ClInclude Include="src\Wasteland\Renderer\EditorCamera.h" />
@@ -742,6 +743,7 @@
     <ClCompile Include="src\Wasteland\Math\Math.cpp" />
     <ClCompile Include="src\Wasteland\Navigation\NavMesh.cpp" />
     <ClCompile Include="src\Wasteland\Project\Project.cpp" />
+    <ClCompile Include="src\Wasteland\Renderer\BlueNoise.cpp" />
     <ClCompile Include="src\Wasteland\Renderer\Buffer.cpp" />
     <ClCompile Include="src\Wasteland\Renderer\EditorCamera.cpp" />
     <ClCompile Include="src\Wasteland\Renderer\Framebuffer.cpp" />

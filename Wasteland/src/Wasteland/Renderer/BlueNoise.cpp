@@ -1,0 +1,116 @@
+#include "wlpch.h"
+
+#include "Wasteland/Renderer/BlueNoise.h"
+
+#include "Wasteland/Core/Log.h"
+#include "Wasteland/Project/Project.h"
+
+#include <cstdio>
+
+namespace Wasteland
+{
+
+    std::vector<uint8_t> BlueNoise::s_Volume;
+    bool BlueNoise::s_Loaded = false;
+
+    namespace
+    {
+        constexpr const char *kAssetPath =
+            "textures/bluenoise/stbn_scalar_128x128x64.r8";
+
+        // Integer hash for the fallback path and for decorrelating the two
+        // channels. Constants from the "Hash without Sine" family.
+        uint32_t Hash(uint32_t x)
+        {
+            x ^= x >> 16;
+            x *= 0x7feb352du;
+            x ^= x >> 15;
+            x *= 0x846ca68bu;
+            x ^= x >> 16;
+            return x;
+        }
+    } // namespace
+
+    bool BlueNoise::Load(const std::string &path)
+    {
+        Unload();
+
+        const std::string resolved =
+            path.empty() ? Project::Get().GetAssetPath(kAssetPath).string() : path;
+
+        std::FILE *file = std::fopen(resolved.c_str(), "rb");
+        if (!file)
+        {
+            WL_CORE_WARN("BlueNoise: {0} not found, falling back to hash sampling",
+                         resolved);
+            return false;
+        }
+
+        s_Volume.resize(kLayerSize * kFrames);
+        const size_t read = std::fread(s_Volume.data(), 1, s_Volume.size(), file);
+        std::fclose(file);
+
+        if (read != s_Volume.size())
+        {
+            WL_CORE_ERROR("BlueNoise: {0} is {1} bytes, expected {2}",
+                          resolved, read, s_Volume.size());
+            s_Volume.clear();
+            return false;
+        }
+
+        s_Loaded = true;
+        WL_CORE_INFO("BlueNoise: loaded {0} (128x128x64 R8)", resolved);
+        return true;
+    }
+
+    bool BlueNoise::IsLoaded()
+    {
+        return s_Loaded;
+    }
+
+    void BlueNoise::Unload()
+    {
+        s_Volume.clear();
+        s_Loaded = false;
+    }
+
+    void BlueNoise::Sample(uint32_t pixelX, uint32_t pixelY, uint32_t frameIndex,
+                           uint32_t index, float &outA, float &outB)
+    {
+        const uint32_t h = Hash(pixelX + Hash(pixelY + Hash(frameIndex + index * 0x9e3779b9u)));
+
+        if (!s_Loaded)
+        {
+            outA = (h & 0xFFFFu) / 65535.0f;
+            outB = ((h >> 16) & 0xFFFFu) / 65535.0f;
+            return;
+        }
+
+        // Wrap rather than clamp so the pattern stays tileable at any viewport
+        // size, and so a camera pan never walks off the edge of the volume.
+        const uint32_t frame = frameIndex % kFrames;
+        const uint32_t layer = (frame + index) % kFrames;
+        const uint32_t x = pixelX % kSize;
+        const uint32_t y = pixelY % kSize;
+        const uint8_t v = s_Volume[layer * kLayerSize + y * kSize + x];
+
+        outA = (v & 0xFFu) / 255.0f;
+        // Second channel from the same blue-noise sequence, offset in the volume
+        // so it is decorrelated from the first without a second asset.
+        const uint32_t layer2 = (frame + index + kFrames / 2) % kFrames;
+        const uint8_t v2 = s_Volume[layer2 * kLayerSize + y * kSize + x];
+        outB = v2 / 255.0f;
+    }
+
+    void BlueNoise::Jitter(uint32_t frameIndex, uint32_t width, uint32_t height,
+                           float &outJitterX, float &outJitterY)
+    {
+        float a = 0.0f, b = 0.0f;
+        Sample(width, height, frameIndex, 0, a, b);
+        // Centre the sample and scale to pixels, matching the old
+        // "Halton - 0.5, then 2/viewport" convention.
+        outJitterX = (a - 0.5f) * 2.0f / static_cast<float>(width ? width : 1);
+        outJitterY = (b - 0.5f) * 2.0f / static_cast<float>(height ? height : 1);
+    }
+
+} // namespace Wasteland
