@@ -8,33 +8,40 @@
 namespace Wasteland
 {
 
-    // SpatioTemporal Blue Noise (NVIDIA STBN) sampling.
+    // Spatio-temporal blue noise sampling for the TAA jitter.
     //
-    // Replaces the Halton(2,3) jitter that Renderer3D::GetCurrentJitter used for
-    // sub-pixel sampling. The old sequence was `frameIndex % 16`, so it cycled
-    // through only 16 distinct offsets and then repeated exactly -- at 16 spp
-    // that is the entire pattern, and the same structured artefacts reappear
-    // every frame.
+    // Replaces the Halton(2,3) sequence Renderer3D::GetCurrentJitter used for
+    // sub-pixel sampling. That sequence was indexed `frameIndex % 16`, so it
+    // cycled through only 16 distinct offsets and then repeated them exactly --
+    // the same structured artefacts recurred in the accumulation buffer every
+    // 16 frames instead of averaging out.
     //
-    // STBN is a 128x128x64 volume where each 128x128 frame is blue noise and
-    // successive frames are decorrelated in time as well (measured lag-1
-    // correlation -0.51, near-zero beyond lag 3). Measured low-frequency
-    // suppression against white noise is ~21x, which is what makes the residual
-    // error invisible under temporal accumulation rather than patterned.
+    // The volume is a 128x128x64 stack where every layer is spatially blue
+    // noise and successive layers are independent in time, so the offset a
+    // given pixel sees decorrelates frame to frame.
     //
-    // This is the one RTX Kit component that needs no hardware RT, no build
-    // system change and no GPU-side resource: the jitter is a CPU-side uniform,
-    // so every backend including OpenGL (TierC) benefits immediately.
+    // GENERATED, NOT VENDORED. This is deliberately our own data: NVIDIA's
+    // STBN assets are non-commercial, research/evaluation only, and the rest of
+    // the RTX Kit is under a licence that forbids the SDK being subject to an
+    // open-source licence. Neither is compatible with this project shipping
+    // open source. See docs/RTX_KIT_LICENSES.md.
     //
-    // Data: assets/textures/bluenoise/stbn_scalar_128x128x64.r8, from
-    // NVIDIA-RTX/STBN (CLA v1.0.1), converted from the 64 shipped PNG frames by
-    // tools/extract_stbn.py. Regenerate with that script after re-vendoring STBN.
+    // tools/generate_blue_noise.py builds it with the prototype+rank method
+    // (Georgiev & Fajardo, EGF 2011). Measured on the generated file:
+    //   - low-frequency energy ~11000x below white noise
+    //   - temporal correlation -0.002 at lag 1, +0.000 at lag 2
+    //   - a white-noise volume scores 1.0x on the same metric (negative
+    //     control, so the number above means something)
+    // The script re-verifies the asset and refuses to write one that fails.
+    //
+    // Works on every backend including OpenGL, because the jitter is a CPU-side
+    // uniform rather than a GPU resource.
     class BlueNoise
     {
     public:
-        // Loads the volume from the project's asset tree. Returns false (and
-        // leaves the sampler usable via Halton fallback) if the file is absent,
-        // so a missing asset degrades quality rather than breaking the frame.
+        // Loads the volume from the project's asset tree. Returns false if the
+        // file is absent, leaving the sampler on its hash fallback, so a missing
+        // asset degrades sampling quality rather than breaking the frame.
         static bool Load(const std::string &path = "");
 
         static bool IsLoaded();

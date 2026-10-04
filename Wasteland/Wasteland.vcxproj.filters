@@ -327,9 +327,6 @@
     <ClInclude Include="src\Wasteland\Renderer\MeshLoader.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
-    <ClInclude Include="src\Wasteland\Renderer\NRDDenoise.h">
-      <Filter>src\Wasteland\Renderer</Filter>
-    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCamera.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -1875,9 +1872,6 @@
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\MeshLoader.cpp">
-      <Filter>src\Wasteland\Renderer</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Wasteland\Renderer\NRDDenoise.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\OrthographicCamera.cpp">
