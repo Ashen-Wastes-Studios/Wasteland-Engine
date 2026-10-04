@@ -376,33 +376,30 @@ Each task is independent; order by value.
 |---|---|---|---|
 | 4.1 | **STBN** blue noise | none | **DONE.** Vendor + `BlueNoise.h/.cpp` + `tools/extract_stbn.py`. Works on every backend including OpenGL (TierC) because the jitter is a CPU-side uniform. Replaced `GetCurrentJitter`'s Halton(2,3). |
 
-### RTX Kit feasibility audit (findings, not speculation)
+### RTX Kit feasibility audit (verified by cloning + building, not inferred)
 
-The RTX Kit umbrella (`NVIDIA-RTX/RTX-Kit`) lists 14 components. They are **not** uniform, and several are effectively locked away from a custom NVRHI engine. Graded by what is actually adoptable here:
+Three parallel investigations cloned every repo and **built RTXMU, OMM and RTXTF** with MSVC 19.51 on this machine. Scratch-only; the engine tree was untouched.
 
-| Component | Status for a custom NVRHI engine |
-|---|---|
-| **STBN** | **Adopted.** Only data files needed; no build system change. Done above. |
-| **NRD** | **Adopted.** Vendored + built + link-verified (Task 1.1). Needs a hand-written NVRHI instance wrapper (NRD's own integration is NRI-bound). |
-| **RTXTF** | **Adoptable.** Near-header-only shader library — no engine build changes. Verified on import. |
-| **RTXMU** | **Via NVRHI**, not vendored standalone. `NVRHI_WITH_RTXMU=ON` exposes compaction through the abstraction this engine already uses. Rebuild NVRHI rather than hand-rolling. |
-| RTXNTC / RTXNS | Neural models (ONNX weights) fetched separately, neural shading is Vulkan-only. Heavy. |
-| RTXTS | Distributed via NVIDIA SDK Manager with an account login. |
-| RTXMG | Unreal/NvRTX first. Large; deferred per plan. |
-| RTXDI / RTXGI / RTXPT | Reference implementations built around NRI + Unreal integration patterns. Substantial adaptation effort; the algorithms (ReSTIR reservoirs, DDGI probes) are implementable directly against NVRHI instead, which is what Phase 5 does for TierC. |
-| RTXCR | Character rendering (hair/skin) — needs RTXPT + Unreal integration. Out of scope. |
-| Streamline | Its own plugin framework; DLSS/MFG integration, not a rendering feature. |
-| OMM | Builds on RTXMG clustering. |
+**Headline correction to the naive reading of the kit:** *none* of these require an NVIDIA developer account login, and *none* are NRI-locked or Unreal-locked. The umbrella repo's component list overstates the friction. The real blockers are API-surface gaps, library-vs-sample confusion, and split repos.
 
-**Bottom line:** the kit is not a menu of drop-in modules. STBN, NRD, RTXTF and (via NVRHI) RTXMU are genuinely usable now; the rest are Unreal/NRI-shaped, and the practical route for their algorithms is to implement the well-documented techniques directly against NVRHI -- which is already the plan's Phase 5 strategy.
+| Component | Verified shape | Verdict for this engine |
+|---|---|---|
+| **STBN** | 64 scalar PNG frames + generators; no build system change needed | **DONE** (`8e8d7e1`). Verified 20.9x low-freq suppression, lag-1 temporal corr -0.51. |
+| **NRD** | Self-contained C library; builds via its own ShaderMake. **Links cleanly with zero shaders present** | **DONE** (`dcafd98`), link+run verified. Needs a hand-written NVRHI instance wrapper (NVIDIA's integration is NRI-bound). |
+| **RTXTF** | `RTXTF-Library` is a **separate repo, 4 files, 2,889 lines, pure header-only HLSL**. **Compiled standalone** | **Adoptable now** (effort ~2-3). Needs zero engine build changes — include the `.hlsli`. |
+| **RTXMU** | Raw D3D12 + Vulkan, **no NRI**. **Built successfully** | **Via NVRHI:** `NVRHI_WITH_RTXMU=ON` already wraps it (229 refs in NVRHI sources). Rebuild NVRHI; do not vendor standalone. Note `d3d12-device.cpp:260`: RTXMU does not implement Enhanced Barriers, so NVRHI works around it. |
+| **OMM** | Self-contained library, **~13,052 LOC, C++20, OpenOpenMP** + **an official NVRHI adapter** (`omm-gpu-nvrhi`, 1,353 LOC). **Built successfully.** No missing binaries | **Best next candidate** (effort ~3). The adapter matches NVRHI exactly and Vulkan needs no NVAPI. |
+| **RTXDI** | Genuinely well-designed **standalone** library. Touches *no* graphics API | **Integrable, highest value.** You own all resources/barriers and implement all 56 `RAB_*` callbacks against your own material model — more upfront work, but it drops into NVRHI with no adapter. |
+| **RTXGI** | Split: **SHaRC is header-only**; **NRC is a closed-source DLL** behind a raw D3D12/Vulkan API | SHaRC adoptable. NRC needs raw-API plumbing and redistribution negotiation with NVIDIA. |
+| **RTXPT** | **Not a library at all** — a reference path tracer needing neural radiance on Turing+ | Design reference only. Do not integrate. |
+| **RTXNTC** | Partially header-only: `Inference.hlsli` shipped publicly, entry `NtcSampleTextureSet(...)`, no NRI/NVRHI/Donut dep | Inference is adoptable; the codec libraries are LFS-hosted binaries. |
+| **RTXTS** | `TiledTextureManager::AddTiledTexture(...)`; not header-only but trivially compilable | **15-30 person-days**, entirely engine plumbing (tiled/reserved resources, tile pools, feedback resolve, async readback, rewriting shaders for the `status` out-param + MinMip fallback). Lowest value per effort here. |
+| **RTXNS** | Neural shading; Vulkan-only, needs model weights | Defer. |
+| **RTXMG** | Donut-coupled sample app; ~64/145 core files depend on Donut; needs **Vulkan 1.4.313+** (we have 1.3.296), 70 GB assets, Blackwell cluster AS | **LOCKED.** Port the LOD/streaming algorithms from `docs/ClusterLOD.md`; do not link. |
+| **RTXCR** | Library code lives in **separate submodule repos** | Not practically adoptable. |
+| **Streamline** | Its own **interposer** plugin framework. `CMakeLists.txt:131` *consumes* rather than builds; feature DLLs come from a release zip | Different category (DLSS/MFG, not a rendering feature). Release zip **needs no login** (verified HTTP 200 unauthenticated). Optional later. |
 
-| 4.2 | **RTXDI** ReSTIR DI | 2.4 | Reservoir + neighbor-offset buffers. `Renderer3D_NovaRenderer.glsl` already enumerates analytic lights (`MaxAnalyticLights = 8`, `Renderer3D.h:209`) — that light list is the DI input. |
-| 4.3 | **RTXGI** DDGI | 2.4 | Irradiance probes. Replaces the current sky/ambient model on DX12/Vulkan; TierC keeps raymarched probes. |
-| 4.4 | **RTXPT** | 2.4 + 4.2 | Reference real-time path tracer. Supersedes Nova on TierA. |
-| 4.5 | **RTXNTC / RTXNS** | 2.1 | Replaces the hand-rolled GLSL MLP (`Renderer3D.h:225-233`). Keep the MLP as the TierC path. |
-| 4.6 | **RTXMG** | 2.3 | Mega Geometry clusters. Large; defer until scenes need it. |
-
-**Per-task verification (non-negotiable):** Release **and** Debug builds; 4K screenshots on DX12 **and** Vulkan; the TierC path re-screenshotted to prove it did not regress.
+**Recommended order, revised by the evidence:** RTXTF (header-only, near-zero friction) -> OMM (official NVRHI adapter) -> RTXMU via NVRHI rebuild -> RTXDI (highest value, most upfront work) -> SHaRC. RTXMG/RTXCR/NRC deferred or treated as references.
 
 ---
 
