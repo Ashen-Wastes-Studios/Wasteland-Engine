@@ -1506,7 +1506,13 @@ void Renderer3D::Flush()
         }
 
         // Native NVRHI path uses the existing Basic HLSL raster shader and
-        // the same CPU-generated cube/sphere batches. Nova remains GL-only.
+        // the same CPU-generated cube/sphere batches.
+        //
+        // NOTE: this is the FALLBACK, not the only NVRHI behaviour. DX11 and
+        // DX12 have their own Nova instances (s_Nova / s_Nova12, dispatched by
+        // FlushDX11Nova / FlushDX12Nova above) and reach here only when Nova
+        // failed to init or threw. Vulkan has no Nova backend at all, so
+        // Vulkan always lands here regardless of RayTracingEnabled.
         if (Renderer3DNVRHIAvailable())
         {
             if (!s_Data.BasicShader)
