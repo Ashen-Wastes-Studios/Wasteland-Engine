@@ -141,6 +141,9 @@
     <ClInclude Include="src\Platform\NVRHI\NVRHIVertexArray.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\VulkanNova.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
     <ClInclude Include="src\Platform\OpenGL\OpenGLBuffer.h">
       <Filter>src\Platform\OpenGL</Filter>
     </ClInclude>
@@ -1725,6 +1728,9 @@
       <Filter>src\Platform\NVRHI</Filter>
     </ClCompile>
     <ClCompile Include="src\Platform\NVRHI\VulkanDispatch.cpp">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Platform\NVRHI\VulkanNova.cpp">
       <Filter>src\Platform\NVRHI</Filter>
     </ClCompile>
     <ClCompile Include="src\Platform\OpenGL\OpenGLBuffer.cpp">

@@ -168,6 +168,7 @@
     <ClInclude Include="src\Platform\NVRHI\NVRHIShader.h" />
     <ClInclude Include="src\Platform\NVRHI\NVRHITexture.h" />
     <ClInclude Include="src\Platform\NVRHI\NVRHIVertexArray.h" />
+    <ClInclude Include="src\Platform\NVRHI\VulkanNova.h" />
     <ClInclude Include="src\Platform\OpenGL\OpenGLBuffer.h" />
     <ClInclude Include="src\Platform\OpenGL\OpenGLContext.h" />
     <ClInclude Include="src\Platform\OpenGL\OpenGLFramebuffer.h" />
@@ -698,6 +699,7 @@
     <ClCompile Include="src\Platform\NVRHI\NVRHITexture.cpp" />
     <ClCompile Include="src\Platform\NVRHI\NVRHIVertexArray.cpp" />
     <ClCompile Include="src\Platform\NVRHI\VulkanDispatch.cpp" />
+    <ClCompile Include="src\Platform\NVRHI\VulkanNova.cpp" />
     <ClCompile Include="src\Platform\OpenGL\OpenGLBuffer.cpp" />
     <ClCompile Include="src\Platform\OpenGL\OpenGLContext.cpp" />
     <ClCompile Include="src\Platform\OpenGL\OpenGLFramebuffer.cpp" />
