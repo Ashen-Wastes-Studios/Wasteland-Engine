@@ -1299,7 +1299,27 @@ namespace Wasteland
         WL_PROFILE_FUNCTION();
         Flush();
     }
-
+    // Shared Nova pass schedule for the DX11 and DX12 backends.
+    //
+    // FlushDX11Nova and FlushDX12Nova used to carry byte-identical copies of
+    // this block, differing only in the element type of the texture vector
+    // (ID3D11ShaderResourceView* vs ID3D12Resource*), which is why it is
+    // templated on both the backend object and the vector type.
+    //
+    // THE PASS ORDER IS NOT ASCENDING AND MUST NOT BE "FIXED". Pass 1 (hybrid
+    // trace) runs before pass 0 (visibility + velocity) because velocity
+    // reprojection in pass 2 needs the G-buffer pass 1 has just produced.
+    // Sorting this sequence changes image content.
+    template <typename NovaT, typename TexVec>
+    static void RunNovaPassSchedule(NovaT &n, const TexVec &textures)
+    {
+        auto pass=[&](int p,bool full=false){n.Dispatch(p,full?s_Data.RayTracingWidth:s_Data.ComputeWidth,full?s_Data.RayTracingHeight:s_Data.ComputeHeight,textures);};
+        pass(1);pass(0);pass(2);n.CommitHistory();
+        if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
+        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
+        if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
+        ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
+    }
         static void FlushDX11Nova()
     {
         auto& n=*s_Nova;
@@ -1383,12 +1403,7 @@ namespace Wasteland
         n.Set("u_GodSunValid",(int)s_Data.GodSunValid);n.Set("u_GodSunScreenPos",s_Data.GodSunScreenPos);
         std::vector<ID3D11ShaderResourceView*> textures;
         for(UINT i=0;i<s_Data.TextureSlotIndex;++i)textures.push_back((ID3D11ShaderResourceView*)s_Data.TextureSlots[i]->GetNativeSRV());
-        auto pass=[&](int p,bool full=false){n.Dispatch(p,full?s_Data.RayTracingWidth:s_Data.ComputeWidth,full?s_Data.RayTracingHeight:s_Data.ComputeHeight,textures);};
-        pass(1);pass(0);pass(2);n.CommitHistory();
-        if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
-        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
-        if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
-        ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
+        RunNovaPassSchedule(n, textures);
     }
 
     static void FlushDX12Nova()
@@ -1474,12 +1489,7 @@ namespace Wasteland
         n.Set("u_GodSunValid",(int)s_Data.GodSunValid);n.Set("u_GodSunScreenPos",s_Data.GodSunScreenPos);
         std::vector<ID3D12Resource*> textures;
         for(UINT i=0;i<s_Data.TextureSlotIndex;++i)textures.push_back((ID3D12Resource*)s_Data.TextureSlots[i]->GetNativeSRV());
-        auto pass=[&](int p,bool full=false){n.Dispatch(p,full?s_Data.RayTracingWidth:s_Data.ComputeWidth,full?s_Data.RayTracingHeight:s_Data.ComputeHeight,textures);};
-        pass(1);pass(0);pass(2);n.CommitHistory();
-        if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
-        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
-        if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
-        ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
+        RunNovaPassSchedule(n, textures);
     }
 
 void Renderer3D::Flush()
