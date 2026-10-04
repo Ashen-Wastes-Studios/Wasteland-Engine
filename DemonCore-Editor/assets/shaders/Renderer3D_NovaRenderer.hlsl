@@ -91,7 +91,21 @@ cbuffer NovaConstants : register(b1)
     float4x4 u_PrevViewProjection;
     int     u_InstanceCount;
     int     u_FrameIndex;
-    int     u_SamplesPerPixel;
+    // DEAD UNIFORM (D3): declared and uploaded every frame, but never READ by any
+    // pass. There is no per-pixel sample loop and no bounce-depth loop that
+    // consults it; the real controls are u_IndirectRays (ray count, read at the
+    // indirect-bounce loop) and the preset's own indirect-ray tiering.
+    //
+    // u_MaxBounces = 1 at EVERY preset, so wiring it to a loop would hardcode one
+    // bounce and silently disable indirect lighting.
+    //
+    // KEPT IN PLACE deliberately: this is a packed constant buffer where every
+    // declaration occupies a fixed slot. Removing it would shift the offset of
+    // every uniform after it and require re-deriving the CPU-side
+    // D3D12_SHADER_VARIABLE_DESC offsets. The upload is cheap; a wrong offset is
+    // not. See references/dx12-compute-submission-safety.md and the Phase -1
+    // notes in the AAA upgrade plan.
+    int     u_SamplesPerPixel;   // UNUSED -- see note above
     int     u_PassID;
     int     u_DepthBuffer;
     float2  u_Jitter;
@@ -105,7 +119,28 @@ cbuffer NovaConstants : register(b1)
     float   u_RoughnessBias;
     float   u_AOIntensity;
     int     u_QualityLevel;
-    int     u_MaxBounces;
+
+    // POST-PROCESSING UNIFORMS (reconstructed; see Phase -1 D3). These were
+    // declared and reachable from editor sliders but read by no pass: vignette,
+    // chromatic aberration and colour grading had no implementation here at all,
+    // and the bloom threshold was hardcoded (0.8 in RunComposite, 0.5 in
+    // RunBloomThreshold). RunComposite below now reads them.
+    int      u_BloomEnabled;
+    float    u_BloomIntensity;
+    float    u_BloomThreshold;
+    int      u_VignetteEnabled;
+    float    u_VignetteIntensity;
+    float    u_VignetteRadius;
+    float    u_VignetteSoftness;
+    int      u_ChromaticAberrationEnabled;
+    float    u_ChromaticAberrationIntensity;
+    int      u_ColorGradingEnabled;
+    float    u_ColorTemperature;   // -1..1, negative shifts cool
+    float    u_ColorTint;          // -1..1, negative shifts green
+    float    u_ColorGamma;
+    int      u_FilmGrainEnabled;
+    float    u_FilmGrainIntensity;
+    int     u_MaxBounces;   // UNUSED -- see the note at u_SamplesPerPixel
     int     u_MaxLights;
     int     u_IndirectRays;
     int     u_StepSize;
@@ -654,6 +689,256 @@ float HitSphere(Ray localRay, float radius, out float3 outNormal)
     return -1.0f;
 }
 
+// --- Blender "Add > Mesh" primitives -------------------------------------
+// Port of the GLSL in Renderer3D_NovaRenderer.glsl. Shape constants must stay
+// in sync with Wasteland::PrimitiveShape (Renderer/ProceduralMeshes.h), which
+// is what the CPU writes into inst.MaterialParams.z.
+
+// Axis-aligned rectangular slab in the XZ plane facing +Y. Covers both Plane
+// and Grid: a grid is a plane, just tessellated.
+float HitPlaneXZ(Ray localRay, float3 halfExtent, out float3 outNormal)
+{
+    if (abs(localRay.Direction.y) < 1e-8f) return -1.0f;
+
+    float t = -localRay.Origin.y / localRay.Direction.y;
+    if (t <= 0.0f) return -1.0f;
+
+    float3 p = localRay.Origin + t * localRay.Direction;
+    if (abs(p.x) > halfExtent.x || abs(p.z) > halfExtent.z) return -1.0f;
+
+    outNormal = float3(0.0f, 1.0f, 0.0f);
+    return t;
+}
+
+// Flat filled disc in the XZ plane facing +Y (Blender: Circle).
+float HitDisc(Ray localRay, float radius, out float3 outNormal)
+{
+    if (abs(localRay.Direction.y) < 1e-8f) return -1.0f;
+
+    float t = -localRay.Origin.y / localRay.Direction.y;
+    if (t <= 0.0f) return -1.0f;
+
+    float3 p = localRay.Origin + t * localRay.Direction;
+    if (dot(p.xz, p.xz) > radius * radius) return -1.0f;
+
+    outNormal = float3(0.0f, 1.0f, 0.0f);
+    return t;
+}
+
+// Y-axis cylinder with capped ends (Blender: Cylinder).
+float HitCylinder(Ray localRay, float radius, float halfHeight, out float3 outNormal)
+{
+    float best = -1.0f;
+    float3 bestNormal = float3(0.0f, 0.0f, 0.0f);
+
+    float2 o = localRay.Origin.xz;
+    float2 d = localRay.Direction.xz;
+    float a = dot(d, d);
+    float b = 2.0f * dot(o, d);
+    float c = dot(o, o) - radius * radius;
+
+    if (a > 1e-12f)
+    {
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f)
+        {
+            float sq = sqrt(disc);
+            for (int k = 0; k < 2; k++)
+            {
+                float t = (k == 0) ? (-b - sq) / (2.0f * a) : (-b + sq) / (2.0f * a);
+                if (t <= 0.0f) continue;
+                float y = localRay.Origin.y + t * localRay.Direction.y;
+                if (y < -halfHeight || y > halfHeight) continue;
+                if (best < 0.0f || t < best)
+                {
+                    best = t;
+                    float3 p = localRay.Origin + t * localRay.Direction;
+                    bestNormal = normalize(float3(p.x, 0.0f, p.z));
+                }
+            }
+        }
+    }
+
+    if (abs(localRay.Direction.y) > 1e-8f)
+    {
+        for (int k = 0; k < 2; k++)
+        {
+            float planeY = (k == 0) ? halfHeight : -halfHeight;
+            float t = (planeY - localRay.Origin.y) / localRay.Direction.y;
+            if (t <= 0.0f) continue;
+            if (best >= 0.0f && t >= best) continue;
+            float3 p = localRay.Origin + t * localRay.Direction;
+            if (dot(p.xz, p.xz) > radius * radius) continue;
+            best = t;
+            bestNormal = float3(0.0f, (k == 0) ? 1.0f : -1.0f, 0.0f);
+        }
+    }
+
+    if (best <= 0.0f) return -1.0f;
+    outNormal = bestNormal;
+    return best;
+}
+
+// Y-axis cone with a capped base (Blender: Cone).
+float HitCone(Ray localRay, float radius, float halfHeight, out float3 outNormal)
+{
+    float best = -1.0f;
+    float3 bestNormal = float3(0.0f, 0.0f, 0.0f);
+
+    float2 o = localRay.Origin.xz;
+    float2 d = localRay.Direction.xz;
+
+    float slope = radius / (2.0f * halfHeight);
+    float k = slope * slope;
+
+    float a = dot(d, d) - k * localRay.Direction.y * localRay.Direction.y;
+    float b = 2.0f * (dot(o, d) + k * localRay.Direction.y * (halfHeight - localRay.Origin.y));
+    float c = dot(o, o) - k * (halfHeight - localRay.Origin.y) * (halfHeight - localRay.Origin.y);
+
+    if (abs(a) > 1e-12f)
+    {
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f)
+        {
+            float sq = sqrt(disc);
+            for (int i = 0; i < 2; i++)
+            {
+                float t = (i == 0) ? (-b - sq) / (2.0f * a) : (-b + sq) / (2.0f * a);
+                if (t <= 0.0f) continue;
+                float3 p = localRay.Origin + t * localRay.Direction;
+                if (p.y < -halfHeight || p.y > halfHeight) continue;
+                if (best < 0.0f || t < best)
+                {
+                    best = t;
+                    float2 radial = p.xz;
+                    float rl = length(radial);
+                    radial = (rl > 1e-6f) ? radial / rl : float2(1.0f, 0.0f);
+                    bestNormal = normalize(float3(radial.x, slope, radial.y));
+                }
+            }
+        }
+    }
+
+    if (abs(localRay.Direction.y) > 1e-8f)
+    {
+        float t = (-halfHeight - localRay.Origin.y) / localRay.Direction.y;
+        if (t > 0.0f && (best < 0.0f || t < best))
+        {
+            float3 p = localRay.Origin + t * localRay.Direction;
+            if (dot(p.xz, p.xz) <= radius * radius)
+            {
+                best = t;
+                bestNormal = float3(0.0f, -1.0f, 0.0f);
+            }
+        }
+    }
+
+    if (best <= 0.0f) return -1.0f;
+    outNormal = bestNormal;
+    return best;
+}
+
+// Distance from a point along the ray to the torus tube surface (negative
+// inside).
+float TorusSDF(Ray localRay, float t, float majorR, float minorR)
+{
+    float3 p = localRay.Origin + t * localRay.Direction;
+    float rxz = length(p.xz);
+    float ring = (rxz > 1e-6f) ? (rxz - majorR) : majorR;
+    return sqrt(ring * ring + p.y * p.y) - minorR;
+}
+
+// Torus about the Y axis (Blender: Torus).
+//
+// Bracket the SDF over the ray interval already bounded by the caller's
+// RayAABB test, then bisect each sign change. A seeded-Newton solve was tried
+// and rejected: the radial-distance quadratic's two roots often converge to the
+// same crossing, so it both missed hits and returned the far root.
+float HitTorus(Ray localRay, float majorR, float minorR, float3 boxMin, float3 boxMax, out float3 outNormal)
+{
+    float3 safeDir = sign(localRay.Direction) * max(abs(localRay.Direction), 0.00001f);
+    float3 invDir = 1.0f / safeDir;
+
+    float3 ta = (boxMin - localRay.Origin) * invDir;
+    float3 tb = (boxMax - localRay.Origin) * invDir;
+    float3 tNear3 = min(ta, tb);
+    float3 tFar3 = max(ta, tb);
+
+    float tEnter = max(max(tNear3.x, tNear3.y), tNear3.z);
+    float tExit = min(min(tFar3.x, tFar3.y), tFar3.z);
+    tEnter = max(tEnter, 0.0f);
+    if (tExit <= tEnter) return -1.0f;
+
+    const int kSamples = 32;
+    float dt = (tExit - tEnter) / (float)kSamples;
+
+    float best = -1.0f;
+    float prevT = tEnter;
+    float prevF = TorusSDF(localRay, prevT, majorR, minorR);
+    // A ray starting inside the tube exits through a crossing, but that is an
+    // exit rather than an entry; only accept outside->inside transitions.
+    bool prevInside = prevF < 0.0f;
+
+    for (int i = 1; i <= kSamples; i++)
+    {
+        float curT = tEnter + dt * (float)i;
+        float curF = TorusSDF(localRay, curT, majorR, minorR);
+        bool curInside = curF < 0.0f;
+
+        if (curInside != prevInside)
+        {
+            float lo = prevT, hi = curT;
+            float fLo = prevF;
+            for (int iter = 0; iter < 24; iter++)
+            {
+                float mid = 0.5f * (lo + hi);
+                float fMid = TorusSDF(localRay, mid, majorR, minorR);
+                if ((fMid < 0.0f) == (fLo < 0.0f)) { lo = mid; fLo = fMid; }
+                else { hi = mid; }
+            }
+            float hitT = 0.5f * (lo + hi);
+            if (!prevInside && (best < 0.0f || hitT < best))
+                best = hitT;
+        }
+
+        prevT = curT;
+        prevF = curF;
+        prevInside = curInside;
+    }
+
+    if (best <= 0.0f) return -1.0f;
+
+    float3 p = localRay.Origin + best * localRay.Direction;
+    float rxz = length(p.xz);
+    float2 ring = (rxz > 1e-6f) ? p.xz * (majorR / rxz) : float2(majorR, 0.0f);
+    outNormal = normalize(float3(p.x - ring.x, p.y, p.z - ring.y));
+    return best;
+}
+
+// Single entry point for every analytic primitive.
+float HitPrimitive(Ray localRay, RayTracingInstance inst, out float3 outNormal)
+{
+    int shape = (int)(inst.MaterialParams.z);
+    float3 halfExtent = (inst.Max.xyz - inst.Min.xyz) * 0.5f;
+
+    if (shape == 0) return HitCube(localRay, outNormal);              // Cube
+    if (shape == 1) return HitSphere(localRay, inst.MaterialParams.w, outNormal); // Sphere
+
+    if (shape == 2 || shape == 7) return HitPlaneXZ(localRay, halfExtent, outNormal); // Plane / Grid
+    if (shape == 6) return HitDisc(localRay, inst.MaterialParams.w, outNormal);        // Circle
+
+    // Cylinder / Cone / Torus carry radius in MaterialParams.w; the second
+    // dimension (height, or minor radius) rides in Min.w, previously unused.
+    if (shape == 3) return HitCylinder(localRay, inst.MaterialParams.w, inst.Min.w, outNormal);
+    if (shape == 4) return HitCone(localRay, inst.MaterialParams.w, inst.Min.w, outNormal);
+    if (shape == 5) return HitTorus(localRay, inst.MaterialParams.w, inst.Min.w, inst.Min.xyz, inst.Max.xyz, outNormal);
+
+    // Unknown/newer shape: fall back to the bounding box rather than
+    // silently dropping the surface.
+    return HitCube(localRay, outNormal);
+}
+
+
 bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
     RayTracingInstance inst = Instances[instIdx];
 
@@ -668,7 +953,7 @@ bool TestInstanceOcclusion(Ray r, float maxDist, int instIdx) {
 
     if (RayAABB(localRay, localInvDir, inst.Min.xyz, inst.Max.xyz)) {
         float3 localNormal;
-        float t = ((uint)(inst.MaterialParams.z) == 0) ? HitCube(localRay, localNormal) : HitSphere(localRay, inst.MaterialParams.w, localNormal);
+        float t = HitPrimitive(localRay, inst, localNormal);
         if (t > 0.0f) {
             float3 localHit = localRay.Origin + t * localRay.Direction;
             float3 worldHit = (mul(inst.WorldTransform, float4(localHit, 1.0f))).xyz;
@@ -1022,7 +1307,41 @@ float3 YCoCg2RGB(float3 ycocg) {
 }
 
 float2 CalculateUV(float3 localPos, RayTracingInstance inst) {
-    if ((int)(inst.MaterialParams.z) == 0) {
+    int shape = (int)(inst.MaterialParams.z);
+
+    // Plane / Grid: flat XZ quad, tiled by world scale so texel density stays
+    // constant under the object's transform.
+    if (shape == 2 || shape == 7) {
+        return float2(localPos.x, localPos.z) * inst.TextureScale.xz;
+    }
+
+    // Cylinder / Cone: unwrap the wall by angle around Y, height along Y --
+    // the same UVs ProceduralMeshes.cpp writes for the raster path.
+    if (shape == 3 || shape == 4) {
+        float phi = atan2(localPos.z, localPos.x);
+        float u = phi / (2.0f * PI) + 0.5f;
+        float halfH = max(inst.Min.w, 0.0001f);
+        float v = clamp((localPos.y / (2.0f * halfH)) + 0.5f, 0.0f, 1.0f);
+        float circumference = 2.0f * PI * max(inst.MaterialParams.w, 0.0001f);
+        return float2(u, v) * float2(circumference, 2.0f * halfH);
+    }
+
+    // Torus: (major angle, minor angle) -- the natural unwrap of a tube.
+    if (shape == 5) {
+        float majorR = max(inst.MaterialParams.w, 0.0001f);
+        float minorR = max(inst.Min.w, 0.0001f);
+        float u = atan2(localPos.z, localPos.x) / (2.0f * PI) + 0.5f;
+        float ringR = max(length(localPos.xz), 0.0001f);
+        float v = atan2(localPos.y, ringR - majorR) / (2.0f * PI) + 0.5f;
+        return float2(u, v) * float2(2.0f * PI * majorR, 2.0f * PI * minorR);
+    }
+
+    // Circle: radial disc mapping from the centre.
+    if (shape == 6) {
+        return localPos.xz + float2(0.5f, 0.5f);
+    }
+
+    if (shape == 0) {
         float3 absLocal = abs(localPos);
         float maxAxis = max(max(absLocal.x, absLocal.y), absLocal.z);
 
@@ -1044,6 +1363,7 @@ float2 CalculateUV(float3 localPos, RayTracingInstance inst) {
 
         return uv * uvScale;
     } else {
+        // Sphere (and any future shape without an explicit case).
         float phi = atan2(localPos.z, localPos.x);
         float theta = acos(clamp(localPos.y, -1.0f, 1.0f));
 
@@ -1416,8 +1736,7 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
     if (!RayAABB(localRay, localInvDir, inst.Min.xyz, inst.Max.xyz)) return;
     float3 localNormal;
     float tLocal;
-    [branch] if ((uint)inst.MaterialParams.z == 0) tLocal = HitCube(localRay, localNormal);
-    else tLocal = HitSphere(localRay, inst.MaterialParams.w, localNormal);
+    tLocal = HitPrimitive(localRay, inst, localNormal);
     if (tLocal > 0.0f) {
         float3 localHitPos = localRay.Origin + tLocal * localRay.Direction;
         float3 worldHit = (mul(inst.WorldTransform, float4(localHitPos, 1.0f))).xyz;
@@ -2058,7 +2377,7 @@ void RunBloomThreshold() {
     int2 pos = int2(g_dt.xy);
     float4 color = IMG_LOAD(img_Output, pos);
     
-    float threshold = 0.5f;
+    float threshold = u_BloomThreshold;
     float knee = 0.1f; 
     
     float brightness = dot(color.rgb, float3(0.2126f, 0.7152f, 0.0722f));
@@ -2091,8 +2410,31 @@ void RunBloomBlurVertical()
     }
 
     float3 existing = IMG_LOAD(img_Output, pos).rgb;
-    float3 finalColor = existing + sum.rgb;
+    // u_BloomIntensity was unreachable before; the sum was added at full weight.
+    float3 finalColor = existing + sum.rgb * u_BloomIntensity;
     IMG_STORE(img_Output, pos, float4(finalColor, 1.0f));
+}
+
+// Bilinear tap into img_Accumulation at a full-frame UV, honouring the internal
+// render scale. Extracted from the upscale block so chromatic aberration
+// resamples identically instead of duplicating (and drifting from) that logic.
+float3 BilinearAccum(float2 uv, float renderScale)
+{
+    int2 fullSize = int2(g_dt.xy);
+    int2 srcSize = int2(float2(fullSize) * max(renderScale, 0.001f));
+    srcSize = max(srcSize, int2(1, 1));
+
+    float2 srcCoord = uv * float2(srcSize);
+    float2 srcPixel = srcCoord - float2(0.5f, 0.5f);
+    int2 s0 = clamp(int2(floor(srcPixel)), int2(0, 0), srcSize - int2(1, 1));
+    int2 s1 = clamp(s0 + int2(1, 1), int2(0, 0), srcSize - int2(1, 1));
+    float2 f = clamp(srcPixel - float2(s0), float2(0.0f, 0.0f), float2(1.0f, 1.0f));
+
+    float3 c00 = IMG_LOAD(img_Accumulation, s0).rgb;
+    float3 c10 = IMG_LOAD(img_Accumulation, int2(s1.x, s0.y)).rgb;
+    float3 c01 = IMG_LOAD(img_Accumulation, int2(s0.x, s1.y)).rgb;
+    float3 c11 = IMG_LOAD(img_Accumulation, s1).rgb;
+    return lerp_safe(lerp_safe(c00, c10, f.x), lerp_safe(c01, c11, f.x), f.y);
 }
 
 void RunComposite() {
@@ -2131,9 +2473,51 @@ void RunComposite() {
 
     float3 combined = denoised;
 
-    float3 mapped = combined / (combined + float3(1.0f, 1.0f, 1.0f));
-    float3 finalColor = pow(mapped, float3(1.0f / 2.2f, 1.0f / 2.2f, 1.0f / 2.2f));
+    float2 uv = (float2(pos) + 0.5f) / float2(fullSize);
+    float2 centered = uv * 2.0f - 1.0f;
 
+    // CHROMATIC ABERRATION: per-channel radial resample, done after the resolve
+    // because it is a lens effect rather than a lighting one.
+    if (u_ChromaticAberrationEnabled == 1 && u_ChromaticAberrationIntensity > 0.001f) {
+        float caAmount = u_ChromaticAberrationIntensity * 0.01f;
+        float2 dir = centered * caAmount;
+        combined.r = BilinearAccum(uv + dir, u_RenderScale).r;
+        combined.b = BilinearAccum(uv - dir, u_RenderScale).b;
+    }
+
+    // VIGNETTE: radial falloff with a soft shoulder.
+    if (u_VignetteEnabled == 1 && u_VignetteIntensity > 0.001f) {
+        float r = length(centered) / max(u_VignetteRadius, 0.001f);
+        float vig = smoothstep(1.0f, 1.0f - max(u_VignetteSoftness, 0.001f), r);
+        combined *= lerp_safe(1.0, vig, clamp(u_VignetteIntensity, 0.0, 2.0));
+    }
+
+    float3 mapped = combined / (combined + float3(1.0f, 1.0f, 1.0f));
+
+    // COLOUR GRADING in display space; temperature/tint are signed scalars.
+    if (u_ColorGradingEnabled == 1) {
+        mapped.r += u_ColorTemperature * 0.10 + u_ColorTint * 0.04;
+        mapped.b -= u_ColorTemperature * 0.10 - u_ColorTint * 0.04;
+        mapped.g += u_ColorTint * 0.06;
+        mapped = clamp(mapped, float3(0.0f, 0.0f, 0.0f), float3(1.0f, 1.0f, 1.0f));
+    }
+
+    // DXC rejects a nested scalar splat inside pow()'s argument list
+    // ("too few elements in vector initialization"); fxc accepts it. Naming the
+    // exponent keeps this portable to DXC/SPIR-V, which the Vulkan and RTX Kit
+    // paths need. Same value, no behaviour change.
+    float gammaExponent = 1.0f / max(u_ColorGamma, 0.1f);
+    float3 finalColor = pow(mapped, float3(gammaExponent, gammaExponent, gammaExponent));
+
+    // FILM GRAIN after gamma, weighted toward midtones.
+    if (u_FilmGrainEnabled == 1 && u_FilmGrainIntensity > 0.001f) {
+        float n = frac(sin(dot(float2(pos) + float2(float(u_FrameIndex) * 17.0f, 0.0f),
+                               float2(12.9898f, 78.233f))) * 43758.5453f);
+        float lum = dot(finalColor, float3(0.2126f, 0.7152f, 0.0722f));
+        finalColor += (n - 0.5) * u_FilmGrainIntensity * 0.15 * (1.0 - abs(lum * 2.0 - 1.0));
+    }
+
+    finalColor = clamp(finalColor, 0.0, 1.0);
     IMG_STORE(img_Output, pos, float4(finalColor, 1.0f));
 
     // Bloom threshold must run at ANY scale: passes 4/5 blur img_Bloom at full
@@ -2141,7 +2525,7 @@ void RunComposite() {
     // scaled) smears a ghost copy of the frame over the output.
     if (u_QualityLevel >= 1) {
         float brightness = dot(combined, float3(0.2126f, 0.7152f, 0.0722f));
-        float threshold = 0.8f;
+        float threshold = u_BloomThreshold;
         float knee = 0.15f;
         float soft = smoothstep(threshold - knee, threshold + knee, brightness);
         IMG_STORE(img_Bloom, pos, float4(combined * soft, 1.0f));
