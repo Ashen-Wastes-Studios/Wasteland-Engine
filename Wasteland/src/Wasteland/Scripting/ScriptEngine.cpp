@@ -143,11 +143,10 @@ namespace Wasteland
             // import. Those failures are all py::error_already_set.
             try
             {
-                // Function-local static: the module object is looked up once per process,
-                // not once per script. Note this is a static INSIDE the try -- if the
-                // import itself threw, the static remains uninitialised and the next call
-                // retries it, which is the correct behaviour here.
-                static py::module_ sys = py::module_::import("sys");
+                // Keep Python module handles scoped to this GIL-protected call.
+                // CPython caches imports, so this avoids persistent py::object
+                // statics without repeatedly initializing the modules.
+                py::module_ sys = py::module_::import("sys");
                 // A COPY of sys.path (cast<py::list> constructs a new Python list), not a
                 // reference to it. So the two appends below mutate a throwaway list and
                 // never reach the interpreter -- see the sibling AddToPath lambda, which
@@ -192,8 +191,7 @@ namespace Wasteland
                 // The file stem is the Python module name, so the file name IS the import
                 // contract. A hyphenated filename cannot be imported this way.
                 std::string moduleName = scriptFullPath.stem().string();
-                // Also cached once per process, for the same reason as sys above.
-                static py::module_ importlib = py::module_::import("importlib");
+                py::module_ importlib = py::module_::import("importlib");
                 py::dict modules = sys.attr("modules").cast<py::dict>();
 
                 py::module_ scriptModule;
@@ -358,8 +356,13 @@ namespace Wasteland
     // behind and every entity would be skipped after a shutdown/reopen cycle.
     void ScriptEngine::Shutdown()
     {
-        s_EntityInstances.clear();
+        if (Py_IsInitialized())
+        {
+            py::gil_scoped_acquire gil;
+            s_EntityInstances.clear();
+        }
         s_FailedScripts.clear();
+        s_ActiveScene = nullptr;
 
         WL_CORE_INFO("ScriptEngine: Cleaned up instance cache.");
     }

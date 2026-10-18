@@ -1,0 +1,188 @@
+Scene: Terrain Showcase
+Terrain:
+  AssetRef: assets/terrain/TerrainShowcase.wlterrain
+  Streaming:
+    LoadRadiusChunks: 4
+    LodDistanceThresholds: [2, 4, 6, 8, 10, 12]
+    MaxChunkBuildsPerUpdate: 4
+Entities:
+  - Entity: 9700000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 25, 40]
+      Rotation: [-0.5, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9700000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9700000000000000003
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 20, 20]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CylinderRendererComponent:
+      Color: [0.3, 0.5, 0.9, 1]
+      Radius: 0.4
+      Height: 1.4
+      Segments: 24
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.5, 0.9, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.6
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.1
+      AngularDamping: 0.1
+      FixedRotationX: true
+      FixedRotationY: false
+      FixedRotationZ: true
+    CapsuleCollider3DComponent:
+      Radius: 0.4
+      Height: 1.4
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0.2
+  - Entity: 9700000000000000004
+    TagComponent:
+      Tag: Reference Cube
+    TransformComponent:
+      Translation: [5, 18, 15]
+      Rotation: [0, 0.5, 0]
+      Scale: [2, 2, 2]
+    CubeRendererComponent:
+      Color: [0.8, 0.3, 0.2, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.8, 0.3, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.6
+      Restitution: 0.3
+  - Entity: 9700000000000000005
+    TagComponent:
+      Tag: Reference Sphere
+    TransformComponent:
+      Translation: [-5, 18, 15]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.2, 0.8, 0.4, 1]
+      Radius: 1
+      Sectors: 32
+      Stacks: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.8, 0.4, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 1
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.4
+      Restitution: 0.5
+  - Entity: 9700000000000000006
+    TagComponent:
+      Tag: Volumetric Fog
+    TransformComponent:
+      Translation: [0, 10, 0]
+      Rotation: [0, 0, 0]
+      Scale: [100, 30, 100]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.699999988, 0.75, 0.800000012, 1]
+      Density: 0.015
+      Anisotropy: 0.3
+      HeightFalloff: 0.3
+      NoiseStrength: 0.4
+      NoiseScale: 0.1
+      WindSpeed: 0.05
+      MaxSteps: 12
+  - Entity: 9700000000000000007
+    TagComponent:
+      Tag: Volumetric Clouds
+    TransformComponent:
+      Translation: [0, 80, 0]
+      Rotation: [0, 0, 0]
+      Scale: [200, 40, 200]
+    VolumetricCloudsComponent:
+      Enabled: true
+      Color: [1, 1, 1, 1]
+      AmbientTint: [0.449999988, 0.550000012, 0.699999988, 1]
+      Coverage: 0.4
+      Density: 0.5
+      NoiseScale: 0.06
+      DetailAmount: 0.5
+      WindDirection: [1, 0.3]
+      WindSpeed: 0.02
+      SilverLining: 0.6
+      ShadowStrength: 0.6
+      MaxSteps: 16

@@ -34,30 +34,28 @@ namespace Wasteland
 
 		// Writes the scene to a YAML file, in the full authoring format.
 		//
-		// Returns VOID, so a failed write is silent: an unwritable path, a full
-		// disk, or a missing parent directory all look identical to success
-		// from the caller's side. There is no error code and no exception.
+		// Returns whether the scene and any configured terrain sidecars were
+		// saved successfully. Existing call sites may ignore this result.
 		//
 		// @param filepath  Where to write. A relative path resolves against
 		//                  the process's current directory, not the project
 		//                  root -- callers wanting project-relative paths
 		//                  must build them against Project::GetProjectDirectory.
-		void Serialize(const std::string &filepath);
+		bool Serialize(const std::string &filepath);
+		bool SerializeChecked(const std::string &filepath, std::string *error = nullptr);
 
 		// Writes the scene in the runtime format: the data needed to play,
 		// without the authoring-only fields.
 		//
-		// Void return, so equally silent about failure as Serialize.
+		// Runtime serialization remains an unimplemented void API.
 		//
 		// @param filepath  Where to write.
 		void SerializeRuntime(const std::string &filepath);
 
 		// Reads a scene from a YAML file, in the authoring format.
 		//
-		// The one method of the four that reports failure, which makes the
-		// asymmetry with Serialize a genuine trap: a caller who checks the
-		// bool here but has no way to check it there will assume a save
-		// succeeded.
+		// Returns false for malformed terrain metadata, source assets, or
+		// sidecars before changing the scene's terrain runtime.
 		//
 		// @param filepath  The file to read.
 		// @returns Whether the scene was loaded. False on a missing or

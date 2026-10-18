@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -152,6 +153,9 @@ namespace Wasteland::Audio
 		// constant expression; no out-of-line definition is needed in C++17
 		// and later.
 		static constexpr int kDefaultMaxVoices = 32;
+		// The fixed engine-facing mix rate. Clips retain their own source rates;
+		// Mix() converts their read step into these output frames.
+		static constexpr int kEngineMixRate = 48000;
 
 		Mixer() = default;
 		// The explicit keyword is load-bearing: without it a bare integer
@@ -166,7 +170,14 @@ namespace Wasteland::Audio
 		void RegisterClip(const std::string &name, const Ref<AudioClip> &clip);
 		Ref<AudioClip> GetClip(const std::string &name) const;
 		bool HasClip(const std::string &name) const;
+		// Legacy reference view: do not retain/read it concurrently with playback
+		// mutations. Use GetClipsSnapshot() when the device callback is running.
 		const std::unordered_map<std::string, Ref<AudioClip>> &GetClips() const { return m_Clips; }
+		std::unordered_map<std::string, Ref<AudioClip>> GetClipsSnapshot() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_Clips;
+		}
 
 		// ---- Playback ----
 
@@ -214,6 +225,7 @@ namespace Wasteland::Audio
 		// worth more than the scan.
 		int GetActiveVoiceCount() const
 		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 			int count = 0;
 			for (const Voice &voice : m_Voices)
 			{
@@ -223,18 +235,33 @@ namespace Wasteland::Audio
 			return count;
 		}
 
-		int GetMaxVoices() const { return m_MaxVoices; }
+		int GetMaxVoices() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_MaxVoices;
+		}
 		// Clamps the low end only. Lowering the cap below the current active
 		// count does NOT retire anything immediately: the excess keeps
 		// playing until each voice finishes on its own, and nothing steals
 		// until the cap is exceeded again. So SetMaxVoices(1) mid-firefight
 		// leaves every gunshot audible to its natural end.
-		void SetMaxVoices(int max) { m_MaxVoices = max < 1 ? 1 : max; }
+		void SetMaxVoices(int max)
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			m_MaxVoices = max < 1 ? 1 : max;
+		}
 
 		// ---- Mixing ----
 
+		// Legacy direct access is intended for single-threaded/headless use. Prefer
+		// the synchronized snapshot/setter while the output callback is active.
 		Listener &GetListener() { return m_Listener; }
 		const Listener &GetListener() const { return m_Listener; }
+		// Thread-safe alternatives for audio systems that update/read the listener
+		// while the device callback is mixing.
+		Listener GetListenerSnapshot() const;
+		void SetListenerTransform(const glm::vec3 &position,
+			const glm::vec3 &forward, const glm::vec3 &up);
 
 		// Master volume, applied to everything. 1.0 is unmodified.
 		//
@@ -253,24 +280,28 @@ namespace Wasteland::Audio
 		// instead of to distortion.
 		void SetMasterVolume(float volume)
 		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 			if (volume < 0.0f)
 				volume = 0.0f;
 			else if (volume > 1.0f)
 				volume = 1.0f;
 			m_MasterVolume = volume;
 		}
-		float GetMasterVolume() const { return m_MasterVolume; }
+		float GetMasterVolume() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_MasterVolume;
+		}
 
-		// Mix into a stereo interleaved float buffer of `frameCount` frames.
-		//
-		// The buffer is ADDED to, not overwritten, so several mixers can sum
-		// into one output. Samples are clamped at the end of each voice write
-		// rather than at the end of the buffer, which contains the damage
-		// before it can spread to neighbouring frames.
-		// Accumulating into the caller's buffer is what lets several mixers
-		// (music, SFX, UI) sum into one device buffer without a bus graph --
-		// consistent with the 'no buses' decision in the class comment.
+		// Mix into a stereo interleaved float buffer at kEngineMixRate. Source
+		// clips keep their native sample rates and are linearly resampled per
+		// voice while reading. The buffer is ADDED to, not overwritten.
 		void Mix(float *output, int frameCount);
+
+		// Real-time device path. Mixes at kEngineMixRate and advances fade and
+		// retirement state from the frames actually rendered. Do not also call
+		// Update() to advance voice positions for the same device frames.
+		void MixRealtime(float *output, int frameCount);
 
 		// Advance every voice's position and fade state by `seconds`, retiring
 		// finished ones.
@@ -303,12 +334,25 @@ namespace Wasteland::Audio
 
 		// Voices dropped because the cap was reached. A diagnostic, and the
 		// number to watch if audio is ever reported as "not playing".
-		int GetDroppedVoiceCount() const { return m_DroppedVoices; }
+		int GetDroppedVoiceCount() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_DroppedVoices;
+		}
 		// Both counters are plain ints that are never reset automatically,
 		// so they are lifetime totals for the Mixer object. ResetCounters
 		// exists precisely because there is no per-frame rollover.
-		int GetStealedVoiceCount() const { return m_StealedVoices; }
-		void ResetCounters() { m_DroppedVoices = 0; m_StealedVoices = 0; }
+		int GetStealedVoiceCount() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_StealedVoices;
+		}
+		void ResetCounters()
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			m_DroppedVoices = 0;
+			m_StealedVoices = 0;
+		}
 
 		// Iterate live voices, for a debug view or a script that wants to know
 		// what is playing.
@@ -320,7 +364,14 @@ namespace Wasteland::Audio
 		// element as playing will act on finished voices; it must test
 		// Voice::IsPlaying() on each. Either the accessor should filter, or
 		// the comment should say it returns slots.
+		// Legacy reference view: do not retain/read it concurrently with playback.
+		// A synchronized copy is available for concurrent diagnostics.
 		const std::vector<Voice> &GetVoices() const { return m_Voices; }
+		std::vector<Voice> GetVoicesSnapshot() const
+		{
+			std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+			return m_Voices;
+		}
 
 	private:
 		// Mix one voice into the buffer. `writeGain` is the master/attenuation
@@ -342,6 +393,7 @@ namespace Wasteland::Audio
 		bool AdvanceVoice(Voice &voice, double frames);
 
 		std::vector<Voice> m_Voices;
+		mutable std::recursive_mutex m_Mutex;
 		std::unordered_map<std::string, Ref<AudioClip>> m_Clips;
 		Listener m_Listener;
 		float m_MasterVolume = 1.0f;

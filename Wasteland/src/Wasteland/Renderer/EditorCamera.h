@@ -134,7 +134,9 @@ namespace Wasteland {
 		float ZoomSpeed() const;
 	private:
 				// Projection parameters. The defaults describe a 45-degree field of view at
-				// a 16:9 aspect with a 0.1 to 1000 depth range.
+				// a 16:9 aspect with a 0.1 to 10000 depth range -- a 10km far plane, matching
+				// SceneCamera's defaults so the editor preview and a scene camera agree on
+				// how far the world extends.
 				// ---
 				// DEFECT (documented, not fixed): m_ViewportWidth and m_ViewportHeight at
 				// line 64 are declared as FLOAT but initialised with integer literals
@@ -142,7 +144,7 @@ namespace Wasteland {
 				// but the pairing of float declaration with integer defaults is the kind
 				// of thing that hides a truncation when the initialiser is later edited to
 				// something like a division result.
-		float m_FOV = 45.0f, m_AspectRatio = 1.778f, m_NearClip = 0.1f, m_FarClip = 1000.0f;
+		float m_FOV = 45.0f, m_AspectRatio = 1.778f, m_NearClip = 0.1f, m_FarClip = 10000.0f;
 
 				// The cached view matrix. Never handed out as a mutable reference, so the
 				// only way to change it is UpdateView.

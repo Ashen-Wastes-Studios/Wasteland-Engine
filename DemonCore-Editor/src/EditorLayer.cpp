@@ -23,6 +23,7 @@
 #include "Wasteland/Scene/SceneSerializer.h"
 
 #include "Wasteland/Utils/PlatformUtils.h"
+#include "Platform/NVRHI/NVRHIFramebuffer.h"
 
 #include "Panels/ApiKeyStore.h"
 #include "Panels/ToolServer.h"
@@ -510,7 +511,7 @@ static bool HasGLExtension(const char *name)
 		// Project::Bootstrap already selected before the layer was created.
 		m_ContentBrowserPanel.ResetToRoot();
 
-		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
+		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 10000.0f);
 
 		m_CameraController.SetZoomLevel(5.0f);
 
@@ -878,6 +879,7 @@ static bool HasGLExtension(const char *name)
 		m_ScriptInspectorPanel.SetVisible(workflow == Workflow::Scripting);
 		m_NPCBehaviorPanel.SetVisible(workflow == Workflow::Visual);
 		m_VisualBlocksPanel.SetVisible(workflow == Workflow::Visual);
+		m_TerrainAssetPanel.SetVisible(false);
 		m_AIChatPanel.SetVisible(workflow == Workflow::Review);
 		m_ModelDownloaderPanel.SetVisible(workflow == Workflow::Scene);
 		m_ShowViewport = workflow != Workflow::Review;
@@ -922,6 +924,8 @@ static bool HasGLExtension(const char *name)
 			"NPC Behavior",
 			"Node Palette",
 			"Visual Blocks",
+			"AVB Graph",
+			"Terrain Asset",
 			"AI Chatbot",
 			"Model Downloader",
 			"Settings",
@@ -1075,6 +1079,9 @@ static bool HasGLExtension(const char *name)
 					if (ImGui::MenuItem("New"))
 						NewScene();
 
+					if (ImGui::MenuItem("New Terrain Asset..."))
+						NewTerrainAsset();
+
 					if (ImGui::MenuItem("Open..."))
 						OpenScene();
 
@@ -1137,6 +1144,12 @@ static bool HasGLExtension(const char *name)
 					bool vb = m_VisualBlocksPanel.IsVisible();
 					if (ImGui::MenuItem("Visual Blocks", nullptr, &vb))
 						m_VisualBlocksPanel.SetVisible(vb);
+					bool avb = m_AvbGraphPanel.IsVisible();
+					if (ImGui::MenuItem("AVB Graph", nullptr, &avb))
+						m_AvbGraphPanel.SetVisible(avb);
+					bool terrain = m_TerrainAssetPanel.IsVisible();
+					if (ImGui::MenuItem("Terrain Asset", nullptr, &terrain))
+						m_TerrainAssetPanel.SetVisible(terrain);
 					ImGui::MenuItem("Stats", nullptr, &m_ShowStats);
 					ImGui::MenuItem("Settings", nullptr, &m_ShowSettings);
 					bool chatVisible = m_AIChatPanel.IsVisible();
@@ -1215,6 +1228,10 @@ static bool HasGLExtension(const char *name)
 		m_NPCBehaviorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());
 		m_NPCBehaviorPanel.OnImGuiRender();
 		m_VisualBlocksPanel.OnImGuiRender();
+		m_AvbGraphPanel.OnImGuiRender();
+		m_TerrainAssetPanel.OnImGuiRender(Project::Get().GetAssetRoot(),
+			Project::Get().GetRoot(), m_ActiveScene,
+			m_SceneState == SceneState::Edit);
 		m_ScriptEditorPanel.OnImGuiRender();
 
 			m_AIChatPanel.OnImGuiRender();
@@ -1584,6 +1601,20 @@ static bool HasGLExtension(const char *name)
 			}
 
 			ImGui::Separator();
+			ImGui::Text("Experimental Nova Reconstruction");
+			bool svfgEnabled = Wasteland::Renderer3D::IsSVGFEnabled();
+			if (ImGui::Checkbox("SVGF Denoiser", &svfgEnabled))
+				Wasteland::Renderer3D::SetSVGFEnabled(svfgEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Fixed four-step A-Trous denoiser. Experimental; off by default.");
+
+			bool restirEnabled = Wasteland::Renderer3D::IsReSTIREnabled();
+			if (ImGui::Checkbox("ReSTIR DI", &restirEnabled))
+				Wasteland::Renderer3D::SetReSTIREnabled(restirEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Experimental temporal diffuse-emissive sampling for the active Nova/GL path. Off by default.");
+
+			ImGui::Separator();
 
 			// Vignette
 			bool vignetteEnabled = Wasteland::Renderer3D::IsVignetteEnabled();
@@ -1710,10 +1741,24 @@ static bool HasGLExtension(const char *name)
 			if (Wasteland::Renderer3D::IsRayTracingEnabled())
 			{
 				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
-				// Already in the active backend's own form: the DX12 Nova path
-				// inside Renderer3D converts its output to a descriptor handle (see
-				// GetRayTraceTargetNativeSRV), so no conversion belongs here.
-				textureTexID = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
+				if (RendererAPI::GetAPI() == RendererAPI::API::NVRHI_Vulkan)
+				{
+					void *rawTexture = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
+					NVRHIFramebuffer *nvrhiFramebuffer =
+						dynamic_cast<NVRHIFramebuffer *>(m_Framebuffer.get());
+					if (rawTexture && nvrhiFramebuffer)
+					{
+						textureTexID = nvrhiFramebuffer->GetExternalTextureImGuiTexID(
+							nvrhi::TextureHandle(static_cast<nvrhi::ITexture *>(rawTexture)));
+					}
+				}
+				else
+				{
+					// Already in the active backend's own form: the DX12 Nova path
+					// inside Renderer3D converts its output to a descriptor handle (see
+					// GetRayTraceTargetNativeSRV), so no conversion belongs here.
+					textureTexID = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
+				}
 			}
 
 			else
@@ -2403,9 +2448,8 @@ static bool HasGLExtension(const char *name)
 		std::string filepath = FileDialogs::SaveFile("Wasteland Scene (*.wastescene)\0*.wastescene\0");
 		if (!filepath.empty())
 		{
-			SerializeScene(m_ActiveScene, filepath);
-
-			m_EditorScenePath = filepath;
+			if (SerializeScene(m_ActiveScene, filepath))
+				m_EditorScenePath = filepath;
 		}
 	}
 
@@ -2424,6 +2468,24 @@ static bool HasGLExtension(const char *name)
 			m_ScriptEditorPanel.OpenFile(filepath);
 			WL_CORE_INFO("Opened script in editor: {0}", filepath);
 		}
+	}
+
+	void EditorLayer::NewTerrainAsset()
+	{
+		Project& project = Project::Get();
+		if (!project.IsOpen())
+		{
+			WL_CORE_WARN("Create a project before creating a terrain asset");
+			return;
+		}
+
+		const std::string filepath = FileDialogs::SaveFile(
+			"Wasteland Terrain (*.wlterrain)\0*.wlterrain\0");
+		if (filepath.empty())
+			return;
+
+		m_TerrainAssetPanel.SetVisible(true);
+		m_TerrainAssetPanel.CreateNewAsset(filepath, project.GetAssetRoot());
 	}
 
 	void EditorLayer::NewProject()
@@ -2536,6 +2598,7 @@ static bool HasGLExtension(const char *name)
 
 		// The content browser was browsing the previous project's tree.
 		m_ContentBrowserPanel.ResetToRoot();
+		m_TerrainAssetPanel.Reset();
 
 		// Entities hold absolute texture paths resolved from the old asset
 		// root, so the open scene has to go. Reload the project's start
@@ -2699,10 +2762,16 @@ static bool HasGLExtension(const char *name)
 		}
 	}
 
-	void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
+	bool EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
 	{
 		SceneSerializer serializer(scene);
-		serializer.Serialize(path.string());
+		std::string error;
+		if (!serializer.SerializeChecked(path.string(), &error))
+		{
+			WL_CORE_ERROR("Failed to save scene '{0}': {1}", path.string(), error);
+			return false;
+		}
+		return true;
 	}
 
 	void EditorLayer::OnScenePlay()
@@ -2795,6 +2864,15 @@ static bool HasGLExtension(const char *name)
 		else if (ext == ".wlblocks")
 		{
 			m_VisualBlocksPanel.OpenGraph(p.string());
+		}
+		else if (ext == ".wlavb")
+		{
+			m_AvbGraphPanel.OpenGraph(p.string());
+		}
+		else if (ext == ".wlterrain")
+		{
+			m_TerrainAssetPanel.SetVisible(true);
+			m_TerrainAssetPanel.OpenAsset(p, Project::Get().GetAssetRoot());
 		}
 		else
 		{

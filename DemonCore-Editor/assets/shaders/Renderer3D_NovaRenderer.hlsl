@@ -40,7 +40,20 @@ struct RayTracingInstance
     float4 TextureScale;
     float4 DisplacementParams;
     float4 WaveParams;  // x=amplitude, y=wavelength, z=speed, w=chop; water only
+    int TerrainVertexOffset;
+    int TerrainCellsPerSide;
+    int TerrainPad0;
+    int TerrainPad1;
 };
+
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+// One packed 32-byte vertex in the uploaded row-major heightfield grid.
+struct TerrainNovaVertex
+{
+    float4 Position;
+    float4 Normal;
+};
+#endif
 
 struct BVHNode
 {
@@ -51,6 +64,22 @@ struct BVHNode
 struct Ray { float3 Origin; float3 Direction; };
 Ray MakeRay(float3 o, float3 d) { Ray r; r.Origin = o; r.Direction = d; return r; }
 
+// ---- ReSTIR DI reservoir (32 bytes per pixel) ----
+// Bitterli et al. ACM TOG 2020. The reservoir stores a single selected
+// light sample with its weight, plus the running sum of target PDFs and
+// the sample count. bary.x stores the target PDF of the selected sample
+// (needed for the W update); bary.y, normalOct and flagsValid are for
+// spatial reuse validation.
+struct LightReservoir {
+    uint lightIndex;   // +0  selected light index
+    uint M;            // +4  number of samples seen
+    float W;           // +8  finalized RIS estimator weight
+    float wSum;        // +12 aggregate candidate weight (target/source PDF)
+    float2 bary;       // +16 legacy name: x=selected pHat, y=receiver depth
+    uint normalOct;    // +24 octahedral-encoded receiver normal (temporal validation)
+    uint flagsValid;   // +28 bit 0 valid; upper bits producer-frame tag
+};
+
 // ---- images (GL image units -> u registers) ----
 RWTexture2D<float4> img_Output        : register(u0);
 RWTexture2D<float4> img_Accumulation  : register(u1);
@@ -60,11 +89,20 @@ RWTexture2D<float4> img_TraceGBuffer  : register(u6);
 RWTexture2D<float4> img_Bloom_Temp    : register(u7);
 RWTexture2D<unorm float4> img_MaterialPacked : register(u3);
 RWTexture2D<float4> img_AlbedoHit     : register(u4);
+RWTexture2D<float2> img_Moments       : register(u9);
+RWTexture2D<float4> img_HistoryBuffer : register(u11);
 
 // ---- scene data (GL SSBO bindings 1/2/3 -> t registers) ----
 StructuredBuffer<RayTracingInstance> Instances    : register(t1);
 StructuredBuffer<BVHNode>            BVHNodes     : register(t2);
 StructuredBuffer<int>                LightIndices : register(t3);
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+StructuredBuffer<TerrainNovaVertex>  TerrainVertices : register(t4);
+#endif
+
+// ---- ReSTIR DI reservoir ping-pong pair (t10/u10) ----
+StructuredBuffer<LightReservoir> ReservoirRead  : register(t10);
+RWStructuredBuffer<LightReservoir> ReservoirWrite : register(u10);
 
 // ---- sampled buffers (GL sampler units shifted to t48+ to avoid
 // colliding with the StructuredBuffer registers t1/t2/t3) ----
@@ -73,6 +111,7 @@ Texture2D s_DepthBuffer   : register(t49);
 Texture2D s_Output        : register(t50);
 Texture2D s_NormalBuffer  : register(t51);
 Texture2D s_InputAlbedo   : register(t52);
+Texture2D s_Moments       : register(t53);
 // Declared in GLSL but unread (dead bindings): s_Bloom, s_Indirect,
 // s_PackedMaterialMap -- omitted here; the future NVRHI compute wiring
 // must skip them.
@@ -190,11 +229,14 @@ cbuffer NovaConstants : register(b1)
     float3  u_GodRayColor;
     // Analytic component lights
     int     u_ALightCount;
-    float3  u_ALightPos[8];
-    float3  u_ALightDir[8];
-    float3  u_ALightColor[8];
-    float4  u_ALightData[8];
-    float4  u_ALightData2[8];
+    float3  u_ALightPos[32];
+    float3  u_ALightDir[32];
+    float3  u_ALightColor[32];
+    float4  u_ALightData[32];
+    float4  u_ALightData2[32];
+    // Temporal Super-Resolution (experimental, default-off)
+    int     u_TSREnabled;
+    float   u_TSRSharpenStrength;
 };
 
 // ---- GLSL-semantics helpers ----
@@ -219,6 +261,7 @@ Texture2D<float4> read_img_AlbedoHit : register(t68);
 Texture2D<float2> read_img_Velocity : register(t69);
 Texture2D<float4> read_img_TraceGBuffer : register(t70);
 Texture2D<float4> read_img_Bloom_Temp : register(t71);
+Texture2D<float2> read_img_Moments : register(t73);
 #define IMG_LOAD(tex, pos) read_##tex.Load(int3(clamp(int2(pos), int2(0,0), int2(g_dims)-1),0))
 #define IMG_SIZE(tex)            (g_dims)
 
@@ -915,6 +958,183 @@ float HitTorus(Ray localRay, float majorR, float minorR, float3 boxMin, float3 b
     return best;
 }
 
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+// Clip one ray component against an axis-aligned interval. Parallel rays are
+// handled without forming 1/0; this also makes a flat (min == max) Y bound valid.
+bool ClipTerrainAxis(float origin, float direction, float minimum, float maximum,
+                     inout float tEnter, inout float tExit)
+{
+    if (direction == 0.0f)
+        return origin >= minimum && origin <= maximum;
+
+    float t0 = (minimum - origin) / direction;
+    float t1 = (maximum - origin) / direction;
+    tEnter = max(tEnter, min(t0, t1));
+    tExit = min(tExit, max(t0, t1));
+    return tEnter <= tExit;
+}
+
+// Two-sided Moller-Trumbore test; barycentrics also interpolate the packed
+// local-space vertex normals. Triangle order matches CPU indices {a,c,b,b,c,d}.
+bool HitTerrainTriangle(Ray ray, TerrainNovaVertex v0, TerrainNovaVertex v1,
+                        TerrainNovaVertex v2, float tMin, out float hitT, out float3 hitNormal)
+{
+    hitT = -1.0f;
+    hitNormal = float3(0.0f, 1.0f, 0.0f);
+    float3 edge1 = v1.Position.xyz - v0.Position.xyz;
+    float3 edge2 = v2.Position.xyz - v0.Position.xyz;
+    float3 p = cross(ray.Direction, edge2);
+    float determinant = dot(edge1, p);
+    float determinantScale = length(edge1) * length(edge2) * length(ray.Direction);
+    if (!(determinantScale > 0.0f) || abs(determinant) <= determinantScale * 1e-7f) return false;
+
+    float inverseDeterminant = 1.0f / determinant;
+    float3 fromV0 = ray.Origin - v0.Position.xyz;
+    float u = dot(fromV0, p) * inverseDeterminant;
+    if (u < -1e-6f || u > 1.0f + 1e-6f) return false;
+
+    float3 q = cross(fromV0, edge1);
+    float v = dot(ray.Direction, q) * inverseDeterminant;
+    if (v < -1e-6f || u + v > 1.0f + 1e-6f) return false;
+
+    float t = dot(edge2, q) * inverseDeterminant;
+    if (t <= tMin) return false;
+
+    float w = 1.0f - u - v;
+    float3 interpolated = v0.Normal.xyz * w + v1.Normal.xyz * u + v2.Normal.xyz * v;
+    float normalLengthSquared = dot(interpolated, interpolated);
+    hitNormal = normalLengthSquared > 1e-12f
+        ? interpolated * rsqrt(normalLengthSquared)
+        : normalize(cross(edge1, edge2));
+    hitT = t;
+    return true;
+}
+
+// Intersect the row-major heightfield by visiting only grid cells crossed by
+// the local ray. The DDA takes at most 2*cells+2 steps; it never scans the grid.
+float HitTerrainGrid(Ray localRay, RayTracingInstance inst, out float3 outNormal)
+{
+    outNormal = float3(0.0f, 1.0f, 0.0f);
+    int cells = inst.TerrainCellsPerSide;
+    if (inst.TerrainVertexOffset < 0 || cells <= 0 || cells > 64) return -1.0f;
+
+    float extentX = inst.Max.x - inst.Min.x;
+    float extentZ = inst.Max.z - inst.Min.z;
+    if (!isfinite(extentX) || !isfinite(extentZ) || extentX <= 0.0f || extentZ <= 0.0f)
+        return -1.0f;
+    float cellWidthX = extentX / (float)cells;
+    float cellWidthZ = extentZ / (float)cells;
+    float cellScale = min(cellWidthX, cellWidthZ);
+    float directionLength = length(localRay.Direction);
+    if (!(directionLength > 0.0f) || !isfinite(directionLength)) return -1.0f;
+    float tMin = min(1e-5f, cellScale * 1e-4f / directionLength);
+
+    float tEnter = 0.0f;
+    float tExit = 1e30f;
+    if (!ClipTerrainAxis(localRay.Origin.x, localRay.Direction.x, inst.Min.x, inst.Max.x, tEnter, tExit) ||
+        !ClipTerrainAxis(localRay.Origin.y, localRay.Direction.y, inst.Min.y, inst.Max.y, tEnter, tExit) ||
+        !ClipTerrainAxis(localRay.Origin.z, localRay.Direction.z, inst.Min.z, inst.Max.z, tEnter, tExit) ||
+        tExit <= 0.0f)
+        return -1.0f;
+
+    float3 entry = localRay.Origin + localRay.Direction * tEnter;
+    float gridX = clamp((entry.x - inst.Min.x) / cellWidthX, 0.0f, (float)cells);
+    float gridZ = clamp((entry.z - inst.Min.z) / cellWidthZ, 0.0f, (float)cells);
+    int cellX = min((int)floor(gridX), cells - 1);
+    int cellZ = min((int)floor(gridZ), cells - 1);
+    const float gridEpsilon = 1e-5f;
+    int stepX = localRay.Direction.x > 0.0f ? 1 :
+                (localRay.Direction.x < 0.0f ? -1 : 0);
+    int stepZ = localRay.Direction.z > 0.0f ? 1 :
+                (localRay.Direction.z < 0.0f ? -1 : 0);
+
+    // On an interior grid boundary, a negative ray enters the cell on its
+    // negative side. At the maximum edge floor() is already clamped correctly.
+    if (stepX < 0 && gridX > 0.0f && gridX < (float)cells &&
+        abs(gridX - round(gridX)) <= gridEpsilon)
+        cellX--;
+    if (stepZ < 0 && gridZ > 0.0f && gridZ < (float)cells &&
+        abs(gridZ - round(gridZ)) <= gridEpsilon)
+        cellZ--;
+
+    float tMaxX = 1e30f;
+    float tMaxZ = 1e30f;
+    float tDeltaX = 1e30f;
+    float tDeltaZ = 1e30f;
+    if (stepX != 0)
+    {
+        float boundaryX = inst.Min.x + (float)(stepX > 0 ? cellX + 1 : cellX) * cellWidthX;
+        tMaxX = tEnter + (boundaryX - entry.x) / localRay.Direction.x;
+        tDeltaX = cellWidthX / abs(localRay.Direction.x);
+    }
+    if (stepZ != 0)
+    {
+        float boundaryZ = inst.Min.z + (float)(stepZ > 0 ? cellZ + 1 : cellZ) * cellWidthZ;
+        tMaxZ = tEnter + (boundaryZ - entry.z) / localRay.Direction.z;
+        tDeltaZ = cellWidthZ / abs(localRay.Direction.z);
+    }
+
+    int rowStride = cells + 1;
+    int maximumSteps = 2 * cells + 2;
+    float cellEnter = tEnter;
+    for (int step = 0; step < maximumSteps; ++step)
+    {
+        if (cellX < 0 || cellX >= cells || cellZ < 0 || cellZ >= cells) break;
+        float cellExit = min(min(tMaxX, tMaxZ), tExit);
+        int vertex = inst.TerrainVertexOffset + cellZ * rowStride + cellX;
+        TerrainNovaVertex a = TerrainVertices[vertex];
+        TerrainNovaVertex b = TerrainVertices[vertex + 1];
+        TerrainNovaVertex c = TerrainVertices[vertex + rowStride];
+        TerrainNovaVertex d = TerrainVertices[vertex + rowStride + 1];
+
+        float candidateT;
+        float3 candidateNormal;
+        float bestT = 1e30f;
+        float3 bestNormal = outNormal;
+        if (HitTerrainTriangle(localRay, a, c, b, tMin, candidateT, candidateNormal) &&
+            candidateT >= cellEnter - tMin && candidateT <= cellExit + tMin && candidateT < bestT)
+        {
+            bestT = candidateT;
+            bestNormal = candidateNormal;
+        }
+        if (HitTerrainTriangle(localRay, b, c, d, tMin, candidateT, candidateNormal) &&
+            candidateT >= cellEnter - tMin && candidateT <= cellExit + tMin && candidateT < bestT)
+        {
+            bestT = candidateT;
+            bestNormal = candidateNormal;
+        }
+        if (bestT < 1e30f)
+        {
+            outNormal = bestNormal;
+            return bestT;
+        }
+        if (cellExit >= tExit || (stepX == 0 && stepZ == 0)) break;
+
+        if (tMaxX == tMaxZ)
+        {
+            cellEnter = max(tMaxX, tMaxZ);
+            cellX += stepX;
+            cellZ += stepZ;
+            tMaxX += tDeltaX;
+            tMaxZ += tDeltaZ;
+        }
+        else if (tMaxX < tMaxZ)
+        {
+            cellEnter = tMaxX;
+            cellX += stepX;
+            tMaxX += tDeltaX;
+        }
+        else
+        {
+            cellEnter = tMaxZ;
+            cellZ += stepZ;
+            tMaxZ += tDeltaZ;
+        }
+    }
+    return -1.0f;
+}
+#endif
+
 // Single entry point for every analytic primitive.
 float HitPrimitive(Ray localRay, RayTracingInstance inst, out float3 outNormal)
 {
@@ -932,6 +1152,9 @@ float HitPrimitive(Ray localRay, RayTracingInstance inst, out float3 outNormal)
     if (shape == 3) return HitCylinder(localRay, inst.MaterialParams.w, inst.Min.w, outNormal);
     if (shape == 4) return HitCone(localRay, inst.MaterialParams.w, inst.Min.w, outNormal);
     if (shape == 5) return HitTorus(localRay, inst.MaterialParams.w, inst.Min.w, inst.Min.xyz, inst.Max.xyz, outNormal);
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+    if (shape == 8) return HitTerrainGrid(localRay, inst, outNormal);
+#endif
 
     // Unknown/newer shape: fall back to the bounding box rather than
     // silently dropping the surface.
@@ -1274,11 +1497,23 @@ float Halton(int index, int base) {
     return r;
 }
 
+// Returns the CPU-generated STBN jitter in PIXEL units, roughly [-0.5, 0.5].
+// --
+// This used to compute its own Halton(offset % 16 + 1) sequence on the GPU, which
+// repeated exactly every 16 frames. u_Jitter was declared and uploaded on every backend
+// but never read, so the blue-noise volume sat unused while the 16-frame pattern shipped.
+//
+// Two unit contracts have to hold together:
+//   - BlueNoise::Jitter returns a-0.5 / b-0.5, i.e. PIXELS. It previously divided by the
+//     viewport width/height, giving ~0.0005 px at 1920 wide -- effectively zero.
+//   - The call site does ((pixelCoords + jitter) / traceSize) * 2 - 1, so what is added
+//     here is in pixels before that division.
+//
+// frameIndex/cameraMoved stay in the signature so call sites and the HLSL/GLSL twin
+// guard (tools/verify_nova_glsl.py) are unchanged; FrameIndex is already reset by the CPU
+// on camera movement and still-frame invalidation, so the shader needs no camera test.
 float2 GetJitter(int frameIndex, float cameraMoved) {
-    int effectiveIndex = (cameraMoved > 0.5f) ? 0 : frameIndex;
-    float x = Halton(effectiveIndex % 16 + 1, 2);
-    float y = Halton(effectiveIndex % 16 + 1, 3);
-    return float2(x, y) - 0.5f;
+    return u_Jitter;
 }
 
 static const float3x3 Gx = float3x3(-1, -2, -1, 0, 0, 0, 1, 2, 1);
@@ -1722,6 +1957,10 @@ void ApplyPOM(RayTracingInstance inst, float3 localHitPos, float3 localNormal,
 
 void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info) {
     RayTracingInstance inst = Instances[instIdx];
+    bool isTerrain = false;
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+    isTerrain = (int)inst.MaterialParams.z == 8;
+#endif
 
     float3 camDiff = u_CameraPosition - float3(inst.WorldTransform[0][3], inst.WorldTransform[1][3], inst.WorldTransform[2][3]);
     if (dot(camDiff, camDiff) > inst.MaxDistance * inst.MaxDistance) return;
@@ -1747,10 +1986,18 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
             info.worldPos = worldHit;
             info.normal = normalize((mul(float4(localNormal, 0.0f), inst.InvTransform)).xyz);
 
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+            float2 uv = isTerrain ? float2(0.0f, 0.0f) : CalculateUV(localHitPos, inst);
+#else
             float2 uv = CalculateUV(localHitPos, inst);
+#endif
 
             float pomH = -1.0f;
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+            if (isPrimaryRay && !isTerrain)
+#else
             if (isPrimaryRay)
+#endif
             {
                 float pomOcclusion = 1.0f;
                 float pomPush = 0.0f;
@@ -1788,17 +2035,45 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
             float ndv = abs(dot(info.normal, ray.Direction));
             float grazing = 1.0f - clamp(ndv, 0.0f, 1.0f);
             float mipLevel = log2(max(dist * scaleLen * 0.008f, 0.0001f)) + grazing * grazing * 2.0f;
-            mipLevel = clamp(mipLevel, 0.0f, 4.0f);
+            // The upper bound used to be a hardcoded 4.0f, commented as a deliberate
+            // quality limit, but it was not one. NVRHITexture.cpp's ComputeMipLevels
+            // derives the chain length from the largest axis and UploadMipChain fills all
+            // of it, yet every sample asked for at most level 4 -- so the top of every
+            // chain was unreachable.
+            //
+            // MEASURED against this repo's real assets, because the obvious size guess is
+            // wrong: metal_floor/wood_floor are 225x225 (8 levels), wood_wall 447x447 (9),
+            // Frame 64x64 (7), Checkerboard 8x8 (4). The whole chain is 1.55 MB and the
+            // levels above 4 total ~0.002 MB. So this is NOT a 33 MB memory win -- that
+            // figure assumed 2048^2 assets this repo does not contain. See
+            // docs/TEXTURE_INVENTORY.md.
+            //
+            // 12 is the level count of a 4096^2 texture. Hardware clamps an explicit LOD
+            // to the chain it was given, so over-specifying is safe (you get the coarsest
+            // level) where under-specifying silently blurs. The true per-texture maximum
+            // is deliberately NOT plumbed through as a uniform: that means extending
+            // NovaConstants on all four backends, and DX11Nova's SRV/UAV binding tables
+            // are fixed-size literals -- real collision risk (u8 collides with
+            // NovaConstants on Vulkan) for a bound that is safe to over-specify.
+            mipLevel = clamp(mipLevel, 0.0f, 12.0f);
 
             float3 sampledAlbedo = float3(1.0f, 1.0f, 1.0f);
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+            if (!isTerrain && inst.TextureID >= 0 && inst.TextureID < 32)
+#else
             if (inst.TextureID >= 0 && inst.TextureID < 32)
+#endif
                 sampledAlbedo = TEX_SLOT_IDX(inst.TextureID, uv, mipLevel).rgb;
 
             info.albedo = sampledAlbedo * inst.Albedo.rgb;
             // Water marker: skip neural blocks for water (waves handle their own shading)
             bool wlWater = (inst.DisplacementParams.z > 0.5f);
             // Neural texture detail: MLP-synthesized micro-surface (OpenGL neural path)
+#ifdef WASTELAND_NOVA_TERRAIN_GRID
+            if (!isTerrain && !wlWater && u_NeuralEnabled == 1 && u_NeuralTexStrength > 0.001f)
+#else
             if (!wlWater && u_NeuralEnabled == 1 && u_NeuralTexStrength > 0.001f)
+#endif
                 info.albedo *= lerp_safe(float3(1.0f, 1.0f, 1.0f), wl_neural_tex_detail(uv, info.normal), clamp(u_NeuralTexStrength, 0.0f, 1.0f));
             info.metal = clamp(inst.MaterialParams.x, 0.0f, 1.0f);
             info.rough = inst.MaterialParams.y > 0.0f ? inst.MaterialParams.y : 0.5f;
@@ -1968,11 +2243,11 @@ HitInfo TraceScene(Ray ray) {
 float3 ComputeDirectLighting(HitInfo h, float3 V, uint lightSeed, bool skipEnv) {
     float3 F0 = lerp_safe(float3(0.04f, 0.04f, 0.04f), max(h.albedo, float3(0.04f, 0.04f, 0.04f)), h.metal) * h.f0Tint;
     float3 diffuseColor = h.albedo * (1.0f - h.metal);
-        float3 directLight = h.emission;
+        float3 directLight = float3(0.0f, 0.0f, 0.0f);
 
     int maxLightsCap = (u_QualityLevel == 0) ? 1 :
                        ((u_QualityLevel == 1) ? 2 :
-                       ((u_QualityLevel == 2) ? 4 : u_MaxLights));
+                       ((u_QualityLevel == 2) ? 4 : 32));
     int lightsToSample = min(u_LightCount, maxLightsCap);
 
     // Stochastic subset: evaluate 2 rotating lights instead of all N shadow
@@ -2138,7 +2413,7 @@ void RunTraceAndDenoise()
     int2 traceSize = wl_trace_extent(imgSize);
     if (pixelCoords.x >= traceSize.x || pixelCoords.y >= traceSize.y) return;
 
-    seed = (uint)(pixelCoords.y * 1024 + pixelCoords.x) + (uint)(u_FrameIndex * 1000);
+    seed = uint(pixelCoords.y) * uint(imgSize.x) + uint(pixelCoords.x) + uint(u_FrameIndex) * 0x9e3779b9u;
     float2 jitter = GetJitter(u_FrameIndex, u_CameraMoved);
     float2 jitteredUV = ((float2(pixelCoords) + jitter) / float2(traceSize)) * 2.0f - 1.0f;
     
@@ -2307,7 +2582,11 @@ void RunTemporalAccumulation() {
     // Keep bilinear taps inside the valid subregion: outside it lives stale
     // data (e.g. from full-res frames), which would streak the frame edges.
     float2 fullRes = float2(IMG_SIZE(img_Accumulation));
-    histUV = min(histUV, float2(u_RenderScale, u_RenderScale) - 0.5f / fullRes);
+    // Clamp on BOTH sides. min() alone let a reprojected UV below zero wrap to the far
+    // edge of the history buffer, pasting last frame's opposite border into this pixel --
+    // visible as a smear on motion, and worst on a camera cut where prevUV can land far
+    // outside [0,1]. The lower bound is half a texel, matching the upper one.
+    histUV = clamp(histUV, 0.5f / fullRes, float2(u_RenderScale, u_RenderScale) - 0.5f / fullRes);
 
     bool validHistory = u_FrameIndex > 0 && prevUV.x >= 0.0f && prevUV.x <= 1.0f && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
     float motionMag = length(velocity * float2(imgSize));
@@ -2371,6 +2650,183 @@ void RunTemporalAccumulation() {
 
     float3 result = lerp_safe(historyLight, currentLight, alpha);
     IMG_STORE(img_Accumulation, pixelCoords, float4(result, 1.0f));
+}
+
+// Pass 12: temporal moments accumulation.
+// Computes running mean (m1) and mean-of-squares (m2) of the luminance
+// channel, reprojected to the previous frame. The A-Trous filter (pass 13)
+// derives variance from these moments: var = m2 - m1^2.
+// --
+// The reprojection logic is identical to RunTemporalAccumulation: same
+// velocity lookup, same histUV computation, same clamp, same depth test.
+// The only difference is that we blend scalar moments instead of RGB colour.
+void RunTemporalMoments() {
+    int2 pixelCoords = int2(g_dt.xy);
+    int2 imgSize = wl_trace_extent(IMG_SIZE(img_Accumulation));
+    float2 uv = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+
+    // Current frame luminance from the bloom buffer (same source as temporal accumulation).
+    float3 currentLight = IMG_LOAD(img_Bloom, pixelCoords).rgb;
+    float currentLum = dot(currentLight, float3(0.2126f, 0.7152f, 0.0722f));
+
+    float2 velocity = IMG_LOAD(img_Velocity, pixelCoords).xy;
+    float2 prevUV = uv - velocity;
+    float2 histUV = prevUV * u_RenderScale;
+    float2 fullRes = float2(IMG_SIZE(img_Accumulation));
+    histUV = clamp(histUV, 0.5f / fullRes, float2(u_RenderScale, u_RenderScale) - 0.5f / fullRes);
+
+    bool validHistory = u_FrameIndex > 0 && prevUV.x >= 0.0f && prevUV.x <= 1.0f && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+    float motionMag = length(velocity * float2(imgSize));
+
+    if (validHistory) {
+        float currentDepth = TEX(s_DepthBuffer, wl_buf_uv(uv)).r;
+        float prevDepth = TEX(s_DepthBuffer, histUV).r;
+        if (abs(currentDepth - prevDepth) > 0.02f) validHistory = false;
+    }
+
+    float2 prevMoments = float2(0.0f, 0.0f);
+    if (validHistory) {
+        prevMoments = TEX(s_Moments, histUV).xy;
+    }
+
+    float motionFactor = clamp(motionMag / 8.0f, 0.0f, 1.0f);
+    float alpha = validHistory ? lerp_safe(u_AccumulationAlpha, 0.8f, motionFactor) : 1.0f;
+
+    float newM1 = lerp_safe(prevMoments.x, currentLum, alpha);
+    float newM2 = lerp_safe(prevMoments.y, currentLum * currentLum, alpha);
+
+    IMG_STORE(img_Moments, pixelCoords, float4(newM1, newM2, 0.0f, 0.0f));
+}
+
+// Pass 13: the A-Trous wavelet filter.
+// ---
+// A fixed 4-iteration edge-preserving filter that reads the temporal moments
+// from pass 12 and uses the local variance to drive the edge-stopping weight.
+// Higher variance means a wider/stronger filter: the kernel reaches further
+// and smooths more aggressively in noisy regions, while flat regions are
+// left untouched (kernel weights sum to 1).
+//
+// The step ladder {1, 2, 4, 8} is the same shape as RunBilateralBlur, but
+// applied recursively: each iteration reads the result of the previous one,
+// so the effective kernel grows exponentially. This is the classic "a trous"
+// (French for "with holes") wavelet decomposition.
+//
+// The edge-stopping weight combines three terms:
+//   - depth difference: prevents blurring across geometry edges
+//   - normal difference: prevents blurring across shading discontinuities
+//   - variance term: adapts the filter strength to the local noise level
+// Pass 13: the A-Trous wavelet filter -- ONE iteration per dispatch.
+// ---
+// This pass performs a single edge-preserving wavelet iteration at the step
+// size held in u_StepSize, reading img_Accumulation and writing img_Bloom_Temp.
+// The C++ side drives the 4-step ladder (1, 2, 4, 8) by dispatching this pass
+// four times and calling CommitDenoise() between them, which copies
+// img_Bloom_Temp back into img_Accumulation -- the same ping-pong mechanism
+// RunBilateralBlur already relies on.
+//
+// WHY ONE ITERATION PER DISPATCH, NOT A LOOP IN THE SHADER:
+// a real A-Trous filter must feed iteration N's OUTPUT into iteration N+1. A
+// loop that re-reads img_Accumulation on every pass computes four independent
+// copies of iteration 1 and keeps only the last, so the step ladder does
+// nothing at all -- the filter degenerates to a single 3x3 blur. The loop also
+// cannot ping-pong internally: one UAV cannot be read and written in the same
+// dispatch without a barrier, and this shader has no resource that is both.
+// Driving the ladder from C++ sidesteps both problems with machinery that is
+// already here and already tested.
+//
+// The B3-spline kernel weights (0.375 centre, 0.25 edge, 0.0625 corner) sum to
+// 1 at every step, so a flat region comes back unchanged.
+void RunATrousFilter() {
+    int2 pos = int2(g_dt.xy);
+    int2 imgSize = wl_trace_extent(IMG_SIZE(img_Accumulation));
+    if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
+
+    // One step per dispatch, supplied by the C++ ladder (1, 2, 4, 8).
+    // max(1,...) guards a zero step, which would collapse the kernel onto the
+    // centre tap and turn the whole pass into a no-op.
+    int step = max(1, u_StepSize);
+
+    float3 inputColor = IMG_LOAD(img_Accumulation, pos).rgb;
+
+    // Centre moments. m1 is the accumulated mean luminance and m2 the mean of
+    // squares, so the variance is m2 - m1^2. The max against zero matters:
+    // m1^2 can exceed m2 by a rounding error, and a negative variance under
+    // sqrt is NaN -- which would poison every weight in the kernel at once.
+    float2 moments = IMG_LOAD(img_Moments, pos).xy;
+    float centerVariance = max(moments.y - moments.x * moments.x, 0.0f);
+
+    float2 uv = (float2(pos) + 0.5f) / float2(imgSize);
+    float centerDepth = TEX(s_DepthBuffer, wl_buf_uv(uv)).r;
+
+    // Sky has no depth to edge-stop against; pass it through untouched.
+    if (centerDepth >= 1.0f) {
+        IMG_STORE(img_Bloom_Temp, pos, float4(inputColor, 1.0f));
+        return;
+    }
+
+    // The trace G-buffer packs the world normal into .yzw (see the writer in
+    // RunTraceAndDenoise: float4(ndcDepth, normal * 0.5 + 0.5)), so the normal
+    // decodes from .gba -- NOT .rgb, whose .r holds depth.
+    float3 centerNormal = TEX(s_NormalBuffer, wl_buf_uv(uv)).gba * 2.0f - 1.0f;
+
+    // Tolerance scale for the luminance weight, in units of the centre's own
+    // standard deviation. See the weight's comment below for why it lives here.
+    const float sigma_l = 4.0f;
+
+    float3 totalColor = float3(0.0f, 0.0f, 0.0f);
+    float totalWeight = 0.0f;
+
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            int2 samplePos = clamp(pos + int2(x, y) * step, int2(0, 0), imgSize - int2(1, 1));
+            float2 sampleUV = (float2(samplePos) + 0.5f) / float2(imgSize);
+
+            float3 neighborColor = IMG_LOAD(img_Accumulation, samplePos).rgb;
+            float neighborDepth = TEX(s_DepthBuffer, wl_buf_uv(sampleUV)).r;
+            float3 neighborNormal = TEX(s_NormalBuffer, wl_buf_uv(sampleUV)).gba * 2.0f - 1.0f;
+            float neighborMean = IMG_LOAD(img_Moments, samplePos).x;
+
+            // B3-spline spatial weights: centre 0.375, edge 0.25, corner 0.0625.
+            float spatialWeight = (x == 0 && y == 0) ? 0.375f :
+                                  ((x == 0 || y == 0) ? 0.25f : 0.0625f);
+
+            // Depth edge-stop. 100 is the sharpness: a depth difference of 1% of
+            // the depth range already halves the weight, so silhouettes survive
+            // without rejecting a whole sloped surface.
+            float depthWeight = exp(-abs(centerDepth - neighborDepth) * 100.0f);
+
+            // Normal edge-stop. The exponent separates two faces meeting at a
+            // crease while still admitting neighbours on a gently curved surface:
+            // 5 degrees off normal keeps ~0.88, 10 degrees keeps ~0.61.
+            float normalWeight = pow(max(0.0f, dot(centerNormal, neighborNormal)), 32.0f);
+
+            // THE SVGF LUMINANCE WEIGHT -- the term that must vary per tap. It
+            // compares the NEIGHBOUR's accumulated mean against the centre's,
+            // with the CENTRE's variance setting the tolerance:
+            //
+            //     w_l = exp( -|mean_c - mean_n| / (sigma_l * sqrt(var_c) + eps) )
+            //
+            // A noisy region has a large var_c, so the tolerance widens and the
+            // filter smooths harder; a converged region has a small var_c, so it
+            // backs off and preserves detail. That is the entire point of feeding
+            // temporal moments into a spatial filter.
+            //
+            // The previous version multiplied by (1 + var_c * 5) instead. That
+            // term was inert: var_c is the CENTRE pixel's variance, so it was the
+            // same constant for all nine taps, and a constant factor cancels
+            // exactly in the normalisation below. It changed nothing whatsoever.
+            float luminanceWeight =
+                exp(-abs(moments.x - neighborMean) / (sigma_l * sqrt(centerVariance) + 1e-4f));
+
+            float weight = spatialWeight * depthWeight * normalWeight * luminanceWeight;
+            totalColor += neighborColor * weight;
+            totalWeight += weight;
+        }
+    }
+
+    // Normalise so the kernel sums to 1 and a flat region is unchanged.
+    float3 filtered = (totalWeight > 0.0001f) ? (totalColor / totalWeight) : inputColor;
+    IMG_STORE(img_Bloom_Temp, pos, float4(filtered, 1.0f));
 }
 
 void RunBloomThreshold() {
@@ -2699,6 +3155,540 @@ void RunUpscale() {
     IMG_STORE(img_Output, pos, float4(color, 1.0f));
 }
 
+
+// ============================================================================
+// ReSTIR DI Reservoir (Bitterli et al. ACM TOG 2020)
+// ============================================================================
+// The reservoir is a per-pixel data structure that stores one selected light
+// sample. Each frame, M candidates are drawn from the light list; the
+// reservoir updates via weighted reservoir sampling. Temporal reuse combines
+// the current reservoir with the previous frame's (reprojected). Spatial
+// reuse combines with neighbouring pixels' reservoirs.
+//
+// The MIS combine is Alg. 4 from the paper: the weight W is
+//   W = (targetPdf(selected) / p_hat(selected)) * (1 / M)
+// where p_hat is the PDF of the sampling strategy that produced the sample.
+// For uniform light sampling, p_hat = 1/N, so W = targetPdf * N / M.
+
+// Octahedral normal encoding for receiver-surface validation
+uint wl_oct_encode(float3 n) {
+    float2 p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    float2 signNotZero = float2(p.x >= 0.0f ? 1.0f : -1.0f, p.y >= 0.0f ? 1.0f : -1.0f);
+    float2 e = (n.z >= 0.0f) ? p : (1.0f - abs(p.yx)) * signNotZero;
+    return uint((e.x * 0.5f + 0.5f) * 65535.0f) | (uint((e.y * 0.5f + 0.5f) * 65535.0f) << 16);
+}
+
+float3 wl_oct_decode(uint encoded) {
+    float2 e = float2(encoded & 0xffffu, encoded >> 16) / 65535.0f * 2.0f - 1.0f;
+    float3 n = float3(e, 1.0f - abs(e.x) - abs(e.y));
+    float fold = max(-n.z, 0.0f);
+    n.x += n.x >= 0.0f ? -fold : fold;
+    n.y += n.y >= 0.0f ? -fold : fold;
+    return normalize(n);
+}
+
+bool wl_restir_has_sample(LightReservoir r) {
+    return (r.flagsValid & 1u) != 0u;
+}
+
+// Tag each stored reservoir with the frame that produced it. Temporal reuse
+// accepts only the immediately previous frame, rejecting uninitialized or stale records.
+bool wl_restir_is_previous_frame(LightReservoir r) {
+    uint previousFrameTag = (uint(u_FrameIndex) - 1u) & 0x7fffffffu;
+    // M proves the record was written; bit 0 independently indicates whether
+    // that record has a selected sample. Keep zero-target proposal counts.
+    return r.M > 0 && (r.flagsValid >> 1) == previousFrameTag;
+}
+
+bool wl_restir_is_current_frame(LightReservoir r) {
+    uint currentFrameTag = uint(u_FrameIndex) & 0x7fffffffu;
+    return r.M > 0 && (r.flagsValid >> 1) == currentFrameTag;
+}
+
+// Reservoir update: incorporate one candidate sample into the reservoir.
+// targetPdf: the target function value (e.g. light contribution weight)
+// sourcePdf: the PDF of the sampling strategy that produced this sample
+// rnd: random number in [0,1)
+void ReservoirUpdate(inout LightReservoir r, uint lightIdx, float targetPdf, float sourcePdf, float rnd) {
+    // M is set to the total number of proposals after the candidate loop, so
+    // zero-weight proposals (occluded/back-facing/zero-emission lights) count
+    // too. This keeps the estimator normalized to the actual proposal budget.
+    float w = (sourcePdf > 0.0f) ? (max(targetPdf, 0.0f) / sourcePdf) : 0.0f;
+    float newSum = r.wSum + w;
+    if (w > 0.0f && rnd * newSum < w) {
+        r.lightIndex = lightIdx;
+        r.bary.x = targetPdf; // selected target value, used to finalize W
+        r.flagsValid = 1;
+    }
+    r.wSum = newSum;
+}
+
+// Target used by this first ReSTIR DI slice: diffuse Lambert response to a
+// point-sampled emissive instance. The light-list model matches the existing
+// center-point source approximation; metal/specular and area-emitter sampling
+// are not represented by the G-buffer data used here.
+float RestirTarget(uint lightListIndex, float3 receiverPos, float3 receiverNormal, float3 receiverAlbedo) {
+    uint lightCount = uint(min(u_LightCount, 64));
+    if (lightListIndex >= lightCount) return 0.0f;
+    int instanceIndex = LightIndices[lightListIndex];
+    RayTracingInstance light = Instances[instanceIndex];
+    float3 toLight = float3(light.WorldTransform[0][3], light.WorldTransform[1][3], light.WorldTransform[2][3]) - receiverPos;
+    float distanceToLight = length(toLight);
+    if (distanceToLight <= 0.001f) return 0.0f;
+    float3 dirToLight = toLight / distanceToLight;
+    float NdotL = max(dot(receiverNormal, dirToLight), 0.0f);
+    if (NdotL <= 0.0f) return 0.0f;
+    Ray shadowRay = MakeRay(receiverPos + receiverNormal * 0.001f, dirToLight);
+    if (IsOccluded(shadowRay, distanceToLight, instanceIndex)) return 0.0f;
+    float3 emission = light.Emission.xyz * light.Emission.w;
+    float3 diffuseContribution = receiverAlbedo * emission * (NdotL / PI);
+    return max(dot(diffuseContribution, float3(0.2126f, 0.7152f, 0.0722f)), 0.0f);
+}
+
+// Reuse a previous-frame reservoir at this receiver. Its selected target must
+// be re-evaluated here; old W alone is not a valid merge weight after reprojection.
+// Algorithm 6 source-support correction: the history's represented proposals
+// count toward the denominator only when the history's source PDF supports the
+// current target (historyTarget > 0). Unconditional total-M normalization is
+// biased under source-support mismatch.
+LightReservoir CombineReservoirs(LightReservoir current, LightReservoir history,
+                                 float currentTarget, float historyTarget, float rnd) {
+    LightReservoir result = current;
+    float currentSum = (wl_restir_has_sample(current) && currentTarget > 0.0f) ? max(current.wSum, 0.0f) : 0.0f;
+    float currentM = float(current.M);
+    float historyCount = (history.M > 0)
+        ? min(float(history.M), max(0.0f, 32.0f - currentM)) : 0.0f;
+    float historyWeight = historyTarget * max(history.W, 0.0f) * historyCount;
+    float totalWeight = currentSum + historyWeight;
+    // Z(y) = sum_i M_i * 1[pHat_qi(y) > 0]: the history source supports the
+    // current target only when historyTarget > 0; otherwise its M is excluded.
+    float totalM = currentM + ((historyTarget > 0.0f) ? historyCount : 0.0f);
+
+    result.wSum = totalWeight;
+    result.M = uint(totalM);
+    result.flagsValid = 0;
+    result.W = 0.0f;
+    if (totalWeight > 1e-8f && totalM > 0.0f) {
+        if (historyWeight > 0.0f && rnd * totalWeight < historyWeight) {
+            result.lightIndex = history.lightIndex;
+            result.bary.x = historyTarget;
+            result.flagsValid = 1;
+        } else if (currentSum > 0.0f && currentTarget > 0.0f) {
+            result.bary.x = currentTarget;
+            result.flagsValid = 1;
+        }
+        if (result.flagsValid != 0 && result.bary.x > 1e-8f)
+            result.W = totalWeight / (result.bary.x * totalM);
+    }
+    return result;
+}
+
+// Pass 3: ReSTIR Generate
+// For each pixel, draw M candidates from the light list and update the reservoir.
+// This replaces the stochastic subset in ComputeDirectLighting.
+void RunRestirGenerate() {
+    int2 pixelCoords = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Accumulation);
+    int2 imgSize = wl_trace_extent(fullSize);
+    if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
+
+    // Integer boundaries partition the full-res plane into non-overlapping
+    // tiles. Supported texture extents keep these 32-bit coordinate products bounded.
+    int2 reservoirMin = pixelCoords * fullSize / imgSize;
+    int2 reservoirMax = (pixelCoords + int2(1, 1)) * fullSize / imgSize;
+    int flatIdx = reservoirMin.y * fullSize.x + reservoirMin.x;
+    LightReservoir r;
+    r.lightIndex = 0;
+    r.M = 0;
+    r.W = 0.0f;
+    r.wSum = 0.0f;
+    r.bary = float2(0.0f, 0.0f);
+    r.normalOct = 0;
+    r.flagsValid = 0;
+
+    float4 gbuffer = IMG_LOAD(img_TraceGBuffer, pixelCoords);
+    float depth = gbuffer.r;
+    if (depth < 1.0f) {
+        float2 uv = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+        float2 ndc = uv * 2.0f - 1.0f;
+        float4 worldPos4 = mul(u_InverseViewProjection, float4(ndc, depth * 2.0f - 1.0f, 1.0f));
+        float3 worldPos = worldPos4.xyz / worldPos4.w;
+        float3 normal = normalize(gbuffer.gba * 2.0f - 1.0f);
+        r.normalOct = wl_oct_encode(normal);
+        r.bary.y = depth; // previous receiver depth for temporal rejection
+
+        float4 albedoHit = IMG_LOAD(img_AlbedoHit, pixelCoords);
+        int M = 4; // proposals per pixel per frame
+        int lightCount = min(u_LightCount, 64);
+        if (albedoHit.a >= 0.5f && lightCount > 0) {
+            seed = uint(pixelCoords.y) * uint(imgSize.x) + uint(pixelCoords.x) + uint(u_FrameIndex) * 0x9e3779b9u;
+            float sourcePdf = 1.0f / float(lightCount);
+            for (int m = 0; m < M; m++) {
+                uint lightIdx = min(uint(hash() * lightCount), uint(lightCount - 1));
+                int i = LightIndices[lightIdx];
+                RayTracingInstance light = Instances[i];
+                float3 toLight = float3(light.WorldTransform[0][3], light.WorldTransform[1][3], light.WorldTransform[2][3]) - worldPos;
+                float distToLight = length(toLight);
+                float targetPdf = 0.0f;
+                if (distToLight > 0.001f) {
+                    float3 dirToLight = toLight / distToLight;
+                    float NdotL = max(dot(normal, dirToLight), 0.0f);
+                    if (NdotL > 0.0f) {
+                        Ray shadowRay = MakeRay(worldPos + normal * 0.001f, dirToLight);
+                        if (!IsOccluded(shadowRay, distToLight, i)) {
+                            float3 emission = light.Emission.xyz * light.Emission.w;
+                            float3 diffuseContribution = albedoHit.rgb * emission * (NdotL / PI);
+                            targetPdf = dot(diffuseContribution, float3(0.2126f, 0.7152f, 0.0722f));
+                        }
+                    }
+                }
+                // Submit every draw, including zero-target candidates, so M is
+                // the actual proposal count for the uniform source distribution.
+                ReservoirUpdate(r, lightIdx, targetPdf, sourcePdf, hash());
+            }
+            r.M = M;
+            if (r.flagsValid != 0 && r.bary.x > 1e-8f)
+                r.W = r.wSum / (float(M) * r.bary.x);
+        }
+    }
+
+    if (r.M > 0)
+        r.flagsValid = (r.flagsValid & 1u) | ((uint(u_FrameIndex) & 0x7fffffffu) << 1);
+    // Write the tile representative once, then fill every other slot in the tile.
+    ReservoirWrite[flatIdx] = r;
+    for (int y = reservoirMin.y; y < reservoirMax.y; ++y) {
+        for (int x = reservoirMin.x; x < reservoirMax.x; ++x) {
+            int tileFlatIdx = y * fullSize.x + x;
+            if (tileFlatIdx != flatIdx)
+                ReservoirWrite[tileFlatIdx] = r;
+        }
+    }
+}
+
+// Pass 11: ReSTIR temporal combine (spatial gather deliberately disabled).
+//
+// PING-PONG CONTRACT -- paired with pass 3:
+//   ReservoirRead  = previous frame's combined reservoir (temporal history)
+//   ReservoirWrite = this frame's generated candidates and per-pixel combine
+//
+// Pass 11 reads the current pixel from ReservoirWrite, temporal history from
+// ReservoirRead, and writes its complete non-overlapping full-resolution tile.
+// Tile ownership avoids write races. Reading neighboring ReservoirWrite slots
+// here would still race with concurrent writes; spatial reuse requires an
+// immutable input and a separate output buffer. The caller swaps after pass 11
+// to promote this frame's result to next frame's history.
+void RunRestirCombine() {
+    int2 pixelCoords = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Accumulation);
+    int2 imgSize = wl_trace_extent(fullSize);
+    if (pixelCoords.x >= imgSize.x || pixelCoords.y >= imgSize.y) return;
+
+    // Match Generate's integer partition; the tile's top-left is its representative.
+    int2 reservoirMin = pixelCoords * fullSize / imgSize;
+    int2 reservoirMax = (pixelCoords + int2(1, 1)) * fullSize / imgSize;
+    int flatIdx = reservoirMin.y * fullSize.x + reservoirMin.x;
+    // The CURRENT pixel comes from ReservoirWrite, not ReservoirRead: pass 3
+    // wrote this frame's fresh candidates there. Reading ReservoirRead here
+    // would start from the previous frame's result and never see pass 3 at all.
+    LightReservoir r = ReservoirWrite[flatIdx];
+
+    float4 gb = IMG_LOAD(img_TraceGBuffer, pixelCoords);
+    float depth = gb.r;
+    float3 receiverN = normalize(gb.gba * 2.0f - 1.0f);
+    float3 receiverPos = float3(0.0f, 0.0f, 0.0f);
+    if (depth < 1.0f) {
+        float2 receiverUV = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+        float2 receiverNdc = receiverUV * 2.0f - 1.0f;
+        float4 receiverWorld4 = mul(u_InverseViewProjection, float4(receiverNdc, depth * 2.0f - 1.0f, 1.0f));
+        receiverPos = receiverWorld4.xyz / receiverWorld4.w;
+    }
+
+    // Temporal reuse: reproject to previous frame
+    float2 velocity = IMG_LOAD(img_Velocity, pixelCoords).xy;
+    float2 uv = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+    float2 prevUV = uv - velocity;
+
+    bool validHistory = depth < 1.0f && u_FrameIndex > 0 && prevUV.x >= 0.0f && prevUV.x <= 1.0f && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+
+    if (validHistory) {
+        // Read previous frame's reservoir
+        // Address the stable full-resolution reservoir plane directly. The
+        // current trace extent can differ from the one that produced history.
+        int2 prevReservoirPixel = clamp(int2(prevUV * float2(fullSize)), int2(0, 0), fullSize - int2(1, 1));
+        int prevFlatIdx = prevReservoirPixel.y * fullSize.x + prevReservoirPixel.x;
+        LightReservoir prevR = ReservoirRead[prevFlatIdx];
+
+        // Validate against surface metadata stored with the previous
+        // reservoir, not two samples from the current frame's depth texture.
+        float3 prevNormal = wl_oct_decode(prevR.normalOct);
+        float3 receiverAlbedo = IMG_LOAD(img_AlbedoHit, pixelCoords).rgb;
+        float historyTarget = (wl_restir_is_previous_frame(prevR) && wl_restir_has_sample(prevR))
+            ? RestirTarget(prevR.lightIndex, receiverPos, receiverN, receiverAlbedo) : 0.0f;
+        float currentTarget = (wl_restir_has_sample(r))
+            ? RestirTarget(r.lightIndex, receiverPos, receiverN, receiverAlbedo) : 0.0f;
+        if (wl_restir_is_previous_frame(prevR) && abs(depth - prevR.bary.y) < 0.02f && dot(receiverN, prevNormal) > 0.9f) {
+            seed = uint(pixelCoords.y) * uint(imgSize.x) + uint(pixelCoords.x) + uint(u_FrameIndex) * 0x9e3779b9u;
+            r = CombineReservoirs(r, prevR, currentTarget, historyTarget, hash());
+        }
+    }
+
+    // Pass 14 performs spatial reuse and the single final shading write.
+
+    // Keep the current receiver's surface metadata after temporal selection.
+    r.bary.y = depth;
+    r.normalOct = wl_oct_encode(normalize(gb.gba * 2.0f - 1.0f));
+    if (r.M > 0)
+        r.flagsValid = (wl_restir_has_sample(r) ? 1u : 0u) |
+                       ((uint(u_FrameIndex) & 0x7fffffffu) << 1);
+    else
+        r.flagsValid = 0u;
+    // Write the updated reservoir across this invocation's complete tile.
+    ReservoirWrite[flatIdx] = r;
+    for (int y = reservoirMin.y; y < reservoirMax.y; ++y) {
+        for (int x = reservoirMin.x; x < reservoirMax.x; ++x) {
+            int tileFlatIdx = y * fullSize.x + x;
+            if (tileFlatIdx != flatIdx)
+                ReservoirWrite[tileFlatIdx] = r;
+        }
+    }
+}
+
+// Experimental spatial reuse with the Algorithm 6 source-support correction:
+// a neighbor's represented proposals count toward the denominator only when
+// the neighbor's source PDF supports the center receiver's target at the
+// neighbor's selected sample. Differing visibility/target support no longer
+// darkens the estimate through unconditional total-M normalization.
+void RunRestirSpatial() {
+    int2 pixelCoords = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Accumulation);
+    int2 imgSize = wl_trace_extent(fullSize);
+    if (any(pixelCoords < int2(0, 0)) || any(pixelCoords >= imgSize)) return;
+
+    // One invocation owns one trace pixel's complete full-resolution tile.
+    int2 reservoirMin = pixelCoords * fullSize / imgSize;
+    int2 reservoirMax = (pixelCoords + int2(1, 1)) * fullSize / imgSize;
+    int flatIdx = reservoirMin.y * fullSize.x + reservoirMin.x;
+    LightReservoir r = ReservoirRead[flatIdx];
+
+    float4 gb = IMG_LOAD(img_TraceGBuffer, pixelCoords);
+    float depth = gb.r;
+    float3 receiverN = normalize(gb.gba * 2.0f - 1.0f);
+    float4 albedoHit = IMG_LOAD(img_AlbedoHit, pixelCoords);
+    float3 receiverAlbedo = albedoHit.rgb;
+    float3 receiverPos = float3(0.0f, 0.0f, 0.0f);
+    if (depth < 1.0f) {
+        float2 receiverUV = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+        float2 receiverNdc = receiverUV * 2.0f - 1.0f;
+        float4 receiverWorld4 = mul(u_InverseViewProjection,
+            float4(receiverNdc, depth * 2.0f - 1.0f, 1.0f));
+        receiverPos = receiverWorld4.xyz / receiverWorld4.w;
+    }
+    r.bary.y = depth;
+    r.normalOct = wl_oct_encode(receiverN);
+
+    uint totalM = r.M;
+    float totalWeight = 0.0f;
+    float selectedTarget = 0.0f;
+    bool selectedValid = false;
+    if (wl_restir_has_sample(r) && r.M > 0 && r.W > 0.0f && r.wSum > 0.0f && r.bary.x > 0.0f) {
+        totalWeight = r.wSum;
+        selectedTarget = r.bary.x;
+        selectedValid = true;
+    } else {
+        r.W = 0.0f;
+        r.wSum = 0.0f;
+        r.bary.x = 0.0f;
+        r.flagsValid = 0u;
+    }
+
+    // A distinct deterministic seed salt reduces direct RNG stream reuse; it
+    // does not prove statistical independence of the input reservoir histories.
+    seed = uint(pixelCoords.y) * uint(imgSize.x) + uint(pixelCoords.x)
+         + uint(u_FrameIndex) * 0x9e3779b9u + 0x85ebca6bu;
+    if (depth < 1.0f && albedoHit.a >= 0.5f) {
+        for (int direction = 0; direction < 4; ++direction) {
+            int2 neighborTrace = pixelCoords;
+            if (direction == 0) neighborTrace.x -= 1;
+            else if (direction == 1) neighborTrace.x += 1;
+            else if (direction == 2) neighborTrace.y -= 1;
+            else neighborTrace.y += 1;
+            if (any(neighborTrace < int2(0, 0)) || any(neighborTrace >= imgSize)) continue;
+
+            int2 neighborMin = neighborTrace * fullSize / imgSize;
+            int neighborFlatIdx = neighborMin.y * fullSize.x + neighborMin.x;
+            LightReservoir neighborR = ReservoirRead[neighborFlatIdx];
+            if (!wl_restir_is_current_frame(neighborR)) continue;
+            float3 neighborNormal = wl_oct_decode(neighborR.normalOct);
+            if (abs(depth - neighborR.bary.y) >= 0.02f || dot(receiverN, neighborNormal) <= 0.9f) continue;
+
+            uint neighborCount = neighborR.M;
+            float neighborTarget = 0.0f;
+            if (wl_restir_has_sample(neighborR) && neighborR.W > 0.0f)
+                neighborTarget = RestirTarget(neighborR.lightIndex, receiverPos, receiverN, receiverAlbedo);
+            float neighborWeight = neighborTarget * max(neighborR.W, 0.0f) * float(neighborCount);
+            float combinedWeight = totalWeight + neighborWeight;
+            if (neighborWeight > 0.0f && hash() * combinedWeight < neighborWeight) {
+                r.lightIndex = neighborR.lightIndex;
+                selectedTarget = neighborTarget;
+                selectedValid = true;
+            }
+            // Algorithm 6 source-support correction: count the neighbor's
+            // represented proposals only when the neighbor's source PDF
+            // supports the center receiver's target at the neighbor's
+            // selected sample (neighborTarget > 0). Unconditional total-M
+            // normalization is biased under source-support mismatch.
+            totalWeight = combinedWeight;
+            if (neighborTarget > 0.0f)
+                totalM += neighborCount;
+        }
+    }
+
+    r.M = totalM;
+    r.wSum = totalWeight;
+    r.bary.x = selectedValid ? selectedTarget : 0.0f;
+    if (selectedValid && totalM > 0 && totalWeight > 1e-8f && selectedTarget > 1e-8f) {
+        r.W = totalWeight / (selectedTarget * float(totalM));
+        r.flagsValid = 1u;
+    } else {
+        r.W = 0.0f;
+        r.flagsValid = 0u;
+    }
+    if (totalM > 0)
+        r.flagsValid = (r.flagsValid & 1u) | ((uint(u_FrameIndex) & 0x7fffffffu) << 1);
+    else
+        r.flagsValid = 0u;
+
+    float3 directLight = float3(0.0f, 0.0f, 0.0f);
+    if (depth < 1.0f && albedoHit.a >= 0.5f && wl_restir_has_sample(r) && r.W > 0.0f) {
+        int i = LightIndices[r.lightIndex];
+        RayTracingInstance light = Instances[i];
+        float3 toLight = float3(light.WorldTransform[0][3], light.WorldTransform[1][3], light.WorldTransform[2][3]) - receiverPos;
+        float distToLight = length(toLight);
+        if (distToLight > 0.001f) {
+            float3 dirToLight = toLight / distToLight;
+            float NdotL = max(dot(receiverN, dirToLight), 0.0f);
+            float3 emission = light.Emission.xyz * light.Emission.w;
+            directLight = receiverAlbedo * emission * (NdotL / PI) * r.W;
+        }
+        float4 traceColor = IMG_LOAD(img_Bloom, pixelCoords);
+        IMG_STORE(img_Bloom, pixelCoords, float4(traceColor.rgb + directLight, traceColor.a));
+    }
+
+    // ReservoirRead is immutable during this dispatch; only the opposite
+    // buffer is written, including every slot in this trace pixel's tile.
+    ReservoirWrite[flatIdx] = r;
+    for (int y = reservoirMin.y; y < reservoirMax.y; ++y) {
+        for (int x = reservoirMin.x; x < reservoirMax.x; ++x) {
+            int tileFlatIdx = y * fullSize.x + x;
+            if (tileFlatIdx != flatIdx)
+                ReservoirWrite[tileFlatIdx] = r;
+        }
+    }
+}
+
+// ============================================================================
+// Temporal Super-Resolution (experimental, default-off)
+// ============================================================================
+// Pass 15: TSR resolve. Reads the current frame color (img_Output), reprojects
+// using motion vectors, samples the history buffer, rejects outliers via 3x3
+// YCoCg neighborhood clamping, blends, and sharpens. Writes the result to
+// img_Accumulation and the history buffer.
+// Pass 16: copies img_Accumulation to img_Output (avoids read-write race).
+//
+// The history buffer (img_HistoryBuffer, u8) stores the TSR result from the
+// previous frame. The C++ side must clear it on camera cuts and frame 0.
+// ============================================================================
+void RunTSRResolve() {
+    int2 pos = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
+
+    float3 currentColor = IMG_LOAD(img_Output, pos).rgb;
+
+    if (u_TSREnabled != 1) {
+        IMG_STORE(img_Accumulation, pos, float4(currentColor, 1.0f));
+        return;
+    }
+
+    float2 velocity = IMG_LOAD(img_Velocity, pos).xy;
+    float2 uv = (float2(pos) + 0.5f) / float2(fullSize);
+    float2 prevUV = uv - velocity;
+
+    bool validHistory = u_FrameIndex > 0 &&
+                        prevUV.x >= 0.0f && prevUV.x <= 1.0f &&
+                        prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+
+    if (validHistory) {
+        float currentDepth = TEX(s_DepthBuffer, uv).r;
+        float prevDepth = TEX(s_DepthBuffer, prevUV).r;
+        if (abs(currentDepth - prevDepth) > 0.02f) validHistory = false;
+    }
+
+    float3 historyColor = float3(0.0f, 0.0f, 0.0f);
+
+    if (validHistory) {
+        // Bilinear sample from history buffer
+        float2 historyCoord = prevUV * float2(fullSize) - float2(0.5f, 0.5f);
+        int2 h0 = clamp(int2(floor(historyCoord)), int2(0, 0), fullSize - int2(1, 1));
+        int2 h1 = clamp(h0 + int2(1, 1), int2(0, 0), fullSize - int2(1, 1));
+        float2 hf = clamp(historyCoord - float2(h0), float2(0.0f, 0.0f), float2(1.0f, 1.0f));
+        float3 c00 = img_HistoryBuffer[h0].rgb;
+        float3 c10 = img_HistoryBuffer[int2(h1.x, h0.y)].rgb;
+        float3 c01 = img_HistoryBuffer[int2(h0.x, h1.y)].rgb;
+        float3 c11 = img_HistoryBuffer[h1].rgb;
+        historyColor = lerp_safe(lerp_safe(c00, c10, hf.x), lerp_safe(c01, c11, hf.x), hf.y);
+
+        // Neighborhood clamping (3x3 YCoCg variance clamp)
+        float3 m1 = float3(0.0f, 0.0f, 0.0f);
+        float3 m2 = float3(0.0f, 0.0f, 0.0f);
+        for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+                int2 sp = clamp(pos + int2(x, y), int2(0, 0), fullSize - int2(1, 1));
+                float3 s = RGB2YCoCg(IMG_LOAD(img_Output, sp).rgb);
+                m1 += s;
+                m2 += s * s;
+            }
+        }
+        float3 mean = m1 / 9.0f;
+        float3 stddev = sqrt(max(float3(0.0f, 0.0f, 0.0f), m2 / 9.0f - mean * mean));
+
+        float3 historyYCoCg = RGB2YCoCg(historyColor);
+        float3 minCol = mean - 1.25f * stddev;
+        float3 maxCol = mean + 1.25f * stddev;
+        historyYCoCg = clamp(historyYCoCg, minCol, maxCol);
+        historyColor = YCoCg2RGB(historyYCoCg);
+    }
+
+    // Blend history with current frame
+    float motionMag = length(velocity * float2(fullSize));
+    float motionFactor = clamp(motionMag / 8.0f, 0.0f, 1.0f);
+    float alpha = validHistory ? lerp_safe(u_AccumulationAlpha, 0.8f, motionFactor) : 1.0f;
+    float3 result = lerp_safe(historyColor, currentColor, alpha);
+
+    // Sharpening (unsharp mask)
+    if (u_TSRSharpenStrength > 0.001f) {
+        float3 sharp = float3(0.0f, 0.0f, 0.0f);
+        sharp += IMG_LOAD(img_Output, pos).rgb * 4.0f;
+        sharp -= IMG_LOAD(img_Output, pos + int2(1, 0)).rgb;
+        sharp -= IMG_LOAD(img_Output, pos - int2(1, 0)).rgb;
+        sharp -= IMG_LOAD(img_Output, pos + int2(0, 1)).rgb;
+        sharp -= IMG_LOAD(img_Output, pos - int2(0, 1)).rgb;
+        result = clamp(result + sharp * u_TSRSharpenStrength * 0.25f, 0.0f, 1.0f);
+    }
+
+    IMG_STORE(img_Accumulation, pos, float4(result, 1.0f));
+    IMG_STORE(img_HistoryBuffer, pos, float4(result, 1.0f));
+}
+
+// Pass 16: copy TSR result to output.
+void RunTSRCopy() {
+    int2 pos = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
+    float3 color = IMG_LOAD(img_Accumulation, pos).rgb;
+    IMG_STORE(img_Output, pos, float4(color, 1.0f));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -2720,5 +3710,19 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         case 8: RunUpscale(); break;
         case 9: GenerateMaterialMaps(); break;
         case 10: RunGodRays(); break;
+        case 12: RunTemporalMoments(); break;
+        // Pass 13: the A-Trous wavelet filter. Reads the temporal moments
+        // from pass 12 and applies a variance-driven edge-preserving filter.
+        case 13: RunATrousFilter(); break;
+        // Pass 3: ReSTIR DI generate (reservoir update)
+        case 3: RunRestirGenerate(); break;
+        // Pass 11: temporal combine writes the per-pixel reservoir only.
+        case 11: RunRestirCombine(); break;
+        // Pass 14: immutable-input spatial reuse and the sole ReSTIR shading write.
+        case 14: RunRestirSpatial(); break;
+        // Pass 15: Temporal Super-Resolution resolve (experimental).
+        case 15: RunTSRResolve(); break;
+        // Pass 16: copy TSR result to output.
+        case 16: RunTSRCopy(); break;
     }
 }

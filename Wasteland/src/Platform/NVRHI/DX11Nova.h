@@ -13,6 +13,9 @@
 #include <string>
 #include <stdexcept>
 #include <cstring>
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 
 #include "Wasteland/Project/Project.h"
 
@@ -71,11 +74,23 @@ class DX11Nova {
     // distinct member makes the read in Dispatch legible at the cost of one
     // more place to keep in sync.
     Image history;
+    // The SVGF moments buffer (img_Moments at u9, read_img_Moments at t73).
+    // Held separately from the eight for the same reason history is: it is not
+    // one of the ping-pong targets the t64..t71 snapshots address, and keeping
+    // it a distinct member makes the read in Dispatch legible.
+    Image moments;
     // Three structured input buffers, bound at t1..t3 by the Dispatch loop.
     // The pairing with scene[] below is by index, and the shader's register
     // layout is what fixes which slot means what.
     std::array<Com<ID3D11Buffer>,3> buffers;
     std::array<Com<ID3D11ShaderResourceView>,3> scene;
+    // ReSTIR reservoir ping-pong buffers. Two buffers, each 32 bytes per pixel.
+    // Read from one (t10), write to the other (u10), swap each frame.
+    Com<ID3D11Buffer> reservoir[2];
+    Com<ID3D11ShaderResourceView> reservoirSRV[2];
+    Com<ID3D11UnorderedAccessView> reservoirUAV[2];
+    UINT reservoirWidth=0, reservoirHeight=0;
+    bool reservoirReadFlip=false;
     // Reflection results: every constant-buffer variable name mapped to its
     // offset and size.
     //
@@ -268,20 +283,46 @@ public:
         // against the old resolution's accumulation buffer. Clear() itself copies
         // texture into snapshot as well, so both sides start zeroed -- the copy
         // matters because dispatches read snapshots.
-        history=CreateImage(w,h,DXGI_FORMAT_R32G32B32A32_FLOAT); Clear();
+        history=CreateImage(w,h,DXGI_FORMAT_R32G32B32A32_FLOAT);
+        moments=CreateImage(w,h,DXGI_FORMAT_R32G32_FLOAT);
+        CreateReservoir(w,h);
+        reservoirReadFlip=false;
+        Clear();
     }
-    // Zeroes every UAV and then copies texture into snapshot.
+    // Zeroes every image/history/moments UAV and both allocated reservoir UAVs,
+    // then copies texture targets into snapshots.
     //
-    // DEFECT: the ClearUnorderedAccessViewFloat calls cover images and history,
-    // but the snapshots are refreshed by CopyResource from those already-cleared
-    // textures -- which is correct. What is not guarded: `context` is checked
-    // but `device` is not, and ClearUnorderedAccessViewFloat needs a valid UAV,
-    // which means Resize must have run. Resize does call Clear(), so it holds
-    // today.
+    // Snapshots are refreshed from their cleared textures; structured reservoir
+    // buffers are explicitly zero-uploaded because they have no texture snapshots.
     //
-    // Also note this is a GPU-side clear, not a memset -- there is no CPU
-    // readback, so no stall.
-    void Clear() { if(!context||!width)return; Unbind(); const float zero[4]={}; for(auto& i:images)context->ClearUnorderedAccessViewFloat(i.uav.Get(),zero); context->ClearUnorderedAccessViewFloat(history.uav.Get(),zero); context->CopyResource(history.snapshot.Get(),history.texture.Get()); }
+    // Structured UAVs have DXGI_FORMAT_UNKNOWN, so typed UAV clear is invalid;
+    // UpdateSubresource uploads zero bytes to each allocated reservoir buffer.
+    // This path runs on resize or explicit reset, not once per dispatch.
+    void Clear() {
+        if(!context||!width)return;
+        Unbind();
+        const float zero[4]={};
+        for(auto& i:images)context->ClearUnorderedAccessViewFloat(i.uav.Get(),zero);
+        context->ClearUnorderedAccessViewFloat(history.uav.Get(),zero);
+        context->ClearUnorderedAccessViewFloat(moments.uav.Get(),zero);
+        if(reservoir[0]||reservoir[1]) {
+            D3D11_BUFFER_DESC reservoirDesc={};
+            if(reservoir[0])reservoir[0]->GetDesc(&reservoirDesc);
+            else reservoir[1]->GetDesc(&reservoirDesc);
+            constexpr UINT clearChunkBytes = 1u << 20;
+            std::vector<unsigned char> zeroReservoir((std::min)(reservoirDesc.ByteWidth,clearChunkBytes));
+            for(int i=0;i<2;++i)if(reservoir[i]) {
+                for(UINT offset=0;offset<reservoirDesc.ByteWidth;) {
+                    const UINT chunkBytes=(std::min)(clearChunkBytes,reservoirDesc.ByteWidth-offset);
+                    D3D11_BOX box={};box.left=offset;box.right=offset+chunkBytes;box.top=0;box.bottom=1;box.front=0;box.back=1;
+                    context->UpdateSubresource(reservoir[i].Get(),0,&box,zeroReservoir.data(),0,0);
+                    offset+=chunkBytes;
+                }
+            }
+        }
+        context->CopyResource(history.snapshot.Get(),history.texture.Get());
+        context->CopyResource(moments.snapshot.Get(),moments.texture.Get());
+    }
     // Writes one constant by NAME, into a staging buffer.
     //
     // @param name   Shader variable name, as reflected.
@@ -356,7 +397,7 @@ public:
         // failure. The slot values come from the caller.
         Check(device->CreateBuffer(&bd,&initial,&buffers[slot]));Check(device->CreateShaderResourceView(buffers[slot].Get(),nullptr,&scene[slot]));
     }
-    // Releases EVERY compute binding: all 128 SRV slots, all 8 UAV slots, and
+    // Releases EVERY compute binding: all 128 SRV slots, all 11 UAV slots, and
     // the shader.
     //
     // This is what makes the snapshot scheme safe. D3D11 refuses to bind a
@@ -368,7 +409,7 @@ public:
     // Called at the start and end of Dispatch, and again by Clear and the
     // Commit methods -- which is why the `if(!context)return` guard exists, for
     // calls before Init.
-    void Unbind() { if(!context)return; ID3D11ShaderResourceView* nulls[128]={};ID3D11UnorderedAccessView* uavs[8]={};context->CSSetShaderResources(0,128,nulls);context->CSSetUnorderedAccessViews(0,8,uavs,nullptr);context->CSSetShader(nullptr,nullptr,0); }
+    void Unbind() { if(!context)return; ID3D11ShaderResourceView* nulls[128]={};ID3D11UnorderedAccessView* uavs[11]={};context->CSSetShaderResources(0,128,nulls);context->CSSetUnorderedAccessViews(0,11,uavs,nullptr);context->CSSetShader(nullptr,nullptr,0); }
     // Records one compute pass.
     //
     // @param pass     Pass index, uploaded as u_PassID so the shader branches.
@@ -403,7 +444,7 @@ public:
         // queue rather than execute. That is correct for ordering and means no
         // stall -- but it also means the copies are pure overhead when a pass does
         // not read the image being copied. Eight copies per dispatch, per pass.
-        for(auto& i:images)context->CopyResource(i.snapshot.Get(),i.texture.Get());
+        for(auto& i:images)context->CopyResource(i.snapshot.Get(),i.texture.Get());context->CopyResource(moments.snapshot.Get(),moments.texture.Get());
         // The pass index goes into the constant buffer by name, then the whole
         // staging buffer is uploaded in one call.
         //
@@ -433,7 +474,7 @@ public:
         // than reporting it, and the t15..t46 range is hardcoded rather than derived
         // from the shader's declared bindings. Adding a 33rd texture would be a
         // silent visual bug.
-        ID3D11ShaderResourceView* srvs[128]={};for(int i=0;i<3;++i)srvs[i+1]=scene[i].Get();for(size_t i=0;i<textures.size()&&i<32;++i)srvs[15+i]=textures[i];
+        ID3D11ShaderResourceView* srvs[128]={};for(int i=0;i<3;++i)srvs[i+1]=scene[i].Get();srvs[10]=reservoirSRV[reservoirReadFlip?1:0].Get();for(size_t i=0;i<textures.size()&&i<32;++i)srvs[15+i]=textures[i];
         // A special case: pass 9 additionally reads textures[0] at t52, which is
         // OUTSIDE the 15..46 range above and so cannot be reached by the general
         // loop.
@@ -454,6 +495,12 @@ public:
         // and the surrounding line offers no explanation. Worth confirming against
         // the .hlsl before changing anything.
         srvs[48]=history.srv.Get();srvs[49]=images[6].srv.Get();srvs[50]=images[0].srv.Get();srvs[51]=images[6].srv.Get();
+        // t53 is s_Moments: pass 12 samples the PREVIOUS frame's moments at a
+        // reprojected UV to blend them with the current frame's luminance. It is
+        // the snapshot rather than the live texture on purpose -- reading the
+        // texture a pass is concurrently writing is a read-write hazard, and the
+        // snapshot is the copy taken before this frame's writes.
+        srvs[53]=moments.srv.Get();
         // The eight image snapshots at t64..t71, read-only because they come from
         // the snapshot textures rather than the live UAV textures.
         //
@@ -462,19 +509,20 @@ public:
         //
         // The whole 128-entry table is committed in one call, so no slot is left
         // holding anything from a previous pass.
-        for(int i=0;i<8;++i)srvs[64+i]=images[i].srv.Get();context->CSSetShaderResources(0,128,srvs);
-        // The eight live textures bound for writing.
+        for(int i=0;i<8;++i)srvs[64+i]=images[i].srv.Get();srvs[73]=moments.srv.Get();context->CSSetShaderResources(0,128,srvs);
+        // The eight image UAVs plus moments and reservoir; u8 is deliberately null.
         //
         // These are i.texture's UAVs, NOT the snapshots' -- and the snapshots have
         // no UAV at all, which is what makes the no-feedback rule structural rather
         // than a convention anyone has to remember.
         //
-        // DEFECT: uavs is UNINITIALISED, unlike srvs above. Every one of the eight
-        // slots is assigned in the loop, so it happens to be fully written here --
-        // but if the loop bound ever changed without the array size, an unwritten
-        // slot would be an indeterminate pointer handed to the driver. The srvs
-        // array is initialised precisely because it is only partly written.
-        ID3D11UnorderedAccessView* uavs[8];for(int i=0;i<8;++i)uavs[i]=images[i].uav.Get();context->CSSetUnorderedAccessViews(0,8,uavs,nullptr);
+        // The UAV array is zero-initialised, keeping u8 null while all used slots
+        // are assigned explicitly below.
+        // Eleven UAV slots: u0..u7 are the eight images, u8 is deliberately null,
+        // u9 is moments, and u10 is the ReSTIR reservoir working buffer. Keep the
+        // register numbers identical to HLSL and GLSL/SPIR-V (u9 moments, u10
+        // reservoir); moving the reservoir to u8 collides with Vulkan's b1 offset.
+        ID3D11UnorderedAccessView* uavs[11]={};for(int i=0;i<8;++i)uavs[i]=images[i].uav.Get();uavs[9]=moments.uav.Get();uavs[10]=reservoirUAV[reservoirReadFlip?0:1].Get();context->CSSetUnorderedAccessViews(0,11,uavs,nullptr);
         // Binds the compute shader and dispatches.
         //
         // (w+7)/8 rounds the pixel count up to whole 8x8 thread groups -- D3D11
@@ -502,6 +550,38 @@ public:
     // is read by Output. Both are single CopyResource calls with no validation
     // that the source image exists.
     void CommitDenoise() {Unbind();context->CopyResource(images[1].texture.Get(),images[7].texture.Get());}
+    // Creates the ReSTIR reservoir ping-pong buffers. Each buffer is 32 bytes per pixel.
+    void CreateReservoir(UINT w, UINT h) {
+        if(!w||!h)throw std::invalid_argument("DX11Nova reservoir dimensions must be nonzero");
+        const std::uint64_t pixelCount=std::uint64_t(w)*std::uint64_t(h);
+        if(pixelCount>(std::numeric_limits<UINT>::max)()/32u)
+            throw std::length_error("DX11Nova reservoir exceeds D3D11 ByteWidth limit");
+        const UINT byteSize=static_cast<UINT>(pixelCount*32u);
+        reservoirWidth = w;
+        reservoirHeight = h;
+        for (int i = 0; i < 2; ++i) {
+            reservoir[i].Reset();
+            reservoirSRV[i].Reset();
+            reservoirUAV[i].Reset();
+            
+            D3D11_BUFFER_DESC bd = {};
+            bd.ByteWidth = byteSize;
+            bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+            bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            bd.StructureByteStride = 32;
+            
+            Check(device->CreateBuffer(&bd, nullptr, &reservoir[i]));
+            Check(device->CreateShaderResourceView(reservoir[i].Get(), nullptr, &reservoirSRV[i]));
+            Check(device->CreateUnorderedAccessView(reservoir[i].Get(), nullptr, &reservoirUAV[i]));
+        }
+    }
+    
+    // Flips SRV/UAV roles at ReSTIR phase boundaries: after pass 11 for pass 14,
+    // then after pass 14 to promote the spatial result as next-frame history.
+    void SwapReservoir() {
+        reservoirReadFlip = !reservoirReadFlip;
+    }
+    
     // Returns the SRV for the caller to bind, after syncing the live texture
     // into its snapshot.
     //

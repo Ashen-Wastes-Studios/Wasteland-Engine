@@ -1,0 +1,240 @@
+Scene: Water Showcase
+Entities:
+  - Entity: 9100000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 8, 20]
+      Rotation: [-0.35, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9100000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9100000000000000003
+    TagComponent:
+      Tag: Ocean
+    TransformComponent:
+      Translation: [0, -0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [200, 1, 200]
+    WaterComponent:
+      Enabled: true
+      BodyType: "Ocean"
+      ShallowColor: [0.150000006, 0.449999988, 0.649999976, 1]
+      DeepColor: [0.00499999989, 0.0799999982, 0.219999999, 1]
+      FoamColor: [0.899999976, 0.949999988, 1, 1]
+      WaterDepth: 6
+      WaveAmplitude: 0.349999994
+      WaveLength: 12
+      WaveSpeed: 1.20000005
+      WaveDirection: [1, 0.25]
+      Chop: 0.699999988
+      Steepness: 0.600000024
+      FlowDirection: [1, 0.25]
+      FlowSpeed: 0.300000012
+      FoamAmount: 0.400000006
+      FoamScale: 1
+      ShoreFoam: 0.300000012
+      ShoreWidth: 2
+      Transparency: 0.850000024
+      Roughness: 0.0799999982
+      Metallic: 0
+      Segments: 64
+      TimeScale: 1
+      Buoyancy: 1
+      WaterDensity: 1
+  - Entity: 9100000000000000004
+    TagComponent:
+      Tag: Lake
+    TransformComponent:
+      Translation: [30, 0.1, 30]
+      Rotation: [0, 0, 0]
+      Scale: [40, 1, 40]
+    WaterComponent:
+      Enabled: true
+      BodyType: "Lake"
+      ShallowColor: [0.25, 0.5, 0.65, 1]
+      DeepColor: [0.02, 0.15, 0.3, 1]
+      FoamColor: [0.9, 0.95, 1, 1]
+      WaterDepth: 2
+      WaveAmplitude: 0.05
+      WaveLength: 3
+      WaveSpeed: 0.6
+      WaveDirection: [1, 0.3]
+      Chop: 0.2
+      Steepness: 0.1
+      FlowDirection: [1, 0]
+      FlowSpeed: 0
+      FoamAmount: 0.15
+      FoamScale: 1
+      ShoreFoam: 0.5
+      ShoreWidth: 1
+      Transparency: 0.75
+      Roughness: 0.1
+      Metallic: 0
+      Segments: 48
+      TimeScale: 1
+      Buoyancy: 1
+      WaterDensity: 1
+  - Entity: 9100000000000000005
+    TagComponent:
+      Tag: River
+    TransformComponent:
+      Translation: [-30, 0, -20]
+      Rotation: [0, 0, 0]
+      Scale: [15, 1, 60]
+    WaterComponent:
+      Enabled: true
+      BodyType: "River"
+      ShallowColor: [0.3, 0.55, 0.6, 1]
+      DeepColor: [0.03, 0.2, 0.25, 1]
+      FoamColor: [0.9, 0.95, 1, 1]
+      WaterDepth: 1.2
+      WaveAmplitude: 0.08
+      WaveLength: 2
+      WaveSpeed: 1.6
+      WaveDirection: [1, 0]
+      Chop: 0.5
+      Steepness: 0.35
+      FlowDirection: [1, 0]
+      FlowSpeed: 1.5
+      FoamAmount: 0.5
+      FoamScale: 1.2
+      ShoreFoam: 0.7
+      ShoreWidth: 0.8
+      Transparency: 0.6
+      Roughness: 0.15
+      Metallic: 0
+      Segments: 48
+      TimeScale: 1
+      Buoyancy: 1
+      WaterDensity: 1
+  - Entity: 9100000000000000006
+    TagComponent:
+      Tag: Buoyant Crate
+    TransformComponent:
+      Translation: [0, 2, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [0.8, 0.6, 0.3, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.8, 0.6, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.8
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 0.3
+      LinearDamping: 0.1
+      AngularDamping: 0.1
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 0.5
+      Friction: 0.5
+      Restitution: 0.2
+  - Entity: 9100000000000000007
+    TagComponent:
+      Tag: Floating Sphere
+    TransformComponent:
+      Translation: [3, 3, 8]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.9, 0.3, 0.2, 1]
+      Radius: 0.6
+      Sectors: 32
+      Stacks: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.9, 0.3, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.2
+      Roughness: 0.3
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 0.1
+      LinearDamping: 0.2
+      AngularDamping: 0.2
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 0.6
+      Offset: [0, 0, 0]
+      Density: 0.3
+      Friction: 0.3
+      Restitution: 0.6
+  - Entity: 9100000000000000008
+    TagComponent:
+      Tag: Shore Platform
+    TransformComponent:
+      Translation: [0, -0.8, 15]
+      Rotation: [0, 0, 0]
+      Scale: [30, 0.5, 10]
+    CubeRendererComponent:
+      Color: [0.4, 0.35, 0.3, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.35, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.9
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Static"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.8
+      Restitution: 0

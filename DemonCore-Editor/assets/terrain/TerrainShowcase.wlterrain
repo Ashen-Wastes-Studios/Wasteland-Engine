@@ -1,0 +1,12 @@
+WL_TERRAIN 1
+world_id "TerrainShowcase"
+generator_id "procedural"
+generator_version 1
+seed 12345
+origin 0 0 0
+sample_spacing 1
+chunk_resolution 64
+height 0 15
+noise 0.02 4 2.0 0.5
+splat_count 0
+end

@@ -258,6 +258,27 @@ def check_constant_buffer(spv_path):
     return True
 
 
+def check_staleness():
+    """--check-only must not trust a .spv that is older than its .hlsl source.
+
+    A stale artifact silently reports OK while the real freshly-compiled shader
+    may have a binding collision or other error.  This codebase has been bitten
+    by that exact failure mode: the .spv on disk was 39 hours old, --check-only
+    said "OK", and the real shader had a collision at binding 8."""
+    if not os.path.exists(SRC):
+        sys.exit("HLSL source not found at %s" % SRC)
+    if not os.path.exists(SPIRV):
+        sys.exit("no .spv to check at %s" % SPIRV)
+    spv_mtime = os.path.getmtime(SPIRV)
+    src_mtime = os.path.getmtime(SRC)
+    if spv_mtime < src_mtime:
+        sys.exit(
+            "STALE ARTIFACT: %s is older than %s.\n"
+            "The .spv on disk does not reflect the current shader source.\n"
+            "Recompile first (run without --check-only), then re-check."
+            % (os.path.basename(SPIRV), os.path.basename(SRC)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     ap.add_argument("--check-only", action="store_true",
@@ -268,6 +289,8 @@ def main():
 
     if not args.check_only:
         compile_spv()
+    else:
+        check_staleness()
     if not os.path.exists(SPIRV):
         sys.exit("no .spv to check at %s" % SPIRV)
     ok = check_bindings(SPIRV)

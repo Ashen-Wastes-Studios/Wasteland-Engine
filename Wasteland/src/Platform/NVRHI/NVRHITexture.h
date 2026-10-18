@@ -90,19 +90,21 @@ namespace Wasteland {
 		// Returning void* is the same untyped escape hatch as
 		// Renderer3D::GetRayTraceTargetNativeSRV: the caller must know which
 		// backend it is on to interpret the pointer.
-		// DEFECT (backend-specific hardcoding, documented not fixed): the body
-		// hardcodes ObjectTypes::D3D11_ShaderResourceView. Despite NVRHI being
-		// an abstraction over four APIs, this returns a D3D11 view and nothing
-		// else -- on D3D12, Vulkan or GL the call succeeds (NVRHI's
-		// getNativeView takes the requested type as a parameter) and hands
-		// back a pointer of the wrong kind, with no error. The comment above
-		// scopes it to DX11 mode, so the caller is expected to know, but nothing
-		// enforces it.
+		// Available only when the NVRHI device is running on DX11.
 		virtual void *GetNativeSRV() const override
 		{
 			if (!m_Texture)
 				return nullptr;
 			return m_Texture->getNativeView(nvrhi::ObjectTypes::D3D11_ShaderResourceView).pointer;
+		}
+
+		// DX12 Nova creates SRVs in its own descriptor heap, so it needs the
+		// underlying ID3D12Resource rather than a D3D11 SRV or NVRHI view.
+		virtual void *GetNativeTextureResource() const override
+		{
+			if (!m_Texture)
+				return nullptr;
+			return m_Texture->getNativeObject(nvrhi::ObjectTypes::D3D12_Resource).pointer;
 		}
 
 	private:

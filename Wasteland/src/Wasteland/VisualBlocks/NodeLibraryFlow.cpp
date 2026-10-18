@@ -708,6 +708,105 @@ namespace Wasteland::VisualBlocks
 		}
 
 		// ================================================================
+		// SCENE -- engine-facing calls are limited to the Python binding surface.
+		// ================================================================
+
+		{
+			NodeDef def;
+			def.TypeId = "GetPosition";
+			def.Category = "Flow/Scene";
+			def.Pins = {
+				MakeOut("Position", "Position", PinType::Vec3),
+			};
+			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+				// Entity.GetTransform returns a TransformComponent value whose bound
+				// Translation member is the engine's current world position.
+				out.Outputs.push_back(
+					{ "Position", "self.entity.GetTransform().Translation" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "SetTransform";
+			def.Category = "Flow/Scene";
+			def.Pins = {
+				MakeExecIn("In", "In"),
+				MakeExecOut("Out", "Then"),
+				MakeIn("Translation", "Translation", PinType::Vec3, true, ""),
+				MakeIn("Rotation", "Rotation", PinType::Vec3, false, "(0, 0, 0)"),
+				MakeIn("Scale", "Scale", PinType::Vec3, false, "(1, 1, 1)"),
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &) {
+				// Entity.SetTransform is bound as separate translation, rotation,
+				// and scale Vec3 arguments; do not pass a TransformComponent object.
+				return "self.entity.SetTransform(" + ctx.In("Translation") + ", " +
+					   ctx.In("Rotation") + ", " + ctx.In("Scale") + ")";
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "GetHealth";
+			def.Category = "Flow/Scene";
+			def.Pins = {
+				MakeOut("Value", "Health", PinType::Float),
+			};
+			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+				// These exact bindings are exposed by Entity and HealthComponent.
+				out.Outputs.push_back(
+					{ "Value", "self.entity.GetHealthComponent().Current" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "Raycast";
+			def.Category = "Flow/Scene";
+			def.Pins = {
+				MakeIn("Origin", "Origin", PinType::Vec3, true, ""),
+				MakeIn("Direction", "Direction", PinType::Vec3, true, ""),
+				MakeIn("MaxDistance", "Max Distance", PinType::Float, true, ""),
+				MakeOut("Hit", "Hit", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// Scene.Raycast's existing binding returns a six-tuple beginning
+				// with the hit flag. Expose that bool as an expression for Branch.
+				out.Outputs.push_back(
+					{ "Hit", "Wasteland.Scene.GetActiveScene().Raycast(" +
+							   ctx.In("Origin") + ", " + ctx.In("Direction") + ", " +
+							   ctx.InFloat("MaxDistance") + ")[0]" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "PlaySound";
+			def.Category = "Flow/Scene";
+			def.Pins = {
+				MakeExecIn("In", "In"),
+				MakeExecOut("Out", "Then"),
+				MakeIn("ClipName", "Clip Name", PinType::String, true, ""),
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &) {
+				// The runtime sets this bound active-scene accessor before scripts
+				// tick; Scene.PlaySound accepts one registered clip name.
+				return "Wasteland.Scene.GetActiveScene().PlaySound(" +
+					   ctx.In("ClipName") + ")";
+			};
+			registry.Register(def);
+		}
+
+		// ================================================================
 		// UTILITY
 		// ================================================================
 

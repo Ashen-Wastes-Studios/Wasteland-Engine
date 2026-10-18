@@ -1,0 +1,357 @@
+Scene: Physics Playground
+Entities:
+  - Entity: 9300000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 12, 30]
+      Rotation: [-0.4, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9300000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9300000000000000003
+    TagComponent:
+      Tag: Ground
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [60, 1, 60]
+    CubeRendererComponent:
+      Color: [0.35, 0.35, 0.38, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.35, 0.35, 0.38, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.9
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Static"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.8
+      Restitution: 0
+  - Entity: 9300000000000000004
+    TagComponent:
+      Tag: Stacking Box 1
+    TransformComponent:
+      Translation: [0, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [0.8, 0.3, 0.2, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.8, 0.3, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.6
+      Restitution: 0.1
+  - Entity: 9300000000000000005
+    TagComponent:
+      Tag: Stacking Box 2
+    TransformComponent:
+      Translation: [0, 1.5, 0]
+      Rotation: [0, 0.3, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [0.2, 0.6, 0.8, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.6, 0.8, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.6
+      Restitution: 0.1
+  - Entity: 9300000000000000006
+    TagComponent:
+      Tag: Stacking Box 3
+    TransformComponent:
+      Translation: [0, 2.5, 0]
+      Rotation: [0, 0.6, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [0.3, 0.8, 0.4, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.8, 0.4, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.6
+      Restitution: 0.1
+  - Entity: 9300000000000000007
+    TagComponent:
+      Tag: Bouncing Sphere
+    TransformComponent:
+      Translation: [-5, 8, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.9, 0.7, 0.1, 1]
+      Radius: 0.7
+      Sectors: 32
+      Stacks: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.9, 0.7, 0.1, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.3
+      Roughness: 0.4
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 0.7
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.4
+      Restitution: 0.85
+  - Entity: 9300000000000000008
+    TagComponent:
+      Tag: Capsule Character
+    TransformComponent:
+      Translation: [5, 3, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    MaterialComponent:
+      Albedo: [0.5, 0.3, 0.7, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.6
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.1
+      AngularDamping: 0.1
+      FixedRotationX: true
+      FixedRotationY: false
+      FixedRotationZ: true
+    CapsuleCollider3DComponent:
+      Radius: 0.4
+      Height: 1.2
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0.2
+  - Entity: 9300000000000000009
+    TagComponent:
+      Tag: Wall
+    TransformComponent:
+      Translation: [0, 2.5, -10]
+      Rotation: [0, 0, 0]
+      Scale: [20, 5, 1]
+    CubeRendererComponent:
+      Color: [0.6, 0.6, 0.65, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.6, 0.6, 0.65, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.5
+      Roughness: 0.5
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Static"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.7
+      Restitution: 0
+  - Entity: 9300000000000000010
+    TagComponent:
+      Tag: Ramp
+    TransformComponent:
+      Translation: [10, 1, 0]
+      Rotation: [0, 0, -0.3]
+      Scale: [8, 0.5, 4]
+    CubeRendererComponent:
+      Color: [0.7, 0.5, 0.3, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.7, 0.5, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.8
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Static"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.6
+      Restitution: 0
+  - Entity: 9300000000000000011
+    TagComponent:
+      Tag: Rolling Ball
+    TransformComponent:
+      Translation: [10, 5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.2, 0.8, 0.6, 1]
+      Radius: 0.5
+      Sectors: 32
+      Stacks: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.8, 0.6, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.1
+      Roughness: 0.3
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Dynamic"
+      GravityScale: 1
+      LinearDamping: 0.05
+      AngularDamping: 0.05
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 0.5
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.4
+      Restitution: 0.3

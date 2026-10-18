@@ -64,13 +64,38 @@ fi
 echo "  size  $SIZE bytes"
 echo "  magic MZ ok"
 
-# The stale-library trap: a .pyd older than its objects means the link used an
-# old Wasteland.lib, so the module silently lacks recent code while every build
-# looks perfect.
-STALE=$(find ./bin-int/Release-windows-x86_64 -name '*.obj' -newer "$PROBE" 2>/dev/null | head -4)
+# Check only inputs that are actually linked into this module. Editor objects
+# live below the shared bin-int root too, but are not module dependencies.
+ENGINE_OBJ_DIR="./bin-int/Release-windows-x86_64/Wasteland"
+ENGINE_LIB="./.buildlogs/linkprobe/Wasteland.lib"
+BOX2D_OBJ_DIR="./Wasteland/vendor/Box2D/bin-int/Release-windows-x86_64/Box2D"
+BOX2D_LIB="./.buildlogs/linkprobe/Box2D.lib"
+BOX3D_OBJ_DIR="./Wasteland/vendor/Box3D/bin-int/Release-windows-x86_64/Box3D"
+BOX3D_LIB="./.buildlogs/linkprobe/Box3D.lib"
+BINDING_OBJ_DIR="./obj/Release"
+
+for required in "$ENGINE_OBJ_DIR" "$ENGINE_LIB" "$BOX2D_OBJ_DIR" "$BOX2D_LIB" "$BOX3D_OBJ_DIR" "$BOX3D_LIB" "$BINDING_OBJ_DIR"; do
+    if [ ! -e "$required" ]; then
+        echo "FAIL: required module build input is missing: $required"; exit 1
+    fi
+done
+
+STALE=""
+NEWER=$(find "$ENGINE_OBJ_DIR" -type f -name '*.obj' -newer "$ENGINE_LIB" 2>/dev/null | head -4)
+[ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+NEWER=$(find "$BOX2D_OBJ_DIR" -type f -name '*.obj' -newer "$BOX2D_LIB" 2>/dev/null | head -4)
+[ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+NEWER=$(find "$BOX3D_OBJ_DIR" -type f -name '*.obj' -newer "$BOX3D_LIB" 2>/dev/null | head -4)
+[ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+NEWER=$(find "$BINDING_OBJ_DIR" -type f -name '*.obj' -newer "$PROBE" 2>/dev/null | head -4)
+[ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+for input in ./.buildlogs/linkprobe/*.lib; do
+    [ -f "$input" ] || continue
+    if [ "$input" -nt "$PROBE" ]; then STALE="${STALE}${input}"$'\n'; fi
+done
 if [ -n "$STALE" ]; then
-    echo "FAIL: objects newer than the module -- the link used a stale lib:"
-    echo "$STALE" | sed 's/^/  /'
+    echo "FAIL: module-linked objects/libraries are newer than their consumers:"
+    printf '%s' "$STALE" | sed '/^$/d' | sort -u | sed 's/^/  /'
     exit 1
 fi
 echo "  fresh against all objects"

@@ -2,7 +2,9 @@
 
 #include <entt/entt.hpp>
 
+#include <filesystem>
 #include <memory>
+#include <string>
 
 #include <glm/glm.hpp>
 
@@ -10,6 +12,7 @@
 #include "Wasteland/Renderer/EditorCamera.h"
 #include "Wasteland/Core/UUID.h"
 #include "Wasteland/Navigation/NavMesh.h"
+#include "Wasteland/Terrain/TerrainRuntime.h"
 
 #include <box3d/id.h>
 
@@ -160,6 +163,28 @@ namespace Wasteland
 		bool GetWaterHeightAt(const glm::vec3 &worldPos, float &outHeight, glm::vec2 *outFlow = nullptr);
 		bool IsUnderwater(const glm::vec3 &worldPos, float margin = 0.0f);
 
+		// Terrain source/settings and sparse edits are owned by the scene runtime;
+		// generated meshes and Box3D colliders remain transient derived state.
+		bool ConfigureTerrainRuntime(const Terrain::TerrainAsset& asset,
+			const Terrain::TerrainWorldState& worldState,
+			const Terrain::TerrainStreamingConfig& config, std::string* error = nullptr,
+			const std::string& assetReference = {});
+		bool SetTerrainWorldState(const Terrain::TerrainWorldState& worldState,
+			std::string* error = nullptr);
+		bool UpdateTerrainStreaming(double worldX, double worldZ, std::string* error = nullptr);
+		void ClearTerrainRuntime() noexcept
+		{
+			m_TerrainRuntime.Clear();
+			m_TerrainAssetReference.clear();
+		}
+		const Terrain::TerrainRuntime& GetTerrainRuntime() const noexcept { return m_TerrainRuntime; }
+		const std::string& GetTerrainAssetReference() const noexcept { return m_TerrainAssetReference; }
+		bool SaveTerrainWorldState(const std::filesystem::path& projectRoot,
+			std::string* error = nullptr)
+		{
+			return m_TerrainRuntime.SaveWorldState(projectRoot, error);
+		}
+
 		// ---------------------------------------------------------------
 		// Navigation (14.5.2)
 		//
@@ -183,6 +208,14 @@ namespace Wasteland
 		// These live on Scene rather than on the component because they need
 		// to resolve an item's ItemDefinitionComponent, which may be on a
 		// different entity. A component cannot reach the registry.
+		//
+		// After inventory mutation, an instantiated script on the carrier may
+		// receive OnInventoryChanged(item_id, old_count, new_count). Counts are
+		// totals across all stacks. Fully accepted adds and successful removals
+		// notify once after mutation; partial adds and no-op operations do not.
+		// RemoveItemFromInventory and DropItemAt route through RemoveItem, and
+		// PickUpDroppedItem routes through AddItem, so those paths do not emit a
+		// second notification of their own.
 		// ---------------------------------------------------------------
 
 		// Add items to an inventory, filling existing partial stacks first,
@@ -427,6 +460,8 @@ namespace Wasteland
 	// Called alongside SubmitWaterSurfaces at both 3D render sites so the
 	// runtime and editor paths stay in sync.
 	void SubmitMeshPrimitives();
+	// Submits every loaded streamed terrain chunk to the renderer once per frame.
+	void SubmitTerrainChunks();
 
 	private:
 		Ref<Audio::AudioSystem> m_AudioSystem;
@@ -449,6 +484,8 @@ namespace Wasteland
 		// BakeNavMesh runs; path queries then fail and agents fall back to
 		// direct movement rather than following a stale route.
 		std::unique_ptr<Navigation::NavMesh> m_NavMesh;
+		Terrain::TerrainRuntime m_TerrainRuntime;
+		std::string m_TerrainAssetReference;
 
 		friend class Entity;
 		friend class SceneSerializer;

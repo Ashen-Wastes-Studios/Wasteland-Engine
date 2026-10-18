@@ -67,11 +67,9 @@ namespace Wasteland
         // helpers that use this need to read AND write entity state.
         static Scene *GetActiveScene() { return s_ActiveScene; }
 
-        // Declared here, implemented in the .cpp. Called at application teardown
-        // to release the Python instance cache BEFORE the interpreter is
-        // finalised -- the ordering matters, because dropping the last
-        // reference to a py::object after Py_Finalize would touch a dead
-        // interpreter.
+        // Declared here, implemented in the .cpp. Called before Py_Finalize and
+        // by the Python module's atexit hook to release the instance cache while
+        // the interpreter and GIL are still available.
         static void Shutdown();
 
         // DEFECT (dangling pointer, documented not fixed): returns a pointer INTO

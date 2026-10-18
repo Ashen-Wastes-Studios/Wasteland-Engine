@@ -7,6 +7,8 @@
 // Unused directly -- kept for consistency with the other engine
 // sources in this tree rather than proven necessary here.
 #include <algorithm>
+// Fixed-size buffers for the canonical WAV header and bounded PCM writes.
+#include <array>
 // std::fabs, for the peak scan in Finalise.
 #include <cmath>
 // memcpy for the fixed-width integer and float reads. Copying rather
@@ -16,6 +18,8 @@
 #include <cstring>
 // std::ifstream, for reading the whole file into memory.
 #include <fstream>
+// Numeric limits for RIFF's 32-bit size fields.
+#include <limits>
 
 // C++17 nested namespace definition, matching the header.
 namespace Wasteland::Audio
@@ -38,6 +42,9 @@ namespace Wasteland::Audio
 		// through it, which is why it is resolved below rather than
 		// rejected outright.
 		constexpr uint16_t kFormatExtensible = 0xFFFE;
+		constexpr uint16_t kOutputBitsPerSample = 16;
+		constexpr uint16_t kOutputChannels = 1;
+		constexpr uint16_t kOutputBlockAlign = kOutputChannels * (kOutputBitsPerSample / 8);
 
 		// Byte-order readers. Hand-rolled rather than a reinterpret_cast,
 		// because the RIFF spec is explicitly little-endian and a WAV read
@@ -60,6 +67,22 @@ namespace Wasteland::Audio
 			// constants; the compiler folds this to a single load on a
 			// little-endian target.
 			return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+		}
+
+		// WAV integers are little-endian regardless of host byte order. Keep
+		// writes byte-wise for the same portability guarantee as ReadU16/ReadU32.
+		void WriteU16(uint8_t *p, uint16_t value)
+		{
+			p[0] = (uint8_t)(value & 0xFF);
+			p[1] = (uint8_t)((value >> 8) & 0xFF);
+		}
+
+		void WriteU32(uint8_t *p, uint32_t value)
+		{
+			p[0] = (uint8_t)(value & 0xFF);
+			p[1] = (uint8_t)((value >> 8) & 0xFF);
+			p[2] = (uint8_t)((value >> 16) & 0xFF);
+			p[3] = (uint8_t)((value >> 24) & 0xFF);
 		}
 
 		// Convert one source sample to float in [-1, 1].
@@ -265,6 +288,84 @@ namespace Wasteland::Audio
 		clip->m_Channels = 1;
 		clip->Finalise();
 		return clip;
+	}
+
+	// Emit a simple PCM RIFF/WAVE file. The stored clip is mono float32, while
+	// the file uses portable 16-bit signed PCM; conversion happens in bounded
+	// chunks and writes explicitly little-endian bytes on every host.
+	bool AudioClip::SaveWav(const std::string &filepath) const
+	{
+		constexpr uint32_t riffHeaderRemainder = 36; // bytes outside the data payload
+		constexpr size_t bytesPerSample = kOutputBitsPerSample / 8;
+
+		// The current clip invariant is mono float samples. Reject inconsistent
+		// internal state rather than writing a header that lies about the payload.
+		if (!m_Valid || m_Samples.empty() || m_SampleRate <= 0 || m_Channels != kOutputChannels)
+			return false;
+
+		// RIFF has 32-bit sizes. Check before multiplying or opening/truncating the
+		// destination, and leave room for the 36 bytes outside the data chunk.
+		const uint32_t maxDataBytes = std::numeric_limits<uint32_t>::max() - riffHeaderRemainder;
+		if (m_Samples.size() > static_cast<size_t>(maxDataBytes / bytesPerSample))
+			return false;
+		const uint32_t dataSize = static_cast<uint32_t>(m_Samples.size() * bytesPerSample);
+		const uint64_t byteRate64 = static_cast<uint64_t>(m_SampleRate) * kOutputBlockAlign;
+		if (byteRate64 > std::numeric_limits<uint32_t>::max())
+			return false;
+
+		std::array<uint8_t, 44> header{};
+		std::memcpy(header.data(), "RIFF", 4);
+		WriteU32(header.data() + 4, riffHeaderRemainder + dataSize);
+		std::memcpy(header.data() + 8, "WAVE", 4);
+		std::memcpy(header.data() + 12, "fmt ", 4);
+		WriteU32(header.data() + 16, 16); // canonical PCM fmt chunk size
+		WriteU16(header.data() + 20, kFormatPCM);
+		WriteU16(header.data() + 22, kOutputChannels);
+		WriteU32(header.data() + 24, static_cast<uint32_t>(m_SampleRate));
+		WriteU32(header.data() + 28, static_cast<uint32_t>(byteRate64));
+		WriteU16(header.data() + 32, kOutputBlockAlign);
+		WriteU16(header.data() + 34, kOutputBitsPerSample);
+		std::memcpy(header.data() + 36, "data", 4);
+		WriteU32(header.data() + 40, dataSize);
+
+		std::ofstream stream(filepath, std::ios::binary | std::ios::trunc);
+		if (!stream.is_open())
+			return false;
+		stream.write(reinterpret_cast<const char *>(header.data()),
+			static_cast<std::streamsize>(header.size()));
+		if (!stream)
+			return false;
+
+		// A fixed buffer avoids allocating a second copy of potentially large
+		// recordings. Integer PCM maps -1 to -32768 and +1 to +32767; non-finite
+		// samples become silence rather than invoking an undefined integer cast.
+		std::array<uint8_t, 16384> pcmBuffer{};
+		size_t bufferedBytes = 0;
+		for (float sample : m_Samples)
+		{
+			double value = std::isfinite(sample) ? static_cast<double>(sample) : 0.0;
+			value = std::max(-1.0, std::min(1.0, value));
+			long quantized = std::lround(value * 32768.0);
+			quantized = std::max(-32768L, std::min(32767L, quantized));
+			const uint16_t encoded = static_cast<uint16_t>(static_cast<int16_t>(quantized));
+			pcmBuffer[bufferedBytes++] = static_cast<uint8_t>(encoded & 0xFF);
+			pcmBuffer[bufferedBytes++] = static_cast<uint8_t>((encoded >> 8) & 0xFF);
+
+			if (bufferedBytes == pcmBuffer.size())
+			{
+				stream.write(reinterpret_cast<const char *>(pcmBuffer.data()),
+					static_cast<std::streamsize>(bufferedBytes));
+				if (!stream)
+					return false;
+				bufferedBytes = 0;
+			}
+		}
+
+		if (bufferedBytes != 0)
+			stream.write(reinterpret_cast<const char *>(pcmBuffer.data()),
+				static_cast<std::streamsize>(bufferedBytes));
+		stream.close();
+		return !stream.fail();
 	}
 
 	// The file-loading half. Reads the whole file into memory and hands

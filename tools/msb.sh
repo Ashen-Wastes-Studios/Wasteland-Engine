@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serialise MSBuild runs for this repo, and reset the PDB server between them.
+# Serialise MSBuild runs for this repo without terminating shared compiler services.
 #
 # Overlapping builds are the cause of every "C1041: cannot open program
 # database", "MSB6006: CL.exe exited with code 1", "MSB6003: ... could not be
@@ -12,9 +12,9 @@
 #      build; it does nothing about two builds racing for the same objects.
 #
 #   2. A wedged mspdbsrv. Symptom is error code '23' (0x000006BA =
-#      RPC_S_SERVER_UNAVAILABLE). The server is a shared singleton that can
-#      survive a client crash in a bad state, so later builds fail instantly
-#      even with nothing else running. Restarting it fixes it outright.
+#      RPC_S_SERVER_UNAVAILABLE). Do not kill mspdbsrv by image name: it may
+#      belong to a user's active IDE/build. Report the PID and let the owner
+#      confirm whether it is safe to stop.
 #
 # Usage: msb.sh <project> [extra MSBuild args...]
 set -u
@@ -37,11 +37,8 @@ for _ in $(seq 1 120); do
   sleep 5
 done
 
-# 2. Reset the PDB server. Harmless when it is healthy.
-powershell -NoProfile -Command \
-  "Stop-Process -Name mspdbsrv -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1 || true
-sleep 1
-
+# 2. Never kill shared mspdbsrv/vctip workers here. If the server is wedged,
+#    MSBuild will report the RPC failure; stop and inspect ownership by PID.
 "$MSB" "$PROJ" -p:Configuration=Release -p:Platform=x64 -t:Build \
        -v:m -m:1 -nologo "$@"
 rc=$?

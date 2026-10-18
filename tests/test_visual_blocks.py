@@ -27,7 +27,9 @@ if _wlpath is not None and hasattr(_wlpath, "setup"):
 # emits a tree that walks correctly and does nothing.
 
 import ast
+import glob
 import os
+import re
 import sys
 import traceback
 
@@ -118,6 +120,28 @@ def test_serializer_roundtrip():
           'compiled a graph naming a node that does not exist')
     check('validator names the unknown type', 'NoSuchNodeType' in vbad.Report('Bad'),
           vbad.Report('Bad'))
+    invalid_report = vbad.Report('Bad')
+    expected_findings = [finding.Format('Bad') for finding in vbad.Findings]
+    check('validator report preserves every invalid finding verbatim',
+          bool(expected_findings) and all(text in invalid_report
+                                          for text in expected_findings),
+          invalid_report)
+
+    # ToolServer's public response must be the validator's complete report,
+    # not a filtered list or a rewritten summary. The engine binding above
+    # exercises the real invalid graph; this source contract covers the C++
+    # bridge without requiring a rebuild of the editor target.
+    server_path = os.path.join(REPO, 'DemonCore-Editor', 'src', 'Panels',
+                               'ToolServer.cpp')
+    with open(server_path, 'r', encoding='utf-8') as stream:
+        server_source = stream.read()
+    start = server_source.find('std::string ToolServer::ValidateGraph(')
+    end = server_source.find('std::string ToolServer::ListGraphNodes(', start)
+    validate_handler = server_source[start:end] if start >= 0 and end > start else ''
+    check('validate_graph returns the real report unchanged',
+          bool(re.search(r'return\s+validation\.Report\(Project::Get\(\)\.'
+                         r'MakeProjectRelative\(fullPath\)\);', validate_handler)),
+          'ValidateGraph must return ValidationResult::Report directly')
 
 
 # ----------------------------------------------------------- VB.2 validation
@@ -185,8 +209,8 @@ def test_codegen():
             check('%s emits valid Python' % name, True)
         except SyntaxError as e:
             check('%s emits valid Python' % name, False, str(e))
-        check('%s emits no None-literal' % name,
-              'None' not in py or True)  # informational; type check below is real
+
+
         # Topology must be DATA. Check the _build() body specifically: a
         # lambda's conditional expression legitimately contains the text
         # "if ... else", so testing the whole file for "if" proves nothing.
@@ -242,6 +266,95 @@ def _compile_to(name):
     mod = {}
     exec(compile(py, name + '.py', 'exec'), mod)
     return mod[name]
+
+
+def test_schema_registry_drift():
+    section('VB.5  schema documentation drift')
+    schema_path = os.path.join(REPO, 'docs', 'VISUAL_BLOCKS_SCHEMA.md')
+    check('schema documentation exists', os.path.isfile(schema_path), schema_path)
+    if not os.path.isfile(schema_path):
+        return
+    with open(schema_path, 'r', encoding='utf-8') as stream:
+        schema = stream.read()
+
+    definitions = VB.RegisteredNodes()
+    check('registry is non-empty for drift check', bool(definitions),
+          'RegisteredNodes() returned no entries')
+    damage_example = re.search(
+        r'### `assets/graphs/DamageFlash\.wlblocks`[^\n]*\n.*?```yaml\n(.*?)\n```',
+        schema, re.S)
+    damage_path = os.path.join(REPO, 'DemonCore-Editor', 'assets', 'graphs',
+                               'DamageFlash.wlblocks')
+    with open(damage_path, 'r', encoding='utf-8') as stream:
+        shipped_damage = stream.read().strip()
+    check('DamageFlash worked example matches shipped graph',
+          damage_example is not None and
+          damage_example.group(1).strip() == shipped_damage,
+          'docs example differs from %s' % damage_path)
+
+    missing_nodes = [definition.TypeId for definition in definitions
+                     if '`%s`' % definition.TypeId not in schema]
+    check('schema documents every registered node id', not missing_nodes,
+          ', '.join(missing_nodes))
+
+    missing_pins = sorted({pin.Id for definition in definitions
+                           for pin in definition.Pins
+                           if '`%s`' % pin.Id not in schema})
+    check('schema documents every registered pin id', not missing_pins,
+          ', '.join(missing_pins))
+
+    # The local extension can lag the source tree between builds. Also inspect
+    # the current registration translation units so a stale binary cannot
+    # make this drift check pass while a newly registered node is undocumented.
+    vb_root = os.path.join(REPO, 'Wasteland', 'src', 'Wasteland', 'VisualBlocks')
+    registration_paths = sorted(glob.glob(os.path.join(vb_root, 'NodeLibrary*.cpp')))
+    check('registry source files were discovered', bool(registration_paths), vb_root)
+    sources = []
+    for source_path in registration_paths:
+        with open(source_path, 'r', encoding='utf-8') as stream:
+            sources.append(stream.read())
+    registration_source = '\n'.join(sources)
+    source_nodes = set(re.findall(r'\bdef\.TypeId\s*=\s*"([^"]+)"',
+                                  registration_source))
+    source_nodes.update(re.findall(r'\b(?:addBinary|addCompare)\(\s*"([^"]+)"',
+                                   registration_source))
+    source_pins = set(re.findall(
+        r'\bMake(?:ExecIn|ExecOut|In|Out)\(\s*"([^"]+)"',
+        registration_source))
+    missing_source_nodes = sorted(node_id for node_id in source_nodes
+                                  if '`%s`' % node_id not in schema)
+    missing_source_pins = sorted(pin_id for pin_id in source_pins
+                                 if '`%s`' % pin_id not in schema)
+    check('schema documents current C++ registry node ids',
+          not missing_source_nodes, ', '.join(missing_source_nodes))
+    check('schema documents current C++ registry pin ids',
+          not missing_source_pins, ', '.join(missing_source_pins))
+
+
+def test_graph_tools_are_registered_and_asset_confined():
+    section('VB.5  graph tools')
+    server_path = os.path.join(REPO, 'DemonCore-Editor', 'src', 'Panels',
+                               'ToolServer.cpp')
+    with open(server_path, 'r', encoding='utf-8') as stream:
+        source = stream.read()
+    check('validate_graph is advertised',
+          r'\"name\":\"validate_graph\"' in source)
+    check('list_graph_nodes is advertised',
+          r'\"name\":\"list_graph_nodes\"' in source)
+    check('both graph tools are dispatched',
+          'name == "validate_graph"' in source and
+          'name == "list_graph_nodes"' in source)
+    check('graph paths are resolved against the canonical asset root',
+          'weakly_canonical(Project::Get().GetAssetRoot(), ec)' in source and
+          'relative(canonicalPath, assetRoot, ec)' in source)
+    check('graph paths require supported file extensions',
+          'extension != ".wlblocks"' in source and
+          'extension != ".wlbtree"' in source)
+    check('graph tools use the real serializer and validator',
+          'VisualBlocks::GraphSerializer::Load(fullPath.string(), graph, loadError)' in source and
+          'VisualBlocks::Validator::Validate(graph, validation)' in source)
+    check('node listing resolves actual registry definitions',
+          'registry.Find(node.TypeId)' in source)
 
 
 def test_end_to_end():
@@ -319,7 +432,9 @@ def test_end_to_end():
 
 def main():
     print('Visual Blocks suite — %d node types registered' % len(VB.RegisteredNodes()))
-    for fn in (test_serializer_roundtrip, test_validator, test_codegen, test_end_to_end):
+    for fn in (test_serializer_roundtrip, test_validator, test_codegen,
+               test_schema_registry_drift, test_graph_tools_are_registered_and_asset_confined,
+               test_end_to_end):
         try:
             fn()
         except Exception:

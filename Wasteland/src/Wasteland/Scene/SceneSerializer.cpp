@@ -21,9 +21,14 @@
 #include "SceneSerializer.h"
 
 #include "Entity.h"
+#include "Wasteland/Project/Project.h"
+#include "Wasteland/Terrain/TerrainScenePersistence.h"
 
 #include <fstream>
 #include <filesystem>
+#include <chrono>
+#include <exception>
+#include <system_error>
 
 #include <yaml-cpp/yaml.h>
 #include "Components.h"
@@ -1401,65 +1406,150 @@ namespace Wasteland
 
 	// Writes the whole scene to a YAML file.
 	//
-	// Emits a mapping of two keys: `Scene` (hard-coded to "Untitled" -- the
-	// scene has no name of its own, so the saved name is always this) and
-	// `Entities`, a sequence holding one SerializeEntity entry per entity.
+	// Emits Scene and Entities, plus Terrain metadata only when the scene has
+	// a configured terrain source. Terrain edits stay in project-root sidecars.
 	//
 	// The iteration goes through m_Registry.view<entt::entity>().each, which
 	// visits every live entity in storage order. That order is an entt detail,
 	// not a stable or meaningful one -- so a saved file's entity order can
 	// differ between runs, producing noisy diffs for the same scene.
 	//
-	// SILENT ON FAILURE: the method returns void, so an unwritable path, a
-	// full disk, or a missing parent directory all look exactly like success
-	// to the caller. `fout` is never checked after opening. The editor's
-	// Save command therefore cannot report a failed save without adding its
-	// own check -- unlike Deserialize, which does return bool.
+	// Writes through a checked same-directory temporary and publishes only
+	// after the complete YAML and any dirty terrain sidecars have been saved.
 	//
 	// @param filepath  Where to write. A relative path resolves against the
 	//                  process's current working directory, NOT the project
 	//                  root -- so the same call from a different launch
 	//                  directory writes the scene somewhere else.
-	void SceneSerializer::Serialize(const std::string &filepath)
+	bool SceneSerializer::Serialize(const std::string &filepath)
 	{
+		return SerializeChecked(filepath, nullptr);
+	}
+
+	bool SceneSerializer::SerializeChecked(const std::string &filepath, std::string *error)
+	{
+		if (error)
+			error->clear();
+		const auto fail = [error](const std::string &message)
+		{
+			if (error)
+				*error = message;
+			return false;
+		};
+
+		const bool terrainConfigured = m_Scene->m_TerrainRuntime.IsConfigured();
+		std::string terrainYaml;
+		if (terrainConfigured)
+		{
+			Project &project = Project::Get();
+			if (!project.IsOpen())
+				return fail("saving configured terrain requires an open project");
+			if (m_Scene->m_TerrainAssetReference.empty())
+				return fail("configured terrain has no authored asset reference");
+
+			std::filesystem::path assetPath;
+			std::string terrainError;
+			if (!Terrain::ResolveTerrainAssetReference(project.GetAssetRoot(),
+				m_Scene->m_TerrainAssetReference, assetPath, &terrainError))
+				return fail("invalid terrain asset reference: " + terrainError);
+
+			Terrain::TerrainAsset referencedAsset;
+			if (!Terrain::LoadTerrainAsset(assetPath, referencedAsset, &terrainError))
+				return fail("could not validate terrain asset: " + terrainError);
+			if (Terrain::TerrainAssetFingerprint(referencedAsset) !=
+				Terrain::TerrainAssetFingerprint(m_Scene->m_TerrainRuntime.GetAsset()))
+				return fail("terrain reference does not match the configured terrain asset");
+
+			Terrain::TerrainSceneMetadata metadata;
+			metadata.AssetReference = m_Scene->m_TerrainAssetReference;
+			metadata.Streaming = m_Scene->m_TerrainRuntime.GetConfig();
+			if (!Terrain::EncodeTerrainSceneMetadataYaml(metadata, terrainYaml, &terrainError))
+				return fail("could not encode terrain scene metadata: " + terrainError);
+		}
+
 		// A default-constructed Emitter, not a Node: this writes through the
 		// operator<< overloads defined at the top of the file, including the four
 		// glm vector ones. The convert specializations are for the LOAD path.
 		YAML::Emitter out;
-		out << YAML::BeginMap;
-		out << YAML::Key << "Scene" << YAML::Value << "Untitled";
-		// Entities is a SEQUENCE, so every entity SerializeEntity emits is one
-		// element of it. The whole file's shape is: two keys, the second being
-		// the entity list.
-		out << YAML::Key << "Entities" << YAML::Value << YAML::BeginSeq;
-		m_Scene->m_Registry.view<entt::entity>().each([&](auto entityID)
-													  {
-				// Entity is a {handle, scene*} pair, constructed inline from the two
-				// things SerializeEntity needs. The braces are an aggregate-style
-				// construction, not a constructor call.
+		try
+		{
+			out << YAML::BeginMap;
+			out << YAML::Key << "Scene" << YAML::Value << "Untitled";
+			if (terrainConfigured)
+			{
+				const YAML::Node terrainNode = YAML::Load(terrainYaml);
+				out << YAML::Key << "Terrain" << YAML::Value << terrainNode;
+			}
+			out << YAML::Key << "Entities" << YAML::Value << YAML::BeginSeq;
+			m_Scene->m_Registry.view<entt::entity>().each([&](auto entityID)
+			{
 				Entity entity = { entityID, m_Scene.get() };
-				// Defensive check: the handle was valid when each() yielded it, but
-				// nothing between the yield and here can invalidate it, so in practice
-				// this is always true. Cheap insurance against a future refactor.
 				if (!entity)
 					return;
+				SerializeEntity(out, entity);
+			});
+			out << YAML::EndSeq;
+			out << YAML::EndMap;
+		}
+		catch (const YAML::Exception &exception)
+		{
+			return fail(std::string("could not emit scene YAML: ") + exception.what());
+		}
+		if (!out.good())
+			return fail(std::string("could not emit scene YAML: ") + out.GetLastError());
 
-				SerializeEntity(out, entity); });
-		out << YAML::EndSeq;
-		out << YAML::EndMap;
+		const std::string yamlText(out.c_str(), out.size());
+		const std::filesystem::path targetPath(filepath);
+		const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+		std::filesystem::path temporaryPath = targetPath;
+		temporaryPath += ".tmp." + std::to_string(stamp);
+		std::ofstream outFile(temporaryPath, std::ios::binary | std::ios::trunc);
+		if (!outFile.is_open())
+			return fail("could not open temporary scene file for writing: " + temporaryPath.string());
+		outFile.write(yamlText.data(), static_cast<std::streamsize>(yamlText.size()));
+		if (!outFile.good())
+		{
+			outFile.close();
+			std::error_code ignored;
+			std::filesystem::remove(temporaryPath, ignored);
+			return fail("failed while writing temporary scene file: " + temporaryPath.string());
+		}
+		outFile.flush();
+		if (!outFile.good())
+		{
+			outFile.close();
+			std::error_code ignored;
+			std::filesystem::remove(temporaryPath, ignored);
+			return fail("failed while flushing temporary scene file: " + temporaryPath.string());
+		}
+		outFile.close();
+		if (outFile.fail())
+		{
+			std::error_code ignored;
+			std::filesystem::remove(temporaryPath, ignored);
+			return fail("failed while closing temporary scene file: " + temporaryPath.string());
+		}
 
-		// Opened AFTER the whole document has been built into `out`. That is why
-		// a failure here costs everything: the emitter already holds the complete
-		// document and there is no way to report it.
-		// DEFECT: neither the open nor the write below is checked. An unwritable
-		// path, a missing parent directory or a full disk all produce a silent
-		// no-op -- the method returns void, so the caller has nothing to check.
-		// Deserialize returns bool; this does not. See the note at line 995.
-		std::ofstream fout(filepath);
-		// c_str() because operator<< for const char* is the std one, not a YAML
-		// one. The document is materialised as a string at this point rather than
-		// streamed, so the file is written in a single operation.
-		fout << out.c_str();
+		if (terrainConfigured)
+		{
+			std::string terrainError;
+			if (!m_Scene->m_TerrainRuntime.SaveWorldState(Project::Get().GetRoot(), &terrainError))
+			{
+				std::error_code ignored;
+				std::filesystem::remove(temporaryPath, ignored);
+				return fail("could not save terrain sidecars: " + terrainError);
+			}
+		}
+
+		std::error_code publishError;
+		std::filesystem::rename(temporaryPath, targetPath, publishError);
+		if (publishError)
+		{
+			std::error_code ignored;
+			std::filesystem::remove(temporaryPath, ignored);
+			return fail("could not publish scene file: " + publishError.message());
+		}
+		return true;
 	}
 
 	// NOT IMPLEMENTED.
@@ -1485,9 +1575,8 @@ namespace Wasteland
 	// Reads a whole scene from a YAML file, replacing the current scene's
 	// contents.
 	//
-	// The only one of the four methods that reports failure, which makes the
-	// asymmetry with Serialize a live trap: a caller who checks the bool here
-	// has nothing to check there.
+	// Terrain metadata, source asset, and sidecars are preflighted before the
+	// entity reader starts; the staged terrain runtime is committed afterward.
 	//
 	// Reconstruction is strictly manual -- no schema, no reflection -- so
 	// every component's fields are read back by name in the mirror image of
@@ -1519,13 +1608,57 @@ namespace Wasteland
 		std::stringstream strStream;
 		strStream << stream.rdbuf();
 
-		// Load on a malformed document THROWS (YAML::ParserException), so the bool
-		// return covers only 'opened and is a mapping with a Scene key'. A file
-		// that is syntactically broken propagates out of this function rather than
-		// returning false.
-		YAML::Node data = YAML::Load(strStream.str());
-		if (!data["Scene"])
+		// A malformed YAML document is reported as a load failure before any scene
+		// mutation begins.
+		YAML::Node data;
+		try
+		{
+			data = YAML::Load(strStream.str());
+		}
+		catch (const YAML::Exception &exception)
+		{
+			WL_CORE_ERROR("Could not parse scene '{0}': {1}", filepath, exception.what());
 			return false;
+		}
+		if (!data.IsMap() || !data["Scene"])
+			return false;
+
+		Terrain::TerrainScenePayload terrainPayload;
+		const YAML::Node terrainNode = data["Terrain"];
+		const bool hasTerrain = terrainNode.IsDefined();
+		if (hasTerrain)
+		{
+			Project &project = Project::Get();
+			if (!project.IsOpen())
+			{
+				WL_CORE_ERROR("Could not load scene terrain: no project is open");
+				return false;
+			}
+
+			try
+			{
+				YAML::Emitter terrainEmitter;
+				terrainEmitter << terrainNode;
+				if (!terrainEmitter.good())
+				{
+					WL_CORE_ERROR("Could not encode scene terrain metadata: {0}", terrainEmitter.GetLastError());
+					return false;
+				}
+				const std::string terrainMetadata(terrainEmitter.c_str(), terrainEmitter.size());
+				std::string terrainError;
+				if (!Terrain::LoadTerrainScenePayload(project.GetAssetRoot(), project.GetRoot(),
+					terrainMetadata, terrainPayload, &terrainError))
+				{
+					WL_CORE_ERROR("Could not load scene terrain: {0}", terrainError);
+					return false;
+				}
+			}
+			catch (const std::exception &exception)
+			{
+				WL_CORE_ERROR("Could not load scene terrain: {0}", exception.what());
+				return false;
+			}
+		}
 
 		// The scene name is read and then only logged -- never stored anywhere.
 		// Serialize hardcodes "Untitled" and nothing on the Scene type keeps a
@@ -1550,7 +1683,7 @@ namespace Wasteland
 				// The identity is read UNCONDITIONALLY. A file hand-edited to drop the
 				// "Entity" key throws here rather than skipping the entity, because
 				// as<uint64_t>() on a missing node is a typed-conversion failure.
-				uint64_t uuid = entity["Entity"].as<uint64_t>();
+				uint64_t uuid = entity["Entity"].as<uint64_t>(0);
 
 				std::string name;
 				// The tag is optional and read BEFORE the entity is created, because its
@@ -1590,16 +1723,13 @@ namespace Wasteland
 					// already attached a TransformComponent. Every other block here uses
 					// AddComponent, which is the asymmetry to watch when adding a new one.
 					auto &tc = deserializedEntity.GetComponent<TransformComponent>();
-					// UNGUARDED read of all three vectors, unlike the presence checks used
-					// further down. A TransformComponent node missing any one key throws out of
-					// this function rather than defaulting -- the vec3 converter's bool decode
-					// does not help, because as<glm::vec3>() on a missing node fails earlier.
-					tc.Translation = transformComponent["Translation"].as<glm::vec3>();
-					// The transform node, read into the component CreateEntityWithUUID
-					// already attached. There is no AddComponent here precisely because the
-					// constructor adds one unconditionally.
-					tc.Rotation = transformComponent["Rotation"].as<glm::vec3>();
-					tc.Scale = transformComponent["Scale"].as<glm::vec3>();
+					// All three vectors presence-checked: a partial node leaves defaults.
+					if (transformComponent["Translation"])
+						tc.Translation = transformComponent["Translation"].as<glm::vec3>();
+					if (transformComponent["Rotation"])
+						tc.Rotation = transformComponent["Rotation"].as<glm::vec3>();
+					if (transformComponent["Scale"])
+						tc.Scale = transformComponent["Scale"].as<glm::vec3>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -1913,36 +2043,30 @@ namespace Wasteland
 				{
 					auto &cc = deserializedEntity.AddComponent<CameraComponent>();
 
-					// cameraProps is the nested Camera mapping, one level below the
-					// component key. Checked for existence as a whole -- but see line 1252 for
-					// the two fields that escape this guard entirely.
-					auto cameraProps = cameraComponent["Camera"];
+						auto cameraProps = cameraComponent["Camera"];
 
-					if (cameraProps)
-					{
-						// Unguarded again, and worse than the transform block above: cameraProps
-						// is checked for existence, but none of its seven keys is. A Camera mapping
-						// missing one key throws rather than using that property's default.
-						cc.Camera.SetProjectionType((SceneCamera::ProjectionType)cameraProps["ProjectionType"].as<int>());
+						if (cameraProps)
+						{
+							if (cameraProps["ProjectionType"])
+								cc.Camera.SetProjectionType((SceneCamera::ProjectionType)cameraProps["ProjectionType"].as<int>());
+							if (cameraProps["PerspectiveFOV"])
+								cc.Camera.SetPerspectiveVerticalFOV(cameraProps["PerspectiveFOV"].as<float>());
+							if (cameraProps["PerspectiveNear"])
+								cc.Camera.SetPerspectiveNearClip(cameraProps["PerspectiveNear"].as<float>());
+							if (cameraProps["PerspectiveFar"])
+								cc.Camera.SetPerspectiveFarClip(cameraProps["PerspectiveFar"].as<float>());
+							if (cameraProps["OrthographicSize"])
+								cc.Camera.SetOrthographicSize(cameraProps["OrthographicSize"].as<float>());
+							if (cameraProps["OrthographicNear"])
+								cc.Camera.SetOrthographicNearClip(cameraProps["OrthographicNear"].as<float>());
+							if (cameraProps["OrthographicFar"])
+								cc.Camera.SetOrthographicFarClip(cameraProps["OrthographicFar"].as<float>());
+						}
 
-						// SetPerspectiveVerticalFOV and the near/far pair. The projection type was
-						// set on the line above, so these are meaningful only for a perspective
-						// camera -- yet they are written unconditionally for an orthographic one
-						// too, which is what lets the editor switch projection without loss.
-						cc.Camera.SetPerspectiveVerticalFOV(cameraProps["PerspectiveFOV"].as<float>());
-						cc.Camera.SetPerspectiveNearClip(cameraProps["PerspectiveNear"].as<float>());
-						cc.Camera.SetPerspectiveFarClip(cameraProps["PerspectiveFar"].as<float>());
-
-						cc.Camera.SetOrthographicSize(cameraProps["OrthographicSize"].as<float>());
-						cc.Camera.SetOrthographicNearClip(cameraProps["OrthographicNear"].as<float>());
-						cc.Camera.SetOrthographicFarClip(cameraProps["OrthographicFar"].as<float>());
-					}
-
-					// Primary and FixedAspectRatio are read OUTSIDE the `if (cameraProps)`
-					// guard, unconditionally. A camera block with no Camera sub-map at all
-					// still reaches these two and throws on the first missing key.
-					cc.Primary = cameraComponent["Primary"].as<bool>();
-					cc.FixedAspectRatio = cameraComponent["FixedAspectRatio"].as<bool>();
+						if (cameraComponent["Primary"])
+							cc.Primary = cameraComponent["Primary"].as<bool>();
+						if (cameraComponent["FixedAspectRatio"])
+							cc.FixedAspectRatio = cameraComponent["FixedAspectRatio"].as<bool>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -1957,11 +2081,8 @@ namespace Wasteland
 					// single field, so the block is the shortest in the function and the only
 					// one with nothing to check.
 					auto &src = deserializedEntity.AddComponent<SpriteRendererComponent>();
-					// Unguarded single read. This is the pattern for every renderer block from
-					// here to the torus: the node is presence-checked, but none of its fields
-					// are, so a partial node throws out of Deserialize.
-					// Contrast the health and weapon blocks above, which check every field.
-					src.Color = spriteRendererComponent["Color"].as<glm::vec4>();
+						if (spriteRendererComponent["Color"])
+							src.Color = spriteRendererComponent["Color"].as<glm::vec4>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -1975,9 +2096,12 @@ namespace Wasteland
 				{
 					// Entities always have transforms
 					auto &crc = deserializedEntity.AddComponent<CircleRendererComponent>();
-					crc.Color = circleRendererComponent["Color"].as<glm::vec4>();
-					crc.Thickness = circleRendererComponent["Thickness"].as<float>();
-					crc.Fade = circleRendererComponent["Fade"].as<float>();
+						if (circleRendererComponent["Color"])
+							crc.Color = circleRendererComponent["Color"].as<glm::vec4>();
+						if (circleRendererComponent["Thickness"])
+							crc.Thickness = circleRendererComponent["Thickness"].as<float>();
+						if (circleRendererComponent["Fade"])
+							crc.Fade = circleRendererComponent["Fade"].as<float>();
 				}
 
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -1990,9 +2114,12 @@ namespace Wasteland
 					// TextureWidth/Height the writer emitted are dropped. See the defect note
 					// on the writer side at line 442.
 					auto &crc = deserializedEntity.AddComponent<CubeRendererComponent>();
-					crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
-					crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
-					crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
+						if (cubeRendererComponent["Color"])
+							crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
+						if (cubeRendererComponent["TextureIndex"])
+							crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
+						if (cubeRendererComponent["TilingFactor"])
+							crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
 				}
 
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2005,15 +2132,18 @@ namespace Wasteland
 					// matter for how the mesh regenerates; TextureIndex and TilingFactor are
 					// the two texture fields. TextureWidth/Height are the two it skips.
 					auto &src = deserializedEntity.AddComponent<SphereRendererComponent>();
-					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
-					// Radius, Sectors and Stacks read straight from the node. All three are
-					// present in any file written by the current writer, so the unguarded
-					// reads are safe in practice and only bite on hand-edited files.
-					src.Radius = sphereRendererComponent["Radius"].as<float>();
-					src.Sectors = sphereRendererComponent["Sectors"].as<int>();
-					src.Stacks = sphereRendererComponent["Stacks"].as<int>();
-					src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
-					src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
+						if (sphereRendererComponent["Color"])
+							src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
+						if (sphereRendererComponent["Radius"])
+							src.Radius = sphereRendererComponent["Radius"].as<float>();
+						if (sphereRendererComponent["Sectors"])
+							src.Sectors = sphereRendererComponent["Sectors"].as<int>();
+						if (sphereRendererComponent["Stacks"])
+							src.Stacks = sphereRendererComponent["Stacks"].as<int>();
+						if (sphereRendererComponent["TextureIndex"])
+							src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
+						if (sphereRendererComponent["TilingFactor"])
+							src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
 				}
 
 				// --- Blender "Add > Mesh" primitives ---
@@ -2032,15 +2162,14 @@ namespace Wasteland
 				// presence check. The result is that a truncated node throws out of
 				// Deserialize rather than leaving defaults behind.
 				auto &prc = deserializedEntity.AddComponent<PlaneRendererComponent>();
-				// DEFECT: TextureWidth and TextureHeight are missing from this read even
-				// though PlaneRendererComponent writes them at line 480. Same omission in
-				// all eight primitive blocks and in MaterialComponent.
-				// The keys this block DOES read are all unguarded, so a partial plane node
-				// throws rather than defaulting -- see the note on line 1261.
-				prc.Color = planeRendererComponent["Color"].as<glm::vec4>();
-				prc.Subdivisions = planeRendererComponent["Subdivisions"].as<int>();
-				prc.TextureIndex = planeRendererComponent["TextureIndex"].as<int>();
-				prc.TilingFactor = planeRendererComponent["TilingFactor"].as<float>();
+					if (planeRendererComponent["Color"])
+						prc.Color = planeRendererComponent["Color"].as<glm::vec4>();
+					if (planeRendererComponent["Subdivisions"])
+						prc.Subdivisions = planeRendererComponent["Subdivisions"].as<int>();
+					if (planeRendererComponent["TextureIndex"])
+						prc.TextureIndex = planeRendererComponent["TextureIndex"].as<int>();
+					if (planeRendererComponent["TilingFactor"])
+						prc.TilingFactor = planeRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2053,11 +2182,16 @@ namespace Wasteland
 				// The colour is read first and unguarded, so a grid node with no Color
 				// key throws rather than defaulting to white.
 				auto &grc = deserializedEntity.AddComponent<GridRendererComponent>();
-				grc.Color = gridRendererComponent["Color"].as<glm::vec4>();
-				grc.XSubdivisions = gridRendererComponent["XSubdivisions"].as<int>();
-				grc.YSubdivisions = gridRendererComponent["YSubdivisions"].as<int>();
-				grc.TextureIndex = gridRendererComponent["TextureIndex"].as<int>();
-				grc.TilingFactor = gridRendererComponent["TilingFactor"].as<float>();
+					if (gridRendererComponent["Color"])
+						grc.Color = gridRendererComponent["Color"].as<glm::vec4>();
+					if (gridRendererComponent["XSubdivisions"])
+						grc.XSubdivisions = gridRendererComponent["XSubdivisions"].as<int>();
+					if (gridRendererComponent["YSubdivisions"])
+						grc.YSubdivisions = gridRendererComponent["YSubdivisions"].as<int>();
+					if (gridRendererComponent["TextureIndex"])
+						grc.TextureIndex = gridRendererComponent["TextureIndex"].as<int>();
+					if (gridRendererComponent["TilingFactor"])
+						grc.TilingFactor = gridRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2070,14 +2204,16 @@ namespace Wasteland
 				// tessellation parameters are all integral for the same reason: a
 				// fractional segment count would have no meaning.
 				auto &c3c = deserializedEntity.AddComponent<Circle3DRendererComponent>();
-				c3c.Color = circle3DRendererComponent["Color"].as<glm::vec4>();
-				// Radius as float, Segments as int -- the type split matches the writer's.
-				// A field read with the wrong as<T>() would compile (yaml-cpp's as<> is
-				// a runtime conversion) and silently reinterpret the value.
-				c3c.Radius = circle3DRendererComponent["Radius"].as<float>();
-				c3c.Segments = circle3DRendererComponent["Segments"].as<int>();
-				c3c.TextureIndex = circle3DRendererComponent["TextureIndex"].as<int>();
-				c3c.TilingFactor = circle3DRendererComponent["TilingFactor"].as<float>();
+					if (circle3DRendererComponent["Color"])
+						c3c.Color = circle3DRendererComponent["Color"].as<glm::vec4>();
+					if (circle3DRendererComponent["Radius"])
+						c3c.Radius = circle3DRendererComponent["Radius"].as<float>();
+					if (circle3DRendererComponent["Segments"])
+						c3c.Segments = circle3DRendererComponent["Segments"].as<int>();
+					if (circle3DRendererComponent["TextureIndex"])
+						c3c.TextureIndex = circle3DRendererComponent["TextureIndex"].as<int>();
+					if (circle3DRendererComponent["TilingFactor"])
+						c3c.TilingFactor = circle3DRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2087,11 +2223,16 @@ namespace Wasteland
 				if (icoSphereRendererComponent)
 				{
 				auto &isc = deserializedEntity.AddComponent<IcoSphereRendererComponent>();
-				isc.Color = icoSphereRendererComponent["Color"].as<glm::vec4>();
-				isc.Radius = icoSphereRendererComponent["Radius"].as<float>();
-				isc.Subdivisions = icoSphereRendererComponent["Subdivisions"].as<int>();
-				isc.TextureIndex = icoSphereRendererComponent["TextureIndex"].as<int>();
-				isc.TilingFactor = icoSphereRendererComponent["TilingFactor"].as<float>();
+					if (icoSphereRendererComponent["Color"])
+						isc.Color = icoSphereRendererComponent["Color"].as<glm::vec4>();
+					if (icoSphereRendererComponent["Radius"])
+						isc.Radius = icoSphereRendererComponent["Radius"].as<float>();
+					if (icoSphereRendererComponent["Subdivisions"])
+						isc.Subdivisions = icoSphereRendererComponent["Subdivisions"].as<int>();
+					if (icoSphereRendererComponent["TextureIndex"])
+						isc.TextureIndex = icoSphereRendererComponent["TextureIndex"].as<int>();
+					if (icoSphereRendererComponent["TilingFactor"])
+						isc.TilingFactor = icoSphereRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2104,12 +2245,18 @@ namespace Wasteland
 				// that have an axis need it, the radially symmetric ones do not. Which
 				// keys a primitive carries is what distinguishes it in the file.
 				auto &cyc = deserializedEntity.AddComponent<CylinderRendererComponent>();
-				cyc.Color = cylinderRendererComponent["Color"].as<glm::vec4>();
-				cyc.Radius = cylinderRendererComponent["Radius"].as<float>();
-				cyc.Height = cylinderRendererComponent["Height"].as<float>();
-				cyc.Segments = cylinderRendererComponent["Segments"].as<int>();
-				cyc.TextureIndex = cylinderRendererComponent["TextureIndex"].as<int>();
-				cyc.TilingFactor = cylinderRendererComponent["TilingFactor"].as<float>();
+					if (cylinderRendererComponent["Color"])
+						cyc.Color = cylinderRendererComponent["Color"].as<glm::vec4>();
+					if (cylinderRendererComponent["Radius"])
+						cyc.Radius = cylinderRendererComponent["Radius"].as<float>();
+					if (cylinderRendererComponent["Height"])
+						cyc.Height = cylinderRendererComponent["Height"].as<float>();
+					if (cylinderRendererComponent["Segments"])
+						cyc.Segments = cylinderRendererComponent["Segments"].as<int>();
+					if (cylinderRendererComponent["TextureIndex"])
+						cyc.TextureIndex = cylinderRendererComponent["TextureIndex"].as<int>();
+					if (cylinderRendererComponent["TilingFactor"])
+						cyc.TilingFactor = cylinderRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2119,15 +2266,18 @@ namespace Wasteland
 				if (coneRendererComponent)
 				{
 				auto &coc = deserializedEntity.AddComponent<ConeRendererComponent>();
-				// Cone reads back Radius, Height and Segments -- the same three that
-				// define its shape. Cone and Cylinder share every field name; only the
-				// mesh differs.
-				coc.Color = coneRendererComponent["Color"].as<glm::vec4>();
-				coc.Radius = coneRendererComponent["Radius"].as<float>();
-				coc.Height = coneRendererComponent["Height"].as<float>();
-				coc.Segments = coneRendererComponent["Segments"].as<int>();
-				coc.TextureIndex = coneRendererComponent["TextureIndex"].as<int>();
-				coc.TilingFactor = coneRendererComponent["TilingFactor"].as<float>();
+					if (coneRendererComponent["Color"])
+						coc.Color = coneRendererComponent["Color"].as<glm::vec4>();
+					if (coneRendererComponent["Radius"])
+						coc.Radius = coneRendererComponent["Radius"].as<float>();
+					if (coneRendererComponent["Height"])
+						coc.Height = coneRendererComponent["Height"].as<float>();
+					if (coneRendererComponent["Segments"])
+						coc.Segments = coneRendererComponent["Segments"].as<int>();
+					if (coneRendererComponent["TextureIndex"])
+						coc.TextureIndex = coneRendererComponent["TextureIndex"].as<int>();
+					if (coneRendererComponent["TilingFactor"])
+						coc.TilingFactor = coneRendererComponent["TilingFactor"].as<float>();
 				}
 				
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2137,13 +2287,20 @@ namespace Wasteland
 				if (torusRendererComponent)
 				{
 				auto &trc = deserializedEntity.AddComponent<TorusRendererComponent>();
-				trc.Color = torusRendererComponent["Color"].as<glm::vec4>();
-				trc.MajorRadius = torusRendererComponent["MajorRadius"].as<float>();
-				trc.MinorRadius = torusRendererComponent["MinorRadius"].as<float>();
-				trc.MajorSegments = torusRendererComponent["MajorSegments"].as<int>();
-				trc.MinorSegments = torusRendererComponent["MinorSegments"].as<int>();
-				trc.TextureIndex = torusRendererComponent["TextureIndex"].as<int>();
-				trc.TilingFactor = torusRendererComponent["TilingFactor"].as<float>();
+					if (torusRendererComponent["Color"])
+						trc.Color = torusRendererComponent["Color"].as<glm::vec4>();
+					if (torusRendererComponent["MajorRadius"])
+						trc.MajorRadius = torusRendererComponent["MajorRadius"].as<float>();
+					if (torusRendererComponent["MinorRadius"])
+						trc.MinorRadius = torusRendererComponent["MinorRadius"].as<float>();
+					if (torusRendererComponent["MajorSegments"])
+						trc.MajorSegments = torusRendererComponent["MajorSegments"].as<int>();
+					if (torusRendererComponent["MinorSegments"])
+						trc.MinorSegments = torusRendererComponent["MinorSegments"].as<int>();
+					if (torusRendererComponent["TextureIndex"])
+						trc.TextureIndex = torusRendererComponent["TextureIndex"].as<int>();
+					if (torusRendererComponent["TilingFactor"])
+						trc.TilingFactor = torusRendererComponent["TilingFactor"].as<float>();
 				}
 
 				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
@@ -2156,50 +2313,37 @@ namespace Wasteland
 					// exists with a null Texture even if the file names one. That is the
 					// graceful-degradation path: a missing asset must not fail the load.
 					auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
-					// Albedo is read unguarded while DisplacementScale three lines below is
-					// presence-checked. That inconsistency is deliberate-looking but is almost
-					// certainly just the newest field being written defensively -- the older
-					// keys in this block predate the convention.
-					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
-					// Albedo unguarded, HasGeneratedMaps and the scalar properties unguarded,
-					// DisplacementScale guarded. The one guarded field is the newest one, which
-					// is the pattern: new fields get the defensive treatment, old ones did
-					// not exist to need it.
-					mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
-					// Read straight to std::string with no presence check: a MaterialComponent
-					// with no TexturePath key throws here. The writer always emits one, so only
-					// a hand-edited file reaches this.
-					std::string rawPath = materialComponent["TexturePath"].as<std::string>();
-					std::replace(rawPath.begin(), rawPath.end(), '\\', '/');
-					// Collapse any duplicate "assets/" prefixes (from old serialization bugs)
-					// Collapses a doubled "assets/assets/" prefix. That duplication came from
-					// an older writer bug, and this is the migration path for files that
-					// already have it on disk -- a `while`, not an `if`, because some files
-					// have it more than twice.
-					const std::string prefix = "assets/";
-					while (rawPath.find(prefix + prefix) == 0)
-						// substr drops exactly one prefix per iteration, so the loop terminates
-						// when the doubling stops. A path with no doubling exits immediately.
-						rawPath = rawPath.substr(prefix.size());
-					mc.TexturePath = rawPath;
-					// The texture is only CREATED if the file exists on disk. A scene whose
-					// asset was moved or deleted loads with a null Texture but a non-empty
-					// TexturePath, which is a valid-looking state rather than an error.
-					// That is the deliberate degradation: a missing texture should not stop a
-					// scene loading.
-					if (!rawPath.empty() && std::filesystem::is_regular_file(rawPath))
-						mc.Texture = Texture2D::Create(rawPath);
-					mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
-					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
-					mc.Metallic = materialComponent["Metallic"].as<float>();
-					mc.Roughness = materialComponent["Roughness"].as<float>();
-					mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
-					mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
-					// The one presence-checked field in this block, and the newest one. Its
-					// presence is what keeps a scene authored before the field existed
-					// loading -- the same reason every field in the health block is checked.
-					if (materialComponent["DisplacementScale"])
-						mc.DisplacementScale = materialComponent["DisplacementScale"].as<float>();
+						// All fields presence-checked: a scene authored before a field
+						// existed must still load with that field's default.
+						if (materialComponent["Albedo"])
+							mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
+						if (materialComponent["TextureIndex"])
+							mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
+						// TexturePath defaults to empty string when missing.
+						std::string rawPath = materialComponent["TexturePath"] ? materialComponent["TexturePath"].as<std::string>() : "";
+						std::replace(rawPath.begin(), rawPath.end(), '\\', '/');
+						// Collapse any duplicate "assets/" prefixes (from old serialization bugs)
+						const std::string prefix = "assets/";
+						while (rawPath.find(prefix + prefix) == 0)
+							rawPath = rawPath.substr(prefix.size());
+						mc.TexturePath = rawPath;
+						// The texture is only CREATED if the file exists on disk.
+						if (!rawPath.empty() && std::filesystem::is_regular_file(rawPath))
+							mc.Texture = Texture2D::Create(rawPath);
+						if (materialComponent["HasGeneratedMaps"])
+							mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
+						if (materialComponent["NormalStrength"])
+							mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
+						if (materialComponent["Metallic"])
+							mc.Metallic = materialComponent["Metallic"].as<float>();
+						if (materialComponent["Roughness"])
+							mc.Roughness = materialComponent["Roughness"].as<float>();
+						if (materialComponent["EmissionColor"])
+							mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
+						if (materialComponent["EmissionIntensity"])
+							mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
+						if (materialComponent["DisplacementScale"])
+							mc.DisplacementScale = materialComponent["DisplacementScale"].as<float>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2214,11 +2358,10 @@ namespace Wasteland
 					// FixedRotation is read right after and IS restored, so a 2D body's
 					// rotation lock survives but its friction (line 1420) does not.
 					auto &rigidbody2D = deserializedEntity.AddComponent<Rigidbody2DComponent>();
-					// The body-type string goes through the enum parser, which falls back to
-					// Static on anything unrecognised. So a typo in the file is absorbed, not
-					// reported: the collider simply stops responding to forces.
-					rigidbody2D.Type = RigidBody2DBodyTypeFromString(rigidbody2DComponent["BodyType"].as<std::string>());
-					rigidbody2D.FixedRotation = rigidbody2DComponent["FixedRotation"].as<bool>();
+						if (rigidbody2DComponent["BodyType"])
+							rigidbody2D.Type = RigidBody2DBodyTypeFromString(rigidbody2DComponent["BodyType"].as<std::string>());
+						if (rigidbody2DComponent["FixedRotation"])
+							rigidbody2D.FixedRotation = rigidbody2DComponent["FixedRotation"].as<bool>();
 				}
 
 				// DEFECT: Friction is written by this component's writer block and read
@@ -2229,16 +2372,16 @@ namespace Wasteland
 				{
 					// Entities always have transforms
 					auto &boxCollider2D = deserializedEntity.AddComponent<BoxCollider2DComponent>();
-					boxCollider2D.Offset = boxCollider2DComponent["Offset"].as<glm::vec2>();
-					// DEFECT (verified by key diff): BoxCollider2DComponent's Friction is
-					// written at line 644 and read by no line here. It resets to the
-					// component default on every load, while the 3D box collider's Friction at
-					// line 1458 does round-trip.
-					// Friction is also missing from the CircleCollider2D block at 1431.
-					boxCollider2D.Size = boxCollider2DComponent["Size"].as<glm::vec2>();
-					boxCollider2D.Density = boxCollider2DComponent["Density"].as<float>();
-					boxCollider2D.Restitution = boxCollider2DComponent["Restitution"].as<float>();
-					boxCollider2D.RestitutionThreshold = boxCollider2DComponent["RestitutionThreshold"].as<float>();
+						if (boxCollider2DComponent["Offset"])
+							boxCollider2D.Offset = boxCollider2DComponent["Offset"].as<glm::vec2>();
+						if (boxCollider2DComponent["Size"])
+							boxCollider2D.Size = boxCollider2DComponent["Size"].as<glm::vec2>();
+						if (boxCollider2DComponent["Density"])
+							boxCollider2D.Density = boxCollider2DComponent["Density"].as<float>();
+						if (boxCollider2DComponent["Restitution"])
+							boxCollider2D.Restitution = boxCollider2DComponent["Restitution"].as<float>();
+						if (boxCollider2DComponent["RestitutionThreshold"])
+							boxCollider2D.RestitutionThreshold = boxCollider2DComponent["RestitutionThreshold"].as<float>();
 				}
 
 				// DEFECT: Friction is written by this component's writer block and read
@@ -2249,11 +2392,16 @@ namespace Wasteland
 				{
 					// Entities always have transforms
 					auto &circleCollider2D = deserializedEntity.AddComponent<CircleCollider2DComponent>();
-					circleCollider2D.Offset = circleCollider2DComponent["Offset"].as<glm::vec2>();
-					circleCollider2D.Radius = circleCollider2DComponent["Radius"].as<float>();
-					circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
-					circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
-					circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
+						if (circleCollider2DComponent["Offset"])
+							circleCollider2D.Offset = circleCollider2DComponent["Offset"].as<glm::vec2>();
+						if (circleCollider2DComponent["Radius"])
+							circleCollider2D.Radius = circleCollider2DComponent["Radius"].as<float>();
+						if (circleCollider2DComponent["Density"])
+							circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
+						if (circleCollider2DComponent["Restitution"])
+							circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
+						if (circleCollider2DComponent["RestitutionThreshold"])
+							circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2264,28 +2412,18 @@ namespace Wasteland
 				if (rigidBody3DComponent)
 				{
 					auto &rb3d = deserializedEntity.AddComponent<RigidBody3DComponent>();
-					// The body-type string goes through the enum parser, which silently
-					// defaults to Static. So the parsed value can never be 'wrong' -- only
-					// defaulted -- which is why a typo in a file is invisible rather than
-					// fatal.
-					rb3d.Type = RigidBody3DTypeFromString(rigidBody3DComponent["BodyType"].as<std::string>());
-					// GravityScale and the two damping values are read UNGUARDED while the
-					// three FixedRotation flags below are guarded. That split is the newest
-					// fields being written defensively and the older ones not -- the same
-					// pattern as DisplacementScale in the material block.
-					rb3d.GravityScale = rigidBody3DComponent["GravityScale"].as<float>();
-					rb3d.LinearDamping = rigidBody3DComponent["LinearDamping"].as<float>();
-					rb3d.AngularDamping = rigidBody3DComponent["AngularDamping"].as<float>();
-					// Single-line `if` bodies, unlike every other block in the file. Cosmetic
-					// only -- but FixedRotationX/Y/Z are the ONLY presence-checked fields in
-					// this block, so the three lines that differ in style are also the three
-					// that differ in robustness.
-					if (rigidBody3DComponent["FixedRotationX"]) rb3d.FixedRotationX = rigidBody3DComponent["FixedRotationX"].as<bool>();
-					// Three single-line guarded reads, matching the compact style at lines
-					// 1446 and 1448. The three flags are independent axes, so an entity can
-					// lock one rotation axis and leave the others free.
-					if (rigidBody3DComponent["FixedRotationY"]) rb3d.FixedRotationY = rigidBody3DComponent["FixedRotationY"].as<bool>();
-					if (rigidBody3DComponent["FixedRotationZ"]) rb3d.FixedRotationZ = rigidBody3DComponent["FixedRotationZ"].as<bool>();
+						// All fields presence-checked: a partial node leaves defaults.
+						if (rigidBody3DComponent["BodyType"])
+							rb3d.Type = RigidBody3DTypeFromString(rigidBody3DComponent["BodyType"].as<std::string>());
+						if (rigidBody3DComponent["GravityScale"])
+							rb3d.GravityScale = rigidBody3DComponent["GravityScale"].as<float>();
+						if (rigidBody3DComponent["LinearDamping"])
+							rb3d.LinearDamping = rigidBody3DComponent["LinearDamping"].as<float>();
+						if (rigidBody3DComponent["AngularDamping"])
+							rb3d.AngularDamping = rigidBody3DComponent["AngularDamping"].as<float>();
+						if (rigidBody3DComponent["FixedRotationX"]) rb3d.FixedRotationX = rigidBody3DComponent["FixedRotationX"].as<bool>();
+						if (rigidBody3DComponent["FixedRotationY"]) rb3d.FixedRotationY = rigidBody3DComponent["FixedRotationY"].as<bool>();
+						if (rigidBody3DComponent["FixedRotationZ"]) rb3d.FixedRotationZ = rigidBody3DComponent["FixedRotationZ"].as<bool>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2296,15 +2434,16 @@ namespace Wasteland
 				if (boxCollider3DComponent)
 				{
 					auto &bc = deserializedEntity.AddComponent<BoxCollider3DComponent>();
-					// HalfExtents is the box's half-size, so the file stores half the
-					// dimensions a user would type. Reading and writing the same half-extent is
-					// what keeps a round trip lossless; storing full size would need a divide
-					// on one side or the other.
-					bc.HalfExtents = boxCollider3DComponent["HalfExtents"].as<glm::vec3>();
-					bc.Offset = boxCollider3DComponent["Offset"].as<glm::vec3>();
-					bc.Density = boxCollider3DComponent["Density"].as<float>();
-					bc.Friction = boxCollider3DComponent["Friction"].as<float>();
-					bc.Restitution = boxCollider3DComponent["Restitution"].as<float>();
+						if (boxCollider3DComponent["HalfExtents"])
+							bc.HalfExtents = boxCollider3DComponent["HalfExtents"].as<glm::vec3>();
+						if (boxCollider3DComponent["Offset"])
+							bc.Offset = boxCollider3DComponent["Offset"].as<glm::vec3>();
+						if (boxCollider3DComponent["Density"])
+							bc.Density = boxCollider3DComponent["Density"].as<float>();
+						if (boxCollider3DComponent["Friction"])
+							bc.Friction = boxCollider3DComponent["Friction"].as<float>();
+						if (boxCollider3DComponent["Restitution"])
+							bc.Restitution = boxCollider3DComponent["Restitution"].as<float>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2315,17 +2454,16 @@ namespace Wasteland
 				if (sphereCollider3DComponent)
 				{
 					auto &sc = deserializedEntity.AddComponent<SphereCollider3DComponent>();
-					// Radius is read first here, unlike the writer which writes it first too
-					// -- but the writer's Radius is dropped on load only for the 2D colliders.
-					// The 3D ones all round-trip every field they write.
-					sc.Radius = sphereCollider3DComponent["Radius"].as<float>();
-					// Offset is a vec3 read through the workhorse converter, and Radius a
-					// plain float. Every collider uses the same pair of types, so the
-					// converters are shared across all of them.
-					sc.Offset = sphereCollider3DComponent["Offset"].as<glm::vec3>();
-					sc.Density = sphereCollider3DComponent["Density"].as<float>();
-					sc.Friction = sphereCollider3DComponent["Friction"].as<float>();
-					sc.Restitution = sphereCollider3DComponent["Restitution"].as<float>();
+						if (sphereCollider3DComponent["Radius"])
+							sc.Radius = sphereCollider3DComponent["Radius"].as<float>();
+						if (sphereCollider3DComponent["Offset"])
+							sc.Offset = sphereCollider3DComponent["Offset"].as<glm::vec3>();
+						if (sphereCollider3DComponent["Density"])
+							sc.Density = sphereCollider3DComponent["Density"].as<float>();
+						if (sphereCollider3DComponent["Friction"])
+							sc.Friction = sphereCollider3DComponent["Friction"].as<float>();
+						if (sphereCollider3DComponent["Restitution"])
+							sc.Restitution = sphereCollider3DComponent["Restitution"].as<float>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2336,15 +2474,18 @@ namespace Wasteland
 				if (capsuleCollider3DComponent)
 				{
 					auto &cc = deserializedEntity.AddComponent<CapsuleCollider3DComponent>();
-					// Radius then Height then Offset: the cylinder's two defining dimensions
-					// and its placement. All five remaining fields are read back, so this
-					// component round-trips completely.
-					cc.Radius = capsuleCollider3DComponent["Radius"].as<float>();
-					cc.Height = capsuleCollider3DComponent["Height"].as<float>();
-					cc.Offset = capsuleCollider3DComponent["Offset"].as<glm::vec3>();
-					cc.Density = capsuleCollider3DComponent["Density"].as<float>();
-					cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
-					cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
+						if (capsuleCollider3DComponent["Radius"])
+							cc.Radius = capsuleCollider3DComponent["Radius"].as<float>();
+						if (capsuleCollider3DComponent["Height"])
+							cc.Height = capsuleCollider3DComponent["Height"].as<float>();
+						if (capsuleCollider3DComponent["Offset"])
+							cc.Offset = capsuleCollider3DComponent["Offset"].as<glm::vec3>();
+						if (capsuleCollider3DComponent["Density"])
+							cc.Density = capsuleCollider3DComponent["Density"].as<float>();
+						if (capsuleCollider3DComponent["Friction"])
+							cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
+						if (capsuleCollider3DComponent["Restitution"])
+							cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
 				}
 
 				// Guarded by node truthiness only -- the fields inside are read
@@ -2600,30 +2741,34 @@ namespace Wasteland
 				if (scriptComponent)
 				{
 					auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
-					// Read unguarded, so a script component with no ScriptPath key throws.
-					// The writer above always emits one, so only a hand-edited file reaches
-					// this -- and it is the same file whose directory structure is discarded
-					// on the next line.
-					std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
-					// Always store as a relative path
-					// DEFECT: filename() DISCARDS the directory. A path saved as
-					// assets/scripts/enemies/orc.lua comes back as scripts/orc.lua, so the
-					// folder structure is lost on every save/load cycle and two same-named
-					// scripts in different folders collide onto one.
-					// This also contradicts the writer at line 966, which deliberately
-					// PRESERVES the subdirectory after /assets/. The two halves of the same
-					// field implement opposite policies.
-					// The "scripts/" prefix is hardcoded here and does not match the
-					// "assets/scripts/" fallback the writer uses at line 968.
-					sc.ScriptPath = "scripts/" + std::filesystem::path(rawPath).filename().string();
-					// ScriptName is read back unconditionally, unlike ScriptPath's directory
-					// handling on the line above. It is the display name and carries no path
-					// information, so nothing is lost by storing it whole.
-					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
+						// Presence-checked: a missing ScriptPath or ScriptName leaves
+						// the component's defaults.
+						if (scriptComponent["ScriptPath"])
+						{
+							std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
+							// Always store as a relative path
+							sc.ScriptPath = "scripts/" + std::filesystem::path(rawPath).filename().string();
+						}
+						if (scriptComponent["ScriptName"])
+							sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
 				}
 			}
 		}
 
+		if (hasTerrain)
+		{
+			std::string terrainError;
+			if (!m_Scene->ConfigureTerrainRuntime(terrainPayload.Asset, terrainPayload.WorldState,
+				terrainPayload.Metadata.Streaming, &terrainError, terrainPayload.Metadata.AssetReference))
+			{
+				WL_CORE_ERROR("Could not commit scene terrain: {0}", terrainError);
+				return false;
+			}
+		}
+		else
+		{
+			m_Scene->ClearTerrainRuntime();
+		}
 		return true;
 	}
 

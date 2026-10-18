@@ -99,6 +99,17 @@ def run_module(module_name: str, *, verbose: bool = False) -> tuple[int, int, li
             for line in tb.strip().splitlines()[-6:]:
                 print(f"      {DIM}{line}{RESET}")
 
+    teardown = getattr(module, "__headless_teardown__", None)
+    if callable(teardown):
+        try:
+            teardown()
+        except Exception:  # noqa: BLE001 — cleanup errors are test failures too
+            tb = traceback.format_exc()
+            failures.append(f"{module_name}.__headless_teardown__\n{tb}")
+            print(f"{RED}ERROR{RESET} __headless_teardown__")
+            for line in tb.strip().splitlines()[-6:]:
+                print(f"      {DIM}{line}{RESET}")
+
     total = passed + len(failures)
     colour = GREEN if not failures else RED
     print(f"  {colour}{passed}/{total} passed{RESET}  {DIM}{module_name}{RESET}")

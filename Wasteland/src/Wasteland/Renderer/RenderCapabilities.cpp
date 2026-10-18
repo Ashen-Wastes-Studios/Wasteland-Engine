@@ -28,16 +28,11 @@ namespace Wasteland
         RenderCapabilities caps{};
         caps.api = RendererAPI::GetAPI();
 
-        // Nova traces in software on every backend, so this is unconditionally
-        // true. It is what keeps OpenGL and DX11 rendering at all: neither has
-        // hardware ray tracing, and neither can ever run RTX Kit SDKs (no DXR,
-        // no VK_KHR_ray_tracing, no DXC).
-        caps.computeRaytracing = true;
-
         switch (caps.api)
         {
         case RendererAPI::API::OpenGL:
             // No DXR, no DXC, no compute denoiser. Everything resolves to TierC.
+            caps.computeRaytracing = true;
             caps.hardwareRT = false;
             caps.denoiseComputeCapable = false;
             break;
@@ -45,32 +40,31 @@ namespace Wasteland
         case RendererAPI::API::NVRHI_DX11:
             // No hardware RT (D3D11 predates DXR). A compute denoiser would run
             // here, but none ships, so denoising stays the bilateral blur.
+            caps.computeRaytracing = true;
             caps.hardwareRT = false;
             caps.denoiseComputeCapable = false;
             break;
 
         case RendererAPI::API::NVRHI_DX12:
-            caps.hardwareRT = true;
-            caps.inlineRaytracing = true;
-            caps.rayQuery = true;
-            caps.maxRecursionDepth = 31;
-            caps.tensorCores = true;
+            // DXR support is not a Wasteland capability yet: there is no BLAS/
+            // TLAS or RT dispatch path, and device feature support is not queried.
+            // Keep these defaults false until both are implemented and probed.
+            caps.computeRaytracing = true;
             caps.denoiseComputeCapable = false;
             break;
 
         case RendererAPI::API::NVRHI_Vulkan:
-            caps.hardwareRT = true;
-            caps.inlineRaytracing = true;
-            caps.rayQuery = true;
-            caps.maxRecursionDepth = 31;
-            caps.tensorCores = true;
+            // VulkanNova is wired through Renderer3D, but its live Vulkan
+            // initialization/dispatch/presentation path is not yet validated.
+            // Keep this capability false until runtime smoke checks pass.
+            caps.computeRaytracing = false;
             caps.denoiseComputeCapable = false;
             break;
         }
 
         s_Capabilities = caps;
 
-        WL_CORE_INFO("RTX Kit tier map: API={0} hardwareRT={1} inlineRT={2} rayQuery={3} denoiseCompute={4} -> denoise={5}",
+        WL_CORE_INFO("Render capability map: API={0} hardwareRT={1} inlineRT={2} rayQuery={3} denoiseCompute={4} -> denoise={5}",
                      caps.api == RendererAPI::API::OpenGL         ? "OpenGL"
                      : caps.api == RendererAPI::API::NVRHI_DX11  ? "DX11"
                      : caps.api == RendererAPI::API::NVRHI_DX12  ? "DX12"

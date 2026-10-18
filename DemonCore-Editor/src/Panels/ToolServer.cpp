@@ -22,6 +22,12 @@
 // Project is the single source of truth for the open project, its root, and the
 // path containment test every file tool depends on.
 #include "Wasteland/Project/Project.h"
+// Graph-file tools use the same Graph loaded by GraphSerializer and validated by
+// Validator; Graph must precede GraphSerializer's forward declaration.
+#include "Wasteland/VisualBlocks/Graph.h"
+#include "Wasteland/VisualBlocks/GraphSerializer.h"
+#include "Wasteland/VisualBlocks/NodeRegistry.h"
+#include "Wasteland/VisualBlocks/Validator.h"
 
 // py::object, py::list and error_already_set for the script-state tool. The
 // interpreter is already running by the time a tool call arrives.
@@ -394,10 +400,10 @@ namespace Wasteland
         // Opened here and closed below. No trailing comma is emitted anywhere because
         // every entry carries its own structure and the last one is closed first.
         std::string json = "[";
-        // Thirteen tools are declared in this function and thirteen are dispatched in
+        // Fifteen tools are declared in this function and fifteen are dispatched in
         // ExecuteTool. The two lists are kept in step BY HAND: nothing compares them, so
         // a tool added to one and not the other is either invisible to the model or
-        // reachable only by guessing its name. Adding a fourteenth means editing both
+        // reachable only by guessing its name. Adding a sixteenth means editing both
         // lists and remembering there is no test.
         json += "{\"name\":\"get_project_info\",\"description\":\"Get the active project's name, root path, start scene, and asset counts.\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},";
         // create_project. Its description tells the model to use it when no project is
@@ -426,6 +432,11 @@ namespace Wasteland
         // second time. A model that follows the schema and always sends dir is never
         // harmed, but the schema describes a stricter contract than the handler has.
         json += "{\"name\":\"list_files\",\"description\":\"List files in a directory recursively, as project-relative paths. " + rootNote + "\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\",\"description\":\"Project-relative directory (default: assets)\"}},\"required\":[\"dir\"]}},";
+        // Graph tools are read-only and stricter than the ordinary file tools:
+        // the path must resolve inside this project's assets tree and have a
+        // graph extension. ResolveGraphAssetPath repeats those checks in code.
+        json += "{\"name\":\"validate_graph\",\"description\":\"Load a .wlblocks or .wlbtree from the active project's assets tree and return the real validator report, including every finding unchanged. The resolved path must remain under this project's assets root; project-relative paths under assets/ are preferred. " + rootNote + "\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to a .wlblocks or .wlbtree under the active project's assets root (project-relative preferred)\"}},\"required\":[\"path\"]}},";
+        json += "{\"name\":\"list_graph_nodes\",\"description\":\"Load a .wlblocks or .wlbtree from the active project's assets tree and list its node instance ids, type ids, ordered tree children, and registry-declared pin ids/types/directions. The resolved path must remain under this project's assets root; project-relative paths under assets/ are preferred. " + rootNote + "\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to a .wlblocks or .wlbtree under the active project's assets root (project-relative preferred)\"}},\"required\":[\"path\"]}},";
         // memory_read, documented as holding lessons and user preferences. No path
         // argument: the location is fixed in GetMemoryPath, so the model cannot move it.
         json += "{\"name\":\"memory_read\",\"description\":\"Read the AI persistent memory. Contains lessons and user preferences.\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},";
@@ -568,6 +579,22 @@ namespace Wasteland
             // So the model is shown a different directory than it asked for, and is not told
             // that its argument was ignored.
             return ListFiles(dir);
+        }
+        // Graph inspection stays under the project's asset root, and each handler
+        // loads the real Graph model before it validates or lists registry pins.
+        else if (name == "validate_graph")
+        {
+            std::string path;
+            if (!JsonMini::ExtractString(argsJson, "path", path))
+                return "Error: validate_graph requires 'path' argument";
+            return ValidateGraph(path);
+        }
+        else if (name == "list_graph_nodes")
+        {
+            std::string path;
+            if (!JsonMini::ExtractString(argsJson, "path", path))
+                return "Error: list_graph_nodes requires 'path' argument";
+            return ListGraphNodes(path);
         }
         // No arguments, and not project-scoped.
         else if (name == "memory_read")
@@ -822,6 +849,162 @@ namespace Wasteland
             // Spelled out in parentheses so it cannot be confused with an error.
             return "(empty directory)";
         return result;
+    }
+
+    // Resolve graph paths through the existing project-root check, then apply the
+    // narrower assets-root boundary to the symlink-resolved target. Pass that
+    // canonical target to GraphSerializer so the checked link path is not reopened.
+    std::filesystem::path ToolServer::ResolveGraphAssetPath(const std::string &path,
+                                                             std::string &error)
+    {
+        const std::filesystem::path projectPath = ResolveProjectPath(path, error);
+        if (projectPath.empty())
+            return {};
+
+        std::error_code ec;
+        const std::filesystem::path assetRoot =
+            std::filesystem::weakly_canonical(Project::Get().GetAssetRoot(), ec);
+        if (ec)
+        {
+            error = "cannot resolve the project's asset root";
+            return {};
+        }
+
+        const std::filesystem::path canonicalPath =
+            std::filesystem::weakly_canonical(projectPath, ec);
+        if (ec)
+        {
+            error = "cannot resolve graph path '" + path + "'";
+            return {};
+        }
+
+        const std::filesystem::path assetRelative =
+            std::filesystem::relative(canonicalPath, assetRoot, ec);
+        if (ec || assetRelative.empty() || assetRelative.is_absolute() ||
+            assetRelative == ".")
+        {
+            error = "graph path '" + path + "' is outside the project's assets";
+            return {};
+        }
+        for (const std::filesystem::path &part : assetRelative)
+        {
+            if (part == "..")
+            {
+                error = "graph path '" + path + "' is outside the project's assets";
+                return {};
+            }
+        }
+
+        const std::string extension = canonicalPath.extension().string();
+        if (extension != ".wlblocks" && extension != ".wlbtree")
+        {
+            error = "graph path '" + path +
+                    "' must name a .wlblocks or .wlbtree file";
+            return {};
+        }
+        if (!std::filesystem::is_regular_file(canonicalPath, ec) || ec)
+        {
+            error = "graph path '" + path + "' is not a regular file";
+            return {};
+        }
+        return canonicalPath;
+    }
+
+    // Load through GraphSerializer into the same Graph shape consumed by the
+    // editor and Validator. The path is both project-confined and assets-confined
+    // before any graph file is opened.
+    bool ToolServer::LoadGraphAsset(const std::string &path,
+                                    std::filesystem::path &fullPath,
+                                    VisualBlocks::Graph &graph,
+                                    std::string &error)
+    {
+        fullPath = ResolveGraphAssetPath(path, error);
+        if (fullPath.empty())
+            return false;
+
+        try
+        {
+            VisualBlocks::GraphError loadError;
+            if (!VisualBlocks::GraphSerializer::Load(fullPath.string(), graph, loadError))
+            {
+                error = loadError.Message;
+                return false;
+            }
+        }
+        catch (const std::exception &exception)
+        {
+            error = "graph load failed: ";
+            error += exception.what();
+            return false;
+        }
+        return true;
+    }
+
+    // Return Validator's own Report output. In particular, do not filter,
+    // rewrite, or re-order Findings: each finding's Message is preserved by the
+    // validator's Format/Report path.
+    std::string ToolServer::ValidateGraph(const std::string &path)
+    {
+        VisualBlocks::Graph graph;
+        std::filesystem::path fullPath;
+        std::string error;
+        if (!LoadGraphAsset(path, fullPath, graph, error))
+            return "Error: " + error;
+
+        VisualBlocks::ValidationResult validation;
+        VisualBlocks::Validator::Validate(graph, validation);
+        return validation.Report(Project::Get().MakeProjectRelative(fullPath));
+    }
+
+    // List graph instances alongside the actual registry signature. Registry::Find
+    // resolves aliases, so legacy node ids report the pins the validator/emitter
+    // actually use rather than an empty alias stub.
+    std::string ToolServer::ListGraphNodes(const std::string &path)
+    {
+        VisualBlocks::Graph graph;
+        std::filesystem::path fullPath;
+        std::string error;
+        if (!LoadGraphAsset(path, fullPath, graph, error))
+            return "Error: " + error;
+
+        std::ostringstream output;
+        output << Project::Get().MakeProjectRelative(fullPath) << ": "
+               << graph.Nodes.size() << " node(s)\n";
+        VisualBlocks::NodeRegistry &registry = VisualBlocks::NodeRegistry::Get();
+        for (const VisualBlocks::GraphNode &node : graph.Nodes)
+        {
+            output << "- id `" << node.Id << "` type `" << node.TypeId << "`";
+            if (!node.Title.empty())
+                output << " title `" << node.Title << "`";
+            output << "\n";
+
+            if (graph.Kind == "tree" && !node.ChildIds.empty())
+            {
+                output << "  children (priority order):";
+                for (const std::string &childId : node.ChildIds)
+                    output << " `" << childId << "`";
+                output << "\n";
+            }
+
+            const VisualBlocks::NodeDef *definition = registry.Find(node.TypeId);
+            if (definition == nullptr)
+            {
+                output << "  (node type is not registered)\n";
+                continue;
+            }
+            for (const VisualBlocks::PinDef &pin : definition->Pins)
+            {
+                output << "  pin `" << pin.Id << "`: "
+                       << (pin.Dir == VisualBlocks::PinDir::In ? "input" : "output")
+                       << " " << VisualBlocks::PinTypeName(pin.Type);
+                if (pin.Required)
+                    output << " required";
+                if (!pin.DefaultLiteral.empty())
+                    output << " default `" << pin.DefaultLiteral << "`";
+                output << "\n";
+            }
+        }
+        return output.str();
     }
 
     // The persistent memory the editor's AI panel shows and the model reads back.

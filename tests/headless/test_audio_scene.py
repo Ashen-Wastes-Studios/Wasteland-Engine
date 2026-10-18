@@ -162,6 +162,31 @@ def test_loading_a_nonexistent_clip_reports_false():
              "LoadAudioClip must report failure rather than raise")
 
 
+def test_runtime_lifecycle_autostarts_sources_and_advances_the_mixer():
+    """Runtime hooks start authored sources and advance audio with the scene."""
+    sc = Scene()
+    audio = sc.GetAudio()
+    clip = Wasteland.Audio.AudioClip.FromSamples([0.0] * 480, 48000)
+    check(clip.IsValid(), "the generated runtime probe clip must be valid")
+    audio.GetMixer().RegisterClip("runtime_probe", clip)
+    check(audio.GetMixer().HasClip("runtime_probe"),
+          "the probe clip must register before runtime starts")
+
+    speaker = sc.CreateEntity("runtime speaker")
+    source = Wasteland.AudioSourceComponent()
+    source.ClipName = "runtime_probe"
+    source.PlayOnStart = True
+    speaker.AddOrReplaceAudioSourceComponent(source)
+
+    sc.OnRuntimeStart()
+    check_eq(audio.GetMixer().GetActiveVoiceCount(), 1,
+             "OnRuntimeStart must play every registered PlayOnStart source")
+
+    sc.OnUpdateRuntime(0.02)
+    check_eq(audio.GetMixer().GetActiveVoiceCount(), 0,
+             "OnUpdateRuntime must advance and retire the 10 ms probe voice")
+
+
 # --------------------------------------------------------------------------
 # 9. .wastescene serialization of the audio pair.
 #

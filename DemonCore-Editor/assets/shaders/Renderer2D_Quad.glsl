@@ -173,36 +173,59 @@ layout(location = 2) in float v_TexIndex;
 layout(location = 3) in float v_TilingFactor;
 layout(location = 4) in flat int v_EntityID;
 
-// A 32-element ARRAY of samplers at one binding point. This is how a single
-// draw call mixes many textures: the per-vertex TexIndex selects the array
-// element at sample time, instead of the CPU rebinding a sampler per quad.
-//
-// GLSL permits dynamic indexing of a sampler array (unlike FXC on D3D, which
-// is why the .hlsl twin unrolls a 32-iteration loop with a literal index -- see
-// the X3512 comment in Renderer2D_Quad.hlsl).
-//
-// The array is never uploaded with real samplers by the engine: Renderer2D
-// calls SetIntArray("u_Texture", ...) with 32 ints, i.e. it declares the
-// GL_TEXTURE_BINDING_* slots and then binds textures to those units directly.
-// An unset unit therefore samples whatever is bound there -- in practice unit
-// 0, which the engine keeps bound to the 1x1 white texture.
-//
-// The size 32 must match the samplers array Renderer2D fills; there is no
-// shared constant, so changing one without the other silently samples past
-// the end (clamped by the driver) or leaves slots white.
+// Thirty-two texture units for this batch. The slot varies between primitives
+// in a draw, so indexing this sampler array directly from v_TexIndex is not
+// portable GLSL (opaque-array indices must be dynamically uniform). The
+// literal-index switch below selects each sampler legally and matches the
+// HLSL twin's fixed-slot sampling path.
 layout(binding = 0) uniform sampler2D u_Texture[32];
+
+vec4 wl_sample_quad_texture(int slot, vec2 uv)
+{
+	switch (slot)
+	{
+		case 0:  return textureLod(u_Texture[0], uv, 0.0);
+		case 1:  return textureLod(u_Texture[1], uv, 0.0);
+		case 2:  return textureLod(u_Texture[2], uv, 0.0);
+		case 3:  return textureLod(u_Texture[3], uv, 0.0);
+		case 4:  return textureLod(u_Texture[4], uv, 0.0);
+		case 5:  return textureLod(u_Texture[5], uv, 0.0);
+		case 6:  return textureLod(u_Texture[6], uv, 0.0);
+		case 7:  return textureLod(u_Texture[7], uv, 0.0);
+		case 8:  return textureLod(u_Texture[8], uv, 0.0);
+		case 9:  return textureLod(u_Texture[9], uv, 0.0);
+		case 10: return textureLod(u_Texture[10], uv, 0.0);
+		case 11: return textureLod(u_Texture[11], uv, 0.0);
+		case 12: return textureLod(u_Texture[12], uv, 0.0);
+		case 13: return textureLod(u_Texture[13], uv, 0.0);
+		case 14: return textureLod(u_Texture[14], uv, 0.0);
+		case 15: return textureLod(u_Texture[15], uv, 0.0);
+		case 16: return textureLod(u_Texture[16], uv, 0.0);
+		case 17: return textureLod(u_Texture[17], uv, 0.0);
+		case 18: return textureLod(u_Texture[18], uv, 0.0);
+		case 19: return textureLod(u_Texture[19], uv, 0.0);
+		case 20: return textureLod(u_Texture[20], uv, 0.0);
+		case 21: return textureLod(u_Texture[21], uv, 0.0);
+		case 22: return textureLod(u_Texture[22], uv, 0.0);
+		case 23: return textureLod(u_Texture[23], uv, 0.0);
+		case 24: return textureLod(u_Texture[24], uv, 0.0);
+		case 25: return textureLod(u_Texture[25], uv, 0.0);
+		case 26: return textureLod(u_Texture[26], uv, 0.0);
+		case 27: return textureLod(u_Texture[27], uv, 0.0);
+		case 28: return textureLod(u_Texture[28], uv, 0.0);
+		case 29: return textureLod(u_Texture[29], uv, 0.0);
+		case 30: return textureLod(u_Texture[30], uv, 0.0);
+		case 31: return textureLod(u_Texture[31], uv, 0.0);
+		default: return vec4(1.0);
+	}
+}
 
 // Fragment entry point. One statement of real work: sample, tint, and emit the
 // id alongside.
 void main()
 {
-	// Sample-then-tint in one expression.
-	//
-	// int(v_TexIndex): the index arrived as a float (the vertex attribute is
-	// declared float) and GLSL will not index an array with a float. The cast is
-	// unchecked -- a TexIndex above 31 is undefined behaviour here, which is why
-	// Renderer2D must keep its slot count and this array size in step. The .hlsl
-	// twin clamps explicitly; this one does not.
+	// The literal-index switch avoids non-uniform sampler-array indexing. LOD 0
+	// matches the HLSL sprite path, which also samples the authored base level.
 	//
 	// v_TexCoord * v_TilingFactor: tiling is a UV multiply, so it costs nothing
 	// and needs no sampler wrap-mode change (which this header cannot express --
@@ -212,10 +235,7 @@ void main()
 	// OpenGLRendererAPI::Init (GL_SRC_ALPHA / GL_ONE_MINUS_SRC_ALPHA) then
 	// composites the result, so the shader itself does no blending.
 	//
-	// Implicit LOD: no bias or explicit level, so this relies on derivatives being
-	// available. That is valid in a fragment stage and is why the .hlsl twin uses
-	// SampleLevel only inside its unrolled loop.
-	color = texture(u_Texture[int(v_TexIndex)], v_TexCoord * v_TilingFactor) * v_Color;
+	color = wl_sample_quad_texture(int(v_TexIndex), v_TexCoord * v_TilingFactor) * v_Color;
 	// The picking pass. `flat` on the varying means this is the provoking vertex's
 	// id verbatim, not an average -- averaging two entity ids would produce an id
 	// belonging to neither.

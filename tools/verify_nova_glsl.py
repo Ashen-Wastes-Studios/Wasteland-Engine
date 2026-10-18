@@ -157,6 +157,51 @@ def check_twin_agreement(glsl_src, hlsl_src):
         ok = bool(m) and "Halton" not in m.group(1) and "u_Jitter" in m.group(1)
         checks.append((ok, f"{name}: GetJitter reads u_Jitter, no Halton"))
 
+    # 5. The trace G-buffer packs the world normal into .yzw -- its writer is
+    #    float4(ndcDepth, normal * 0.5 + 0.5), so .r is DEPTH and the normal must
+    #    decode from .gba. The GLSL twin read .rgb in five places (three of them
+    #    pre-existing in RunBilateralBlur), decoding a normal whose first
+    #    component is a depth value; the resulting edge-stop rejects valid
+    #    neighbours and lets the filter smear across surfaces. Assert the decode
+    #    channel rather than trusting it: BOTH files still compile when it is
+    #    wrong, so compilation is no evidence and the guard would otherwise pass.
+    for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
+        n_rgb = len(re.findall(r"s_NormalBuffer[^;]*?\)\.rgb", src))
+        n_gba = len(re.findall(r"s_NormalBuffer[^;]*?\)\.gba", src))
+        ok = n_gba > 0 and n_rgb == 0
+        checks.append((ok, f"{name}: normal decoded from .gba not .rgb "
+                           f"(gba={n_gba}, rgb={n_rgb})"))
+
+    # 6. The SVGF luminance weight must be built from the NEIGHBOUR's moment so it
+    #    varies per tap. A weight built from the CENTRE's variance alone is the
+    #    same constant for all nine taps and cancels exactly in the kernel
+    #    normalisation -- inert. The filter then silently degenerates to a plain
+    #    bilateral blur while still compiling and still looking plausible.
+    #    The old form was `1.0f + variance * 5.0f`.
+    for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
+        inert = "1.0f + variance * 5.0f" in src
+        uses_neighbour = bool(re.search(r"exp\(-abs\(moments\.x\s*-\s*neighborMean\)", src))
+        ok = (not inert) and uses_neighbour
+        checks.append((ok, f"{name}: variance weight varies per tap "
+                           f"(inert_form={inert}, neighbour_form={uses_neighbour})"))
+
+    # OpenGL guarantees only eight compute image uniforms. The driver failed
+    # this shader at startup with C7624 when a ninth declaration became active,
+    # even though the bindings themselves were all in the 0..7 range. Reuse
+    # image unit 6 by pass instead of declaring separate TraceGBuffer/Moments
+    # uniforms; the host rebinds that unit before the SVGF passes.
+    image_pattern = r"uniform\s+(?:(?:readonly|writeonly)\s+)?image\w+\s+(\w+)"
+    image_uniforms = re.findall(image_pattern, glsl_src)
+    image_budget_ok = len(image_uniforms) <= 8
+    checks.append((image_budget_ok, f"glsl: compute image uniforms fit guaranteed limit "
+                                  f"(found {len(image_uniforms)}, maximum 8)"))
+
+    # Negative control: a synthetic ninth image uniform must make the same
+    # detector reject the source, even when it reuses a legal binding index.
+    overflow_probe = glsl_src + chr(10) + "layout(rgba32f, binding = 7) uniform image2D _ImageBudgetProbe;" + chr(10)
+    overflow_count = len(re.findall(image_pattern, overflow_probe))
+    checks.append((overflow_count > 8, "negative control: ninth image uniform is detected"))
+
     print()
     all_ok = True
     for ok, label in checks:

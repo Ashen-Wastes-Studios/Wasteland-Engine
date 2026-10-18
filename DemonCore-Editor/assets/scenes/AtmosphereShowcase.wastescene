@@ -1,0 +1,163 @@
+Scene: Atmosphere Showcase
+Entities:
+  - Entity: 9200000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 5, 25]
+      Rotation: [-0.2, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9200000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9200000000000000003
+    TagComponent:
+      Tag: Volumetric Fog
+    TransformComponent:
+      Translation: [0, 3, 0]
+      Rotation: [0, 0, 0]
+      Scale: [80, 12, 80]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.699999988, 0.75, 0.800000012, 1]
+      Density: 0.025
+      Anisotropy: 0.3
+      HeightFalloff: 0.4
+      NoiseStrength: 0.6
+      NoiseScale: 0.15
+      WindSpeed: 0.08
+      MaxSteps: 16
+  - Entity: 9200000000000000004
+    TagComponent:
+      Tag: Volumetric Clouds
+    TransformComponent:
+      Translation: [0, 60, 0]
+      Rotation: [0, 0, 0]
+      Scale: [200, 30, 200]
+    VolumetricCloudsComponent:
+      Enabled: true
+      Color: [1, 1, 1, 1]
+      AmbientTint: [0.449999988, 0.550000012, 0.699999988, 1]
+      Coverage: 0.45
+      Density: 0.5
+      NoiseScale: 0.06
+      DetailAmount: 0.6
+      WindDirection: [1, 0.3]
+      WindSpeed: 0.025
+      SilverLining: 0.7
+      ShadowStrength: 0.65
+      MaxSteps: 20
+  - Entity: 9200000000000000005
+    TagComponent:
+      Tag: Ground
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [100, 1, 100]
+    CubeRendererComponent:
+      Color: [0.3, 0.35, 0.25, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.35, 0.25, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.95
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    RigidBody3DComponent:
+      BodyType: "Static"
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.8
+      Restitution: 0
+  - Entity: 9200000000000000006
+    TagComponent:
+      Tag: Fog Volume 2
+    TransformComponent:
+      Translation: [20, 2, -15]
+      Rotation: [0, 0, 0]
+      Scale: [25, 8, 25]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.85, 0.7, 0.6, 1]
+      Density: 0.06
+      Anisotropy: -0.2
+      HeightFalloff: 0.7
+      NoiseStrength: 0.8
+      NoiseScale: 0.3
+      WindSpeed: 0.12
+      MaxSteps: 12
+  - Entity: 9200000000000000007
+    TagComponent:
+      Tag: Cloud Puff
+    TransformComponent:
+      Translation: [-30, 45, -20]
+      Rotation: [0, 0, 0]
+      Scale: [40, 12, 40]
+    VolumetricCloudsComponent:
+      Enabled: true
+      Color: [1, 0.95, 0.9, 1]
+      AmbientTint: [0.5, 0.55, 0.65, 1]
+      Coverage: 0.65
+      Density: 0.7
+      NoiseScale: 0.1
+      DetailAmount: 0.4
+      WindDirection: [0.8, 0.6]
+      WindSpeed: 0.04
+      SilverLining: 0.5
+      ShadowStrength: 0.8
+      MaxSteps: 16
+  - Entity: 9200000000000000008
+    TagComponent:
+      Tag: Reference Cube
+    TransformComponent:
+      Translation: [0, 1, 8]
+      Rotation: [0, 0.5, 0]
+      Scale: [2, 2, 2]
+    CubeRendererComponent:
+      Color: [0.7, 0.7, 0.75, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.7, 0.7, 0.75, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.8
+      Roughness: 0.2
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+
+      TexturePath: ""

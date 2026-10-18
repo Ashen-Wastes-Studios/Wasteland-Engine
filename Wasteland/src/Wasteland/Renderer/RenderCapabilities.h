@@ -9,14 +9,15 @@ namespace Wasteland
     // Feature tiers. Every RTX-class feature resolves to exactly one, and the
     // resolution happens here so no feature code ever branches on the API enum.
     //
-    //   HardwareRT     DXR / VK_KHR_ray_tracing: real RTX Kit SDKs.
+    //   HardwareRT     A Wasteland hardware-RT path backed by device support.
     //   DenoiseCompute A dedicated denoiser that runs as plain compute, so it
     //                  works on D3D11 (which has no hardware RT) but never on
     //                  OpenGL. No such denoiser ships today -- denoising is the
     //                  hand-rolled bilateral blur on every backend -- so this
     //                  tier only ever resolves for a future component.
     //   ComputeEmulated Software tracing in plain compute shaders -- this is
-    //                  the Nova path tracer, not a stub. It runs everywhere.
+    //                  the Nova path tracer, not a stub. It runs on GL/DX11/DX12;
+    //                  Vulkan remains unavailable until Nova is instantiated.
     //   Unavailable    The feature cannot run; caller must use its raster path.
     enum class FeatureTier : uint8_t
     {
@@ -30,7 +31,8 @@ namespace Wasteland
     {
         RendererAPI::API api = RendererAPI::API::OpenGL;
 
-        // Hardware ray tracing (DXR 1.1 / VK_KHR_ray_tracing).
+        // Hardware ray tracing usable by an implemented Wasteland path, not just
+        // a presumed driver capability.
         bool hardwareRT = false;
         // SM 6.x shader features: Inline Raytracing, RayQuery, wave intrinsics.
         bool inlineRaytracing = false;
@@ -39,9 +41,8 @@ namespace Wasteland
         // Cooperative vectors / tensor cores (RTXNTC, RTXMU).
         bool tensorCores = false;
 
-        // Software ray tracing via compute shaders (Nova). True on all four
-        // backends today -- this is what keeps OpenGL feature-complete
-        // without hardware RT.
+        // Software ray tracing via compute shaders (Nova), per active runtime
+        // path. VulkanNova is compiled but not instantiated today.
         bool computeRaytracing = false;
         // A compute-based denoiser can be built for this backend (D3D11 /
         // D3D12 / Vulkan). False everywhere until one exists.

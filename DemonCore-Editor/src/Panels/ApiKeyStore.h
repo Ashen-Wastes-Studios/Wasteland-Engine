@@ -20,8 +20,8 @@
 namespace Wasteland
 {
 
-	// The location is computed by FilePath() in the .cpp: %APPDATA%\Wasteland\
-	// ai_keys.cfg on Windows, $HOME/.config/Wasteland/ on other platforms, falling
+	// The location is computed by FilePath() in the .cpp: %APPDATA%\Wasteland\ai_keys.cfg
+	// on Windows, $HOME/.config/Wasteland/ on other platforms, falling
 	// back to a relative assets/ directory when the environment variable is unset.
 	//
 	// Outside the repo is the point -- an in-tree file would be one `git add -A`

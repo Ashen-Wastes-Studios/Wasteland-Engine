@@ -12,17 +12,19 @@
 // <filesystem> for the path arithmetic in GetSlotPath and the remove_all
 // calls in main's cleanup paths; <fstream> for the ofstream/ifstream pairs;
 // <sstream> for the stringstream that funnels a save file into YAML::Load.
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <system_error>
 
 namespace Wasteland
 {
 
-	// Anonymous namespace: these two helpers have no external contract, so
-	// internal linkage keeps them out of the module's symbol table. They must be
-	// defined here rather than in the header because they are the only places
-	// that need to know UUID's textual form.
+	// Anonymous namespace: these helpers have no external contract, so internal
+	// linkage keeps them out of the module's symbol table. The UUID helpers stay
+	// here because they are the only functions that need its textual form.
 	namespace
 	{
 		// The scene serializer writes a UUID as plain decimal (via the fmt
@@ -40,15 +42,51 @@ namespace Wasteland
 			return std::to_string(uuid);
 		}
 
-		UUID StringToUUID(const std::string &text)
+		bool StringToUUID(const std::string &text, UUID &outUUID)
 		{
-			// std::stoull THROWS std::invalid_argument on a non-numeric string and
-			// std::out_of_range on overflow. DEFECT: none of that is guarded here or at
-			// the single call site in ReadEntity, so a hand-edited or truncated save with
-			// a non-numeric UUID propagates an exception out of Load -- which its own
-			// header promises never happens ("returns false for a malformed file").
-			// A try/catch, or std::from_chars, would close that hole.
-			return static_cast<UUID>(std::stoull(text));
+			// UUIDs are serialized as unsigned decimal integers. from_chars neither
+			// accepts signs/trailing characters nor throws on invalid or overflowing
+			// input, so a malformed save stays on Load's ordinary error path.
+			uint64_t value = 0;
+			const char *begin = text.data();
+			const char *end = begin + text.size();
+			const auto result = std::from_chars(begin, end, value, 10);
+			if (result.ec != std::errc{} || result.ptr != end || text.empty())
+				return false;
+
+			outUUID = UUID(value);
+			return true;
+		}
+
+		template <typename T>
+		void ValidateScalar(const YAML::Node &node, const std::string &field)
+		{
+			if (!node)
+				return;
+			try
+			{
+				(void)node.as<T>();
+			}
+			catch (const std::exception &e)
+			{
+				throw std::runtime_error(field + ": " + e.what());
+			}
+		}
+
+		void ValidateMap(const YAML::Node &node, const std::string &field)
+		{
+			if (node && !node.IsMap())
+				throw std::runtime_error(field + " must be a map");
+		}
+
+		void ValidateVector3(const YAML::Node &node, const std::string &field)
+		{
+			if (!node)
+				return;
+			if (!node.IsSequence() || node.size() != 3)
+				throw std::runtime_error(field + " must contain exactly three coordinates");
+			for (std::size_t i = 0; i < 3; ++i)
+				ValidateScalar<float>(node[i], field + "[" + std::to_string(i) + "]");
 		}
 	}
 
@@ -467,10 +505,22 @@ namespace Wasteland
 			return false;
 		}
 
-		// The unguarded stoull from the anonymous namespace. DEFECT: as noted there,
-		// a non-numeric UUID throws std::invalid_argument straight out of here and
-		// out of Load, despite the header promising false-on-malformed.
-		UUID uuid = StringToUUID(node["UUID"].as<std::string>());
+		UUID uuid(0);
+		try
+		{
+			if (!StringToUUID(node["UUID"].as<std::string>(), uuid))
+			{
+				if (outError)
+					*outError = "entity UUID is not an unsigned decimal integer";
+				return false;
+			}
+		}
+		catch (const std::exception &e)
+		{
+			if (outError)
+				*outError = std::string("invalid entity UUID: ") + e.what();
+			return false;
+		}
 		Entity entity = FindEntityByUUID(uuid);
 
 		// 'No entity with this id' is NOT an error. The level changed between the
@@ -494,10 +544,8 @@ namespace Wasteland
 		if (node["Position"] && entity.HasComponent<TransformComponent>())
 		{
 			auto &t = entity.GetComponent<TransformComponent>();
-			// Positional indexing into the sequence written by WriteEntity. NOTE: a
-			// sequence shorter than three elements is read as undefined nodes and
-			// .as<float>() THROWS on those -- a truncated save would escape as an
-			// exception rather than a reported error.
+			// Load preflights the sequence shape and numeric conversions before this
+			// mutation pass, so malformed coordinates are rejected atomically.
 			t.Translation = glm::vec3(
 				node["Position"][0].as<float>(),
 				node["Position"][1].as<float>(),
@@ -654,9 +702,8 @@ namespace Wasteland
 			return fail("no save in slot '" + slot + "' (" + path + ")");
 
 		YAML::Node data;
-		// Only the YAML parse is inside the try. Every .as<T>() below is OUTSIDE
-		// it, so a structurally valid but wrongly-typed value (a string where a
-		// sequence is expected, say) throws rather than returning a reason.
+		// Parse the document first. Structural and scalar validation happens before
+		// any scene mutation, so malformed YAML values can return a reason safely.
 		try
 		{
 			std::stringstream buffer;
@@ -721,28 +768,147 @@ namespace Wasteland
 						std::to_string(kCurrentSchemaVersion));
 		}
 
-		// Past this point the file is understood, so state may be applied.
-		// Past this point the file is fully understood, so applying state cannot
-		// corrupt anything. This is the boundary the whole validation chain protects.
+		// Validate every value that the restore pass will read before changing
+		// WorldTime or any entity. This two-pass boundary ensures a malformed later
+		// record cannot leave earlier records partially applied to the live scene.
+		double loadedWorldTime = m_WorldTime;
 		if (data["WorldTime"])
-			m_WorldTime = data["WorldTime"].as<double>();
+		{
+			try
+			{
+				loadedWorldTime = data["WorldTime"].as<double>();
+			}
+			catch (const std::exception &e)
+			{
+				return fail(std::string("WorldTime is not a number: ") + e.what());
+			}
+		}
+
+		const YAML::Node entities = data["Entities"];
+		if (entities && !entities.IsSequence())
+			return fail("Entities must be a sequence");
+
+		try
+		{
+			if (entities)
+			{
+				for (const auto &node : entities)
+				{
+					if (!node.IsMap())
+						throw std::runtime_error("entity record must be a map");
+
+					const YAML::Node uuidNode = node["UUID"];
+					if (!uuidNode)
+						throw std::runtime_error("entity record has no UUID");
+					const std::string uuidText = uuidNode.as<std::string>();
+					UUID uuid(0);
+					if (!StringToUUID(uuidText, uuid))
+						throw std::runtime_error("entity UUID is not an unsigned decimal integer");
+
+					Entity entity = FindEntityByUUID(uuid);
+					if (!entity.IsValid())
+					{
+						// ReadEntity includes Name in its warning for entities removed from
+						// the level, so make that conversion safe too.
+						ValidateScalar<std::string>(node["Name"], "Name");
+						continue;
+					}
+
+					if (entity.HasComponent<TransformComponent>())
+					{
+						ValidateVector3(node["Position"], "Position");
+						ValidateVector3(node["Rotation"], "Rotation");
+						ValidateVector3(node["Scale"], "Scale");
+					}
+
+					const YAML::Node health = node["Health"];
+					if (health && entity.HasComponent<HealthComponent>())
+					{
+						ValidateMap(health, "Health");
+					ValidateScalar<float>(health["Current"], "Health.Current");
+					ValidateScalar<float>(health["Max"], "Health.Max");
+					ValidateScalar<bool>(health["IsDead"], "Health.IsDead");
+					}
+
+					const YAML::Node weapon = node["Weapon"];
+					if (weapon && entity.HasComponent<WeaponComponent>())
+					{
+						ValidateMap(weapon, "Weapon");
+						ValidateScalar<int>(weapon["CurrentAmmo"], "Weapon.CurrentAmmo");
+						ValidateScalar<int>(weapon["MaxAmmo"], "Weapon.MaxAmmo");
+						ValidateScalar<int>(weapon["ReserveAmmo"], "Weapon.ReserveAmmo");
+					}
+
+					const YAML::Node inventory = node["Inventory"];
+					if (inventory && entity.HasComponent<InventoryComponent>())
+					{
+						ValidateMap(inventory, "Inventory");
+						ValidateScalar<float>(inventory["MaxWeight"], "Inventory.MaxWeight");
+						ValidateScalar<int>(inventory["MaxSlots"], "Inventory.MaxSlots");
+						const YAML::Node items = inventory["Items"];
+						if (items)
+						{
+							if (!items.IsSequence())
+								throw std::runtime_error("Inventory.Items must be a sequence");
+							for (const auto &stack : items)
+							{
+								if (!stack.IsMap())
+									throw std::runtime_error("Inventory.Items entries must be maps");
+								if (!stack["ItemId"])
+									continue;
+								ValidateScalar<std::string>(stack["ItemId"], "Inventory.Items.ItemId");
+								ValidateScalar<int>(stack["Quantity"], "Inventory.Items.Quantity");
+							}
+						}
+					}
+
+					const YAML::Node questFlags = node["QuestFlags"];
+					if (questFlags && entity.HasComponent<QuestFlagsComponent>())
+					{
+						ValidateMap(questFlags, "QuestFlags");
+						for (const auto &entry : questFlags)
+						{
+							ValidateScalar<std::string>(entry.first, "QuestFlags key");
+							ValidateScalar<std::string>(entry.second, "QuestFlags value");
+						}
+					}
+
+					const YAML::Node worldTimers = node["WorldTimers"];
+					if (worldTimers && entity.HasComponent<WorldTimerComponent>())
+					{
+						ValidateMap(worldTimers, "WorldTimers");
+						for (const auto &entry : worldTimers)
+						{
+							ValidateScalar<std::string>(entry.first, "WorldTimers key");
+							ValidateScalar<double>(entry.second, "WorldTimers value");
+						}
+					}
+				}
+			}
+		}
+		catch (const std::exception &e)
+		{
+			return fail(std::string("malformed save data: ") + e.what());
+		}
+
+		// All conversions have been checked; the mutation pass can now apply the
+		// document without exposing partial state on malformed input.
+		m_WorldTime = loadedWorldTime;
 
 		// 'applied' counts ReadEntity returning true, which INCLUDES entities that
 		// were found missing and skipped -- so this count is records read, not
 		// records that changed the world. Worth knowing before the log line below is
 		// read as 'N entities restored'.
 		int applied = 0;
-		if (data["Entities"])
+		if (entities)
 		{
-			for (const auto &node : data["Entities"])
+			for (const auto &node : entities)
 			{
 				std::string entityError;
-				// `entityError` is captured and then DISCARDED -- DEFECT. ReadEntity writes
-				// a reason there (the missing-UUID case), but Load never inspects or logs it,
-				// so a malformed record vanishes into the applied/not-applied count with no
-				// diagnostic anywhere.
 				if (ReadEntity(node, &entityError))
 					applied++;
+				else
+					return fail(entityError.empty() ? "malformed entity record" : entityError);
 			}
 		}
 

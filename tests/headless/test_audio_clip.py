@@ -180,6 +180,128 @@ def test_float32_bit_exact():
     check_near(clip.GetPeak(), 1.0, 1e-6, "float peak is exact")
 
 
+def test_save_wav_writes_valid_pcm16_and_roundtrips_clip_data():
+    """SaveWav writes a canonical little-endian PCM WAV from the real samples."""
+    samples = [0.0, 0.25, -0.25, 1.5, -1.5]
+    clip = Audio.AudioClip.FromSamples(samples, 22050)
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        check(clip.SaveWav(path), "valid clip should be written")
+        with open(path, "rb") as handle:
+            data = handle.read()
+
+        check_eq(data[:4], b"RIFF", "RIFF signature")
+        check_eq(struct.unpack_from("<I", data, 4)[0], len(data) - 8,
+                 "RIFF size counts all bytes after the size field")
+        check_eq(data[8:12], b"WAVE", "WAVE signature")
+        check_eq(data[12:16], b"fmt ", "format chunk id")
+        check_eq(struct.unpack_from("<I", data, 16)[0], 16, "PCM fmt chunk size")
+        fmt, channels, rate, byte_rate, align, bits = struct.unpack_from("<HHIIHH", data, 20)
+        check_eq(fmt, 1, "writer emits integer PCM, not IEEE float")
+        check_eq(channels, 1, "AudioClip stores mono samples")
+        check_eq(rate, 22050, "sample rate is preserved")
+        check_eq(byte_rate, 44100, "byte rate matches sample rate and block align")
+        check_eq(align, 2, "16-bit mono block align")
+        check_eq(bits, 16, "writer emits 16-bit PCM")
+        check_eq(data[36:40], b"data", "data chunk id")
+        check_eq(struct.unpack_from("<I", data, 40)[0], len(samples) * 2,
+                 "data chunk size")
+        check_eq(len(data), 44 + len(samples) * 2, "file size includes header and PCM")
+        check_eq(struct.unpack_from("<5h", data, 44),
+                 (0, 8192, -8192, 32767, -32768),
+                 "samples are clipped and encoded little-endian")
+
+        reread, result = _load(data)
+        check(reread is not None, "LoadWav must read the writer's file")
+        check_eq(result, Audio.LoadResult.Success, "round-trip reader result")
+        check_eq(reread.GetSampleRate(), 22050, "round-trip sample rate")
+        check_eq(reread.GetChannels(), 1, "round-trip channel count")
+        check_eq(reread.GetFrameCount(), len(samples), "round-trip frame count")
+        check_near(reread.GetDuration(), len(samples) / 22050, 1e-6,
+                   "round-trip duration")
+        check_near(reread.GetPeak(), 1.0, 1e-6, "clipped PCM peak")
+        check_near(clip.GetPeak(), 1.5, 1e-6, "saving must not mutate clip samples")
+    finally:
+        os.unlink(path)
+
+
+def test_save_wav_preserves_highest_supported_sample_rate():
+    """The top positive int sample rate still yields a valid WAV byte rate."""
+    clip = Audio.AudioClip.FromSamples([0.25, -0.25], 2147483647)
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        check(clip.SaveWav(path), "clip at the sample-rate boundary should save")
+        with open(path, "rb") as handle:
+            data = handle.read()
+        check_eq(struct.unpack_from("<I", data, 24)[0], 2147483647,
+                 "maximum supported positive sample rate")
+        check_eq(struct.unpack_from("<I", data, 28)[0], 4294967294,
+                 "byte rate remains representable as uint32")
+        reread, result = _load(data)
+        check(reread is not None, "reader accepts the boundary-rate writer output")
+        check_eq(result, Audio.LoadResult.Success, "boundary-rate round-trip result")
+        check_eq(reread.GetSampleRate(), 2147483647, "boundary-rate round-trip")
+    finally:
+        os.unlink(path)
+
+
+def test_save_wav_rejects_invalid_clip():
+    """An invalid empty clip cannot produce a file."""
+    invalid = Audio.AudioClip.FromSamples([], SR)
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "invalid.wav")
+        check(not invalid.SaveWav(path), "an empty invalid clip cannot be saved")
+        check(not os.path.exists(path), "invalid clip must not leave a file")
+
+
+def test_save_wav_rejects_unwritable_path():
+    """A valid clip cannot be saved below a parent directory that does not exist."""
+    valid = Audio.AudioClip.FromSamples([0.25], SR)
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "missing", "clip.wav")
+        check(not valid.SaveWav(path), "a path with a missing parent cannot be saved")
+
+
+def test_save_wav_converts_nonfinite_samples_to_silence():
+    """NaN and infinities must not become arbitrary integer PCM values."""
+    clip = Audio.AudioClip.FromSamples([float("nan"), float("inf"), -float("inf")], SR)
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        check(clip.SaveWav(path), "a clip containing non-finite samples should be sanitized")
+        with open(path, "rb") as handle:
+            data = handle.read()
+        check_eq(struct.unpack_from("<3h", data, 44), (0, 0, 0),
+                 "non-finite samples are written as silence")
+        reread, result = _load(data)
+        check(reread is not None, "sanitized output remains readable")
+        check_eq(result, Audio.LoadResult.Success, "sanitized reader result")
+        check_eq(reread.GetPeak(), 0.0, "sanitized samples have zero peak")
+    finally:
+        os.unlink(path)
+
+
+def test_writer_output_truncated_at_partial_sample_is_safely_read():
+    """The real reader must drop a partial final PCM frame from a truncated WAV."""
+    clip = Audio.AudioClip.FromSamples([0.1, 0.2, 0.3, 0.4], SR)
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        check(clip.SaveWav(path), "source clip should save before truncation")
+        with open(path, "rb") as handle:
+            data = handle.read()
+        truncated, result = _load(data[:-1])
+        check(truncated is not None, "reader must remain bounded on truncated data")
+        check_eq(result, Audio.LoadResult.Success,
+                 "existing reader behavior clamps data to bytes present")
+        check_eq(truncated.GetFrameCount(), 3,
+                 "partial final 16-bit frame is dropped")
+    finally:
+        os.unlink(path)
+
+
 # --------------------------------------------------------------------------
 # AudioClip: multichannel downmix
 # --------------------------------------------------------------------------

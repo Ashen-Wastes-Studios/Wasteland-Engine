@@ -1,0 +1,274 @@
+Scene: Material Gallery
+Entities:
+  - Entity: 9500000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 6, 18]
+      Rotation: [-0.25, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9500000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9500000000000000003
+    TagComponent:
+      Tag: Floor
+    TransformComponent:
+      Translation: [0, -0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [40, 1, 40]
+    CubeRendererComponent:
+      Color: [0.3, 0.3, 0.32, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.3, 0.32, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.9
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000004
+    TagComponent:
+      Tag: Polished Gold
+    TransformComponent:
+      Translation: [-9, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [1, 0.75, 0.2, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.75, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.05
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000005
+    TagComponent:
+      Tag: Brushed Copper
+    TransformComponent:
+      Translation: [-6, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.85, 0.5, 0.3, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.85, 0.5, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.35
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000006
+    TagComponent:
+      Tag: Matte Plastic
+    TransformComponent:
+      Translation: [-3, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.2, 0.5, 0.9, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.5, 0.9, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.8
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000007
+    TagComponent:
+      Tag: Rubber
+    TransformComponent:
+      Translation: [0, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.15, 0.15, 0.15, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.15, 0.15, 0.15, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000008
+    TagComponent:
+      Tag: Neon Emission
+    TransformComponent:
+      Translation: [3, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [1, 0.1, 0.3, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.1, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.4
+      EmissionColor: [1, 0.05, 0.2, 1]
+      EmissionIntensity: 8
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000009
+    TagComponent:
+      Tag: Displacement
+    TransformComponent:
+      Translation: [6, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.6, 0.6, 0.65, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.6, 0.6, 0.65, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.2
+      Roughness: 0.6
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.5
+      TexturePath: ""
+  - Entity: 9500000000000000010
+    TagComponent:
+      Tag: Glass-like
+    TransformComponent:
+      Translation: [9, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.8, 0.9, 1, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.8, 0.9, 1, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.02
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9500000000000000011
+    TagComponent:
+      Tag: Textured Cube
+    TransformComponent:
+      Translation: [0, 1, 6]
+      Rotation: [0, 0.3, 0]
+      Scale: [2, 2, 2]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 0.5
+      Metallic: 0.8
+      Roughness: 0.4
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.2
+  - Entity: 9500000000000000012
+    TagComponent:
+      Tag: Textured Sphere
+    TransformComponent:
+      Translation: [0, 1, -6]
+      Rotation: [0, 0, 0]
+      Scale: [2, 2, 2]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureIndex: 0
+      TexturePath: assets/textures/wood_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 0.3
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.1

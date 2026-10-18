@@ -51,6 +51,17 @@ MUTATIONS = {
         "    int e = (cameraMoved > 0.5f) ? 0 : frameIndex;\n"
         "    return float2(Halton(e % 16 + 1, 2), Halton(e % 16 + 1, 3)) - 0.5f;\n}",
     ),
+    # The trace G-buffer packs the normal into .yzw, so .rgb decodes depth as the
+    # normal's first component. Both files still COMPILE when this is wrong, so
+    # only an explicit channel assertion can catch it.
+    "normal decoded from .rgb (depth read as normal)": lambda s: s.replace(
+        "texture(s_NormalBuffer, wl_buf_uv(uv)).gba",
+        "texture(s_NormalBuffer, wl_buf_uv(uv)).rgb", 1),
+    # The SVGF luminance weight rebuilt from the CENTRE's variance, which is
+    # constant across all nine taps and cancels in the normalisation -- inert.
+    "variance weight made inert (centre variance, constant per tap)": lambda s: s.replace(
+        "exp(-abs(moments.x - neighborMean) / (sigma_l * sqrt(centerVariance) + 1e-4f))",
+        "1.0f + variance * 5.0f", 1),
 }
 
 

@@ -520,6 +520,13 @@ namespace Wasteland
                 m_CurrentDirectory = path;
                 m_SelectedFile.clear();
             }
+            else if (!isDirectory && path.extension() == ".wlavb" &&
+                     ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            {
+                // AVB graphs open in their own graph panel; the browser only
+                // queues the path and lets EditorLayer dispatch by extension.
+                m_OpenRequested = path.string();
+            }
 
             // Drag source. Wrapped in its own block because BeginDragDropSource
             // must be paired with EndDragDropSource() before anything else is
@@ -617,7 +624,9 @@ namespace Wasteland
             || ext == ".wlbtree"   // NPC Behavior panel
             // Lowercasing the extension before comparison would fix the above
             // without changing any other behaviour.
-            || ext == ".wlblocks"; // Visual Blocks flow graph
+            || ext == ".wlblocks" // Visual Blocks flow graph
+            || ext == ".wlavb"    // AVB audio graph
+            || ext == ".wlterrain"; // Terrain source asset
     }
 
     // Hand-off, not dispatch: swap takes the string and leaves the member

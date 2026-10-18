@@ -77,7 +77,7 @@
       <PrecompiledHeaderFile>wlpch.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\miniaudio;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -90,7 +90,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
     <Lib>
-      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;ole32.lib;winmm.lib;avrt.lib;shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;vendor\nvrhi\build\Debug;C:\VulkanSDK\1.3.296.0\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
@@ -102,7 +102,7 @@
       <PrecompiledHeaderFile>wlpch.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\miniaudio;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -119,7 +119,7 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
     <Lib>
-      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;ole32.lib;winmm.lib;avrt.lib;shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;vendor\nvrhi\build\Release;C:\VulkanSDK\1.3.296.0\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
@@ -131,7 +131,7 @@
       <PrecompiledHeaderFile>wlpch.h</PrecompiledHeaderFile>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;YAML_CPP_STATIC_DEFINE;WL_PLATFORM_WINDOWS;WL_BUILD_DLL;GLFW_INCLUDE_NONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>src;vendor\spdlog\include;vendor\GLFW\include;vendor\Glad\include;vendor\imgui;vendor\glm;vendor\miniaudio;vendor\stb_image;vendor\entt\single_include;vendor\yaml-cpp\include;vendor\ImGuizmo;vendor\Box2D\include;vendor\Box3D\include;vendor\pybind11\include;vendor\nvrhi\include;vendor\nvrhi\build\_deps\directx_headers-src\include;vendor\nvrhi\build\_deps\vulkan_headers-src\include;C:\VulkanSDK\1.3.296.0\Include;C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
@@ -148,7 +148,7 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
     <Lib>
-      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>python314.lib;nvrhi.lib;nvrhi_d3d11.lib;nvrhi_d3d12.lib;nvrhi_vk.lib;opengl32.lib;d3d11.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dxguid.lib;vulkan-1.lib;volk.lib;ole32.lib;winmm.lib;avrt.lib;shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\libs;vendor\nvrhi\build\Dist;C:\VulkanSDK\1.3.296.0\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
     <ProjectReference>
@@ -198,8 +198,21 @@
     <ClInclude Include="src\Wasteland\Animation\Skeleton.h" />
     <ClInclude Include="src\Wasteland\Animation\SkinnedMesh.h" />
     <ClInclude Include="src\Wasteland\Audio\AudioClip.h" />
+    <ClInclude Include="src\Wasteland\Audio\AudioDevice.h" />
     <ClInclude Include="src\Wasteland\Audio\AudioSystem.h" />
     <ClInclude Include="src\Wasteland\Audio\Mixer.h" />
+    <ClInclude Include="src\Wasteland\Avb\AudioBus.h" />
+    <ClInclude Include="src\Wasteland\Avb\AvbBusEffects.h" />
+    <ClInclude Include="src\Wasteland\Avb\AvbDsp.h" />
+    <ClInclude Include="src\Wasteland\Avb\AvbVoices.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\Compiler.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\Graph.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\GraphSerializer.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\NodeRegistry.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\ProjectRuntime.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\Runtime.h" />
+    <ClInclude Include="src\Wasteland\Avb\Graph\Validator.h" />
+    <ClInclude Include="src\Wasteland\Avb\Recorder.h" />
     <ClInclude Include="src\Wasteland\Core\Application.h" />
     <ClInclude Include="src\Wasteland\Core\Core.h" />
     <ClInclude Include="src\Wasteland\Core\EntryPoint.h" />
@@ -241,6 +254,7 @@
     <ClInclude Include="src\Wasteland\Renderer\RendererAPI.h" />
     <ClInclude Include="src\Wasteland\Renderer\Shader.h" />
     <ClInclude Include="src\Wasteland\Renderer\SubTexture2D.h" />
+    <ClInclude Include="src\Wasteland\Renderer\TerrainNovaMesh.h" />
     <ClInclude Include="src\Wasteland\Renderer\Texture.h" />
     <ClInclude Include="src\Wasteland\Renderer\VertexArray.h" />
     <ClInclude Include="src\Wasteland\Scene\BehaviorTreeSystem.h" />
@@ -253,6 +267,10 @@
     <ClInclude Include="src\Wasteland\Scene\ScriptableEntity.h" />
     <ClInclude Include="src\Wasteland\Scripting\BindingsAge.h" />
     <ClInclude Include="src\Wasteland\Scripting\ScriptEngine.h" />
+    <ClInclude Include="src\Wasteland\Terrain\Terrain.h" />
+    <ClInclude Include="src\Wasteland\Terrain\TerrainCollision.h" />
+    <ClInclude Include="src\Wasteland\Terrain\TerrainRuntime.h" />
+    <ClInclude Include="src\Wasteland\Terrain\TerrainScenePersistence.h" />
     <ClInclude Include="src\Wasteland\Utils\PlatformUtils.h" />
     <ClInclude Include="src\Wasteland\VisualBlocks\BehaviorTree.h" />
     <ClInclude Include="src\Wasteland\VisualBlocks\Compiler.h" />
@@ -682,6 +700,7 @@
     <ClInclude Include="vendor\glm\glm\vec4.hpp" />
     <ClInclude Include="vendor\glm\glm\vector_relational.hpp" />
     <ClInclude Include="vendor\imgui\TextEditor.h" />
+    <ClInclude Include="vendor\miniaudio\miniaudio.h" />
     <ClInclude Include="vendor\stb_image\stb_image.h" />
   </ItemGroup>
   <ItemGroup>
@@ -729,8 +748,21 @@
     <ClCompile Include="src\Wasteland\Animation\Skeleton.cpp" />
     <ClCompile Include="src\Wasteland\Animation\SkinnedMesh.cpp" />
     <ClCompile Include="src\Wasteland\Audio\AudioClip.cpp" />
+    <ClCompile Include="src\Wasteland\Audio\AudioDevice.cpp" />
     <ClCompile Include="src\Wasteland\Audio\AudioSystem.cpp" />
     <ClCompile Include="src\Wasteland\Audio\Mixer.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\AudioBus.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\AvbBusEffects.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\AvbDsp.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\AvbVoices.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\Compiler.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\Graph.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\GraphSerializer.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\NodeRegistry.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\ProjectRuntime.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\Runtime.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Graph\Validator.cpp" />
+    <ClCompile Include="src\Wasteland\Avb\Recorder.cpp" />
     <ClCompile Include="src\Wasteland\Core\Application.cpp" />
     <ClCompile Include="src\Wasteland\Core\Gamepad.cpp" />
     <ClCompile Include="src\Wasteland\Core\Layer.cpp" />
@@ -769,15 +801,29 @@
     <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp" />
     <ClCompile Include="src\Wasteland\Scripting\BindingsAge.cpp" />
     <ClCompile Include="src\Wasteland\Scripting\ScriptEngine.cpp" />
+    <ClCompile Include="src\Wasteland\Terrain\Terrain.cpp" />
+    <ClCompile Include="src\Wasteland\Terrain\TerrainCollision.cpp" />
+    <ClCompile Include="src\Wasteland\Terrain\TerrainRuntime.cpp" />
+    <ClCompile Include="src\Wasteland\Terrain\TerrainScenePersistence.cpp" />
     <ClCompile Include="src\Wasteland\VisualBlocks\BehaviorTree.cpp" />
-    <ClCompile Include="src\Wasteland\VisualBlocks\Compiler.cpp" />
-    <ClCompile Include="src\Wasteland\VisualBlocks\Graph.cpp" />
-    <ClCompile Include="src\Wasteland\VisualBlocks\GraphSerializer.cpp" />
+    <ClCompile Include="src\Wasteland\VisualBlocks\Compiler.cpp">
+      <ObjectFileName>$(IntDir)\Compiler1.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\Graph.cpp">
+      <ObjectFileName>$(IntDir)\Graph1.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\GraphSerializer.cpp">
+      <ObjectFileName>$(IntDir)\GraphSerializer1.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibrary.cpp" />
     <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibraryFlow.cpp" />
     <ClCompile Include="src\Wasteland\VisualBlocks\NodeLibraryV1.cpp" />
-    <ClCompile Include="src\Wasteland\VisualBlocks\NodeRegistry.cpp" />
-    <ClCompile Include="src\Wasteland\VisualBlocks\Validator.cpp" />
+    <ClCompile Include="src\Wasteland\VisualBlocks\NodeRegistry.cpp">
+      <ObjectFileName>$(IntDir)\NodeRegistry1.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\VisualBlocks\Validator.cpp">
+      <ObjectFileName>$(IntDir)\Validator1.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="src\wlpch.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>

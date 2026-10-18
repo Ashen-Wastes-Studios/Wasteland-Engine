@@ -19,16 +19,10 @@ namespace Wasteland
 	// RendererAPI.h:41. Without the `RendererAPI::` qualifier here it would be a
 	// different variable with the same name.
 
-	// Initialised to OpenGL rather than None, which is a deliberate-looking but
-	// consequential choice: every factory switch has an explicit None arm that
-	// asserts and returns nullptr, and this initializer means that arm is
-	// unreachable until something overwrites s_API. Overwrite happens in exactly
-	// one place -- RenderCommand.cpp:36 assigns RendererAPI::s_API = api, which
-	// is permitted only because RenderCommand is a friend of RendererAPI
-	// (declared at RendererAPI.h:40). So the ordering that matters is: this
-	// static initializer runs, then the application selects a backend through
-	// RenderCommand. Any Create() call before that selection silently gets the
-	// OpenGL path regardless of what the platform actually initialised.
+	// Windows starts with NVRHI/DX12, the supported Nova path. Other platforms
+	// retain OpenGL until a Nova-capable default is proven there. RenderCommand's
+	// initial concrete backend follows this same platform selection; startup may
+	// subsequently select the active API through SetAPI.
 
 	// Not a thread-local, so it is shared mutable state with no synchronisation.
 	// Benign today only because backend selection happens once during startup
@@ -38,6 +32,10 @@ namespace Wasteland
 	// Being a plain enum rather than std::atomic<API> also means this write is
 	// not synchronised with the reads in Renderer::GetAPI(), which is an
 	// `inline static` accessor in the header returning s_API by value.
+#if defined(WL_PLATFORM_WINDOWS)
 	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
+#else
+	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
+#endif
 
 }

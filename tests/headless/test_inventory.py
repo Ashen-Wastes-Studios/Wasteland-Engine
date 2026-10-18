@@ -68,6 +68,7 @@ from Wasteland import Scene, Vec3  # noqa: E402
 from runner import check, check_eq, check_ge, check_near  # noqa: E402
 
 _TMP_DIRS: list[str] = []
+_SIMULATION_SCENES: list[Scene] = []
 
 
 def _tmpdir() -> str:
@@ -91,7 +92,15 @@ def _scene() -> Scene:
     """
     sc = Scene()
     sc.OnSimulationStart()
+    _SIMULATION_SCENES.append(sc)
     return sc
+
+
+def __headless_teardown__() -> None:
+    """Stop physics before releasing scenes that own raw world handles."""
+    for sc in reversed(_SIMULATION_SCENES):
+        sc.OnSimulationStop()
+    _SIMULATION_SCENES.clear()
 
 
 def _define(sc: Scene, item_id: str, max_stack: int, weight: float) -> "Wasteland.Entity":
@@ -1028,3 +1037,118 @@ def test_pickup_refuses_a_source_that_is_not_a_pile():
              "a carrier with no inventory accepts nothing")
     check_eq(pile.GetDroppedItemComponent().Quantity, 2,
              "and the pile must be untouched, not consumed")
+
+
+# --------------------------------------------------------------------------
+# 9. Script notifications for gameplay inventory mutations.
+
+def _attach_inventory_probe(sc: "Scene", entity: "Wasteland.Entity") -> str:
+    """Attach a real Python script whose inventory hook records arguments and state."""
+    fd, path = tempfile.mkstemp(prefix="wl_inventory_probe_", suffix=".py", dir=HERE, text=True)
+    with os.fdopen(fd, "w", encoding="utf-8") as script_file:
+        script_file.write(
+            "class InventoryProbe:\n"
+            "    def __init__(self, entity):\n"
+            "        self.entity = entity\n"
+            "        self.events = []\n"
+            "    def OnUpdateEntity(self, ts):\n"
+            "        pass\n"
+            "    def OnInventoryChanged(self, item_id, old_count, new_count):\n"
+            "        current = sum(stack.Quantity for stack in self.entity.GetInventoryComponent().Items if stack.ItemId == item_id)\n"
+            "        self.events.append((item_id, old_count, new_count, current))\n"
+        )
+
+    component = Wasteland.ScriptComponent()
+    component.ScriptPath = path
+    component.ScriptName = "InventoryProbe"
+    entity.AddOrReplaceScriptComponent(component)
+    sc.OnUpdateRuntime(0.0)
+    check(entity.GetScriptAttribute("events") is not None,
+          "the probe script must be initialized before inventory operations")
+    return path
+
+
+def test_a_fully_accepted_add_notifies_once_after_the_count_changes():
+    sc = _scene()
+    _define(sc, "herb", 0, 0.0)
+    entity = _carrier(sc, "carrier", 0.0, 0)
+    script_path = _attach_inventory_probe(sc, entity)
+    try:
+        check_eq(sc.AddItem(entity, "herb", 2), 2, "both requested herbs fit")
+        check_eq(sc.GetItemCount(entity, "herb"), 2, "inventory state after adding")
+        check_eq(entity.GetScriptAttribute("events"), [("herb", 0, 2, 2)],
+                 "one callback must carry item id, old/new totals, and observe the mutated count")
+    finally:
+        sc.DestroyEntity(entity)
+        os.remove(script_path)
+
+
+def test_a_capacity_refused_partial_add_does_not_notify():
+    sc = _scene()
+    _define(sc, "feather", 1, 0.0)
+    entity = _carrier(sc, "carrier", 0.0, 2)
+    script_path = _attach_inventory_probe(sc, entity)
+    try:
+        check_eq(sc.AddItem(entity, "feather", 3), 2,
+                 "two one-item stacks fit; the third is refused by MaxSlots")
+        check_eq(_stacks(entity), [("feather", 1), ("feather", 1)],
+                 "the accepted partial quantity must still be inserted")
+        check_eq(entity.GetScriptAttribute("events"), [],
+                 "a short add must not notify, even though it inserted two items")
+    finally:
+        sc.DestroyEntity(entity)
+        os.remove(script_path)
+
+
+def test_removal_drop_and_pickup_paths_emit_one_event_per_successful_mutation():
+    sc = _scene()
+    _define(sc, "ration", 0, 0.0)
+    entity = _carrier(sc, "carrier", 0.0, 0)
+    script_path = _attach_inventory_probe(sc, entity)
+    plain = pile = second_pile = None
+    try:
+        check_eq(sc.AddItem(entity, "ration", 4), 4, "setup: four rations")
+        check_eq(sc.RemoveItem(entity, "ration", 1), 1, "consume one")
+        check_eq(sc.RemoveItemFromInventory(entity, "ration", 1), 1,
+                 "remove-only alias consumes one")
+        pile = sc.DropItemAt(entity, "ration", 1)
+        check_eq(pile.IsValid(), True, "drop one into a world pile")
+        second_pile = sc.DropItemAt(entity, "ration", 1)
+        check_eq(second_pile.IsValid(), True, "drop the last carried ration")
+        check_eq(sc.PickUpDroppedItem(second_pile, entity), 1,
+                 "pick the second pile back up")
+        check_eq(sc.RemoveItem(entity, "ration", 10), 1,
+                 "over-removing reports and removes only the one actually held")
+
+        expected = [
+            ("ration", 0, 4, 4),
+            ("ration", 4, 3, 3),
+            ("ration", 3, 2, 2),
+            ("ration", 2, 1, 1),
+            ("ration", 1, 0, 0),
+            ("ration", 0, 1, 1),
+            ("ration", 1, 0, 0),
+        ]
+        check_eq(entity.GetScriptAttribute("events"), expected,
+                 "RemoveItem, RemoveItemFromInventory, DropItemAt, and pickup each "
+                 "must dispatch exactly once after the inventory count changes")
+
+        # No-op operations must leave the callback history unchanged.
+        plain = sc.CreateEntity("plain")
+        check_eq(sc.AddItem(entity, "ration", 0), 0, "zero add is a no-op")
+        check_eq(sc.AddItem(entity, "", 1), 0, "empty id add is a no-op")
+        check_eq(sc.RemoveItem(entity, "missing", 1), 0, "missing item removal is a no-op")
+        check_eq(sc.RemoveItem(entity, "ration", 0), 0, "zero removal is a no-op")
+        check_eq(sc.DropItemAt(entity, "", 1).IsValid(), False, "invalid drop is a no-op")
+        check_eq(sc.PickUpDroppedItem(plain, entity), 0, "non-pile pickup is a no-op")
+        check_eq(entity.GetScriptAttribute("events"), expected,
+                 "invalid and no-op operations must not dispatch")
+    finally:
+        sc.DestroyEntity(entity)
+        os.remove(script_path)
+        if plain is not None and plain.IsValid():
+            sc.DestroyEntity(plain)
+        if pile is not None and pile.IsValid():
+            sc.DestroyEntity(pile)
+        if second_pile is not None and second_pile.IsValid():
+            sc.DestroyEntity(second_pile)

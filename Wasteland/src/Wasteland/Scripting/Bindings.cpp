@@ -4650,7 +4650,9 @@ py::class_<Wasteland::Audio::AudioClip, std::shared_ptr<Wasteland::Audio::AudioC
         .def("GetChannels", &Wasteland::Audio::AudioClip::GetChannels)
         .def("GetFrameCount", &Wasteland::Audio::AudioClip::GetFrameCount)
         .def("GetDuration", &Wasteland::Audio::AudioClip::GetDuration)
-        .def("GetPeak", &Wasteland::Audio::AudioClip::GetPeak);
+        .def("GetPeak", &Wasteland::Audio::AudioClip::GetPeak)
+        .def("SaveWav", &Wasteland::Audio::AudioClip::SaveWav,
+             py::arg("filepath"));
 
 // PlayRequest is the mutable description of "play this". It is a value
 // type, and every field mirrors a field on AudioSourceComponent: the
@@ -5030,6 +5032,14 @@ py::class_<Wasteland::ViewStateComponent>(m, "ViewStateComponent")
         .def_readwrite("IsAiming", &Wasteland::ViewStateComponent::IsAiming);
 
 // ======================================== SCENE: Entity ================
+    // Trace records are immutable snapshots; only BehaviorTreeSystem can write
+    // them, while Python receives copied values from Entity.GetBehaviorTreeTrace.
+    py::class_<Wasteland::BehaviorTreeTraceEntry>(m, "BehaviorTreeTraceEntry")
+        .def_readonly("Tick", &Wasteland::BehaviorTreeTraceEntry::Tick)
+        .def_readonly("NodeId", &Wasteland::BehaviorTreeTraceEntry::NodeId)
+        .def_readonly("NodeType", &Wasteland::BehaviorTreeTraceEntry::NodeType)
+        .def_readonly("Event", &Wasteland::BehaviorTreeTraceEntry::Event);
+
     // Entity is the handle a gameplay script spends its whole life holding. It
     // is a thin pair of (entt handle, Scene pointer) -- not an owning reference
     // -- so copying one is free and a destroyed entity leaves a dangling Scene
@@ -5042,6 +5052,36 @@ py::class_<Wasteland::ViewStateComponent>(m, "ViewStateComponent")
         .def("IsValid", [](const Wasteland::Entity &e) { return e.IsValid(); })
         .def("GetUUID", [](Wasteland::Entity &e) { return e.GetUUID(); })
         .def("GetName", [](Wasteland::Entity &e) { return e.GetName(); })
+        // Trace access is identity-checked and component-checked before GetUUID:
+        // Entity::GetUUID asserts if IDComponent is absent. The log is a bounded
+        // copy, never a reference into BehaviorTreeSystem's per-entity storage.
+        .def("SetBehaviorTreeTrace",
+             [](Wasteland::Entity &e, bool enabled) {
+                 if (!e.IsValid() ||
+                     !e.HasComponent<Wasteland::BehaviorTreeComponent>() ||
+                     !e.HasComponent<Wasteland::IDComponent>())
+                     return false;
+                 return Wasteland::BehaviorTreeSystem::SetTrace(
+                     e.GetComponent<Wasteland::IDComponent>().ID, enabled);
+             }, py::arg("enabled"))
+        .def("IsBehaviorTreeTraceEnabled",
+             [](Wasteland::Entity &e) {
+                 if (!e.IsValid() ||
+                     !e.HasComponent<Wasteland::BehaviorTreeComponent>() ||
+                     !e.HasComponent<Wasteland::IDComponent>())
+                     return false;
+                 return Wasteland::BehaviorTreeSystem::IsTraceEnabled(
+                     e.GetComponent<Wasteland::IDComponent>().ID);
+             })
+        .def("GetBehaviorTreeTrace",
+             [](Wasteland::Entity &e) {
+                 if (!e.IsValid() ||
+                     !e.HasComponent<Wasteland::BehaviorTreeComponent>() ||
+                     !e.HasComponent<Wasteland::IDComponent>())
+                     return std::vector<Wasteland::BehaviorTreeTraceEntry>();
+                 return Wasteland::BehaviorTreeSystem::GetTraceLog(
+                     e.GetComponent<Wasteland::IDComponent>().ID);
+             })
 
 // GetUUID requires an IDComponent. Entity::GetUUID does GetComponent<ID>
 // internally, so an entity without one asserts in debug rather than
@@ -5906,16 +5946,12 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         // state. Both are exposed because a save game wants Runtime and a
         // tool-authored scene wants the authored form.
         // SaveScene writes the AUTHORED format via a locally constructed
-        // SceneSerializer. It always returns true -- the serializer's own success or
-        // failure is not propagated, so a failed write (bad path, read-only drive)
-        // looks exactly like a successful one to the caller.
+        // SceneSerializer and returns its actual save status to Python.
         .def("SaveScene", [](const std::shared_ptr<Wasteland::Scene> &sc, const std::string &path) {
                  Wasteland::SceneSerializer serializer(sc);
-                 serializer.Serialize(path);
-                 return true;
+                 return serializer.Serialize(path);
              }, py::arg("path"))
-        // LoadScene DOES return the serializer's bool, so the asymmetry with
-        // SaveScene above is real: loading reports failure, saving does not.
+        // LoadScene returns the serializer's bool just like SaveScene.
         .def("LoadScene", [](const std::shared_ptr<Wasteland::Scene> &sc, const std::string &path) {
                  Wasteland::SceneSerializer serializer(sc);
                  return serializer.Deserialize(path);
@@ -6852,5 +6888,17 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             .def_static("GetEngineAssetsRoot",
                         &Wasteland::Project::GetEngineAssetsRoot);
     }
+
+    // Python-hosted tools do not own an Application whose destructor can clear
+    // these process-wide pybind11 caches. Run cleanup from Python's atexit phase,
+    // before CPython finalizes, so static maps never decref into a dead runtime.
+    py::module_::import("atexit").attr("register")(
+        py::cpp_function([]() {
+            if (!Py_IsInitialized())
+                return;
+            Wasteland::BehaviorTreeSystem::Shutdown();
+            Wasteland::ScriptEngine::Shutdown();
+            Wasteland_SetPythonEventHandler(py::object());
+        }));
 
 }

@@ -149,6 +149,57 @@ namespace Wasteland
 		return result;
 	}
 
+	// Finds the next "#type" directive that is genuinely a directive: the token
+	// must be the first thing on its line, after optional spaces or tabs.
+	//
+	// A plain find() is not good enough, and the difference is not theoretical.
+	// This loader's own header comment quotes the directive while explaining it
+	// ("// #type compute -- a GL loader directive..."), and a naive find() locked
+	// onto that COMMENT rather than the real directive further down. It derived
+	// the stage name from the rest of the comment sentence, which failed the type
+	// lookup, and it then treated a second comment mentioning "#type" as the end
+	// of the stage -- truncating the source before its main(). The program linked
+	// with no usable stage, so every glGetUniformLocation returned -1; glUniform
+	// against -1 is a documented no-op, which left u_PassID at its default 0 and
+	// made every dispatch run pass 0. The ray-traced viewport stayed black with no
+	// shader error reported, because linking a stage-less program SUCCEEDS.
+	//
+	// Anchoring to the start of the line makes the loader comment-proof, which is
+	// what keeps a future explanatory comment from silently disabling the renderer.
+	static size_t FindTypeDirective(const std::string &source, size_t from, size_t tokenLength)
+	{
+		size_t pos = source.find("#type", from);
+		while (pos != std::string::npos)
+		{
+			// Walk back to the first character of this line. find_last_of with a
+			// from-index of pos - 1 is undefined at pos == 0, so the start-of-file
+			// case is handled explicitly.
+			size_t lineStart = 0;
+			if (pos > 0)
+			{
+				size_t nl = source.find_last_of("\r\n", pos - 1);
+				lineStart = (nl == std::string::npos) ? 0 : nl + 1;
+			}
+
+			// Only whitespace may precede the token on its line.
+			bool directiveLike = true;
+			for (size_t i = lineStart; i < pos; ++i)
+			{
+				if (source[i] != ' ' && source[i] != '	')
+				{
+					directiveLike = false;
+					break;
+				}
+			}
+			if (directiveLike)
+				return pos;
+
+			// Not a directive -- inside a comment or a string. Keep looking.
+			pos = source.find("#type", pos + tokenLength);
+		}
+		return std::string::npos;
+	}
+
 	// Splits a multi-stage .glsl file on its #type markers into one source
 	// string per GL stage. This is why a shader file can carry a vertex and
 	// a fragment section in a single asset.
@@ -163,8 +214,9 @@ namespace Wasteland
 		const char *typeToken = "#type";
 		size_t typeTokenLength = strlen(typeToken);
 		// The explicit 0 is the search start and matches the from-position
-		// overload; the loop below advances it.
-		size_t pos = source.find(typeToken, 0);
+		// overload; the loop below advances it. Anchored, so a "#type" quoted
+		// inside a comment is skipped rather than mistaken for the directive.
+		size_t pos = FindTypeDirective(source, 0, typeTokenLength);
 		while (pos != std::string::npos)
 		{
 			// The #type token must be followed by a line ending. Asserted below --
@@ -187,7 +239,11 @@ namespace Wasteland
 			// Skips the whole run of line endings, not just one, so a CRLF file with a
 			// stray blank line does not produce a source string starting mid-break.
 			size_t nextLinePos = source.find_first_not_of("\r\n", eol);
-			pos = source.find(typeToken, nextLinePos);
+			// Anchored, for the same reason as the initial search: the stage body
+			// ends at the NEXT real directive, not at the first mention of the
+			// token anywhere in the text. A plain find() here matched a comment
+			// that referenced "#type" and cut the stage short before main().
+			pos = FindTypeDirective(source, nextLinePos, typeTokenLength);
 			// The substring runs from the first character after the #type line to the
 			// NEXT #type token -- i.e. the whole body of the current stage. That is
 			// why the search for the next token happens before the substr.
@@ -209,6 +265,28 @@ namespace Wasteland
 	void OpenGLShader::Compile(const std::unordered_map<GLenum, std::string> &shaderSources)
 	{
 		WL_PROFILE_FUNCTION();
+
+		// An empty map means PreProcess found no usable #type directive -- usually
+		// because the file could not be read, or because its directive was quoted
+		// inside a comment. Linking the resulting program SUCCEEDS, because GL
+		// permits a program with no stages, and the only symptom is that every
+		// glGetUniformLocation returns -1 afterwards. glUniform against -1 is a
+		// documented no-op, so uniforms silently keep their defaults and the
+		// renderer produces a black viewport with no error anywhere.
+		//
+		// That is exactly how a stray comment mentioning "#type" blacked out the
+		// ray-traced viewport, so this now fails loudly at the point of the mistake
+		// rather than silently downstream.
+		if (shaderSources.empty())
+		{
+			WL_CORE_ERROR("OpenGLShader: no shader stages were found; the source had no usable "
+						  "'#type' directive at the start of a line (a '#type' quoted inside a "
+						  "comment does not count). The program would link with no stages and "
+						  "every uniform lookup would return -1.");
+			WL_CORE_ASSERT(false, "Shader has no stages!");
+			m_RendererID = 0;
+			return;
+		}
 
 		// Created up front, before any stage compiles, so the attach below has
 		// somewhere to attach to.

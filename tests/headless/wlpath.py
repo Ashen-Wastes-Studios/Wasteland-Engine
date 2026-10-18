@@ -69,6 +69,11 @@ def setup(prefer: str | None = None) -> str:
     verifies against it: a Debug build has different floating-point behaviour
     and its assertions on tight tolerances are not meaningful.
     """
+    # Headless tests must never open the user's physical audio endpoint. The
+    # real-time device path has its own native smoke test; this suite exercises
+    # deterministic mixer advancement instead.
+    os.environ["WASTELAND_DISABLE_AUDIO_OUTPUT"] = "1"
+
     candidates = _candidate_module_dirs()
     if prefer:
         matching = [d for d in candidates if prefer.lower() in d.lower()]

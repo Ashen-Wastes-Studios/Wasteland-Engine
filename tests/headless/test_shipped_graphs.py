@@ -11,7 +11,7 @@ attempt here guessed `W.ValidateTree(path)` and every test errored):
     Wasteland.VisualBlocks.ValidateTree(graph)   -> ValidationResult
     Wasteland.VisualBlocks.ValidateFlow(graph)   -> ValidationResult
     Wasteland.VisualBlocks.CompileTreeFile(path) -> (ok, python, report, error)
-    Wasteland.VisualBlocks.CompileFlow(graph)    -> compiled behaviour object
+    Wasteland.VisualBlocks.CompileFlow(graph)    -> generated Python source
 
 Note these live on the `VisualBlocks` SUBMODULE, not on `Wasteland` directly, and
 Load/Validate/CompileFlow take a LOADED Graph rather than a path. Only
@@ -130,21 +130,35 @@ def test_every_shipped_graph_validates_with_zero_findings():
         check_eq(n, 0, "%s must validate clean (got %d finding(s))" % (rel, n))
 
 
-def test_every_shipped_tree_compiles_to_parseable_python():
+def test_every_shipped_graph_compiles_to_parseable_python():
     import Wasteland as W
 
     for path in _graphs():
         rel = _rel(path)
-        if not path.endswith(".wlbtree"):
-            continue
+        tree = path.endswith(".wlbtree")
         try:
-            ok, python, report, err = W.VisualBlocks.CompileTreeFile(path)
+            if tree:
+                ok, python, report, err = W.VisualBlocks.CompileTreeFile(path)
+                check(bool(ok), "%s: CompileTreeFile reported failure: %s / %s"
+                      % (rel, report, err))
+                if not ok:
+                    continue
+            else:
+                graph = W.VisualBlocks.Graph()
+                load_error = W.VisualBlocks.Load(path, graph)
+                if load_error is not None:
+                    check(False, "%s: Load failed before CompileFlow (%s)"
+                          % (rel, load_error))
+                    continue
+                python = W.VisualBlocks.CompileFlow(graph)
+                check(bool(python), "%s: CompileFlow returned empty" % rel)
+                if not python:
+                    continue
         except Exception as exc:                       # noqa: BLE001
-            check(False, "%s: CompileTreeFile raised %s: %s"
-                  % (rel, type(exc).__name__, exc))
+            compiler = "CompileTreeFile" if tree else "CompileFlow"
+            check(False, "%s: %s raised %s: %s"
+                  % (rel, compiler, type(exc).__name__, exc))
             continue
-        check(bool(ok), "%s: CompileTreeFile reported failure: %s / %s"
-              % (rel, report, err))
         check(len(python) > 0, "%s: compiler produced empty output" % rel)
         try:
             ast.parse(python)
@@ -166,16 +180,34 @@ def test_compilation_is_deterministic():
 
     for path in _graphs():
         rel = _rel(path)
-        if not path.endswith(".wlbtree"):
-            continue
+        tree = path.endswith(".wlbtree")
         try:
-            a = W.VisualBlocks.CompileTreeFile(path)
-            b = W.VisualBlocks.CompileTreeFile(path)
+            if tree:
+                a = W.VisualBlocks.CompileTreeFile(path)
+                b = W.VisualBlocks.CompileTreeFile(path)
+                if not a[0] or not b[0]:
+                    check(False, "%s: tree compile failed: %s / %s"
+                          % (rel, a[2:], b[2:]))
+                    continue
+                first, second = a[1], b[1]
+            else:
+                graph = W.VisualBlocks.Graph()
+                load_error = W.VisualBlocks.Load(path, graph)
+                if load_error is not None:
+                    check(False, "%s: Load failed before determinism check (%s)"
+                          % (rel, load_error))
+                    continue
+                first = W.VisualBlocks.CompileFlow(graph)
+                second = W.VisualBlocks.CompileFlow(graph)
+                if not first or not second:
+                    check(False, "%s: CompileFlow returned empty output" % rel)
+                    continue
         except Exception as exc:                       # noqa: BLE001
-            check(False, "%s: compile raised %s: %s" % (rel, type(exc).__name__, exc))
+            compiler = "CompileTreeFile" if tree else "CompileFlow"
+            check(False, "%s: %s raised %s: %s"
+                  % (rel, compiler, type(exc).__name__, exc))
             continue
-        check_eq(a[1], b[1], "%s must compile deterministically" % rel)
-
+        check_eq(first, second, "%s must compile deterministically" % rel)
 
 if __name__ == "__main__":
     runner.run_module("test_shipped_graphs", verbose=True)

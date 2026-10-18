@@ -1,7 +1,11 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "Wasteland/Core/UUID.h"
 #include "Wasteland/Scene/Entity.h"
@@ -13,6 +17,17 @@ namespace py = pybind11;
 namespace Wasteland
 {
 	class Scene;
+
+	// Immutable snapshot record copied out of the per-entity trace ring. The
+	// node ID identifies the authored node; NodeType and Event preserve the
+	// runtime's actual event (enter, exit:<status>, abort) without UI synthesis.
+	struct BehaviorTreeTraceEntry
+	{
+		uint64_t Tick = 0;
+		std::string NodeId;
+		std::string NodeType;
+		std::string Event;
+	};
 
 	// Loads, compiles and ticks behaviour trees.
 	//
@@ -48,9 +63,25 @@ namespace Wasteland
 		static bool CompileTree(const std::string &path, std::string &outPython,
 								std::string &outError);
 
+		// Tracing is opt-in per entity. Enabling before first attach is supported;
+		// the next instance gets a hook. Disabling detaches the hook but preserves
+		// the bounded log for inspection. GetTraceLog always returns a copy.
+		static bool SetTrace(UUID id, bool enabled);
+		static bool IsTraceEnabled(UUID id);
+		static std::vector<BehaviorTreeTraceEntry> GetTraceLog(UUID id);
+
 		static void Shutdown();
 
 	private:
+		static bool SetPythonTrace(UUID id, py::object &instance, bool enabled);
+		static void AppendTrace(UUID id, uint64_t tick,
+							const std::string &nodeId,
+								const std::string &nodeType,
+								const std::string &event);
+		static constexpr size_t kTraceCapacity = 512;
+		static std::unordered_set<UUID> s_TraceEnabled;
+		static std::unordered_map<UUID, std::vector<BehaviorTreeTraceEntry>> s_TraceLogs;
+		static std::unordered_map<UUID, std::unordered_map<std::string, std::string>> s_NodeTypes;
 		// UUID -> the instantiated tree class.
 		static std::unordered_map<UUID, py::object> s_Instances;
 		// UUIDs whose tree failed to compile, so a broken tree logs once

@@ -598,89 +598,98 @@ def test_a_missing_slot_reports_failure_rather_than_raising():
              "GameSlotExists must report a never-written slot as absent")
 
 
-def test_a_truncated_save_is_a_second_known_defect_that_still_raises():
-    """Pins the OTHER documented hole in Load's false-on-malformed contract.
+def _replace_vector_block(text: str, key: str, replacement: str) -> str:
+    """Replace one emitted three-value vector while preserving YAML layout."""
+    lines = text.splitlines(keepends=True)
+    start = lines.index("    %s:\n" % key)
+    end = start + 1
+    while end < len(lines) and lines[end].startswith("      - "):
+        end += 1
+    lines[start:end] = replacement.splitlines(keepends=True)
+    return "".join(lines)
 
-    A save truncated mid-document can still be well-formed YAML: cut inside
-    `Position`, the file parses, SchemaVersion reads 1, and the version check
-    passes. The failure then happens deeper in, where SaveGame.cpp's own
-    comment on ReadEntity admits it: "a sequence shorter than three elements
-    is read as undefined nodes and .as<float>() THROWS on those -- a
-    truncated save would escape as an exception rather than a reported
-    error."
 
-    So the two halves of Load's validation chain behave differently: the
-    YAML parse is inside a try/catch, and every .as<T>() below it is not.
-    Like the non-numeric-UUID test, this asserts the CURRENT behaviour and is
-    expected to FAIL when ReadEntity's positional indexing is guarded.
-    """
+def test_malformed_uuid_records_report_a_reason_without_changing_the_scene():
+    """Reject malformed UUIDs even after an earlier valid entity was staged."""
     sc = _scene()
     saves = os.path.join(_tmpdir(), "saves")
     e = _populate(sc)
     check(sc.SaveGame("base", saves), "SaveGame must report success")
-
-    # Cut the document inside the Position sequence, so the file parses but
-    # the entity record is short a component.
     base = _read_save(saves, "base")
-    marker = "    Position:\n      - 3\n      - 3\n      - 3\n"
-    check(marker in base, "setup: the expected Position block must be in the save")
-    _write_save(saves, "trunc", base.replace(marker, "    Position:\n      - 3\n", 1))
 
-    _scribble(sc, e)
-    raised = False
-    try:
-        ok, _err = sc.LoadGame("trunc", saves)
-        check_eq(ok, False,
-                 "a truncated save should report false, not raise -- INVERT THIS "
-                 "ASSERTION once ReadEntity's positional indexing is guarded")
-    except Exception:
-        raised = True
+    # Appending the malformed record makes the valid saved record precede it.
+    # A loader that applies while parsing would restore the first record before
+    # discovering the bad UUID, violating the atomic failure contract.
+    malformed_ids = {
+        "text": "notanumber",
+        "mixed": "12abc",
+        "empty": '""',
+        "negative": "-1",
+        "overflow": "18446744073709551616",
+    }
+    for label, uuid in malformed_ids.items():
+        slot = "baduuid_" + label
+        payload = (base.rstrip() + "\n  - UUID: " + uuid +
+                   "\n    Name: malformed\n")
+        _write_save(saves, slot, payload)
 
-    check(raised,
-          "ReadEntity indexes Position/Rotation/Scale positionally and calls "
-          ".as<float>() on the result, so a short sequence escapes Load as an "
-          "exception. This assertion documents the defect; it should start failing "
-          "the moment SaveGame.cpp guards it.")
-    _assert_world_untouched(sc, e, "truncated save")
+        _scribble(sc, e)
+        ok, err = sc.LoadGame(slot, saves)
+        check_eq(ok, False, "malformed UUID %r must report failure" % uuid)
+        check(isinstance(err, str) and err,
+              "malformed UUID %r must return a reason" % uuid)
+        _assert_world_untouched(sc, e, "malformed UUID %s" % label)
 
 
-def test_a_non_numeric_uuid_is_a_known_defect_that_still_raises():
-    """Pins a DEFECT the engine's own source documents, so it cannot rot.
+def test_truncated_or_malformed_coordinates_report_failure_atomically():
+    """Every transform vector must contain three numeric coordinates."""
+    sc = _scene()
+    saves = os.path.join(_tmpdir(), "saves")
+    e = _populate(sc)
+    check(sc.SaveGame("base", saves), "SaveGame must report success")
+    base = _read_save(saves, "base")
 
-    SaveGame.cpp's `StringToUUID` calls `std::stoull` unguarded, which throws
-    std::invalid_argument on a non-numeric id -- straight out of Load, whose
-    header promises false-on-malformed. The source says so in a DEFECT note
-    beside the function.
+    malformed = {
+        "position_truncated": _replace_vector_block(
+            base, "Position", "    Position:\n      - 3\n"),
+        "position_nonnumeric": _replace_vector_block(
+            base, "Position", "    Position:\n      - 3\n      - nope\n      - 3\n"),
+        "rotation_wrong_shape": _replace_vector_block(
+            base, "Rotation", "    Rotation: not-a-sequence\n"),
+        "scale_truncated": _replace_vector_block(
+            base, "Scale", "    Scale:\n      - 1\n      - 1\n"),
+    }
 
-    This test asserts the CURRENT behaviour, and is expected to FAIL once
-    StringToUUID is fixed (a try/catch, or std::from_chars). That is the
-    intended signal: invert it to `check_eq(ok, False, ...)` at the same time
-    as the fix. Leaving it asserting a raise forever would be worse than
-    useless -- it would make the fix look like a regression.
-    """
+    for slot, payload in malformed.items():
+        _write_save(saves, slot, payload)
+        _scribble(sc, e)
+        ok, err = sc.LoadGame(slot, saves)
+        check_eq(ok, False, "%s must report failure" % slot)
+        check(isinstance(err, str) and err,
+              "%s must return a reason instead of raising" % slot)
+        _assert_world_untouched(sc, e, slot)
+
+
+def test_malformed_component_values_report_failure_without_partial_restore():
+    """A bad later component cannot leave earlier transforms/world time applied."""
     sc = _scene()
     saves = os.path.join(_tmpdir(), "saves")
     e = _populate(sc)
     check(sc.SaveGame("base", saves), "SaveGame must report success")
 
-    _write_save(saves, "baduuid",
-                _read_save(saves, "base").replace("UUID: ", "UUID: notanumber ", 1))
+    lines = _read_save(saves, "base").splitlines(keepends=True)
+    health_start = lines.index("    Health:\n")
+    current_line = next(i for i in range(health_start + 1, len(lines))
+                        if lines[i].startswith("      Current: "))
+    lines[current_line] = "      Current: not-a-number\n"
+    _write_save(saves, "badhealth", "".join(lines))
 
     _scribble(sc, e)
-    raised = False
-    try:
-        ok, _err = sc.LoadGame("baduuid", saves)
-        check_eq(ok, False,
-                 "a non-numeric UUID should report false, not raise -- INVERT THIS "
-                 "ASSERTION once StringToUUID is guarded")
-    except Exception:
-        raised = True
-
-    check(raised,
-          "StringToUUID is unguarded std::stoull, so Load raises std::invalid_argument "
-          "instead of returning false. This assertion documents the defect; it should "
-          "start failing the moment SaveGame.cpp is fixed.")
-    _assert_world_untouched(sc, e, "non-numeric uuid")
+    ok, err = sc.LoadGame("badhealth", saves)
+    check_eq(ok, False, "a malformed component value must report failure")
+    check(isinstance(err, str) and err,
+          "a malformed component value must return a reason instead of raising")
+    _assert_world_untouched(sc, e, "malformed health value")
 
 
 # --------------------------------------------------------------------------

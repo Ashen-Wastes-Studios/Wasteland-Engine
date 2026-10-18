@@ -136,6 +136,12 @@ namespace Wasteland::Audio
 		// a temporary moves it in, and a caller with an lvalue pays a copy. The engine
 		static Ref<AudioClip> FromSamples(std::vector<float> samples, int sampleRate);
 
+		// Write this clip as mono, 16-bit signed PCM in a little-endian RIFF/WAVE
+		// file. Samples outside [-1, 1] are clipped for the file; the clip itself
+		// is not modified. Returns false for an invalid clip, an unrepresentable
+		// RIFF size, or any file I/O error.
+		bool SaveWav(const std::string &filepath) const;
+
 		// The validity query, and the only accessor that distinguishes a loaded clip from
 		// a default-constructed one.
 		//

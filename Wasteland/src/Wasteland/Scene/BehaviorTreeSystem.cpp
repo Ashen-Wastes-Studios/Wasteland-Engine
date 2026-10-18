@@ -35,6 +35,7 @@
 
 // std::remove_if, for the control-character scrub in CleanPath.
 #include <algorithm>
+#include <memory>
 // std::filesystem::path / exists, for resolving and stat-ing the tree file.
 #include <filesystem>
 // std::string, and std::to_string. The latter matters below: UUID converts to
@@ -49,6 +50,11 @@ namespace Wasteland
 	// Holding the object is what keeps the Python instance, and everything it
 	// references, alive for as long as the entity exists.
 	std::unordered_map<UUID, py::object> BehaviorTreeSystem::s_Instances;
+	std::unordered_set<UUID> BehaviorTreeSystem::s_TraceEnabled;
+	std::unordered_map<UUID, std::vector<BehaviorTreeTraceEntry>>
+		BehaviorTreeSystem::s_TraceLogs;
+	std::unordered_map<UUID, std::unordered_map<std::string, std::string>>
+		BehaviorTreeSystem::s_NodeTypes;
 	// entity UUID -> true. A latch, not a status: it is set on any failure and
 	// consulted at the top of OnUpdateEntity, so a broken tree is not retried at
 	// frame rate. Erased only by OnDestroyEntity or Shutdown.
@@ -92,9 +98,12 @@ namespace Wasteland
 	// per attaching entity, hence the scan below.
 	static void EnsureScriptsOnPath()
 	{
-		// Function-local static. A namespace-scope py::module_ would be constructed
-		// before the interpreter exists, so it must not exist at namespace scope.
-		static py::module_ sys = py::module_::import("sys");
+		// Keep this handle scoped to the attach operation. A function-local static
+		// survives until DLL/process teardown, which can run after CPython has
+		// finalized and make its py::object destructor touch a dead interpreter.
+		// Python caches imported modules, so a local handle does not repeat module
+		// initialization and is released while the interpreter is still active.
+		py::module_ sys = py::module_::import("sys");
 		// Resolved from the *active* project. Switching project mid-session appends the
 		// new directory but never removes the old one, so sys.path accumulates.
 		std::string scriptsDir = Project::Get().GetAssetPath("scripts").string();
@@ -214,6 +223,138 @@ namespace Wasteland
 		return true;
 	}
 
+	bool BehaviorTreeSystem::SetTrace(UUID id, bool enabled)
+	{
+		if (!Py_IsInitialized())
+			return false;
+		py::gil_scoped_acquire gil;
+
+		if (enabled)
+		{
+			// A new enable starts a fresh capture. Repeated enable requests are
+			// idempotent and do not discard records already being inspected.
+			if (!s_TraceEnabled.insert(id).second)
+				return true;
+			s_TraceLogs[id].clear();
+
+			auto instance = s_Instances.find(id);
+			if (instance != s_Instances.end() &&
+				!SetPythonTrace(id, instance->second, true))
+			{
+				s_TraceEnabled.erase(id);
+				return false;
+			}
+			return true;
+		}
+
+		s_TraceEnabled.erase(id);
+		auto instance = s_Instances.find(id);
+		return instance == s_Instances.end() ||
+			SetPythonTrace(id, instance->second, false);
+	}
+
+	bool BehaviorTreeSystem::IsTraceEnabled(UUID id)
+	{
+		if (!Py_IsInitialized())
+			return false;
+		py::gil_scoped_acquire gil;
+		return s_TraceEnabled.find(id) != s_TraceEnabled.end();
+	}
+
+	std::vector<BehaviorTreeTraceEntry> BehaviorTreeSystem::GetTraceLog(UUID id)
+	{
+		if (Py_IsInitialized())
+		{
+			py::gil_scoped_acquire gil;
+			auto log = s_TraceLogs.find(id);
+			return log == s_TraceLogs.end()
+				? std::vector<BehaviorTreeTraceEntry>()
+				: log->second;
+		}
+		auto log = s_TraceLogs.find(id);
+		return log == s_TraceLogs.end()
+			? std::vector<BehaviorTreeTraceEntry>()
+			: log->second;
+	}
+
+	bool BehaviorTreeSystem::SetPythonTrace(UUID id, py::object &instance,
+										 bool enabled)
+	{
+		try
+		{
+			// The generated class is a thin host wrapper; the evaluator that owns
+			// set_trace() is the underlying wl_behavior.Tree stored as `.tree`.
+			py::object runtimeTree = instance.attr("tree");
+			if (!enabled)
+			{
+				runtimeTree.attr("set_trace")(py::none());
+				return true;
+			}
+
+			// Each callback owns its own tick counter. Root-enter is emitted first
+			// for every Tree.tick(), so later abort/exit records retain real event order.
+			auto tick = std::make_shared<uint64_t>(0);
+			runtimeTree.attr("set_trace")(py::cpp_function(
+				[id, tick](py::object nodeIdValue, py::object eventValue,
+						   py::object tree) {
+					try
+					{
+						const std::string nodeId = py::str(nodeIdValue).cast<std::string>();
+						const std::string event = py::str(eventValue).cast<std::string>();
+						if (nodeId == "root" && event == "enter")
+							++*tick;
+
+						std::string nodeType = "unknown";
+						auto types = BehaviorTreeSystem::s_NodeTypes.find(id);
+						if (types != BehaviorTreeSystem::s_NodeTypes.end())
+						{
+							auto type = types->second.find(nodeId);
+							if (type != types->second.end())
+								nodeType = type->second;
+						}
+						if (nodeType == "unknown")
+						{
+							py::object node = tree.attr("topology").attr("get")(
+								py::str(nodeId), py::none());
+							if (!node.is_none())
+								nodeType = py::str(node.attr("get")(
+									py::str("t"), py::str("unknown"))).cast<std::string>();
+						}
+
+						BehaviorTreeSystem::AppendTrace(id, *tick, nodeId,
+							nodeType, event);
+					}
+					catch (...)
+					{
+						// Tracing must never turn a diagnostic failure into a gameplay
+						// tick failure or leave Python's error indicator set.
+						if (PyErr_Occurred())
+							PyErr_Clear();
+					}
+				}));
+			return true;
+		}
+		catch (...)
+		{
+			if (PyErr_Occurred())
+				PyErr_Clear();
+			return false;
+		}
+	}
+
+	void BehaviorTreeSystem::AppendTrace(UUID id, uint64_t tick,
+										 const std::string &nodeId,
+										 const std::string &nodeType,
+										 const std::string &event)
+	{
+		if (s_TraceEnabled.find(id) == s_TraceEnabled.end())
+			return;
+		auto &log = s_TraceLogs[id];
+		if (log.size() >= kTraceCapacity)
+			log.erase(log.begin());
+		log.push_back({tick, nodeId, nodeType, event});
+	}
+
 	// Per-entity, per-frame hook doing two jobs in order: lazily attach a tree to
 	// an entity that has never had one, then tick whatever instance exists.
 	// Every failure path below sets s_Failed and returns, which is what keeps one
@@ -226,6 +367,9 @@ namespace Wasteland
 		// simply does not run behaviour.
 		if (!entity.IsValid() || !entity.HasComponent<BehaviorTreeComponent>())
 			return;
+		if (!Py_IsInitialized())
+			return;
+		py::gil_scoped_acquire gil;
 
 		// No IDComponent means no stable identity, so there is nowhere to key
 		// an instance. Same guard ScriptEngine uses, for the same reason.
@@ -399,6 +543,16 @@ namespace Wasteland
 				// interpreter-visible contract for the constructor itself is an inference from
 				// the emitted code, not something this file can prove.)
 				s_Instances[id] = mod.attr(py::str(className))(entity, &scene);
+				auto &nodeTypes = s_NodeTypes[id];
+				nodeTypes.clear();
+				for (const auto &node : graph.Nodes)
+					nodeTypes[node.Id] = node.TypeId;
+				if (s_TraceEnabled.find(id) != s_TraceEnabled.end() &&
+					!SetPythonTrace(id, s_Instances[id], true))
+				{
+					s_TraceEnabled.erase(id);
+					WL_CORE_WARN("BehaviorTree: trace could not be enabled for entity {0}", id);
+				}
 				// The inspector flag, set only after construction succeeded. DEFECT: the
 				// tick-failure path lower down erases the instance but never clears this, so
 				// an entity reads as attached in the editor after its tree has thrown and been
@@ -452,9 +606,21 @@ namespace Wasteland
 	// object, and the Scene pointer it was handed at line 205, from outliving it.
 	void BehaviorTreeSystem::OnDestroyEntity(UUID id)
 	{
-		s_Instances.erase(id);
-		// The latch goes too, so failure state cannot outlive the entity it describes.
+		if (Py_IsInitialized())
+		{
+			py::gil_scoped_acquire gil;
+			s_Instances.erase(id);
+			// The latch goes too, so failure state cannot outlive the entity it describes.
+			s_Failed.erase(id);
+			s_TraceEnabled.erase(id);
+			s_TraceLogs.erase(id);
+			s_NodeTypes.erase(id);
+			return;
+		}
 		s_Failed.erase(id);
+		s_TraceEnabled.erase(id);
+		s_TraceLogs.erase(id);
+		s_NodeTypes.erase(id);
 	}
 
 	// Drops every live tree at once. This must happen while the interpreter is
@@ -465,10 +631,19 @@ namespace Wasteland
 	{
 		// Cleared in unspecified order (the container is unordered), so the order in
 		// which trees run their destructors is not something a tree may depend on.
-		s_Instances.clear();
+		if (Py_IsInitialized())
+		{
+			py::gil_scoped_acquire gil;
+			s_Instances.clear();
+			s_Failed.clear();
+		}
+		else
+			s_Failed.clear();
 		// The latches are cleared too, so reloading a project starts from a clean slate
 		// and a tree that failed to compile once gets another attempt.
-		s_Failed.clear();
+		s_TraceEnabled.clear();
+		s_TraceLogs.clear();
+		s_NodeTypes.clear();
 	}
 
 } // namespace Wasteland

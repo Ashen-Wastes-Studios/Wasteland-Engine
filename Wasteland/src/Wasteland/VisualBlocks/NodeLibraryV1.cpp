@@ -24,7 +24,7 @@ namespace Wasteland::VisualBlocks
 	// `_build()` lambda, `self` is the class, so a `self.health()` silently
 	// raises AttributeError on the first tick.
 	//
-	// Latent is a property of the DEF below, never inferred from what a body
+	// Latent is a property of the graph node, never inferred from what a body
 	// happens to return. An accidental latent task stops forever; a task that
 	// cannot return RUNNING cannot express "walk there over several ticks".
 	// ================================================================
@@ -367,6 +367,32 @@ namespace Wasteland::VisualBlocks
 						 "lambda ctx: _move_to_point(ctx.entity, ctx, " +
 							 ctx.InVec3("Position") + ", " + ctx.InFloat("Speed") +
 							 ", " + ctx.InFloat("Arrival") + ")");
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// FollowPath -- chase a blackboard entity through the existing
+			// navigation shim. Keep route planning and waypoint advancement in
+			// Compiler.cpp's _move/_path_to helpers; a second planner here would
+			// drift from MoveTo's replanning and fallback behaviour.
+			NodeDef def;
+			def.TypeId = "FollowPath";
+			def.Category = "Behaviour/Task";
+			def.BtRole = "task";
+			def.Pins = {
+				MakeIn("Target", "Target", PinType::String, true, "target"),
+				MakeIn("Speed", "Speed", PinType::Float, false, "3.0"),
+				MakeOut("Value", "Tree", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// Escape the blackboard key because this is emitted verbatim into
+				// Python source. The route itself is always enabled for this node.
+				const std::string target = EscapePy(StrPinV1(ctx, "Target", "target"));
+				EmitLeaf(out, ctx,
+						 "lambda ctx: _move(ctx.entity, ctx, \"" + target + "\", " +
+							 ctx.InFloat("Speed") + ", True)");
 				return std::string();
 			};
 			registry.Register(def);

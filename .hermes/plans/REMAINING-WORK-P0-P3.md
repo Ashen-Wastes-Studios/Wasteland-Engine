@@ -915,3 +915,81 @@ interchangeable:
 
 A suite written against the wrong one dies on its LAST line, after doing all its
 work. Read the runner in the tree you are adding to.
+
+### Item 14 tiers 1-3 CLOSED (2026-10-05, end of session)
+
+```
+headless    217/217 across 18 suites
+  audio_clip 35 · audio_mixer 28 · audio_scene 14 · ground_snap 4
+  inventory 31 · los_contract 3 · navmesh 10 · pathfinding_node 6
+  perception_cache 13 · physics_2d 6 · physics_3d 5 · physics_controls 6
+  physics_timestep 3 · runtime_types 15 · savegame 21 · shim_pathfinding 7
+  shipped_graphs 5 · tree_attach 5
+tests/      17/17 · 23/23 · 97/97
+visualblocks 54/0 · 99/0 · edit OK
+native C++  PASS
+```
+
+**5.1 SyncPendingPhysics2D.** A straight mirror of the 3D pass would have been
+wrong in THREE places, all of which the implementer had to find:
+- Box2D has no `b3World_IsValid` equivalent, so the guard is `!m_PhysicsWorld`
+  (a raw pointer deleted in `OnPhysics2DStop`);
+- `RuntimeBody` is a raw `b2Body*`, not a packed id, so it is `nullptr` AND
+  **dangles** after teardown -- the guard must short-circuit before any handle
+  is read;
+- `CreatePhysicsBody2D` needs the same `!= nullptr` early-return as 3D, or the
+  per-step pass rebuilds every body on every substep.
+
+RED was proven first against the pre-change binary: 3 of 6 failed with exactly
+the diagnosed symptom (`RuntimeBody` NULL, `y 4.0 -> 4.0`). After: the late body
+falls `4.997 -> 3.650`; a late static floor stops it at `y=0.515`.
+
+**5.3 DropItem.** `Scene::DropItem` -> `Scene::RemoveItemFromInventory` (rename
+only, body unchanged). New `Scene::DropItemAt(entity, itemId, quantity, offset)`
+removes THEN spawns, so a refusal can never create items, and returns an INVALID
+Entity on any refusal rather than a zeroed pile. New `DroppedItemComponent`
+records the count ACTUALLY removed. `Scene::PickUpDroppedItem` closes the loop:
+partial pickups leave the remainder, only a full pickup destroys the pile.
+Zero stale `DropItem(` call sites remain anywhere in the repo.
+*The old binding comment claimed DropItem "spawns world geometry" -- the exact
+opposite of what it did. That is why the footgun survived review.*
+
+**5.5 audio serialization.** Both components written and read, every field
+presence-checked so an old file missing a key loads with the default instead of
+throwing. `MinPlayTime` excluded as mid-playback runtime state.
+
+**`PlayOnStart` is deliberately NOT round-tripped.** It is an action request,
+not state: round-tripping it replays every autostart sound on every level load.
+`PlayAutoStartSources` fires once from `OnRuntimeStart` and `Deserialize` never
+calls it, so a load is silent by construction. The COST is stated in the
+comment -- an editor-authored autostart flag is lost across a reload, accepted
+because the runtime save path shares the file -- and a test pins the choice.
+
+#### "Byte-identical second save" is not a property of this serializer
+
+Requested and correctly abandoned. Entity ORDER changes on reload even with only
+pre-existing components: the serializer emits registry-view order, and EnTT's
+post-load view order does not match file order. Confirmed with a control scene
+containing none of the new components. Both suites compare the MULTISET of
+lines, which still catches every asymmetry the test exists for (a
+written-but-unread field changes a value).
+
+#### Concurrent agents corrupted the aggregate mid-flight
+
+At different moments the aggregate showed 3, then 5, failures in
+`test_inventory` and `test_audio_scene` -- suites with ZERO references to the
+other agent's work. Both agents flagged this independently and correctly
+attributed it to each other rather than "fixing" working code. After both
+finished: 217/217. **A red aggregate while agents are running concurrently is
+not evidence of a regression; check whether the failing suite belongs to the
+other task before touching anything.**
+
+#### `.gitignore` had a real gap
+
+`bin/` is anchored to the repo root, so `Wasteland/vendor/**/bin/` never matched
+and three `.idb` files were staged. Added `**/vendor/**/bin/`, `*.idb`, `*.exp`.
+Earlier the same pass also caught `.buildlogs/` (a 7 MB `.pyd` plus 20 files)
+and `tests/**/_probe*.py` scratch.
+
+**Index: 387 source paths, 0 build products, 0 renderer files, 0 mutation
+markers, no credentials.** Still not committed -- the renderer work is in flight.

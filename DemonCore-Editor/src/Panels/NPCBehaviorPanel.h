@@ -253,6 +253,7 @@ namespace Wasteland
 		void DrawPalette();
 		void DrawFindings();
 		void DrawBlackboard();
+		void DrawBehaviorTrace();
 		// The Python preview pane.
 		//
 		// DEFECT (dead method): declared here and NOT defined in the .cpp. The preview

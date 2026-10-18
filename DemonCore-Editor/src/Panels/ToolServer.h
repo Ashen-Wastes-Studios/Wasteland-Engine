@@ -13,6 +13,11 @@ namespace Wasteland
     class Scene;
     class Entity;
 
+    namespace VisualBlocks
+    {
+        struct Graph;
+    }
+
     // The bridge between the LLM and the editor: a call arrives as a name plus a
     // JSON arguments object and returns a string, so the AI side needs a schema and no
     // knowledge of the editor.
@@ -23,11 +28,11 @@ namespace Wasteland
     // ResolveProjectPath exists and refuses to escape the project. Every string that
     // becomes a path must go through it.
     //
-    // The list in the comment above is the whole attack surface: anything added to it
-    // is a new capability invocable without a human in the loop.
+    // The dispatcher and advertised definitions are the whole attack surface:
+    // anything added there is a new capability invocable without a human in the loop.
     // Exposes tool definitions (for the system prompt) and executes tool calls
-    // made by the AI. Tools: read_file, write_file, edit_file, list_files,
-    // memory_read, memory_append, list_entities, get_entity_info.
+    // made by the AI. Graph tools are read-only and restricted to the active
+    // project's assets root, unlike the project's general file tools.
     class ToolServer
     {
     public:
@@ -120,6 +125,15 @@ namespace Wasteland
         // can quote what it saw, and a non-matching edit fails loudly instead of
         // corrupting a different region.
         std::string ListFiles(const std::string &dir);
+
+        // Read-only graph tools. Paths are restricted to graph files under the
+        // active project's assets root, even when a symlink points elsewhere.
+        std::string ValidateGraph(const std::string &path);
+        std::string ListGraphNodes(const std::string &path);
+        static std::filesystem::path ResolveGraphAssetPath(const std::string &path,
+                                                           std::string &error);
+        bool LoadGraphAsset(const std::string &path, std::filesystem::path &fullPath,
+                            VisualBlocks::Graph &graph, std::string &error);
 
         // Memory tools
         // One file whose path GetMemoryPath() owns, so the model never supplies a path

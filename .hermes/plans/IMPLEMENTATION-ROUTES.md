@@ -160,7 +160,7 @@ sites — is invisible until an NPC enters that branch at runtime.
 | WAV writer | `grep -rn 'SaveWav\|WriteWav\|WriteWave\|SaveWave' Wasteland/src/` | **0 hits** — reader only |
 | Trace toggle in either panel | `grep -i trace VisualBlocksPanel.cpp NPCBehaviorPanel.cpp` | **0 hits** in both |
 | Trace hook in the runtime | `wl_behavior.py:717 set_trace`, `:726 trace_to_list` | present |
-| `FollowPath` task | `grep -rn FollowPath Wasteland/src DemonCore-Editor/src assets` | **0 hits** |
+| `FollowPath` task | `NodeLibraryV1.cpp` registers it and `tests/headless/test_follow_path.py` covers a wall detour; current `.pyd` predates the registration | **BUILT; awaiting rebuilt-module verification** |
 | Local avoidance / separation | `grep -inE 'avoid\|separat\|RVO' Compiler.cpp` | **0 hits** (only prose in comments) |
 | Apply-impulse / set-velocity | `grep -rn 'ApplyImpulse\|SetVelocity\|AddForce' Wasteland/src/` | **0 hits** |
 | Inventory tests | `grep -rln 'AddItem\|InventoryComponent' tests/` | **0 hits** |
@@ -1376,7 +1376,7 @@ Verified: `test_navmesh 10/10`, `test_pathfinding_node 6/6`,
 `test_shim_pathfinding 7/7`, `test_perception_cache 13/13`, `test_tree_attach`
 5/5, `test_enemy_migration` 23 checks.
 
-Four items remain. Three are small; one is a shipped-broken node.
+Four items are listed below. `FollowPath` is now BUILT; its regression awaits a rebuilt module. Separation remains deferred pending measured crowding.
 
 ---
 
@@ -1423,38 +1423,32 @@ happening. A alone leaves the trap armed.
 
 ---
 
-### NB-10 — `FollowPath`, local avoidance and separation are absent
+### NB-10 — `FollowPath` built; separation deferred pending measured crowding
 
-**What it is.** `grep -rn FollowPath` across `Wasteland/src`,
-`DemonCore-Editor/src` and `assets` returns **0 hits**. No avoidance, no
-separation — `grep -inE 'avoid|separat|RVO' Compiler.cpp` finds only prose.
+**Current status.** `NodeLibraryV1.cpp` registers a latent `FollowPath` task
+with `Target` and `Speed` pins. Its emitter delegates to the existing
+`_move(ctx.entity, ctx, key, speed, True)` helper, reusing `Compiler.cpp`'s
+`_path_to` cache, waypoint advancement, drift detection, replanning, and
+no-route fallback; it does not add a second planner. The new
+`tests/headless/test_follow_path.py` compiles a one-task tree through the public
+`Graph`/`CompileTree` API and checks the NPC trail against the wall slab, with
+its blocked z-span measured at the wall's own x and its vertical extent checked
+at the wall's own y.
 
-**Route A — add a `FollowPath` task reusing the existing path shim.**
-*Files:* `NodeLibraryV1.cpp`.
-*Symbols:* a `FollowPath` def whose body calls the `_path_to` machinery already
-at `Compiler.cpp:378` — the waypoint advance, drift check and re-plan logic
-(`:473-526`) is written once and reusable.
-*Test:* with a wall between start and goal, `FollowPath` routes **around** it;
-assert the path never crosses the wall's own x at the wall's own y. **Do not**
-assert on path length — a detour clipping a corner is *shorter* than the straight
-line, and that assertion is one of the four that passed while proving nothing.
-*Effort:* **S/M**.
+**Verification limit.** The available `.pyd` predates this registration. Running
+the new suite against it correctly reports `unknown node type 'FollowPath'`; that
+is a stale-binary baseline, not a source result. Rebuild and rerun the suite
+before claiming the C++ registration is verified.
 
-**Route B — separation only, as a steering nudge in the shim.**
-*Files:* `Compiler.cpp`'s shim.
-*Test:* two agents given the same goal **end at different positions**; assert
-the **minimum separation between them at the end**, not either one's exact
-coordinate.
-*Risk:* O(n²) at scale; the perception cache (`Compiler.cpp:650`) is the
-existing pattern for sharing per-scene scans.
-*Effort:* **M**.
+**Separation decision.** `ExampleGame.wastescene` contains three entities
+running `Enemy.py`/`EnemyChase`, so it is a multi-agent scenario, but no shipped
+test or scene evidence establishes that they actually overlap or stack. Do not
+add separation based on agent count alone. Defer it until a reproducible
+minimum-distance regression or runtime capture demonstrates crowding; if opened,
+start with simple separation and **do not add RVO**.
 
-**Route C — full RVO.** **Do not.** The plan puts "simple separation before any
-full RVO", and no roster is large enough to need it.
-
-**Dependencies.** A on nothing (the navmesh is done).
-**Recommendation: A, then B if agents visibly stack.**
-**Runner-up: B alone**, if the symptom is crowding rather than a missing node.
+**Dependencies.** The `FollowPath` node requires the existing baked navmesh; when
+no route is available, the reused shim preserves its direct-movement fallback.
 
 ---
 
@@ -1697,7 +1691,7 @@ independent and writable now.
  ┌──────────────┐              ┌────────────────┐          ┌────────▼───────┐
  │ AVB-1c bind  │──enables──▶  │ COV-3          │          │ NB-10          │
  │ AudioSource  │  assertion 4│ AudioSystem    │          │ FollowPath     │
- │ (2 lines)    │             │ suite          │          │ + avoidance    │
+ │ (2 lines)    │             │ suite          │          │ separation def.│
  └──────┬───────┘             └────────────────┘          └────────────────┘
         │
         ▼
@@ -1811,7 +1805,7 @@ code nobody can retrieve buys nothing.
 | 20 | **VB-1** canvas decision; Route A decoupling if a second canvas is coming | S → M |
 | 21 | **VB-2** flow-graph end-to-end through a live scene | S |
 | 22 | **VB-5 Routes A+B** schema doc + graph-aware `ToolServer` tools | S |
-| 23 | **NB-10** `FollowPath`; separation if agents visibly stack | S/M → M |
+| 23 | **NB-10** rebuild and verify `FollowPath`; separation deferred absent measured crowding | S |
 | 24 | **VB-3** five scene/entity flow nodes (unblocks the UI demo) | M |
 
 ### Phase 5 — New capability (weeks)

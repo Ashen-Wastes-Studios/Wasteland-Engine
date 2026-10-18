@@ -34,6 +34,12 @@
     <Filter Include="src\Wasteland\Audio">
       <UniqueIdentifier>{0061D6F7-6CC2-B305-F52F-FAB76190EAC4}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Wasteland\Avb">
+      <UniqueIdentifier>{27F195FA-9307-9490-DC7E-1FB248D46418}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\Avb\Graph">
+      <UniqueIdentifier>{68628D96-D499-D52D-DDA3-3951495AFC26}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Wasteland\Core">
       <UniqueIdentifier>{7713554D-63F7-15A3-CC57-10F6B85A0025}</UniqueIdentifier>
     </Filter>
@@ -63,6 +69,9 @@
     </Filter>
     <Filter Include="src\Wasteland\Scripting">
       <UniqueIdentifier>{81AF4098-EDE6-882F-F6F0-EC5262A7AF28}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\Wasteland\Terrain">
+      <UniqueIdentifier>{23B234D9-8F1E-F0D3-5812-8831C43D123C}</UniqueIdentifier>
     </Filter>
     <Filter Include="src\Wasteland\Utils">
       <UniqueIdentifier>{5FD43FF9-CB35-1D07-54A3-63B9C00354C6}</UniqueIdentifier>
@@ -96,6 +105,9 @@
     </Filter>
     <Filter Include="vendor\imgui">
       <UniqueIdentifier>{5D3BD0F0-499E-5F95-F223-984BDE652B18}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="vendor\miniaudio">
+      <UniqueIdentifier>{C1EF7D2A-ADE8-9C7C-D61A-8201C2727C88}</UniqueIdentifier>
     </Filter>
     <Filter Include="vendor\stb_image">
       <UniqueIdentifier>{0DA0BA59-F998-D9AB-22CB-BE300E23B9B7}</UniqueIdentifier>
@@ -231,11 +243,50 @@
     <ClInclude Include="src\Wasteland\Audio\AudioClip.h">
       <Filter>src\Wasteland\Audio</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Audio\AudioDevice.h">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Audio\AudioSystem.h">
       <Filter>src\Wasteland\Audio</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Audio\Mixer.h">
       <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\AudioBus.h">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\AvbBusEffects.h">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\AvbDsp.h">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\AvbVoices.h">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\Compiler.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\Graph.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\GraphSerializer.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\NodeRegistry.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\ProjectRuntime.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\Runtime.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Graph\Validator.h">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Avb\Recorder.h">
+      <Filter>src\Wasteland\Avb</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Core\Application.h">
       <Filter>src\Wasteland\Core</Filter>
@@ -360,6 +411,9 @@
     <ClInclude Include="src\Wasteland\Renderer\SubTexture2D.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\TerrainNovaMesh.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\Texture.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -395,6 +449,18 @@
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scripting\ScriptEngine.h">
       <Filter>src\Wasteland\Scripting</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Terrain\Terrain.h">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Terrain\TerrainCollision.h">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Terrain\TerrainRuntime.h">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Terrain\TerrainScenePersistence.h">
+      <Filter>src\Wasteland\Terrain</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Utils\PlatformUtils.h">
       <Filter>src\Wasteland\Utils</Filter>
@@ -1683,6 +1749,9 @@
     <ClInclude Include="vendor\imgui\TextEditor.h">
       <Filter>vendor\imgui</Filter>
     </ClInclude>
+    <ClInclude Include="vendor\miniaudio\miniaudio.h">
+      <Filter>vendor\miniaudio</Filter>
+    </ClInclude>
     <ClInclude Include="vendor\stb_image\stb_image.h">
       <Filter>vendor\stb_image</Filter>
     </ClInclude>
@@ -1820,11 +1889,50 @@
     <ClCompile Include="src\Wasteland\Audio\AudioClip.cpp">
       <Filter>src\Wasteland\Audio</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Audio\AudioDevice.cpp">
+      <Filter>src\Wasteland\Audio</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Audio\AudioSystem.cpp">
       <Filter>src\Wasteland\Audio</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Audio\Mixer.cpp">
       <Filter>src\Wasteland\Audio</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\AudioBus.cpp">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\AvbBusEffects.cpp">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\AvbDsp.cpp">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\AvbVoices.cpp">
+      <Filter>src\Wasteland\Avb</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\Compiler.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\Graph.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\GraphSerializer.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\NodeRegistry.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\ProjectRuntime.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\Runtime.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Graph\Validator.cpp">
+      <Filter>src\Wasteland\Avb\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Avb\Recorder.cpp">
+      <Filter>src\Wasteland\Avb</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Core\Application.cpp">
       <Filter>src\Wasteland\Core</Filter>
@@ -1939,6 +2047,18 @@
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scripting\ScriptEngine.cpp">
       <Filter>src\Wasteland\Scripting</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Terrain\Terrain.cpp">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Terrain\TerrainCollision.cpp">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Terrain\TerrainRuntime.cpp">
+      <Filter>src\Wasteland\Terrain</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Terrain\TerrainScenePersistence.cpp">
+      <Filter>src\Wasteland\Terrain</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\VisualBlocks\BehaviorTree.cpp">
       <Filter>src\Wasteland\VisualBlocks</Filter>

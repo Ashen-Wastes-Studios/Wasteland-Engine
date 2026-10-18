@@ -61,16 +61,50 @@ layout(location = 1) in vec2 v_TexCoord;
 layout(location = 2) in float v_textureIndex;
 layout(location = 3) in float v_TilingFactor;
 
-// A 32-element array of samplers in one uniform array. This is the whole
-// reason the texture index is a float: an array of samplers cannot be
-// indexed by anything that varies per vertex, so the index travels as
-// interpolation data and is converted here.
-//
-// The 32 must match MaxTextureSlots in the renderer, which allocates and
-// fills exactly this many. There is no bounds check at index time, so an
-// out-of-range value -- including the default 0.0 for a quad whose buffer
-// was not filled in -- is undefined behaviour rather than a clamp.
+// The 32 texture units match the sandbox batcher. A per-primitive slot is not
+// dynamically uniform across a draw, so use literal sampler indices in the
+// switch rather than indexing this opaque array directly.
 layout(binding = 0) uniform sampler2D u_Texture[32];
+
+vec4 wl_sample_sandbox_texture(int slot, vec2 uv)
+{
+	switch (slot)
+	{
+		case 0:  return textureLod(u_Texture[0], uv, 0.0);
+		case 1:  return textureLod(u_Texture[1], uv, 0.0);
+		case 2:  return textureLod(u_Texture[2], uv, 0.0);
+		case 3:  return textureLod(u_Texture[3], uv, 0.0);
+		case 4:  return textureLod(u_Texture[4], uv, 0.0);
+		case 5:  return textureLod(u_Texture[5], uv, 0.0);
+		case 6:  return textureLod(u_Texture[6], uv, 0.0);
+		case 7:  return textureLod(u_Texture[7], uv, 0.0);
+		case 8:  return textureLod(u_Texture[8], uv, 0.0);
+		case 9:  return textureLod(u_Texture[9], uv, 0.0);
+		case 10: return textureLod(u_Texture[10], uv, 0.0);
+		case 11: return textureLod(u_Texture[11], uv, 0.0);
+		case 12: return textureLod(u_Texture[12], uv, 0.0);
+		case 13: return textureLod(u_Texture[13], uv, 0.0);
+		case 14: return textureLod(u_Texture[14], uv, 0.0);
+		case 15: return textureLod(u_Texture[15], uv, 0.0);
+		case 16: return textureLod(u_Texture[16], uv, 0.0);
+		case 17: return textureLod(u_Texture[17], uv, 0.0);
+		case 18: return textureLod(u_Texture[18], uv, 0.0);
+		case 19: return textureLod(u_Texture[19], uv, 0.0);
+		case 20: return textureLod(u_Texture[20], uv, 0.0);
+		case 21: return textureLod(u_Texture[21], uv, 0.0);
+		case 22: return textureLod(u_Texture[22], uv, 0.0);
+		case 23: return textureLod(u_Texture[23], uv, 0.0);
+		case 24: return textureLod(u_Texture[24], uv, 0.0);
+		case 25: return textureLod(u_Texture[25], uv, 0.0);
+		case 26: return textureLod(u_Texture[26], uv, 0.0);
+		case 27: return textureLod(u_Texture[27], uv, 0.0);
+		case 28: return textureLod(u_Texture[28], uv, 0.0);
+		case 29: return textureLod(u_Texture[29], uv, 0.0);
+		case 30: return textureLod(u_Texture[30], uv, 0.0);
+		case 31: return textureLod(u_Texture[31], uv, 0.0);
+		default: return vec4(1.0);
+	}
+}
 
 // Fragment entry point.
 void main()
@@ -87,5 +121,5 @@ void main()
 		// No clamping of v_TilingFactor either. A negative factor mirrors the
 		// texture (repeats are well-defined, so it does not produce garbage), and
 		// a very large one simply aliases, since there is no mip selection here.
-	color = texture(u_Texture[int(v_textureIndex)], v_TexCoord * v_TilingFactor) * v_Color;
+	color = wl_sample_sandbox_texture(int(v_textureIndex), v_TexCoord * v_TilingFactor) * v_Color;
 }

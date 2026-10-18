@@ -87,14 +87,11 @@ namespace Wasteland {
 		// working with no branch of its own.
 		//
 		// VULKAN RETURNS A DESCRIPTOR SET, built by ImGui_ImplVulkan_AddTexture from
-		// three things the engine does own: the image view comes from the attachment
-		// itself (getNativeView caches it on the texture, so its lifetime follows the
-		// texture's), the sampler is NVRHIContext's, and the descriptor set layout is
-		// created by ImGui's own CreateDeviceObjects. The pool the set is allocated
-		// from is the engine's Vulkan ImGui pool. The set is cached per attachment and
-		// rebuilt when either the texture or that pool changes -- see the members
-		// below for why both are part of the key.
+		// the texture's cached image view, NVRHIContext's sampler, and ImGui's layout.
+		// The shared set cache is rebuilt when either the texture or ImGui pool changes.
 		virtual void *GetColorAttachmentImGuiTexID(uint32_t index = 0) const override;
+		// Vulkan ImGui TexID for an external NVRHI texture, such as a compute output.
+		void *GetExternalTextureImGuiTexID(nvrhi::TextureHandle texture) const;
 
 		virtual const FramebufferSpecification& GetSpecification() const override { return m_Specification; }
 
@@ -132,11 +129,11 @@ namespace Wasteland {
 		// only from the ctor and from Resize(), so an object can never be torn down
 		// and recreated without its size being updated first.
 		void Invalidate();
-		// Returns the cached Vulkan descriptor set to ImGui's pool, if there is one.
-		// Called from the destructor and from Invalidate() so a resize does not hold
-		// a set against a texture that is about to die. Safe to call when nothing
-		// was ever cached.
-		void ReleaseVulkanImGuiDescriptorSet() const;
+		// Returns the cached Vulkan descriptor set to its live pool after device idle.
+		// Called on destruction, resize, and cache replacement; false means idle
+		// failed and the set must remain allocated. Safe when nothing was cached.
+		bool ReleaseVulkanImGuiDescriptorSet() const;
+		void *GetVulkanImGuiTexID(nvrhi::TextureHandle texture) const;
 
 		FramebufferSpecification m_Specification;
 		// The framebuffer object.
@@ -175,7 +172,8 @@ namespace Wasteland {
 		// for one (texture, pool) pair and neither half alone is enough.
 		//
 		// THE TEXTURE IS HALF THE KEY because Invalidate() rebuilds every attachment on
-		// a viewport resize. A set cached against the old texture would name a
+		// resize and the external-texture accessor may receive a new input. A set
+		// cached against the old texture would name a
 		// VkImageView that died with it, which is a descriptor pointing at freed memory
 		// rather than a visible failure. Stored as a handle rather than a raw pointer so
 		// this reference itself keeps the texture alive and the comparison is a plain

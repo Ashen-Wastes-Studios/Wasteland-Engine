@@ -5,6 +5,8 @@
 
 #include "Wasteland/Renderer/Renderer.h"
 #include "Wasteland/Renderer/RendererAPI.h"
+#include "Wasteland/Scene/BehaviorTreeSystem.h"
+#include "Wasteland/Scripting/ScriptEngine.h"
 #include "Platform/NVRHI/NVRHIContext.h"
 
 #include "Input.h"
@@ -234,24 +236,27 @@ Application::Application(const std::string &name)
 // Tears down the application.
 //
 // The window and layer stack need no explicit cleanup: they are members and are
-// destroyed automatically after this body runs. What this body must do is
-// anything that has to happen while those members are still alive -- here,
-// only the Python handler release.
+// destroyed automatically after this body runs. Python-backed global state must
+// be released here, while the interpreter is alive, before it is finalized.
 Application::~Application()
 {
 	WL_PROFILE_FUNCTION();
 
-	// Release the handler before finalizing: s_PythonEventHandler is a static
-	// py::object, and its destructor runs at process exit — long after
-	// Py_Finalize() — which would Py_DECREF into a dead interpreter.
-	//
-	// The assignment resets the static to a null handle, dropping its reference
-	// count NOW while the interpreter is still alive.
 	if (Py_IsInitialized())
 	{
-		// The GIL is needed to touch a py::object's refcount. Scoped, so it is
-		// released before Py_Finalize below -- finalizing with the GIL held
-		// deadlocks.
+		// Active behavior-tree instances hold py::object handles in a static cache;
+		// release them before Py_Finalize rather than from static destruction.
+		BehaviorTreeSystem::Shutdown();
+		// Scripted entity instances use the same lifetime rule. The module's
+		// atexit hook covers Python-hosted tests; this handles the embedded app.
+		ScriptEngine::Shutdown();
+
+		// Release the handler before finalizing: s_PythonEventHandler is a static
+		// py::object, and its destructor runs at process exit — long after
+		// Py_Finalize() — which would Py_DECREF into a dead interpreter.
+		//
+		// The assignment resets the static to a null handle, dropping its reference
+		// count NOW while the interpreter is still alive.
 		py::gil_scoped_acquire gil;
 		s_PythonEventHandler = py::object();
 	}

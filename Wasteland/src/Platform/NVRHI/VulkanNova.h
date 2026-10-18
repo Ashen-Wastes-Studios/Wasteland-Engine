@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -35,7 +37,7 @@ namespace Wasteland
     // Left alone the two collide at four points, so tools/compile_nova_spirv.py
     // shifts the register spaces into disjoint ranges at compile time
     // (u=0, b=7, t=16, s=200) and the same values go into bindingOffsets below.
-    // The tool verifies all 24 bindings stay collision-free.
+    // The tool verifies the binding contract stays collision-free.
     //
     // The slots below are the HLSL register numbers. Changing a register in the
     // shader without re-running that tool will produce an invalid descriptor set
@@ -55,7 +57,12 @@ namespace Wasteland
         // stride under both D3D and std140 packing, which
         // tools/compile_nova_spirv.py verifies member-by-member.
         template <class T>
-        void Set(const char *name, const T &value, uint32_t index = 0);
+        void Set(const char *name, const T &value, uint32_t index = 0)
+        {
+            static_assert(std::is_trivially_copyable<T>::value,
+                          "VulkanNova constants must be trivially copyable");
+            SetBytes(name, &value, sizeof(T), index);
+        }
 
         // slot: 0 = Instances, 1 = BVHNodes, 2 = LightIndices.
         void Upload(uint32_t slot, const void *data, uint32_t count, uint32_t stride);
@@ -69,6 +76,7 @@ namespace Wasteland
                       const std::vector<Ref<Texture2D>> &textures);
         void CommitHistory();
         void CommitDenoise();
+        void SwapReservoir();
 
         // Native handle for compositing the result into the swapchain.
         void *Output(uint32_t index = 0) const;
@@ -77,7 +85,7 @@ namespace Wasteland
 
         // First-dispatch self-check. The binding map is verified at build time
         // by tools/compile_nova_spirv.py, but this confirms at runtime that
-        // NVRHI actually built a 24-entry layout with the expected
+        // NVRHI actually built the expected layout with the right
         // offset+slot arithmetic -- if that ever disagrees the frame is wrong
         // in a way no exception reports.
         void LogBindingContract() const;
@@ -95,35 +103,38 @@ namespace Wasteland
         {
             nvrhi::TextureHandle texture;
             nvrhi::TextureHandle snapshot; // copy target; read_* SRVs bind this
+            bool snapshotDirty = true;
         };
 
-        static constexpr uint32_t kImageCount = 8;
+        // Nine images: the eight pass images (u0..u7) plus the SVGF moments
+        // image at u9. u8 is a deliberate gap -- the moments UAV was moved off
+        // u8 to u9 because on Vulkan the NVRHI binding for u8 (offset 0 + 8)
+        // collides with NovaConstants (offset 7 + 1). The gap costs one
+        // descriptor and keeps the HLSL/GLSL twins identical.
+        static constexpr uint32_t kImageCount = 9;
+        // Internal image index -> HLSL UAV register. Index 8 is moments at u9;
+        // u8 is intentionally unbound.
+        static const uint32_t kImageUavSlot[kImageCount];
         static constexpr uint32_t kSceneTextureCount = 32;
         // NovaConstants, from spirv-cross: block_size 1744.
         static constexpr uint32_t kConstantBufferSize = 1744;
 
-        // HLSL register -> image index for the read_* SRVs.
-        //
-        // The .hlsl declares EIGHT read_* images at t64..t71, but only these
-        // five survive compilation: DXC drops any global nothing reads, and the
-        // shader's only read path is the IMG_LOAD(tex,pos) macro that
-        // token-pastes to read_##tex. img_MaterialPacked is only written and
-        // sized, img_AlbedoHit and img_TraceGBuffer are only written, so t67,
-        // t68 and t70 have no OpDecorate in the .spv and a descriptor bound
-        // there would be one the shader can never reference. This is an
-        // intentional exclusion of passes that never run on ANY backend, not a
-        // Vulkan gap; the full argument is on kReadImageSlot in the .cpp, and
-        // VerifySpirvBindings() enforces it against the loaded module at Init.
-        static constexpr uint32_t kReadImageCount = 5;
-        static const uint32_t kReadImageSlot[kReadImageCount];  // 64,65,66,69,71
-        static const uint32_t kReadImageIndex[kReadImageCount]; //  0, 1,2, 5,  7
-        // Sampled SRV slots t48..t52 -> (s_Accumulation, s_DepthBuffer,
-        // s_Output, s_NormalBuffer, s_InputAlbedo). t48 is NOT one of the
-        // caller's scene textures: it is the temporal history texture written by
-        // CommitHistory() and read by the reprojection pass. See the t48 binding
-        // in VulkanNova::CreateBindingSet.
-        static constexpr uint32_t kSampledCount = 5;
-        static constexpr uint32_t kSampledSlot[kSampledCount] = {48, 49, 50, 51, 52};
+        // Active read_* SRVs. ReSTIR adds AlbedoHit (t68) and TraceGBuffer
+        // (t70); MaterialPacked's t67 alias remains unused. Moments is t73 and
+        // maps to image index 8; t72 is intentionally absent. VulkanNova.cpp
+        // defines the ordered slot/index maps and VerifySpirvBindings() checks
+        // them against the module loaded at runtime.
+        static constexpr uint32_t kReadImageCount = 8;
+        static const uint32_t kReadImageSlot[kReadImageCount];  // 64,65,66,68,69,70,71,73
+        static const uint32_t kReadImageIndex[kReadImageCount]; // 0,1,2,4,5,6,7,8
+        // Sampled SRV slots t48..t53 -> (s_Accumulation, s_DepthBuffer,
+        // s_Output, s_NormalBuffer, s_InputAlbedo, s_Moments). t48 is NOT one of
+        // the caller's scene textures: it is the temporal history texture
+        // written by CommitHistory() and read by the reprojection pass. See the
+        // t48 binding in VulkanNova::CreateBindingSet. t53 is s_Moments, the
+        // previous frame's moments that pass 12 samples at a reprojected UV.
+        static constexpr uint32_t kSampledCount = 6;
+        static constexpr uint32_t kSampledSlot[kSampledCount] = {48, 49, 50, 51, 52, 53};
 
         nvrhi::IDevice *m_Device = nullptr;
         nvrhi::ICommandList *m_CommandList = nullptr;
@@ -148,17 +159,16 @@ namespace Wasteland
 
         uint32_t m_Width = 0, m_Height = 0;
         bool m_LoggedBindingContract = false;
-        // Dispatch is called several times per frame (passes 1, 0, 2, then the
-        // bilateral blur). Rebuilding the binding set and re-copying snapshots
-        // per call would be both wasteful and unsafe: NVRHI binding sets are
-        // consumed by work already recorded on the command list. Gate both on
-        // a frame change instead. u_FrameIndex is the engine's frame token; the
-        // renderer calls Set() for it once per frame before the pass schedule.
+        // Dispatch is called several times per frame. Compare all scene texture
+        // slots on each call, but rebuild bindings only when resources change.
+        // Copy internal image snapshots when dirty, immediately before a pass
+        // reads an image written earlier in the frame. Keep old binding sets
+        // alive for already-recorded work. u_FrameIndex is the engine's frame
+        // token; Renderer3D sets it once before the pass schedule.
         uint32_t m_CurrentFrame = 0xFFFFFFFFu;
         uint32_t m_BoundFrame = 0xFFFFFFFFu;
 
-        // Scene texture SRVs are recreated whenever the scene texture set
-        // changes, not every frame. Keyed by the nvrhi texture pointer.
+        // Scene texture handles are cached by their nvrhi texture pointer.
         std::unordered_map<nvrhi::ITexture *, nvrhi::TextureHandle> m_SceneSRVCache;
         std::vector<nvrhi::TextureHandle> m_SceneSRVs;
 
@@ -169,14 +179,31 @@ namespace Wasteland
         // sampled in one dispatch.
         nvrhi::TextureHandle m_HistorySnapshot;
 
+        // ReSTIR reservoir ping-pong buffers. Two buffers, each 32 bytes per pixel.
+        // Read is t10 (SPIR-V binding 26), write is u10 (binding 10); swap after
+        // the consumer pass so next frame reads this frame's combined result.
+        nvrhi::BufferHandle m_ReservoirBuffers[2];
+        uint32_t m_ReservoirWidth = 0;
+        uint32_t m_ReservoirHeight = 0;
+        bool m_ReservoirReadFlip = false;
+        bool m_ReservoirsNeedClear = true;
+        bool m_ImagesNeedClear = false;
+        // Swaps only mark this dirty. The replacement set is built on the next
+        // Dispatch, leaving the current command list's recorded set alive.
+        bool m_BindingSetDirty = false;
+
         void CreateImages(uint32_t w, uint32_t h);
         void CreateStaticResources();
         void CreatePipelineAndLayout();
         void CreateBindingSet();
         void EnsureStructuredBuffer(uint32_t slot, uint32_t byteSize, uint32_t stride);
+        void CopyImageToSnapshot(uint32_t imageIndex);
         void CopyImagesToSnapshots();
+        void RefreshImageSnapshotsForPass(int pass);
+        void MarkImageSnapshotsDirtyAfterPass(int pass);
         nvrhi::ITexture *ResolveSceneTexture(Texture2D *texture);
         void RecordCopy(nvrhi::ITexture *dst, nvrhi::ITexture *src);
+        void RecordImageHistoryClear();
         bool EnsureCommandList();
 
         // Parses the SPIR-V module and throws unless its set of OpDecorate
@@ -189,6 +216,7 @@ namespace Wasteland
         void VerifySpirvBindings(const std::vector<char> &spirv) const;
 
         static const ConstantField *FindConstant(const char *name);
+        void SetBytes(const char *name, const void *value, std::size_t size, uint32_t index);
     };
 
 } // namespace Wasteland

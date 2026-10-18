@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include <glm/glm.hpp>
 
+#include "Wasteland/Audio/AudioDevice.h"
 #include "Wasteland/Audio/Mixer.h"
 
 namespace Wasteland
@@ -23,19 +25,27 @@ namespace Wasteland
 		// scene-facing concerns -- following the listener entity, resolving
 		// source components, and loading clips by path.
 		//
-		// There is deliberately no platform device here. A device pulls in a
-		// backend per OS and cannot be exercised headlessly, so it sits behind
-		// the mixer rather than in the middle of it. Until that backend exists,
-		// the mixer runs and its output is inspectable via Mix(), which is
-		// enough to build and test against.
+		// The platform device stays behind the device-independent mixer. Its
+		// callback consumes fixed-rate mixer output; headless callers can still
+		// exercise the mixer without opening any audio hardware.
 		class AudioSystem
 		{
 		public:
 			explicit AudioSystem(Scene *scene);
-			~AudioSystem() = default;
+			~AudioSystem();
 
 			Mixer &GetMixer() { return m_Mixer; }
 			const Mixer &GetMixer() const { return m_Mixer; }
+
+			// Explicit output lifecycle for the Scene runtime integration. Failure
+			// is non-fatal and reports the backend/device error to the caller.
+			bool StartOutput(std::string *error = nullptr) { return m_AudioDevice.Start(error); }
+			void StopOutput() { m_AudioDevice.Stop(); }
+			bool IsOutputRunning() const { return m_AudioDevice.IsRunning(); }
+			uint32_t GetOutputEndpointSampleRate() const
+			{
+				return m_AudioDevice.GetEndpointSampleRate();
+			}
 
 			// Load and register a clip from a filesystem path. The registered
 			// name is the file's stem, so "assets/audio/shotgun_fire.wav"
@@ -101,24 +111,15 @@ namespace Wasteland
 			// AudioListenerComponent, falls back to the primary camera.
 			Entity FindListenerEntity() const;
 
-			// A BORROWED back-pointer, deliberately NOT Ref<Scene>.
-			//
-			// Scene constructs this with `Ref<Scene>(this)`, which wraps a
-			// non-owning raw pointer in a SECOND, independent shared_ptr control
-			// block. Scene is already owned by whoever created it -- pybind11's
-			// shared_ptr holder, or CreateRef in the editor -- so when both control
-			// blocks die the Scene is deleted twice. The symptom is not a leak but
-			// heap corruption (0xC0000374) on interpreter exit, and it appears the
-			// moment any AudioSystem exists, which is why it went unnoticed: the
-			// audio layer had no test at all.
-			//
-			// Every use below is a read -- `m_Scene->`, `*m_Scene`,
-			// `m_Scene.get()`. None of them needs shared ownership, and a raw
-			// borrowed pointer makes the lifetime requirement honest: the Scene
-			// must outlive its AudioSystem, which it does by construction, since
-			// the AudioSystem is a member of the Scene.
+			// A borrowed parent pointer, deliberately NOT Ref<Scene>. Scene
+			// constructs this with `this`; wrapping that raw pointer in a new
+			// shared_ptr control block would create independent ownership of the
+			// Scene. AudioSystem only dereferences the parent and must remain
+			// within the Scene's lifetime; Scene stops its output device before
+			// tearing down runtime state.
 			Scene *m_Scene = nullptr;
 			Mixer m_Mixer;
+			AudioDevice m_AudioDevice;
 			// Remembered so a per-clip volume survives the clip being
 			// re-registered; the Mixer stores volumes on voices, not clips.
 			std::string m_LastListenerName;

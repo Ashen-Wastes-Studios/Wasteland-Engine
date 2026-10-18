@@ -101,7 +101,23 @@ namespace Wasteland::Audio
 		m_Listener.RecomputeBasis();
 	}
 
-	// Name -> clip, so the same file is decoded once and referenced by string from
+	Mixer::Listener Mixer::GetListenerSnapshot() const
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+		return m_Listener;
+	}
+
+	void Mixer::SetListenerTransform(const glm::vec3 &position,
+		const glm::vec3 &forward, const glm::vec3 &up)
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+		m_Listener.Position = position;
+		m_Listener.Forward = forward;
+		m_Listener.Up = up;
+		m_Listener.RecomputeBasis();
+	}
+
+	// Name -> clip, so the same file is not decoded twice and referenced by string from
 	// script. Registered clips keep their Ref alive for the mixer's lifetime.
 	// ---- Clip registry ----
 
@@ -109,6 +125,7 @@ namespace Wasteland::Audio
 	// asset load, where a failure is already reported by the loader.
 	void Mixer::RegisterClip(const std::string &name, const Ref<AudioClip> &clip)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// IsValid() is AudioClip's own flag, set by its decoder. Registering an invalid
 		// clip would store a handle that Play() later rejects anyway.
 		if (name.empty() || !clip || !clip->IsValid())
@@ -124,6 +141,7 @@ namespace Wasteland::Audio
 	// which treats a null clip as a dropped voice rather than a crash.
 	Ref<AudioClip> Mixer::GetClip(const std::string &name) const
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		auto it = m_Clips.find(name);
 		return it != m_Clips.end() ? it->second : nullptr;
 	}
@@ -132,6 +150,7 @@ namespace Wasteland::Audio
 	// Play for a clip that was never imported.
 	bool Mixer::HasClip(const std::string &name) const
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		return m_Clips.find(name) != m_Clips.end();
 	}
 
@@ -192,8 +211,9 @@ namespace Wasteland::Audio
 	// Resolves attenuation AND pan together, because both depend on the same
 	// listener-relative vector and computing it twice would be wasteful.
 	SpatialGains Mixer::ComputeSpatial(const glm::vec3 &position, bool spatial,
-									   float minDistance, float maxDistance) const
+								   float minDistance, float maxDistance) const
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// Default-constructed to Left = Right = Attenuation = 1.0, so a 2D sound takes
 		// the early return below and is full volume, centred.
 		SpatialGains gains;
@@ -364,6 +384,7 @@ namespace Wasteland::Audio
 	// to Stop or SetVoiceVolume later, or -1.
 	int Mixer::Play(const PlayRequest &request)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// A direct handle takes priority over the name lookup below.
 		Ref<AudioClip> clip = request.Clip;
 		// Fall back to the registry. The `!clip` test means an explicitly-set handle wins,
@@ -480,6 +501,7 @@ namespace Wasteland::Audio
 	// voice retired rather than erasing it, so the vector's size never shrinks.
 	void Mixer::Stop(int voiceId, float fadeSeconds)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// Linear scan by id. A map would be faster but the vector is capped at ~32, and
 		// keeping voices contiguous is what lets Play reuse a slot without bookkeeping.
 		for (Voice &voice : m_Voices)
@@ -520,6 +542,7 @@ namespace Wasteland::Audio
 	// touched. Used on scene teardown and level change.
 	void Mixer::StopAll(float fadeSeconds)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		for (Voice &voice : m_Voices)
 		{
 			if (!voice.IsPlaying())
@@ -541,6 +564,7 @@ namespace Wasteland::Audio
 	// the caller knows the clip, not the voice ids.
 	void Mixer::StopClip(const AudioClip *clip, float fadeSeconds)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// Null-tolerant because the argument comes from GetClip(), which returns nullptr
 		// for an unknown name.
 		if (!clip)
@@ -568,6 +592,7 @@ namespace Wasteland::Audio
 	// normal, so a caller must not treat false as an error.
 	bool Mixer::SetVoiceVolume(int voiceId, float volume)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// Same by-id scan as Stop, but returns on the first match instead of continuing.
 		for (Voice &voice : m_Voices)
 		{
@@ -586,6 +611,7 @@ namespace Wasteland::Audio
 	// pitch 0 and negative pitch are structurally broken rather than merely quiet.
 	bool Mixer::SetVoicePitch(int voiceId, float pitch)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		for (Voice &voice : m_Voices)
 		{
 			if (voice.VoiceId == voiceId && voice.IsPlaying())
@@ -603,6 +629,7 @@ namespace Wasteland::Audio
 	// looped music, so a music-volume slider can use it directly.
 	void Mixer::SetClipVolume(const AudioClip *clip, float volume)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		if (!clip)
 			return;
 		for (Voice &voice : m_Voices)
@@ -618,6 +645,7 @@ namespace Wasteland::Audio
 	// which is the normal answer for a stale id rather than an error.
 	bool Mixer::IsPlaying(int voiceId) const
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		for (const Voice &voice : m_Voices)
 			if (voice.VoiceId == voiceId && voice.IsPlaying())
 				return true;
@@ -676,6 +704,7 @@ namespace Wasteland::Audio
 	// keeps audio from drifting against video when buffer sizes vary.
 	void Mixer::Update(float seconds)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// A zero or negative delta (paused game, clock adjustment) would otherwise run
 		// the fade countdown backwards or spin nothing at all.
 		if (seconds <= 0.0f)
@@ -762,32 +791,33 @@ namespace Wasteland::Audio
 		// The three scalar factors. Master is applied here rather than per sample so the
 		// multiply happens once per voice, not once per sample.
 		float baseVolume = voice.Volume * masterGain * gains.Attenuation;
-		// A voice that has faded to nothing should cost nothing to skip.
 		// Linear fade multiplier: remaining/total. Guarded on Duration > 0 so a voice
 		// with a remaining count but no duration cannot divide by zero.
 		if (voice.FadeRemaining > 0.0f && voice.FadeDuration > 0.0f)
-			// Note this DISABLES the attenuation, not multiplies it: the mixer's volume knob
-			// stays independent of a stop-fade, which is why a UI fade does not fight the
-			// master volume.
 			baseVolume *= (voice.FadeRemaining / voice.FadeDuration);
 
-		// Early-out before the sample loop. A fully faded or silent voice costs one
-		// compare rather than frameCount iterations.
+		// Fractional source read position. Each engine output frame represents
+		// sourceRate / 48000 source frames before the authored pitch multiplier.
+		double readPosition = voice.FramePosition;
+		const double increment = (double)clip->GetSampleRate() /
+			(double)kEngineMixRate * (double)voice.Pitch;
+
+		// A muted voice still consumes audio time. This fast path avoids touching
+		// the sample buffer while keeping the device clock and read position aligned.
 		if (baseVolume <= 0.0f)
+		{
+			readPosition += increment * (double)frameCount;
+			if (voice.Loop)
+				readPosition = std::fmod(readPosition, total);
+			else if (readPosition >= total)
+				readPosition = total;
+			voice.FramePosition = readPosition;
 			return;
+		}
 
 		// Per-side gains resolved once, so the inner loop is two multiply-adds.
 		const float leftGain = baseVolume * gains.Left;
-		// Same, for the right channel. Constant across the whole buffer for this voice.
 		const float rightGain = baseVolume * gains.Right;
-
-		// Fractional read position. A pitch of 1.05 lands between samples; a
-		// device asks for more frames than a clip has, and the voice must
-		// simply run out rather than read past the end.
-		// Fractional, so a pitch of 1.05 lands between samples and interpolates.
-		double readPosition = voice.FramePosition;
-		// Frames per output frame. Constant, so the loop needs no multiply here.
-		const double increment = (double)voice.Pitch;
 
 		// A negative pitch was clamped to 1 at Play, so increment is always
 		// positive and the loop below terminates.
@@ -879,6 +909,7 @@ namespace Wasteland::Audio
 	// summing every live voice into `output`.
 	void Mixer::Mix(float *output, int frameCount)
 	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
 		// Null-tolerant because `output` comes from a script binding or a device callback,
 		// neither of which guarantees a valid buffer.
 		if (!output || frameCount <= 0)
@@ -916,6 +947,70 @@ namespace Wasteland::Audio
 				output[i] = 1.0f;
 			else if (output[i] < -1.0f)
 				output[i] = -1.0f;
+		}
+	}
+
+	// Device-owned clock: Mix() advances each source position from its clip rate
+	// at the fixed 48 kHz engine rate. This method then advances fades and retires
+	// completed voices from the same number of frames, without wall-clock Update().
+	void Mixer::MixRealtime(float *output, int frameCount)
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+		if (!output || frameCount <= 0)
+			return;
+
+		const bool masterMuted = m_MasterVolume <= 0.0f;
+		Mix(output, frameCount);
+
+		// Mix() keeps its historical muted fast path for headless callers. A live
+		// device must nevertheless consume time while muted so unmuting does not
+		// restart clips from a stale position.
+		if (masterMuted)
+		{
+			for (Voice &voice : m_Voices)
+			{
+				if (!voice.IsPlaying() || !voice.Clip)
+					continue;
+
+				const double total = static_cast<double>(voice.Clip->GetFrameCount());
+				if (total <= 0.0)
+					continue;
+				const double increment = static_cast<double>(voice.Clip->GetSampleRate()) /
+					static_cast<double>(kEngineMixRate) * static_cast<double>(voice.Pitch);
+				double position = voice.FramePosition + increment * frameCount;
+				if (voice.Loop)
+					position = std::fmod(position, total);
+				else if (position >= total)
+					position = total;
+				voice.FramePosition = position;
+			}
+		}
+
+		const float elapsedSeconds = static_cast<float>(frameCount) /
+			static_cast<float>(kEngineMixRate);
+		for (Voice &voice : m_Voices)
+		{
+			if (!voice.IsPlaying())
+				continue;
+
+			if (voice.FadeRemaining > 0.0f)
+			{
+				voice.FadeRemaining -= elapsedSeconds;
+				if (voice.FadeRemaining <= 0.0f)
+				{
+					voice.FadeRemaining = 0.0f;
+					voice.VoiceId = -1;
+					voice.Clip = nullptr;
+					continue;
+				}
+			}
+
+			if (!voice.Loop && voice.Clip &&
+				voice.FramePosition + 1e-6 >= static_cast<double>(voice.Clip->GetFrameCount()))
+			{
+				voice.VoiceId = -1;
+				voice.Clip = nullptr;
+			}
 		}
 	}
 

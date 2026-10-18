@@ -18,6 +18,7 @@ IncludeDir["GLFW"] = "Wasteland/vendor/GLFW/include"
 IncludeDir["Glad"] = "Wasteland/vendor/Glad/include"
 IncludeDir["ImGui"] = "Wasteland/vendor/imgui"
 IncludeDir["glm"] = "Wasteland/vendor/glm"
+IncludeDir["miniaudio"] = "Wasteland/vendor/miniaudio"
 IncludeDir["stb_image"] = "Wasteland/vendor/stb_image"
 IncludeDir["entt"] = "Wasteland/vendor/entt/single_include"
 IncludeDir["yaml_cpp"] = "Wasteland/vendor/yaml-cpp/include"
@@ -65,7 +66,8 @@ project "Wasteland"
 		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.h",
 		"%{prj.name}/vendor/ImGuizmo/ImGuizmo.cpp",
 		"%{prj.name}/vendor/imgui/TextEditor.h",
-		"%{prj.name}/vendor/imgui/TextEditor.cpp"
+		"%{prj.name}/vendor/imgui/TextEditor.cpp",
+		"%{prj.name}/vendor/miniaudio/miniaudio.h"
 	}
 
 	defines
@@ -82,6 +84,7 @@ project "Wasteland"
 		"%{IncludeDir.Glad}",
 		"%{IncludeDir.ImGui}",
 		"%{IncludeDir.glm}",
+		"%{IncludeDir.miniaudio}",
 		"%{IncludeDir.stb_image}",
 		"%{IncludeDir.entt}",
 		"%{IncludeDir.yaml_cpp}",
@@ -130,6 +133,13 @@ project "Wasteland"
 			"NoPCH"
 		}
 
+	filter "system:linux"
+		links { "dl" }
+
+	filter "system:macosx"
+		links { "CoreAudio.framework", "AudioToolbox.framework", "AudioUnit.framework" }
+
+	filter {}
 	filter "system:windows"
 		systemversion "latest"
 
@@ -155,8 +165,13 @@ project "Wasteland"
 			"d3dcompiler.lib",
 			"dxguid.lib",
 			"vulkan-1.lib",
-			"volk.lib"
-				}
+			"volk.lib",
+			"ole32.lib",
+			"winmm.lib",
+			"avrt.lib",
+			"shell32.lib",
+			"advapi32.lib"
+		}
 
 	filter "system:linux"
 		buildoptions
@@ -451,6 +466,7 @@ project "DemonCore-Editor"
 		"%{IncludeDir.yaml_cpp}",
 		"%{IncludeDir.ImGuizmo}",
 		"%{IncludeDir.Box3D}",
+		"%{IncludeDir.NVRHI}",
 		"%{IncludeDir.pybind11}",
 		pythonpath .. "/include"
 	}
@@ -471,7 +487,7 @@ project "DemonCore-Editor"
 
 	postbuildcommands {
         'if not exist "$(TargetDir)assets" mkdir "$(TargetDir)assets"',
-        'xcopy /Y /E /I "%{wks.location}/DemonCore-Editor/assets" "$(TargetDir)assets"',
+        'robocopy /E "$(ProjectDir)assets" "$(TargetDir)assets" & if errorlevel 8 exit /b 1',
         'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.dll" "$(TargetDir)python314.dll"',
 		'copy /Y "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314._pth" "$(TargetDir)"',
         'xcopy /Y /E /I "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib" "$(TargetDir)Lib"',

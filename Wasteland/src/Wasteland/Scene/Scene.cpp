@@ -13,6 +13,7 @@
 #include "Wasteland/Scene/BehaviorTreeSystem.h"
 
 #include <cfloat>
+#include <cstdlib>
 #include <filesystem>
 #include <glm/gtc/matrix_inverse.hpp>
 
@@ -190,8 +191,8 @@ namespace Wasteland
 	// @param dst     Destination registry, already populated with the new
 	//               entities.
 	// @param src     Source registry to copy from.
-	// @param enttMap UUID -> destination entt handle. Built by the caller.
-	static void CopyComponent(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
+	// @param enttMap Source entt handle -> destination entt handle. Built by the caller.
+	static void CopyComponent(entt::registry &dst, entt::registry &src, const std::unordered_map<entt::entity, entt::entity> &enttMap)
 	{
 		auto view = src.view<T>();
 		for (auto e : view)
@@ -199,8 +200,14 @@ namespace Wasteland
 			if (!src.valid(e) || !src.all_of<IDComponent>(e))
 				continue;
 
-			UUID uuid = src.get<IDComponent>(e).ID;
-			auto it = enttMap.find(uuid);
+			// Keyed by the SOURCE entt handle, not by UUID. UUIDs are not unique:
+			// the deserializer defaults a missing or unconvertible Entity key to 0,
+			// so a scene can hold many entities sharing ID 0. A UUID-keyed map
+			// collapses those into one entry, and every component after the first is
+			// then copied onto the same destination entity while the rest arrive
+			// with nothing -- which is how a scene of 1000 buildings came to show a
+			// single one after pressing Play.
+			auto it = enttMap.find(e);
 			if (it == enttMap.end())
 				continue;
 
@@ -234,7 +241,7 @@ namespace Wasteland
 	// emplace_or_replace with no source argument default-constructs a fresh
 	// component, which is what guarantees a clean container rather than one
 	// carrying state from a previous occupant of that entity.
-	static void CopyComponent<NativeScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
+	static void CopyComponent<NativeScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<entt::entity, entt::entity> &enttMap)
 	{
 		auto view = src.view<NativeScriptComponent>();
 		for (auto e : view)
@@ -242,8 +249,7 @@ namespace Wasteland
 			if (!src.valid(e) || !src.all_of<IDComponent>(e))
 				continue;
 
-			UUID uuid = src.get<IDComponent>(e).ID;
-			auto it = enttMap.find(uuid);
+			auto it = enttMap.find(e);
 			if (it == enttMap.end())
 				continue;
 
@@ -272,7 +278,7 @@ namespace Wasteland
 	// The log line fires once per scripted entity, so duplicating an entity
 	// with several scripts logs several lines at INFO -- useful when tracing
 	// a duplication, noisy in bulk.
-	static void CopyComponent<ScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
+	static void CopyComponent<ScriptComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<entt::entity, entt::entity> &enttMap)
 	{
 		auto scriptView = src.view<ScriptComponent>();
 		for (auto e : scriptView)
@@ -280,8 +286,7 @@ namespace Wasteland
 			if (!src.valid(e) || !src.all_of<IDComponent>(e))
 				continue;
 
-			UUID uuid = src.get<IDComponent>(e).ID;
-			auto it = enttMap.find(uuid);
+			auto it = enttMap.find(e);
 			if (it == enttMap.end())
 				continue;
 
@@ -326,7 +331,7 @@ namespace Wasteland
 	// analytic-light path is first-wins, which one survives depends on gather
 	// order rather than on anything the user controlled. See the Primary TODO
 	// in Components.h.
-	static void CopyComponent<CameraComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<UUID, entt::entity> &enttMap)
+	static void CopyComponent<CameraComponent>(entt::registry &dst, entt::registry &src, const std::unordered_map<entt::entity, entt::entity> &enttMap)
 	{
 		auto view = src.view<CameraComponent>();
 		for (auto e : view)
@@ -334,8 +339,7 @@ namespace Wasteland
 			if (!src.valid(e) || !src.all_of<IDComponent>(e))
 				continue;
 
-			UUID uuid = src.get<IDComponent>(e).ID;
-			auto it = enttMap.find(uuid);
+			auto it = enttMap.find(e);
 			if (it == enttMap.end())
 				continue;
 
@@ -391,7 +395,9 @@ namespace Wasteland
 
 		auto &srcSceneRegistry = other->m_Registry;
 		auto &dstSceneRegistry = newScene->m_Registry;
-		std::unordered_map<UUID, entt::entity> enttMap;
+		// Source handle -> destination handle. Keyed by handle rather than UUID
+		// because UUIDs are not guaranteed unique; see CopyComponent below.
+		std::unordered_map<entt::entity, entt::entity> enttMap;
 
 		// Create entities in new scene
 		auto idView = srcSceneRegistry.view<IDComponent>();
@@ -400,7 +406,7 @@ namespace Wasteland
 			UUID uuid = srcSceneRegistry.get<IDComponent>(e).ID;
 			const auto &name = srcSceneRegistry.get<TagComponent>(e).Tag;
 			Entity newEntity = newScene->CreateEntityWithUUID(uuid, name);
-			enttMap[uuid] = (entt::entity)newEntity;
+			enttMap[e] = (entt::entity)newEntity;
 		}
 
 		// Copy components (except IDComponent and TagComponent)
@@ -441,6 +447,14 @@ namespace Wasteland
 
 		CopyComponent<NativeScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
 		CopyComponent<ScriptComponent>(dstSceneRegistry, srcSceneRegistry, enttMap);
+		if (other->m_TerrainRuntime.IsConfigured())
+		{
+			std::string error;
+			if (!newScene->ConfigureTerrainRuntime(other->m_TerrainRuntime.GetAsset(),
+				other->m_TerrainRuntime.GetWorldState(), other->m_TerrainRuntime.GetConfig(), &error,
+				other->GetTerrainAssetReference()))
+				WL_CORE_WARN("Could not copy scene terrain runtime: {0}", error);
+		}
 
 		{
 			auto view = dstSceneRegistry.view<CameraComponent>();
@@ -528,11 +542,11 @@ namespace Wasteland
 		m_Registry.destroy(entity);
 	}
 
-	// Brings the simulation up: both physics worlds, nothing else.
+	// Brings up the runtime-owned subsystems in order: both physics worlds,
+	// then audio output and authored PlayOnStart sources.
 	//
-	// Called when entering play mode. Deliberately minimal -- no scripts are
-	// instantiated here (that happens lazily on the first OnUpdateRuntime, see
-	// below), and no water or light state is touched.
+	// Called when entering play mode. Scripts are still instantiated lazily on the
+	// first OnUpdateRuntime; no water or light state is touched here.
 	//
 	// The 2D world is started before the 3D one, so body handles allocated in
 	// 2D get lower indices. Nothing depends on that today, but it means the
@@ -541,9 +555,24 @@ namespace Wasteland
 	{
 		OnPhysics2DStart();
 		OnPhysics3DStart();
+
+		// The editor's play lifecycle owns the output device. Headless tests set
+		// WASTELAND_DISABLE_AUDIO_OUTPUT=1 and still exercise the deterministic
+		// mixer clock without opening a physical endpoint.
+		auto audio = GetAudioSystem();
+		const char *disableOutput = std::getenv("WASTELAND_DISABLE_AUDIO_OUTPUT");
+		const bool outputDisabled = disableOutput &&
+			disableOutput[0] == '1' && disableOutput[1] == '\0';
+		if (!outputDisabled && !audio->IsOutputRunning())
+		{
+			std::string error;
+			if (!audio->StartOutput(&error))
+				WL_CORE_WARN("Audio output unavailable; continuing with the offline mixer: {0}", error);
+		}
+		audio->PlayAutoStartSources();
 	}
 
-	// Tears the simulation down, in the reverse order of OnRuntimeStart.
+	// Tears runtime-owned subsystems down in the reverse order of OnRuntimeStart.
 	//
 	// Stopping 3D before 2D matters more than starting did: the stop passes
 	// walk the registry destroying bodies, and doing them in the opposite
@@ -556,8 +585,13 @@ namespace Wasteland
 	// during play survives.
 	void Scene::OnRuntimeStop()
 	{
-		OnPhysics2DStop();
+		if (m_AudioSystem)
+		{
+			m_AudioSystem->StopAll();
+			m_AudioSystem->StopOutput();
+		}
 		OnPhysics3DStop();
+		OnPhysics2DStop();
 	}
 
 	// The runtime update: everything that advances while the game is playing,
@@ -678,9 +712,32 @@ namespace Wasteland
 			}
 		}
 
+		// Stream terrain before physics so newly selected chunk colliders exist
+		// before this frame's Box3D step.
+		if (m_TerrainRuntime.IsConfigured())
+		{
+			auto view = m_Registry.view<TransformComponent, CameraComponent>();
+			for (auto entity : view)
+			{
+				if (!view.get<CameraComponent>(entity).Primary)
+					continue;
+				const auto& position = view.get<TransformComponent>(entity).Translation;
+				std::string error;
+				if (!UpdateTerrainStreaming(position.x, position.z, &error))
+					WL_CORE_WARN("Terrain streaming update failed: {0}", error);
+				break;
+			}
+		}
+
 		// Physics. One call, so the runtime path and the headless
 		// StepPhysics path cannot drift apart.
 		StepPhysics(ts);
+
+		// Audio follows the post-physics listener transform. The output callback
+		// advances voices from rendered frames; when no device is active, Update
+		// advances the same mixer from the scene timestep for headless use.
+		if (m_AudioSystem)
+			m_AudioSystem->Update(ts.GetSeconds());
 
 		// Render 2D
 		Camera *mainCamera = nullptr;
@@ -734,6 +791,7 @@ namespace Wasteland
 			SubmitSceneLights();
 			SubmitWaterSurfaces();
 			SubmitMeshPrimitives();
+			SubmitTerrainChunks();
 
 			// Draw Cubes
 			{
@@ -1079,6 +1137,13 @@ namespace Wasteland
 	{
 		// Water simulation always advances (drives waves + gameplay queries)
 		UpdateWater(ts);
+		const auto& position = camera.GetPosition();
+		if (m_TerrainRuntime.IsConfigured())
+		{
+			std::string error;
+			if (!UpdateTerrainStreaming(position.x, position.z, &error))
+				WL_CORE_WARN("Terrain streaming update failed: {0}", error);
+		}
 
 		// Physics. One call, so the runtime path and the headless
 		// StepPhysics path cannot drift apart.
@@ -1092,6 +1157,13 @@ namespace Wasteland
 	{
 		// Water preview animates in the editor viewport
 		UpdateWater(ts);
+		const auto& position = camera.GetPosition();
+		if (m_TerrainRuntime.IsConfigured())
+		{
+			std::string error;
+			if (!UpdateTerrainStreaming(position.x, position.z, &error))
+				WL_CORE_WARN("Terrain streaming update failed: {0}", error);
+		}
 
 		// Render
 		RenderScene(camera);
@@ -1429,6 +1501,7 @@ namespace Wasteland
 		b3WorldDef worldDef = b3DefaultWorldDef();
 		worldDef.gravity = {0.0f, -9.81f, 0.0f};
 		m_Physics3DWorld = b3CreateWorld(&worldDef);
+		m_TerrainRuntime.SetPhysicsWorld(m_Physics3DWorld);
 
 		auto view = m_Registry.view<RigidBody3DComponent>();
 		for (auto e : view)
@@ -1676,6 +1749,7 @@ namespace Wasteland
 
 		void Scene::OnPhysics3DStop()
 		{
+		m_TerrainRuntime.SetPhysicsWorld(B3_NULL_ID);
 		if (b3World_IsValid(m_Physics3DWorld))
 		{
 			b3DestroyWorld(m_Physics3DWorld);
@@ -1951,6 +2025,12 @@ namespace Wasteland
 		}
 	}
 
+	void Scene::SubmitTerrainChunks()
+	{
+		for (const auto& chunk : m_TerrainRuntime.GetStreamer().GetLoadedChunks())
+			Renderer3D::DrawTerrainChunk(chunk.second);
+	}
+
 	void Scene::SubmitWaterSurfaces()
 	{
 		auto view = m_Registry.view<TransformComponent, WaterComponent>();
@@ -2100,6 +2180,45 @@ namespace Wasteland
 	// through (a 0.5 item against 0 available still fails by miles).
 	static constexpr float kWeightEpsilon = 1e-4f;
 
+	// Notify the script attached to an inventory owner after its count changed.
+	// This runs from both Python bindings and native gameplay, so acquire the GIL
+	// explicitly and keep a missing hook a quiet no-op like CallScriptMethod.
+	static void NotifyInventoryChanged(Entity entity, const std::string &itemId,
+									   int oldCount, int newCount)
+	{
+		if (!entity.IsValid() || !entity.HasComponent<IDComponent>() || !Py_IsInitialized())
+			return;
+
+		py::gil_scoped_acquire gil;
+		const UUID id = entity.GetComponent<IDComponent>().ID;
+		py::object *instance = ScriptEngine::GetInstance(id);
+		if (!instance || !instance->ptr())
+			return;
+
+		try
+		{
+			py::object callback = py::getattr(*instance, "OnInventoryChanged", py::none());
+			if (callback.is_none() || !PyCallable_Check(callback.ptr()))
+				return;
+			callback(itemId, oldCount, newCount);
+		}
+		catch (const py::error_already_set &e)
+		{
+			WL_CORE_ERROR("Script for entity {0} raised during OnInventoryChanged: {1}", id, e.what());
+			PyErr_Clear();
+		}
+		catch (const std::exception &e)
+		{
+			WL_CORE_ERROR("Script binding error for entity {0} during OnInventoryChanged: {1}", id, e.what());
+			PyErr_Clear();
+		}
+		catch (...)
+		{
+			WL_CORE_ERROR("Unknown error for entity {0} during OnInventoryChanged", id);
+			PyErr_Clear();
+		}
+	}
+
 	// Adds items to an inventory, topping up existing stacks before opening new
 	// ones, and returns how many were actually accepted.
 	//
@@ -2127,6 +2246,8 @@ namespace Wasteland
 		auto *inv = entity.TryGetComponent<InventoryComponent>();
 		if (!inv)
 			return 0;
+
+		const int oldCount = GetItemCount(entity, itemId);
 
 		ItemDefinitionComponent *def = FindItemDefinition(itemId);
 		// An unknown item gets a single-item stack. It is better to carry a
@@ -2255,6 +2376,9 @@ namespace Wasteland
 			remaining -= take;
 		}
 
+		if (added == quantity)
+			NotifyInventoryChanged(entity, itemId, oldCount, GetItemCount(entity, itemId));
+
 		return added;
 	}
 
@@ -2266,6 +2390,8 @@ namespace Wasteland
 		auto *inv = entity.TryGetComponent<InventoryComponent>();
 		if (!inv)
 			return 0;
+
+		const int oldCount = GetItemCount(entity, itemId);
 
 		int removed = 0;
 		int remaining = quantity;
@@ -2290,6 +2416,9 @@ namespace Wasteland
 			if (it->Quantity <= 0)
 				it = inv->Items.erase(it);
 		}
+
+		if (removed > 0)
+			NotifyInventoryChanged(entity, itemId, oldCount, GetItemCount(entity, itemId));
 
 		return removed;
 	}
@@ -3268,6 +3397,7 @@ namespace Wasteland
 		SubmitSceneLights();
 		SubmitWaterSurfaces();
 		SubmitMeshPrimitives();
+		SubmitTerrainChunks();
 
 		// Draw Cubes
 		{
@@ -3873,6 +4003,28 @@ namespace Wasteland
 		return GetAudioSystem()->LoadClip(path);
 	}
 
+
+bool Scene::ConfigureTerrainRuntime(const Terrain::TerrainAsset& asset,
+	const Terrain::TerrainWorldState& worldState,
+	const Terrain::TerrainStreamingConfig& config, std::string* error,
+	const std::string& assetReference)
+{
+	if (!m_TerrainRuntime.Configure(asset, worldState, config, error))
+		return false;
+	m_TerrainRuntime.SetPhysicsWorld(m_Physics3DWorld);
+	m_TerrainAssetReference = assetReference;
+	return true;
+}
+
+bool Scene::SetTerrainWorldState(const Terrain::TerrainWorldState& worldState, std::string* error)
+{
+	return m_TerrainRuntime.SetWorldState(worldState, error);
+}
+
+bool Scene::UpdateTerrainStreaming(double worldX, double worldZ, std::string* error)
+{
+	return m_TerrainRuntime.UpdateView(worldX, worldZ, error);
+}
 
 bool Scene::BakeNavMesh(const Navigation::NavMeshConfig &config)
 {

@@ -15,6 +15,8 @@
 #include "Panels/ScriptInspectorPanel.h"
 #include "Panels/NPCBehaviorPanel.h"
 #include "Panels/VisualBlocksPanel.h"
+#include "Panels/AvbGraphPanel.h"
+#include "Panels/TerrainAssetPanel.h"
 #include "Panels/AIChatPanel.h"
 #include "Panels/ModelDownloaderPanel.h"
 
@@ -128,6 +130,7 @@ namespace Wasteland
 		// scene is the document being edited, and they have different lifetimes.
 		void NewScript();
 		void OpenScript();
+		void NewTerrainAsset();
 
 		// Project lifecycle. Switching projects re-roots every panel that
 		// resolves assets, so it goes through OnProjectChanged().
@@ -150,7 +153,7 @@ namespace Wasteland
 
 		// Serialization is a static-looking operation on an arbitrary scene,
 		// because SaveSceneAs needs it for a scene that is not the active one.
-		void SerializeScene(Ref<Scene> scene, const std::filesystem::path &path);
+		bool SerializeScene(Ref<Scene> scene, const std::filesystem::path &path);
 
 		// Play / Simulate / Stop are three distinct runtime modes, not two:
 		// Simulate runs the simulation without the gameplay HUD or player input,
@@ -336,6 +339,8 @@ namespace Wasteland
 	// flow, a tree's is priority order. The two share the runtime
 	// registry, validator and serializer.
 	VisualBlocksPanel m_VisualBlocksPanel;
+	AvbGraphPanel m_AvbGraphPanel;
+	TerrainAssetPanel m_TerrainAssetPanel;
 		AIChatPanel m_AIChatPanel;
 		// The model downloader is editor-only tooling, but it lives in the engine
 		// target's dependency set rather than being conditionally compiled out,

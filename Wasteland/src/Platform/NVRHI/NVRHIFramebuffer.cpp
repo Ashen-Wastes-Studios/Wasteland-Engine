@@ -152,7 +152,8 @@ namespace Wasteland
 		// it either way, but a set that outlives the VkImageView it names stays
 		// allocated in ImGui's pool until the next resize or teardown, and a
 		// dragged window edge resizes every frame.
-		ReleaseVulkanImGuiDescriptorSet();
+		if (!ReleaseVulkanImGuiDescriptorSet())
+			return;
 
 		// Clear old resources
 		m_Framebuffer = nullptr;
@@ -308,23 +309,89 @@ namespace Wasteland
 	// it owned is already gone; IsVulkanImGuiInitialized() closes exactly that gap,
 	// because it reads the pool handle.
 	//
-	// THE COST OF THE GUARD IS A LEAK, NOT A CRASH: if the check fails the set is
-	// simply forgotten. That is the right trade, and the size of the leak is bounded
-	// anyway because the pool's own destruction frees every set allocated from it.
-	void NVRHIFramebuffer::ReleaseVulkanImGuiDescriptorSet() const
+	// A pool mismatch means its owner will reclaim the set, so it is forgotten
+	// without RemoveTexture. For a live matching pool, device idle must succeed
+	// before RemoveTexture; on failure the cached set is retained for a later retry.
+	bool NVRHIFramebuffer::ReleaseVulkanImGuiDescriptorSet() const
 	{
 		if (!m_VkImGuiCacheDescriptorSet)
-			return;
+		{
+			m_VkImGuiCacheTexture = nullptr;
+			m_VkImGuiCachePool = nullptr;
+			return true;
+		}
 
 		auto *context = NVRHIRendererAPI::GetCurrentContext();
 		if (context && context->GetAPI() == RendererAPI::API::NVRHI_Vulkan &&
-			context->IsVulkanImGuiInitialized())
+			context->IsVulkanImGuiInitialized() &&
+			static_cast<void *>(context->GetVkImGuiDescriptorPool()) == m_VkImGuiCachePool)
 		{
+			if (!context->GetVkDevice())
+			{
+				WL_CORE_ERROR("NVRHIFramebuffer: cannot safely release Vulkan ImGui texture without a VkDevice");
+				return false;
+			}
+
+			VkResult waitResult = vkDeviceWaitIdle(context->GetVkDevice());
+			if (waitResult != VK_SUCCESS)
+			{
+				WL_CORE_ERROR("NVRHIFramebuffer: vkDeviceWaitIdle failed ({0}); keeping Vulkan ImGui descriptor set allocated", static_cast<int>(waitResult));
+				return false;
+			}
+
 			ImGui_ImplVulkan_RemoveTexture(static_cast<VkDescriptorSet>(m_VkImGuiCacheDescriptorSet));
 		}
 		m_VkImGuiCacheDescriptorSet = nullptr;
 		m_VkImGuiCacheTexture = nullptr;
 		m_VkImGuiCachePool = nullptr;
+		return true;
+	}
+
+	// Shared Vulkan descriptor path for framebuffer attachments and external NVRHI textures.
+	void *NVRHIFramebuffer::GetVulkanImGuiTexID(nvrhi::TextureHandle texture) const
+	{
+		if (!texture)
+			return nullptr;
+
+		auto *context = NVRHIRendererAPI::GetCurrentContext();
+		if (!context || context->GetAPI() != RendererAPI::API::NVRHI_Vulkan)
+			return nullptr;
+
+		VkSampler sampler = context->GetVkImGuiSampler();
+		VkDescriptorPool poolHandle = context->GetVkImGuiDescriptorPool();
+		void *pool = static_cast<void *>(poolHandle);
+		if (!sampler || !pool || !context->IsVulkanImGuiInitialized())
+			return nullptr;
+
+		nvrhi::ITexture *textureObject = texture.Get();
+		if (!m_VkImGuiCacheDescriptorSet || textureObject != m_VkImGuiCacheTexture.Get() ||
+			pool != m_VkImGuiCachePool)
+		{
+			if (!ReleaseVulkanImGuiDescriptorSet())
+				return nullptr;
+
+			VkImageView view = static_cast<VkImageView>(
+				textureObject->getNativeView(nvrhi::ObjectTypes::VK_ImageView));
+			if (!view)
+			{
+				WL_CORE_ERROR("NVRHIFramebuffer: NVRHI texture has no VkImageView for ImGui");
+				return nullptr;
+			}
+
+			VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(
+				sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			if (!descriptorSet)
+			{
+				WL_CORE_ERROR("NVRHIFramebuffer: ImGui_ImplVulkan_AddTexture failed for NVRHI texture");
+				return nullptr;
+			}
+
+			m_VkImGuiCacheTexture = texture;
+			m_VkImGuiCachePool = pool;
+			m_VkImGuiCacheDescriptorSet = static_cast<void *>(descriptorSet);
+		}
+
+		return m_VkImGuiCacheDescriptorSet;
 	}
 
 	// Binding is indirect: there is no NVRHI framebuffer-to-context binding,
@@ -777,8 +844,6 @@ namespace Wasteland
 		// nullptr here, so the editor skipped the draw entirely.
 		if (context->GetAPI() == RendererAPI::API::NVRHI_Vulkan)
 		{
-			VkSampler sampler = context->GetVkImGuiSampler();
-			void *pool = static_cast<void *>(context->GetVkImGuiDescriptorPool());
 			// AddTexture dereferences ImGui's backend data with no null check --
 			// ImGui_ImplVulkan_GetBackendData asserts on it -- so calling it before
 			// ImGui_ImplVulkan_Init, or after its Shutdown, is a hard crash rather
@@ -786,10 +851,7 @@ namespace Wasteland
 			// signal the context publishes, and InitVulkanImGuiResources has already
 			// returned by the time a frame can reach here, which is exactly when
 			// ImGuiLayer has run ImGui_ImplVulkan_Init.
-			if (!sampler || !pool || !context->IsVulkanImGuiInitialized())
-				return nullptr;
-
-			nvrhi::ITexture *texture = m_ColorTextures[index].Get();
+			//
 			// CACHED, because AddTexture ALLOCATES a set every call and a viewport
 			// that never resizes would otherwise leak one descriptor per frame out
 			// of a 1000-slot pool until the UI failed to bind anything.
@@ -799,64 +861,38 @@ namespace Wasteland
 			// free, so keying on it would put that cost back on the per-frame path.
 			// The texture handle is the same identity in every frame, and NVRHI maps
 			// both to the same cached view, so keying on the texture is sufficient.
-			if (texture != m_VkImGuiCacheTexture.Get() || pool != m_VkImGuiCachePool)
-			{
-				// The old set first: it belongs to the texture or pool that just went
-				// away, and holding it until the new one is built would double the
-				// transient usage for no benefit.
-				ReleaseVulkanImGuiDescriptorSet();
-
-				VkImageView view = static_cast<VkImageView>(
-					texture->getNativeView(nvrhi::ObjectTypes::VK_ImageView));
-				if (!view)
-				{
-					WL_CORE_ERROR("NVRHIFramebuffer: colour attachment {0} has no VkImageView on Vulkan", index);
-					return nullptr;
-				}
-
-				// THE LAYOUT ARGUMENT IS NOT A FREE PARAMETER, AND IT IS THE REASON
-				// NOTHING ELSE HERE TOUCHES RESOURCE STATE. NVRHI's Vulkan backend
-				// renders through dynamic rendering, whose implicit transitions leave
-				// a colour attachment in eColorAttachmentOptimal, so the descriptor has
-				// to name eShaderReadOnlyOptimal and something has to move the image
-				// there. It cannot be an NVRHI state change: the engine never calls
-				// setPermanentTextureState, so this texture has NO permanent state and
-				// NVRHI tracks it normally -- but the scene's command list is closed and
-				// executed before ImGui draws, so a request recorded on it now would be
-				// flushed a frame late. Nor can initialState be widened to
-				// RenderTarget | ShaderResource as VulkanNova does for its history
-				// texture: those two bits map to eColorAttachmentOptimal and
-				// eShaderReadOnlyOptimal, which are different layouts, and
-				// convertResourceState asserts on exactly that and then silently picks
-				// the wrong one in release. The transition is recorded instead, by
-				// NVRHIContext::RecordVulkanImGuiAttachmentTransition, once this
-				// accessor has told it which image the pass will sample.
-				VkDescriptorSet descriptorSet = ImGui_ImplVulkan_AddTexture(
-					sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-				if (!descriptorSet)
-				{
-					// The pool is exhausted, or the backend is not initialised. Either way
-					// a null TexID is the honest answer: the editor skips the draw rather
-					// than binding a set that names nothing.
-					WL_CORE_ERROR("NVRHIFramebuffer: ImGui_ImplVulkan_AddTexture failed for colour attachment {0}", index);
-					return nullptr;
-				}
-
-				m_VkImGuiCacheTexture = texture;
-				m_VkImGuiCachePool = pool;
-				m_VkImGuiCacheDescriptorSet = static_cast<void *>(descriptorSet);
-			}
-
+			// The shared helper retires the previous cached set before replacing it.
+			//
+			// THE LAYOUT ARGUMENT IS NOT A FREE PARAMETER, AND IT IS THE REASON
+			// NOTHING ELSE HERE TOUCHES RESOURCE STATE. NVRHI's Vulkan backend
+			// renders through dynamic rendering, whose implicit transitions leave
+			// a colour attachment in eColorAttachmentOptimal, so the descriptor has
+			// to name eShaderReadOnlyOptimal and something has to move the image
+			// there. It cannot be an NVRHI state change: the engine never calls
+			// setPermanentTextureState, so this texture has NO permanent state and
+			// NVRHI tracks it normally -- but the scene's command list is closed and
+			// executed before ImGui draws, so a request recorded on it now would be
+			// flushed a frame late. Nor can initialState be widened to
+			// RenderTarget | ShaderResource as VulkanNova does for its history
+			// texture: those two bits map to eColorAttachmentOptimal and
+			// eShaderReadOnlyOptimal, which are different layouts, and
+			// convertResourceState asserts on exactly that and then silently picks
+			// the wrong one in release. The transition is recorded instead, by
+			// NVRHIContext::RecordVulkanImGuiAttachmentTransition, once this
+			// accessor has told it which image the pass will sample.
+			//
 			// REGISTERED EVERY FRAME, not only when the set is rebuilt: the transition
 			// has to be recorded again every frame, because NVRHI's dynamic rendering
 			// moves the image back to eColorAttachmentOptimal at the start of each
 			// frame's scene pass.
-			context->SetVulkanImGuiAttachment(texture);
-
+			//
 			// The DESCRIPTOR SET VALUE, not a texture or view pointer: imgui_impl_vulkan
 			// casts TexID straight back to VkDescriptorSet, and handing it anything
 			// else binds an arbitrary descriptor set and samples nothing.
-			return m_VkImGuiCacheDescriptorSet;
+			void *texID = GetVulkanImGuiTexID(m_ColorTextures[index]);
+			if (texID)
+				context->SetVulkanImGuiAttachment(m_ColorTextures[index]);
+			return texID;
 		}
 
 		// No backend matched, which means the context reported an API this accessor
@@ -864,6 +900,19 @@ namespace Wasteland
 		// (which never constructs an NVRHIFramebuffer), but returning null is the
 		// only safe answer if it ever is reached.
 		return nullptr;
+	}
+
+	// Returns a Vulkan ImGui TexID for an arbitrary NVRHI texture and registers it as a compute output.
+	void *NVRHIFramebuffer::GetExternalTextureImGuiTexID(nvrhi::TextureHandle texture) const
+	{
+		auto *context = NVRHIRendererAPI::GetCurrentContext();
+		if (!context || context->GetAPI() != RendererAPI::API::NVRHI_Vulkan)
+			return nullptr;
+
+		void *texID = GetVulkanImGuiTexID(texture);
+		if (texID)
+			context->SetVulkanImGuiComputeOutput(texture);
+		return texID;
 	}
 
 	// Handle accessor returning the NVRHI handle itself rather than a raw

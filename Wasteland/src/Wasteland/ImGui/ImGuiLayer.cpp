@@ -2316,6 +2316,7 @@ namespace Wasteland
    // style even where it is not consistent with itself.
    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
    vkCmdEndRenderPass(cmd);
+   ctx->RecordVulkanImGuiComputeOutputReturnTransition();
 
    // Ending the command buffer is what makes it submittable. Note the
    // failure here only WARNS and falls through to the break below -- the

@@ -14,8 +14,8 @@ namespace Wasteland {
 	// Backend-agnostic texture interface: dimensions, a native handle, and the
 	// ability to upload pixels.
 
-	// Abstract base for Texture2D, which adds resizing and the ImGui-specific
-	// native-SRV accessor. The name is deliberately not suffixed 2D here, though
+	// Abstract base for Texture2D, which adds resizing and native-resource
+	// accessors. The name is deliberately not suffixed 2D here, though
 	// the derived class is -- so `Texture` is the common ancestor for any
 	// dimension of texture.
 	class Texture
@@ -105,6 +105,10 @@ namespace Wasteland {
 		// there is no way to tell from the return whether it is an SRV or something
 		// else. ImGuiLayer::m_D3D11WhiteSRV is the known consumer.
 		virtual void *GetNativeSRV() const { return nullptr; }
+
+		// Raw backend resource for APIs that build their own descriptors (DX12 Nova).
+		// This is distinct from an SRV; most backends do not expose one here.
+		virtual void *GetNativeTextureResource() const { return nullptr; }
 	};
 
 }

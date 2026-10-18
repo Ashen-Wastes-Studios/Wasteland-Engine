@@ -4,6 +4,18 @@
     <BuildType Name="Release" />
     <Platform Name="x64" />
   </Configurations>
+  <Project Path="NodeCanvasHitTest.vcxproj" Id="ED4A25D2-CDD6-4D21-B03D-EF97673E14F9">
+  </Project>
+  <Project Path="avb_dsp/AvbDspTests.vcxproj" Id="4FCB8D56-94B2-47F6-8486-46B1DF252801">
+  </Project>
+  <Project Path="avb_voices/AvbVoiceTests.vcxproj" Id="9B19506D-5CB4-4AB9-96F4-9B09AA3010D1">
+  </Project>
+  <Project Path="avb_graph/AvbGraphTests.vcxproj" Id="2A35988C-1F24-4B71-AC73-B4EC96DCE879">
+  </Project>
+  <Project Path="avb_buses/AvbBusTests.vcxproj" Id="C064BAD7-8FB2-4E40-9A8C-6E559D1F4CB8">
+  </Project>
+  <Project Path="AudioOutputTests.vcxproj" Id="1EDED7DA-4CCD-4D23-83A5-146AF9C9E04F">
+  </Project>
   <Project Path="AgeServiceTests.vcxproj" Id="F6BBB1CD-6247-1F92-6B58-A286D7627B92">
   </Project>
   <Project Path="AgeTests.vcxproj" Id="8535DB62-7102-366E-9A1B-241686476BFC">
@@ -27,5 +39,13 @@
   <Project Path="SafetyProfileTests.vcxproj" Id="753E9805-6122-595B-CA82-53AEB68543DD">
   </Project>
   <Project Path="SeedingSmokeTest.vcxproj" Id="C32B5F3F-AF24-7E91-D856-6316C4AE5D9D">
+  </Project>
+  <Project Path="avb_effects/AvbEffectTests.vcxproj" Id="F26F1B38-7A95-45A7-91C4-6D2B8E03A572">
+  </Project>
+  <Project Path="avb_graph_runtime/AvbGraphRuntimeTests.vcxproj" Id="D7E24C91-35AF-4B68-8E13-A9C7402F5B6D">
+  </Project>
+  <Project Path="avb_recording/AvbRecordingTests.vcxproj" Id="A4D92B3F-18C1-4F52-9B6A-7D03EBC4518E">
+  </Project>
+  <Project Path="terrain/TerrainTests.vcxproj" Id="7A4D2A01-ED6C-45E6-91F0-9CEB121D8B7A">
   </Project>
 </Solution>

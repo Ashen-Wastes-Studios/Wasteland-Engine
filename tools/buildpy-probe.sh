@@ -62,11 +62,40 @@ fi
 # erroring. When the work is ready to ship, run tools/buildpy-canonical.sh to
 # refresh the real output and re-verify against it.
 #
-# A .pyd older than an object means the link used a stale Wasteland.lib, so the
-# module silently contains the previous code while every build looks perfect.
-STALE=$(find ./bin-int/$CONFIG-windows-x86_64 -name '*.obj' -newer "$PYD" 2>/dev/null | head -4)
+# Check only objects and libraries that feed this module. The Editor's object
+# directory is nested under the same bin-int root, but those objects are not
+# linked into Wasteland.pyd and must not invalidate the module.
+ENGINE_OBJ_DIR="./bin-int/$CONFIG-windows-x86_64/Wasteland"
+ENGINE_LIB="./.buildlogs/linkprobe/Wasteland.lib"
+BOX2D_OBJ_DIR="./Wasteland/vendor/Box2D/bin-int/$CONFIG-windows-x86_64/Box2D"
+BOX2D_LIB="./.buildlogs/linkprobe/Box2D.lib"
+BOX3D_OBJ_DIR="./Wasteland/vendor/Box3D/bin-int/$CONFIG-windows-x86_64/Box3D"
+BOX3D_LIB="./.buildlogs/linkprobe/Box3D.lib"
+BINDING_OBJ_DIR="./obj/$CONFIG"
+
+STALE=""
+if [ -f "$ENGINE_LIB" ]; then
+    NEWER=$(find "$ENGINE_OBJ_DIR" -type f -name '*.obj' -newer "$ENGINE_LIB" 2>/dev/null | head -4)
+    [ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+    if [ "$ENGINE_LIB" -nt "$PYD" ]; then STALE="${STALE}${ENGINE_LIB}"$'\n'; fi
+fi
+if [ -f "$BOX2D_LIB" ]; then
+    NEWER=$(find "$BOX2D_OBJ_DIR" -type f -name '*.obj' -newer "$BOX2D_LIB" 2>/dev/null | head -4)
+    [ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+    if [ "$BOX2D_LIB" -nt "$PYD" ]; then STALE="${STALE}${BOX2D_LIB}"$'\n'; fi
+fi
+if [ -f "$BOX3D_LIB" ]; then
+    NEWER=$(find "$BOX3D_OBJ_DIR" -type f -name '*.obj' -newer "$BOX3D_LIB" 2>/dev/null | head -4)
+    [ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+    if [ "$BOX3D_LIB" -nt "$PYD" ]; then STALE="${STALE}${BOX3D_LIB}"$'\n'; fi
+fi
+NEWER=$(find "$BINDING_OBJ_DIR" -type f -name '*.obj' -newer "$PYD" 2>/dev/null | head -4)
+[ -z "$NEWER" ] || STALE="${STALE}${NEWER}"$'\n'
+for lib in ./.buildlogs/linkprobe/*.lib; do
+    if [ -f "$lib" ] && [ "$lib" -nt "$PYD" ]; then STALE="${STALE}${lib}"$'\n'; fi
+done
 if [ -n "$STALE" ]; then
-    echo "WARNING: objects newer than the .pyd -- the link used a stale lib:"
-    echo "$STALE" | sed 's/^/  /'
+    echo "WARNING: module inputs newer than their library or .pyd:"
+    printf '%s' "$STALE" | sed '/^$/d' | sort -u | sed 's/^/  /'
 fi
 exit $RC

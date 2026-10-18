@@ -1,0 +1,202 @@
+Scene: Lighting Showcase
+Entities:
+  - Entity: 9400000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 8, 25]
+      Rotation: [-0.3, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9400000000000000002
+    TagComponent:
+      Tag: Directional Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9400000000000000003
+    TagComponent:
+      Tag: Point Light Warm
+    TransformComponent:
+      Translation: [-8, 4, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    PointLightComponent:
+      Color: [1, 0.7, 0.4, 1]
+      Intensity: 12
+      Range: 20
+      Falloff: 2
+  - Entity: 9400000000000000004
+    TagComponent:
+      Tag: Point Light Cool
+    TransformComponent:
+      Translation: [8, 4, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    PointLightComponent:
+      Color: [0.4, 0.6, 1, 1]
+      Intensity: 12
+      Range: 20
+      Falloff: 2
+  - Entity: 9400000000000000005
+    TagComponent:
+      Tag: Spot Light
+    TransformComponent:
+      Translation: [0, 10, 0]
+      Rotation: [1.57079637, 0, 0]
+      Scale: [1, 1, 1]
+    SpotLightComponent:
+      Color: [1, 0.95, 0.85, 1]
+      Intensity: 20
+      Range: 30
+      Falloff: 2
+      InnerAngle: 20
+      OuterAngle: 35
+  - Entity: 9400000000000000006
+    TagComponent:
+      Tag: Area Light
+    TransformComponent:
+      Translation: [0, 3, -8]
+      Rotation: [1.57079637, 0, 0]
+      Scale: [1, 1, 1]
+    AreaLightComponent:
+      Color: [0.8, 0.9, 1, 1]
+      Intensity: 6
+      Width: 4
+      Height: 3
+      Range: 15
+      DoubleSided: true
+  - Entity: 9400000000000000007
+    TagComponent:
+      Tag: Ground
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [50, 1, 50]
+    CubeRendererComponent:
+      Color: [0.4, 0.4, 0.42, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.4, 0.42, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.85
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9400000000000000008
+    TagComponent:
+      Tag: Emissive Cube
+    TransformComponent:
+      Translation: [0, 1, 5]
+      Rotation: [0, 0.5, 0]
+      Scale: [2, 2, 2]
+    CubeRendererComponent:
+      Color: [1, 0.3, 0.1, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.3, 0.1, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 0.2, 0.05, 1]
+      EmissionIntensity: 3
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9400000000000000009
+    TagComponent:
+      Tag: Metallic Sphere
+    TransformComponent:
+      Translation: [-5, 1.5, 8]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.9, 0.9, 0.95, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.9, 0.9, 0.95, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.05
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9400000000000000010
+    TagComponent:
+      Tag: Rough Sphere
+    TransformComponent:
+      Translation: [5, 1.5, 8]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    SphereRendererComponent:
+      Color: [0.7, 0.5, 0.3, 1]
+      Radius: 1
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.7, 0.5, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9400000000000000011
+    TagComponent:
+      Tag: Emissive Sphere
+    TransformComponent:
+      Translation: [0, 2, -5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.2, 0.8, 1, 1]
+      Radius: 0.8
+      Sectors: 48
+      Stacks: 48
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.8, 1, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.3
+      EmissionColor: [0.1, 0.6, 1, 1]
+      EmissionIntensity: 5
+      DisplacementScale: 0
+
+      TexturePath: ""

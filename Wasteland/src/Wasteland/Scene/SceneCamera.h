@@ -180,14 +180,21 @@ namespace Wasteland {
 
 		// Perspective clip planes, in world units, both positive.
 		//
-		// The near default of 0.01 is deliberately small: it lets the camera get
-		// very close to geometry without clipping through it, at the cost of
-		// depth precision. The far default of 1000 covers a large outdoor scene.
+		// Defaults are a 0.1-to-10000 range: a 10km far plane, for large open
+		// worlds, with the near plane raised in step with it.
 		//
-		// Note the ratio: a 0.01-to-1000 depth range is five orders of magnitude,
-		// which is where depth-buffer z-fighting shows up first if the far clip
-		// is pushed much further.
-		float m_PerspectiveNear = 0.01f, m_PerspectiveFar = 1000.0f;
+		// Depth-buffer precision is governed by the far/near RATIO, not by the
+		// far distance alone, so 0.1/10000 holds the same 1e-5 ratio the
+		// previous 0.01/1000 pair had -- the range grows tenfold at the same
+		// precision, rather than tenfold worse.
+		//
+		// The cost is the near plane itself: geometry closer than 10cm now
+		// clips where 1cm used to be visible. That is the ordinary trade for a
+		// first-person camera (eye height ~1.7m) and it is what buys the range.
+		// To keep BOTH a 1cm near plane and a 10km far plane the depth buffer
+		// needs reversed-Z or a logarithmic depth split; raising near is the
+		// cheap alternative this pair takes.
+		float m_PerspectiveNear = 0.1f, m_PerspectiveFar = 10000.0f;
 
 		// Orthographic vertical extent in world units. See SetOrthographic.
 		float m_OrthographicSize = 10.0f;

@@ -61,15 +61,24 @@ Recovery, and what it cost:
 
 - The damaged HLSL was **backed up before any further edit** (three locations under
   the scratch/temp/Documents dirs, sha256-verified). Inspecting it then showed
-  **zero POM references survived in it** — the POM rewrite was never in that file.
-- `git checkout` on the HLSL was therefore safe *and* correct: HEAD already contains
-  a working `ApplyPOM` implementation (3 hits, plus `marchLOD`/`marchK`). The
-  GLSL-side rewrite is a refinement of it, not an invention. **The HLSL POM work was
-  lost and must be re-applied by hand; it was not in HEAD and not in the backup.**
+  **zero POM references survived in it**.
+- `git checkout` on the HLSL restored HEAD, which **already contained the complete
+  POM rewrite** — `strataW`, `neuralK`, `mesoAmp`, `wl_pom_full`, the shadow march
+  with `rayRise`/`selfOcclusion`. **No POM work was lost.** An earlier version of this
+  document claimed it was, on the strength of `grep -c ApplyPOM` returning 5; that was
+  a misreading of a partial match count, not evidence. The construct-level comparison
+  (identical counts on both twins) is the check that should have been run first.
 - The GLSL was repaired in place — three targeted fixes — and kept **all** of its
   content, including the full POM rewrite.
 - All four temporal/jitter/mip fixes were re-applied to the restored HLSL and are
   verified present in both twins.
+
+**The real remaining asymmetry is small and specific.** The GLSL's `ApplyPOM` is 164
+code lines against the HLSL's 102. The HLSL lacks the `uvDelta` UV-offset blend and its
+`0.15` hard clamp (`marchK`-scaled, with a grazing blow-up rail) — present in the GLSL
+at its `wl_pom_full`/`ApplyPOM` boundary and absent entirely from the HLSL (`grep -c
+uvDelta` → 4 vs 0). That is a behavioural difference in grazing-angle parallax, not a
+missing subsystem, and it is the concrete item to port.
 
 ### The lesson worth keeping
 

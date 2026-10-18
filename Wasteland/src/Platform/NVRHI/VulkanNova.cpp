@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace Wasteland
@@ -28,33 +29,18 @@ namespace Wasteland
     static constexpr uint32_t kBindingOffsetShaderResource = 16;
     static constexpr uint32_t kBindingOffsetSampler = 200;
 
-    // HLSL register slots for the read_* SRVs and the image each one snapshots.
-    //
-    // WHY ONLY FIVE OF THE EIGHT read_* DECLARATIONS IN THE HLSL:
-    // the .hlsl declares read_img_Output/Accumulation/Bloom/MaterialPacked/
-    // AlbedoHit/Velocity/TraceGBuffer/Bloom_Temp at t64..t71, but the compiled
-    // module declares only five of them. DXC eliminates a global that nothing
-    // reads, and the only read path is the IMG_LOAD(tex, pos) macro, which
-    // token-pastes to read_##tex. Every IMG_LOAD call site in the shader passes
-    // img_Output, img_Accumulation, img_Bloom, img_Velocity or img_Bloom_Temp --
-    // img_MaterialPacked is only ever written (IMG_STORE) and sized (IMG_SIZE),
-    // and img_AlbedoHit / img_TraceGBuffer are only ever written. So t67, t68 and
-    // t70 have no OpDecorate in the .spv at all, and binding descriptors for them
-    // would create Vulkan bindings the shader can never reference.
-    //
-    // This is an EXCLUSION, not an oversight, and it is checked rather than
-    // assumed: VerifySpirvBindings() (called from Init) parses the .spv this
-    // backend actually loads and throws if the module's binding set and this
-    // table disagree in either direction. If a future shader edit starts reading
-    // img_MaterialPacked, DXC emits binding 83, the sets stop matching, and Init
-    // throws -- which the caller turns into a raster fallback -- instead of the
-    // descriptor silently going missing.
-    //
-    // DX11Nova.h:465 and DX12Nova.cpp both bind all eight; binding an unused
-    // SRV is legal there, so the extra three cost nothing and hide the fact that
-    // the shader never reads them.
-    const uint32_t VulkanNova::kReadImageSlot[kReadImageCount] = {64, 65, 66, 69, 71};
-    const uint32_t VulkanNova::kReadImageIndex[kReadImageCount] = {0, 1, 2, 5, 7};
+    // Internal image index -> HLSL UAV register. u8 is unused by the shader;
+    // image 8 is the moments texture at u9.
+    const uint32_t VulkanNova::kImageUavSlot[kImageCount] = {0, 1, 2, 3, 4, 5, 6, 7, 9};
+
+    // HLSL register slots for active read_* SRVs and the image each snapshots.
+    // ReSTIR reads AlbedoHit (t68) and TraceGBuffer (t70); temporal/filter passes
+    // also read the other listed images. MaterialPacked's t67 alias remains
+    // declaration-only because the shader has no IMG_LOAD(img_MaterialPacked).
+    // Keep this list synchronized with the loaded SPIR-V: VerifySpirvBindings()
+    // checks both missing and unused bindings before Vulkan creates the pipeline.
+    const uint32_t VulkanNova::kReadImageSlot[kReadImageCount] = {64, 65, 66, 68, 69, 70, 71, 73};
+    const uint32_t VulkanNova::kReadImageIndex[kReadImageCount] = {0, 1, 2, 4, 5, 6, 7, 8};
 
     // NovaConstants field offsets, from fxc /dumpbin. tools/compile_nova_spirv.py
     // asserts these equal the offsets DXC gave the SPIR-V for all 84 members;
@@ -160,8 +146,7 @@ namespace Wasteland
         return nullptr;
     }
 
-    template <class T>
-    void VulkanNova::Set(const char *name, const T &value, uint32_t index)
+    void VulkanNova::SetBytes(const char *name, const void *value, std::size_t size, uint32_t index)
     {
         const ConstantField *field = FindConstant(name);
         if (!field)
@@ -178,18 +163,22 @@ namespace Wasteland
                           name, index, field->arraySize);
             return;
         }
-        if (field->arraySize == 0 && std::strcmp(name, "u_FrameIndex") == 0)
-            m_CurrentFrame = static_cast<uint32_t>(value);
+        if (field->arraySize == 0 && std::strcmp(name, "u_FrameIndex") == 0 &&
+            size == sizeof(uint32_t))
+        {
+            uint32_t frameIndex = 0;
+            std::memcpy(&frameIndex, value, sizeof(frameIndex));
+            m_CurrentFrame = frameIndex;
+        }
 
         const uint32_t offset = field->offset + index * stride;
-        const uint32_t size = sizeof(T);
         if (offset + size > kConstantBufferSize)
         {
             WL_CORE_ERROR("VulkanNova: {0} writes past NovaConstants ({1}+{2} > {3})",
                           name, offset, size, kConstantBufferSize);
             return;
         }
-        std::memcpy(m_ConstantBytes.data() + offset, &value, size);
+        std::memcpy(m_ConstantBytes.data() + offset, value, size);
     }
 
     // -------------------------------------------------------------------------
@@ -290,11 +279,15 @@ namespace Wasteland
         // layout is built from. t15 is one descriptor of kSceneTextureCount
         // elements, so it contributes a single binding number.
         std::vector<uint32_t> expected;
-        expected.reserve(kImageCount + 3 + 2 + 1 + kSampledCount + kReadImageCount);
+        expected.reserve(kImageCount + 3 + 2 + 1 + kSampledCount + kReadImageCount + 2);
         for (uint32_t i = 0; i < kImageCount; ++i)
-            expected.push_back(kBindingOffsetUav + i);
+            expected.push_back(kBindingOffsetUav + kImageUavSlot[i]);
+        // Reservoir write at u10 (shader: RWStructuredBuffer : register(u10))
+        expected.push_back(kBindingOffsetUav + 10);
         for (uint32_t i = 1; i <= 3; ++i)
             expected.push_back(kBindingOffsetShaderResource + i);
+        // Reservoir read at t10 (shader: StructuredBuffer : register(t10))
+        expected.push_back(kBindingOffsetShaderResource + 10);
         expected.push_back(kBindingOffsetSampler);
         expected.push_back(kBindingOffsetConstantBuffer + 1);
         expected.push_back(kBindingOffsetShaderResource + 15);
@@ -450,12 +443,16 @@ namespace Wasteland
         layoutDesc.visibility = nvrhi::ShaderType::Compute;
         layoutDesc.bindingOffsets = offsets;
 
-        // UAV images, u0..u7.
+        // UAV images, u0..u7 and u9 (u8 is a deliberate gap).
         for (uint32_t i = 0; i < kImageCount; ++i)
-            layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::Texture_UAV(i));
+            layoutDesc.bindings.push_back(
+                nvrhi::BindingLayoutItem::Texture_UAV(kImageUavSlot[i]));
         // Structured buffers: Instances t1, BVHNodes t2, LightIndices t3.
         for (uint32_t i = 1; i <= 3; ++i)
             layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(i));
+        // ReSTIR reservoir: read at t10, write at u10
+        layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(10));
+        layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_UAV(10));
         // Sampler s0 and NovaConstants b1.
         layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::Sampler(0));
         layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::ConstantBuffer(1));
@@ -465,10 +462,10 @@ namespace Wasteland
             item.size = kSceneTextureCount;
             layoutDesc.bindings.push_back(item);
         }
-        // Sampled snapshots t48..t52.
+        // Sampled snapshots t48..t53.
         for (uint32_t slot : kSampledSlot)
             layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::Texture_SRV(slot));
-        // Read-only snapshots of our own images, t64/65/66/69/71.
+        // Read-only snapshots of our own images, t64/65/66/68/69/70/71/73.
         for (uint32_t i = 0; i < kReadImageCount; ++i)
             layoutDesc.bindings.push_back(
                 nvrhi::BindingLayoutItem::Texture_SRV(kReadImageSlot[i]));
@@ -491,14 +488,13 @@ namespace Wasteland
             return;
         WL_CORE_INFO("VulkanNova binding contract: offsets u={0} b={1} t={2} s={3}; "
                      "{4} UAV + 3 SSBO + 1 CB + 1 sampler + 1x{5} scene SRV + "
-                     "{6} sampled SRV (t48 = history) + {7} read SRV = {8} bindings, "
-                     "all distinct; t67/t68/t70 are declared in the .hlsl but "
-                     "eliminated by DXC, and Init cross-checked that against the "
-                     "loaded module",
+                     "{6} sampled SRV (t48 = history) + {7} read SRV + 2 reservoir = {8} bindings, "
+                     "all distinct; t67 remains declaration-only, and Init "
+                     "cross-checked the active read table against the loaded module",
                      kBindingOffsetUav, kBindingOffsetConstantBuffer,
                      kBindingOffsetShaderResource, kBindingOffsetSampler, kImageCount,
                      kSceneTextureCount, kSampledCount, kReadImageCount,
-                     kImageCount + 3 + 1 + 1 + 1 + kSampledCount + kReadImageCount);
+                     kImageCount + 3 + 1 + 1 + 1 + kSampledCount + kReadImageCount + 2);
     }
 
     // -------------------------------------------------------------------------
@@ -515,6 +511,7 @@ namespace Wasteland
         m_Height = h;
         CreateImages(w, h);
         CreateBindingSet();
+        m_BoundFrame = 0xFFFFFFFFu;
         if (!m_LoggedBindingContract)
         {
             LogBindingContract();
@@ -524,6 +521,12 @@ namespace Wasteland
 
     void VulkanNova::CreateImages(uint32_t w, uint32_t h)
     {
+        constexpr uint64_t kReservoirBytesPerPixel = 32;
+        const uint64_t pixelCount = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
+        if (pixelCount > std::numeric_limits<uint64_t>::max() / kReservoirBytesPerPixel)
+            throw std::overflow_error("VulkanNova: reservoir buffer size overflow");
+        const uint64_t reservoirByteSize = pixelCount * kReservoirBytesPerPixel;
+
         static const nvrhi::Format formats[kImageCount] = {
             nvrhi::Format::RGBA32_FLOAT, // img_Output        u0
             nvrhi::Format::RGBA32_FLOAT, // img_Accumulation  u1
@@ -533,6 +536,7 @@ namespace Wasteland
             nvrhi::Format::RG32_FLOAT,       // img_Velocity      u5
             nvrhi::Format::RGBA32_FLOAT, // img_TraceGBuffer  u6
             nvrhi::Format::RGBA32_FLOAT, // img_Bloom_Temp    u7
+            nvrhi::Format::RG32_FLOAT,       // img_Moments       u9
         };
 
         for (uint32_t i = 0; i < kImageCount; ++i)
@@ -547,20 +551,26 @@ namespace Wasteland
             desc.format = formats[i];
             desc.isShaderResource = true;
             desc.isRenderTarget = false;
-            // Without initialState + keepInitialState NVRHI reports an unknown
-            // prior state, which on D3D12 can cascade into device removal.
-            desc.initialState = nvrhi::ResourceStates::UnorderedAccess;
+            desc.isUAV = true;
+            // Compute writes the images and snapshot copies read them as sources.
+            // keepInitialState requires the permanent state to include both uses.
+            desc.initialState = nvrhi::ResourceStates::UnorderedAccess |
+                                nvrhi::ResourceStates::CopySource;
             desc.keepInitialState = true;
             desc.debugName = "NovaImage";
             m_Images[i].texture = m_Device->createTexture(desc);
 
             // A texture bound as a UAV cannot also be read as an SRV in the
-            // same dispatch, so the read_* bindings sample a copy. This mirrors
-            // DX12Nova's snapshot textures.
+            // same dispatch, so the read_* bindings sample a copy. It needs
+            // both states: copies write it, and the descriptor set samples it.
             nvrhi::TextureDesc snapDesc = desc;
-            snapDesc.initialState = nvrhi::ResourceStates::CopyDest;
+            snapDesc.isUAV = false;
+            snapDesc.initialState = nvrhi::ResourceStates::CopyDest |
+                                    nvrhi::ResourceStates::ShaderResource;
+            snapDesc.keepInitialState = true;
             snapDesc.debugName = "NovaSnapshot";
             m_Images[i].snapshot = m_Device->createTexture(snapDesc);
+            m_Images[i].snapshotDirty = true;
 
             if (!m_Images[i].texture || !m_Images[i].snapshot)
                 throw std::runtime_error("VulkanNova: failed to create pass images");
@@ -596,15 +606,53 @@ namespace Wasteland
         historyDesc.keepInitialState = true;
         historyDesc.debugName = "NovaHistory";
         m_HistorySnapshot = m_Device->createTexture(historyDesc);
+        if (!m_HistorySnapshot)
+            throw std::runtime_error("VulkanNova: failed to create temporal history texture");
+        // Newly allocated storage is undefined until the renderer-owned list
+        // clears it before the first dispatch.
+        m_ImagesNeedClear = true;
+
+        // ReSTIR reservoir ping-pong buffers. Each is 32 bytes per pixel.
+        m_ReservoirWidth = w;
+        m_ReservoirHeight = h;
+        m_ReservoirReadFlip = false;
+        m_ReservoirsNeedClear = true;
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            nvrhi::BufferDesc reservoirDesc;
+            reservoirDesc.byteSize = reservoirByteSize;
+            reservoirDesc.structStride = 32;
+            reservoirDesc.canHaveUAVs = true;
+            reservoirDesc.initialState = nvrhi::ResourceStates::UnorderedAccess |
+                                         nvrhi::ResourceStates::ShaderResource;
+            reservoirDesc.keepInitialState = true;
+            reservoirDesc.debugName = "NovaReservoir";
+            m_ReservoirBuffers[i] = m_Device->createBuffer(reservoirDesc);
+            if (!m_ReservoirBuffers[i])
+                throw std::runtime_error("VulkanNova: failed to create reservoir buffer");
+        }
     }
 
     void VulkanNova::CreateBindingSet()
     {
         nvrhi::BindingSetDesc desc;
+        // Keep sets alive until already-recorded command lists finish using them.
+        desc.trackLiveness = true;
 
-        // UAV images, u0..u7.
+        // Every scene-array element needs a valid Texture2D SRV. History is an
+        // existing compatible shader-resource texture and is used only as the
+        // fallback for elements the caller did not supply.
+        if (!m_HistorySnapshot)
+            throw std::runtime_error("VulkanNova: no compatible fallback texture for scene descriptors");
+        m_SceneSRVs.resize(kSceneTextureCount, m_HistorySnapshot);
+        for (auto &sceneSRV : m_SceneSRVs)
+            if (!sceneSRV)
+                sceneSRV = m_HistorySnapshot;
+
+        // UAV images, u0..u7 and u9 (u8 is a deliberate gap).
         for (uint32_t i = 0; i < kImageCount; ++i)
-            desc.bindings.push_back(nvrhi::BindingSetItem::Texture_UAV(i, m_Images[i].texture));
+            desc.bindings.push_back(nvrhi::BindingSetItem::Texture_UAV(
+                kImageUavSlot[i], m_Images[i].texture));
 
         // Instances t1, BVHNodes t2, LightIndices t3. There is no
         // StructuredBuffer_SRV factory, so build the item directly.
@@ -621,12 +669,11 @@ namespace Wasteland
         desc.bindings.push_back(nvrhi::BindingSetItem::ConstantBuffer(1, m_ConstantBuffer));
 
         // u_SceneTextures is t15[32]: one binding, arrayElement walks the
-        // array, so push all 32 rather than resizing the layout.
+        // array. Every element has a real texture, including unused slots.
         for (uint32_t i = 0; i < kSceneTextureCount; ++i)
         {
-            nvrhi::BindingSetItem item = nvrhi::BindingSetItem::None(15);
-            item.resourceHandle = i < m_SceneSRVs.size() ? m_SceneSRVs[i] : nullptr;
-            item.type = nvrhi::ResourceType::Texture_SRV;
+            nvrhi::BindingSetItem item = nvrhi::BindingSetItem::Texture_SRV(
+                15, m_SceneSRVs[i]);
             item.arrayElement = i;
             desc.bindings.push_back(item);
         }
@@ -649,27 +696,35 @@ namespace Wasteland
         // This binding did not exist before: the slot was filled from
         // m_SceneSRVs[0], i.e. the caller's first scene texture, which has no
         // relationship to Nova's accumulation. That is the defect.
-        if (m_HistorySnapshot)
-        {
-            desc.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(
-                kSampledSlot[0], m_HistorySnapshot));
-        }
+        desc.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(
+            kSampledSlot[0], m_HistorySnapshot));
 
         // s_DepthBuffer / s_Output / s_NormalBuffer / s_InputAlbedo (t49..t52)
         // still come from the caller's scene texture list. k starts at 1 so t48
         // is left to the history binding above; the remaining four keep exactly
         // the source they had before this change.
+        //
+        // t53 (s_Moments) is different: it is NOT one of the caller's scene
+        // textures. It is the moments snapshot, the previous frame's moments
+        // that pass 12 samples at a reprojected UV. So it binds
+        // m_Images[8].snapshot, not m_SceneSRVs[5].
         for (uint32_t k = 1; k < kSampledCount; ++k)
         {
             const uint32_t slot = kSampledSlot[k];
-            nvrhi::BindingSetItem item = nvrhi::BindingSetItem::None(slot);
-            item.resourceHandle = k < m_SceneSRVs.size() ? m_SceneSRVs[k] : nullptr;
-            item.type = nvrhi::ResourceType::Texture_SRV;
-            if (item.resourceHandle)
-                desc.bindings.push_back(item);
+            if (slot == 53)
+            {
+                // s_Moments: the moments snapshot, not a scene texture.
+                desc.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(
+                    slot, m_Images[8].snapshot));
+            }
+            else
+            {
+                desc.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(
+                    slot, m_SceneSRVs[k]));
+            }
         }
 
-        // Read-only snapshots of our own images, t64/65/66/69/71. These are
+        // Read-only snapshots of our own images, t64/65/66/68/69/70/71/73. These are
         // separate textures: a texture bound as a UAV cannot also be sampled.
         for (uint32_t i = 0; i < kReadImageCount; ++i)
         {
@@ -677,9 +732,25 @@ namespace Wasteland
                 kReadImageSlot[i], m_Images[kReadImageIndex[i]].snapshot));
         }
 
+        // ReSTIR reservoir ping-pong: read from one buffer (t10), write to the other (u10).
+        {
+            nvrhi::BindingSetItem readItem{};
+            readItem.resourceHandle = m_ReservoirBuffers[m_ReservoirReadFlip ? 1 : 0];
+            readItem.slot = 10;
+            readItem.type = nvrhi::ResourceType::StructuredBuffer_SRV;
+            desc.bindings.push_back(readItem);
+
+            nvrhi::BindingSetItem writeItem{};
+            writeItem.resourceHandle = m_ReservoirBuffers[m_ReservoirReadFlip ? 0 : 1];
+            writeItem.slot = 10;
+            writeItem.type = nvrhi::ResourceType::StructuredBuffer_UAV;
+            desc.bindings.push_back(writeItem);
+        }
+
         m_BindingSet = m_Device->createBindingSet(desc, m_BindingLayout);
         if (!m_BindingSet)
             throw std::runtime_error("VulkanNova: createBindingSet failed");
+        m_BindingSetDirty = false;
     }
 
     // -------------------------------------------------------------------------
@@ -688,7 +759,7 @@ namespace Wasteland
 
     void VulkanNova::EnsureStructuredBuffer(uint32_t slot, uint32_t byteSize, uint32_t stride)
     {
-        if (slot > 2 || byteSize == 0)
+        if (slot > 2 || byteSize == 0 || stride == 0)
             return;
         if (m_StructuredBuffers[slot] && m_StructuredBufferSize[slot] >= byteSize &&
             m_StructuredBufferStride[slot] == stride)
@@ -700,21 +771,40 @@ namespace Wasteland
         desc.initialState = nvrhi::ResourceStates::ShaderResource;
         desc.keepInitialState = true;
         desc.debugName = "NovaStructured";
-        m_StructuredBuffers[slot] = m_Device->createBuffer(desc);
+        nvrhi::BufferHandle buffer = m_Device->createBuffer(desc);
+        if (!buffer)
+            throw std::runtime_error("VulkanNova: failed to create structured buffer");
+
+        m_StructuredBuffers[slot] = buffer;
         m_StructuredBufferSize[slot] = byteSize;
+        m_StructuredBufferStride[slot] = stride;
+        m_BindingSetDirty = true;
     }
 
     void VulkanNova::Upload(uint32_t slot, const void *data, uint32_t count, uint32_t stride)
     {
-        if (slot > 2 || !data || count == 0)
+        if (slot > 2 || stride == 0 || (count != 0 && !data))
             return;
-        const uint32_t byteSize = count * stride;
-        m_StructuredBufferStride[slot] = stride;
+        // Keep a valid one-record SRV bound even for empty scenes. The shader
+        // must still respect the corresponding count uniform before reading it.
+        const uint64_t recordCount = count == 0 ? 1u : static_cast<uint64_t>(count);
+        const uint64_t byteCount = recordCount * static_cast<uint64_t>(stride);
+        if (byteCount > (std::numeric_limits<uint32_t>::max)())
+            throw std::runtime_error("VulkanNova: structured upload exceeds 32-bit buffer limit");
+        const uint32_t byteSize = static_cast<uint32_t>(byteCount);
         EnsureStructuredBuffer(slot, byteSize, stride);
         if (!m_StructuredBuffers[slot])
             return;
         if (!EnsureCommandList())
             return;
+
+        std::vector<uint8_t> zeroRecord;
+        const void *uploadData = data;
+        if (count == 0)
+        {
+            zeroRecord.assign(stride, 0);
+            uploadData = zeroRecord.data();
+        }
 
         // The engine's BeginFrame()/ExecuteNVRHICommandList() own the list in
         // the batched path. Opening or closing per upload would overwrite the
@@ -724,13 +814,13 @@ namespace Wasteland
         if (!batched)
         {
             m_CommandList->open();
-            m_CommandList->writeBuffer(m_StructuredBuffers[slot], data, byteSize, 0);
+            m_CommandList->writeBuffer(m_StructuredBuffers[slot], uploadData, byteSize, 0);
             m_CommandList->close();
             if (m_Device)
                 m_Device->executeCommandList(m_CommandList);
             return;
         }
-        m_CommandList->writeBuffer(m_StructuredBuffers[slot], data, byteSize, 0);
+        m_CommandList->writeBuffer(m_StructuredBuffers[slot], uploadData, byteSize, 0);
     }
 
     void VulkanNova::RecordCopy(nvrhi::ITexture *dst, nvrhi::ITexture *src)
@@ -742,13 +832,121 @@ namespace Wasteland
         m_CommandList->copyTexture(dst, nvrhi::TextureSlice(), src, nvrhi::TextureSlice());
     }
 
+    void VulkanNova::CopyImageToSnapshot(uint32_t imageIndex)
+    {
+        if (imageIndex >= kImageCount || !m_Images[imageIndex].snapshotDirty ||
+            !m_Images[imageIndex].texture || !m_Images[imageIndex].snapshot ||
+            !m_CommandList || !m_Context || !m_Context->IsCommandListOpen())
+            return;
+
+        RecordCopy(m_Images[imageIndex].snapshot, m_Images[imageIndex].texture);
+        m_Images[imageIndex].snapshotDirty = false;
+    }
+
     void VulkanNova::CopyImagesToSnapshots()
     {
         for (uint32_t i = 0; i < kReadImageCount; ++i)
+            CopyImageToSnapshot(kReadImageIndex[i]);
+    }
+
+    void VulkanNova::RefreshImageSnapshotsForPass(int pass)
+    {
+        switch (pass)
         {
-            const uint32_t img = kReadImageIndex[i];
-            RecordCopy(m_Images[img].snapshot, m_Images[img].texture);
+        case 2: // Temporal accumulation reads this frame's trace and velocity.
+            CopyImageToSnapshot(2);
+            CopyImageToSnapshot(5);
+            break;
+        case 3: // ReSTIR candidate generation reads this frame's G-buffer.
+            CopyImageToSnapshot(4);
+            CopyImageToSnapshot(6);
+            break;
+        case 4: // Bloom blur reads the trace/bloom image.
+            CopyImageToSnapshot(2);
+            break;
+        case 5: // Vertical bloom reads horizontal output and composite color.
+            CopyImageToSnapshot(0);
+            CopyImageToSnapshot(7);
+            break;
+        case 6: // Composite reads accumulated lighting.
+        case 7: // Bilateral filter reads accumulated lighting.
+            CopyImageToSnapshot(1);
+            break;
+        case 8: // Upscale reads the filtered temporary image.
+            CopyImageToSnapshot(7);
+            break;
+        case 10: // God rays read the current composite output.
+            CopyImageToSnapshot(0);
+            break;
+        case 11: // Temporal reservoir merge reads current geometry and velocity.
+            CopyImageToSnapshot(4);
+            CopyImageToSnapshot(5);
+            CopyImageToSnapshot(6);
+            break;
+        case 14: // Spatial reuse reads current bloom and receiver data.
+            CopyImageToSnapshot(2);
+            CopyImageToSnapshot(4);
+            CopyImageToSnapshot(6);
+            break;
+        case 12: // Moments reads current trace/velocity; t53 remains prior-frame.
+            CopyImageToSnapshot(2);
+            CopyImageToSnapshot(5);
+            CopyImageToSnapshot(8);
+            break;
+        case 13: // A-Trous reads current accumulation and moments.
+            CopyImageToSnapshot(1);
+            CopyImageToSnapshot(8);
+            break;
+        default:
+            break;
         }
+    }
+
+    void VulkanNova::MarkImageSnapshotsDirtyAfterPass(int pass)
+    {
+        const auto markDirty = [this](uint32_t imageIndex)
+        {
+            if (imageIndex < kImageCount)
+                m_Images[imageIndex].snapshotDirty = true;
+        };
+
+        switch (pass)
+        {
+        case 0: markDirty(5); break;
+        case 1: markDirty(2); markDirty(4); markDirty(6); break;
+        case 2: markDirty(1); break;
+        case 4: markDirty(7); break;
+        case 5: markDirty(0); break;
+        case 6: markDirty(0); markDirty(2); break;
+        case 7: markDirty(7); break;
+        case 8: markDirty(0); break;
+        case 9: markDirty(3); break;
+        case 10: markDirty(0); break;
+        case 14: markDirty(2); break;
+        case 12: markDirty(8); break;
+        case 13: markDirty(7); break;
+        default: break;
+        }
+    }
+
+    void VulkanNova::RecordImageHistoryClear()
+    {
+        for (uint32_t i = 0; i < kImageCount; ++i)
+        {
+            if (!m_Images[i].texture)
+                continue;
+            m_CommandList->clearTextureFloat(m_Images[i].texture,
+                                             nvrhi::AllSubresources,
+                                             nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
+            m_Images[i].snapshotDirty = true;
+        }
+        if (m_HistorySnapshot)
+        {
+            m_CommandList->clearTextureFloat(m_HistorySnapshot,
+                                             nvrhi::AllSubresources,
+                                             nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
+        }
+        m_ImagesNeedClear = false;
     }
 
     nvrhi::ITexture *VulkanNova::ResolveSceneTexture(Texture2D *texture)
@@ -783,26 +981,57 @@ namespace Wasteland
             return;
         }
 
-        // Once per frame: rebind the scene textures and refresh the snapshots.
-        if (m_BoundFrame != m_CurrentFrame)
+        // Clear requests made outside an open renderer-owned list are recorded
+        // here, before any dispatch (or snapshot copy) can observe stale data.
+        // This method never opens, closes, or submits the renderer's list.
+        if (m_ImagesNeedClear)
+            RecordImageHistoryClear();
+        if (m_ReservoirsNeedClear)
         {
-            bool sceneChanged = false;
-            for (uint32_t i = 0; i < textures.size() && i < kSceneTextureCount; ++i)
-            {
-                nvrhi::ITexture *texture = ResolveSceneTexture(textures[i].get());
-                if (i < m_SceneSRVs.size() && m_SceneSRVs[i] != texture)
-                {
-                    m_SceneSRVs[i] = texture;
-                    sceneChanged = true;
-                }
-            }
-            if (sceneChanged || !m_BindingSet)
-            {
-                CreateBindingSet();
-                CopyImagesToSnapshots();
-            }
-            m_BoundFrame = m_CurrentFrame;
+            for (uint32_t i = 0; i < 2; ++i)
+                if (m_ReservoirBuffers[i])
+                    m_CommandList->clearBufferUInt(m_ReservoirBuffers[i], 0);
+            m_ReservoirsNeedClear = false;
         }
+
+        // Resolve the full descriptor array on every dispatch. Missing or null
+        // entries use a compatible real texture; incompatible supplied textures
+        // are rejected. Shrinking/reordering also clears previously stale slots.
+        if (!m_HistorySnapshot)
+            throw std::runtime_error("VulkanNova: no compatible fallback texture for scene descriptors");
+        const bool newFrame = m_BoundFrame != m_CurrentFrame;
+        bool sceneChanged = false;
+        if (m_SceneSRVs.size() != kSceneTextureCount)
+        {
+            m_SceneSRVs.resize(kSceneTextureCount, m_HistorySnapshot);
+            sceneChanged = true;
+        }
+        for (uint32_t i = 0; i < kSceneTextureCount; ++i)
+        {
+            nvrhi::ITexture *texture = m_HistorySnapshot;
+            if (i < textures.size() && textures[i])
+            {
+                texture = ResolveSceneTexture(textures[i].get());
+                if (!texture)
+                    throw std::runtime_error("VulkanNova: scene texture is not a compatible NVRHI Texture2D");
+            }
+            if (m_SceneSRVs[i] != texture)
+            {
+                m_SceneSRVs[i] = texture;
+                sceneChanged = true;
+            }
+        }
+        if (sceneChanged)
+            m_BindingSetDirty = true;
+        // Upload/reallocation and reservoir swaps only mark the descriptor set
+        // dirty. Rebuild here at a dispatch boundary so recorded work retains
+        // its prior set while this dispatch sees the current resources.
+        if (m_BindingSetDirty || !m_BindingSet)
+            CreateBindingSet();
+        if (newFrame || sceneChanged)
+            CopyImagesToSnapshots();
+        RefreshImageSnapshotsForPass(pass);
+        m_BoundFrame = m_CurrentFrame;
 
         m_CommandList->writeBuffer(m_ConstantBuffer, m_ConstantBytes.data(),
                                    m_ConstantBytes.size(), 0);
@@ -812,6 +1041,7 @@ namespace Wasteland
         state.bindings.push_back(m_BindingSet);
         m_CommandList->setComputeState(state);
         m_CommandList->dispatch((w + 7) / 8, (h + 7) / 8, 1);
+        MarkImageSnapshotsDirtyAfterPass(pass);
     }
 
     void VulkanNova::CommitHistory()
@@ -829,30 +1059,37 @@ namespace Wasteland
     {
         // Fold the bilateral-blur result back into accumulation.
         RecordCopy(m_Images[1].texture, m_Images[7].texture);
+        m_Images[1].snapshotDirty = true;
+    }
+
+    void VulkanNova::SwapReservoir()
+    {
+        m_ReservoirReadFlip = !m_ReservoirReadFlip;
+        // Refresh at the next dispatch boundary; do not replace the set while
+        // already-recorded work is still using its current reservoir parity.
+        m_BindingSetDirty = true;
     }
 
     void VulkanNova::Clear()
     {
+        // Reset the temporal ping-pong history as well as the image history.
+        m_ReservoirReadFlip = false;
+        m_ReservoirsNeedClear = true;
+        m_ImagesNeedClear = true;
+        m_BindingSetDirty = true;
         if (!EnsureCommandList() || !m_Context->IsCommandListOpen())
+        {
+            // Defer all clears to the next renderer-owned list; never open,
+            // close, or submit a list from this backend helper.
+            m_BoundFrame = 0xFFFFFFFFu;
             return;
-        for (uint32_t i = 0; i < kImageCount; ++i)
-        {
-            if (!m_Images[i].texture)
-                continue;
-            m_CommandList->clearTextureFloat(m_Images[i].texture,
-                                             nvrhi::AllSubresources,
-                                             nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
         }
-        if (m_HistorySnapshot)
-        {
-            // This is now the texture bound at t48, so it is the one a reset has
-            // to reach: zeroing some other history texture would leave the
-            // reprojection pass blending against the previous view's
-            // accumulation and smearing it across the cut.
-            m_CommandList->clearTextureFloat(m_HistorySnapshot,
-                                             nvrhi::AllSubresources,
-                                             nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
-        }
+
+        RecordImageHistoryClear();
+        for (uint32_t i = 0; i < 2; ++i)
+            if (m_ReservoirBuffers[i])
+                m_CommandList->clearBufferUInt(m_ReservoirBuffers[i], 0);
+        m_ReservoirsNeedClear = false;
         // Snapshots and the scene bindings are refreshed on the next frame's
         // first Dispatch, so no per-slot state has to be reset here.
         m_BoundFrame = 0xFFFFFFFFu;
@@ -877,6 +1114,8 @@ namespace Wasteland
             image.texture = nullptr;
         }
         m_HistorySnapshot = nullptr;
+        for (uint32_t i = 0; i < 2; ++i)
+            m_ReservoirBuffers[i] = nullptr;
         for (int i = 0; i < 3; ++i)
             m_StructuredBuffers[i] = nullptr;
         m_ConstantBuffer = nullptr;

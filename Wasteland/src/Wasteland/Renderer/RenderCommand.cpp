@@ -5,8 +5,8 @@
 // Clear, DrawIndexed...) that dereference it with no null check.
 #include "RenderCommand.h"
 
-// The default backend, included unconditionally so the type is complete at the
-// `new` on line 9.
+// OpenGL fallback backend, included unconditionally so its type is complete if
+// the current platform keeps OpenGL as its initial selection.
 #include "Platform/OpenGL/OpenGLRendererAPI.h"
 // The NVRHI backend, covering DX11, DX12 and Vulkan alike. Both platform headers
 // are included on every platform, so both must compile even when only one is used.
@@ -16,12 +16,17 @@
 // the header be `inline static`.
 namespace Wasteland {
 
-	// Dynamic initialisation of a namespace-scope pointer: the OpenGL backend is
-	// built before main. DEFECT (lifetime): this `new` is never paired with a delete
-	// on the shutdown path, so the initial backend leaks at process exit. SetAPI does
-	// delete the current one, so only the first allocation is orphaned -- harmless in
-	// practice, and left as found.
+	// Dynamic initialisation of a namespace-scope pointer: select the concrete
+	// backend that matches RendererAPI::s_API before main. DEFECT (lifetime): this
+	// `new` is never paired with a delete on the shutdown path, so the initial
+	// backend leaks at process exit. SetAPI does delete the current one, so only the
+	// first allocation is orphaned -- harmless in practice, and left as found.
+#if defined(WL_PLATFORM_WINDOWS)
+	RendererAPI* RenderCommand::s_RendererAPI =
+		new NVRHIRendererAPI(RendererAPI::API::NVRHI_DX12);
+#else
 	RendererAPI* RenderCommand::s_RendererAPI = new OpenGLRendererAPI;
+#endif
 
 	// The only out-of-line member of an otherwise header-inline class: changing the
 	// backend is not something a caller should be able to do inline.

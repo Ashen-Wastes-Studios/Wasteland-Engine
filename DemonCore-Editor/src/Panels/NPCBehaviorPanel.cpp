@@ -35,6 +35,10 @@
 // Validator::Validate, called from four places below: the Validate button,
 // SaveTree, LoadTree and CompileAndWrite.
 #include "Wasteland/VisualBlocks/Validator.h"
+// Runtime tree instances are owned by BehaviorTreeSystem per entity; the panel
+// only toggles tracing and displays copied events for the current selection.
+#include "Wasteland/Scene/BehaviorTreeSystem.h"
+#include "Wasteland/Scene/Components.h"
 
 namespace Wasteland
 {
@@ -196,6 +200,7 @@ namespace Wasteland
 		// function only runs with a graph present.
 		if (!m_HasGraph)
 		{
+			DrawBehaviorTrace();
 			ImGui::TextDisabled("No behavior tree loaded.");
 			ImGui::Separator();
 			ImGui::SetNextItemWidth(-1.0f);
@@ -244,17 +249,17 @@ namespace Wasteland
 		DrawToolbar();
 		ImGui::Separator();
 
-		// The tree region: full available width, and 260 pixels LESS than the height
+		// The tree region: full available width, and 420 pixels LESS than the height
 		// available.
 		//
 		// The negative height is the ImGui idiom for "all remaining space minus this",
-		// which is what leaves room below for the findings panel. It is a fixed pixel
+		// reserving space for findings and the bounded runtime trace below. It is a fixed pixel
 		// reservation, so on a short window the findings pane is squeezed rather than
 		// the tree -- and at some sizes the two begin to overlap visually.
 		//
 		// `true` gives it a border and its own scrollbar, which is what keeps a long
 		// tree scrollable independently of the panel.
-		if (ImGui::BeginChild("tree", ImVec2(0.0f, -260.0f), true))
+		if (ImGui::BeginChild("tree", ImVec2(0.0f, -420.0f), true))
 		{
 			DrawTreeList();
 		}
@@ -269,6 +274,7 @@ namespace Wasteland
 		// the m_Dirty flag exists to solve for the compiled output, but not solved for
 		// validation.
 		DrawFindings();
+		DrawBehaviorTrace();
 
 		// A COLLAPSIBLE section, so the preview costs nothing when the author is not
 		// looking at it.
@@ -1187,6 +1193,61 @@ namespace Wasteland
 		}
 	}
 
+	// Live trace for the selected entity, not the authoring graph. The panel
+	// never ticks gameplay or installs a callback on its editable graph copy.
+	void NPCBehaviorPanel::DrawBehaviorTrace()
+	{
+		ImGui::Separator();
+		ImGui::TextUnformatted("Runtime behavior trace");
+
+		if (!m_Entity.IsValid() ||
+			!m_Entity.HasComponent<BehaviorTreeComponent>() ||
+			!m_Entity.HasComponent<IDComponent>())
+		{
+			ImGui::TextDisabled("Select an entity with a behavior tree component.");
+			return;
+		}
+
+		const UUID id = m_Entity.GetComponent<IDComponent>().ID;
+		bool enabled = BehaviorTreeSystem::IsTraceEnabled(id);
+		if (ImGui::Checkbox("Capture selected entity", &enabled))
+		{
+			if (!BehaviorTreeSystem::SetTrace(id, enabled))
+			{
+				enabled = BehaviorTreeSystem::IsTraceEnabled(id);
+				ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.42f, 1.0f),
+					"Python runtime is unavailable; trace state was not changed.");
+			}
+		}
+
+		const auto events = BehaviorTreeSystem::GetTraceLog(id);
+		ImGui::SameLine();
+		ImGui::TextDisabled("%zu recent events", events.size());
+
+		if (ImGui::BeginChild("behavior_trace_log", ImVec2(0.0f, 150.0f), true))
+		{
+			const bool scrollToLatest = ImGui::GetScrollY() >=
+				ImGui::GetScrollMaxY() - 1.0f;
+			if (events.empty())
+				ImGui::TextDisabled("No runtime events captured yet.");
+			else
+			{
+				for (const auto &event : events)
+				{
+					const ImVec4 color = event.Event == "abort"
+						? ImVec4(1.0f, 0.72f, 0.32f, 1.0f)
+						: ImVec4(0.82f, 0.86f, 0.92f, 1.0f);
+					ImGui::TextColored(color, "[%llu] %s (%s): %s",
+						static_cast<unsigned long long>(event.Tick),
+						event.NodeId.c_str(), event.NodeType.c_str(), event.Event.c_str());
+				}
+			}
+			if (scrollToLatest)
+				ImGui::SetScrollHereY(1.0f);
+		}
+		ImGui::EndChild();
+	}
+
 	// ------------------------------------------------------------------
 	// Edits
 	// ------------------------------------------------------------------
@@ -1568,6 +1629,14 @@ namespace Wasteland
 			// the panel exactly as it was.
 			return false;   // LoadTree records the reason; the open tree stands
 		m_Visible = true;
+		const size_t registryCount = NodeRegistry::Get().All().size();
+		ValidationResult selfCheck;
+		const bool valid = VisualBlocks::Validator::ValidateTree(m_Graph, selfCheck);
+		WL_CORE_INFO("NPC Behavior open check: tree='{0}' registry_nodes={1} valid={2} errors={3} warnings={4}",
+			m_Path, registryCount, valid ? "true" : "false",
+			selfCheck.ErrorCount(), selfCheck.WarningCount());
+		if (registryCount == 0 || !valid)
+			WL_CORE_ERROR("NPC Behavior open check failed for '{0}'", m_Path);
 		return true;
 	}
 

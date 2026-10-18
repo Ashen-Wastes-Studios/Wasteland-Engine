@@ -1,0 +1,333 @@
+Scene: Inventory Demo
+Entities:
+  - Entity: 9600000000000000001
+    TagComponent:
+      Tag: Camera
+    TransformComponent:
+      Translation: [0, 8, 20]
+      Rotation: [-0.35, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9600000000000000002
+    TagComponent:
+      Tag: Sun
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9600000000000000003
+    TagComponent:
+      Tag: Ground
+    TransformComponent:
+      Translation: [0, -1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [40, 1, 40]
+    CubeRendererComponent:
+      Color: [0.35, 0.35, 0.38, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.35, 0.35, 0.38, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.9
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9600000000000000004
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 1.5, 8]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CylinderRendererComponent:
+      Color: [0.3, 0.5, 0.9, 1]
+      Radius: 0.4
+      Height: 1.4
+      Segments: 24
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.5, 0.9, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.6
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    HealthComponent:
+      Current: 100
+      Max: 100
+      Invulnerable: false
+      DamageCooldown: 0.5
+  - Entity: 9600000000000000005
+    TagComponent:
+      Tag: Health Potion Def
+    TransformComponent:
+      Translation: [-6, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [0.5, 0.5, 0.5]
+    ItemDefinitionComponent:
+      Name: health_potion
+      DisplayName: Health Potion
+      MaxStack: 10
+      Weight: 0.5
+      Value: 25
+      Consumable: true
+      EffectType: heal
+      EffectAmount: 50
+    SphereRendererComponent:
+      Color: [1, 0.2, 0.2, 1]
+      Radius: 0.3
+      Sectors: 24
+      Stacks: 24
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.2, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.3
+      EmissionColor: [1, 0.1, 0.1, 1]
+      EmissionIntensity: 1
+      DisplacementScale: 0
+      TexturePath: ""
+    InteractableComponent:
+      Label: "Pick up Health Potion"
+  - Entity: 9600000000000000006
+    TagComponent:
+      Tag: Ammo Def
+    TransformComponent:
+      Translation: [0, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [0.4, 0.4, 0.4]
+    ItemDefinitionComponent:
+      Name: ammo_9mm
+      DisplayName: 9mm Ammo
+      MaxStack: 60
+      Weight: 0.02
+      Value: 1
+      Consumable: false
+      EffectType: ammo
+      EffectAmount: 12
+    CubeRendererComponent:
+      Color: [0.7, 0.6, 0.2, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.7, 0.6, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.9
+      Roughness: 0.3
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    InteractableComponent:
+      Label: "Pick up 9mm Ammo"
+  - Entity: 9600000000000000007
+    TagComponent:
+      Tag: Sword Def
+    TransformComponent:
+      Translation: [6, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [0.3, 0.3, 0.3]
+    ItemDefinitionComponent:
+      Name: iron_sword
+      DisplayName: Iron Sword
+      MaxStack: 1
+      Weight: 3.5
+      Value: 150
+      Consumable: false
+      EffectType: weapon
+      EffectAmount: 35
+    CubeRendererComponent:
+      Color: [0.7, 0.7, 0.75, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.7, 0.7, 0.75, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.2
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    InteractableComponent:
+      Label: "Pick up Iron Sword"
+  - Entity: 9600000000000000008
+    TagComponent:
+      Tag: Gold Bar Def
+    TransformComponent:
+      Translation: [-3, 0.3, 5]
+      Rotation: [0.5, 0.5, 0]
+      Scale: [0.6, 0.3, 0.4]
+    ItemDefinitionComponent:
+      Name: gold_bar
+      DisplayName: Gold Bar
+      MaxStack: 20
+      Weight: 10
+      Value: 500
+      Consumable: false
+      EffectType: valuables
+      EffectAmount: 0
+    CubeRendererComponent:
+      Color: [1, 0.84, 0, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.84, 0, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 1
+      Roughness: 0.1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    InteractableComponent:
+      Label: "Pick up Gold Bar"
+  - Entity: 9600000000000000009
+    TagComponent:
+      Tag: Bandage Def
+    TransformComponent:
+      Translation: [3, 0.2, 5]
+      Rotation: [0, 0.8, 0]
+      Scale: [0.4, 0.2, 0.4]
+    ItemDefinitionComponent:
+      Name: bandage
+      DisplayName: Bandage
+      MaxStack: 15
+      Weight: 0.1
+      Value: 10
+      Consumable: true
+      EffectType: heal
+      EffectAmount: 20
+    CubeRendererComponent:
+      Color: [0.95, 0.95, 0.9, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.95, 0.95, 0.9, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.95
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    InteractableComponent:
+      Label: "Pick up Bandage"
+  - Entity: 9600000000000000010
+    TagComponent:
+      Tag: Dropped Health Potion
+    TransformComponent:
+      Translation: [-1, 0.3, 3]
+      Rotation: [0, 0.5, 0]
+      Scale: [0.3, 0.3, 0.3]
+    DroppedItemComponent:
+      Name: health_potion
+      Quantity: 3
+    SphereRendererComponent:
+      Color: [1, 0.3, 0.3, 1]
+      Radius: 0.25
+      Sectors: 16
+      Stacks: 16
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.3, 0.3, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.4
+      EmissionColor: [1, 0.15, 0.15, 1]
+      EmissionIntensity: 0.5
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9600000000000000011
+    TagComponent:
+      Tag: Dropped Ammo
+    TransformComponent:
+      Translation: [1.5, 0.2, 2]
+      Rotation: [0, 0.3, 0]
+      Scale: [0.25, 0.25, 0.25]
+    DroppedItemComponent:
+      Name: ammo_9mm
+      Quantity: 24
+    CubeRendererComponent:
+      Color: [0.6, 0.5, 0.15, 1]
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.6, 0.5, 0.15, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0.8
+      Roughness: 0.4
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+  - Entity: 9600000000000000012
+    TagComponent:
+      Tag: Enemy Target
+    TransformComponent:
+      Translation: [0, 1, -8]
+      Rotation: [0, 3.14159, 0]
+      Scale: [1, 1, 1]
+    CylinderRendererComponent:
+      Color: [0.8, 0.2, 0.2, 1]
+      Radius: 0.4
+      Height: 1.4
+      Segments: 24
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.8, 0.2, 0.2, 1]
+      TextureIndex: 0
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+      TexturePath: ""
+    HealthComponent:
+      Current: 80
+      Max: 80
+      Invulnerable: false
+      DamageCooldown: 0.3

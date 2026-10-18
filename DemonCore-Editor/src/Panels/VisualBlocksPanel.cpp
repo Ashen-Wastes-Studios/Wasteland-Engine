@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 
 #include "Wasteland/VisualBlocks/Compiler.h"
 #include "Wasteland/VisualBlocks/GraphSerializer.h"
@@ -864,7 +865,8 @@ namespace Wasteland
 		return false;
 	}
 
-	// The canvas, plus the translation of canvas events into graph edits.
+	// The canvas, plus the translation between the VisualBlocks graph and the
+	// graph-neutral presentation model consumed by the canvas.
 	void VisualBlocksPanel::DrawCanvas()
 	{
 		if (!m_HasGraph)
@@ -873,46 +875,77 @@ namespace Wasteland
 			return;
 		}
 
-		// A per-frame output struct. Local rather than a member because the canvas
-		// fills it fresh each frame and nothing outside this function reads it.
-		NodeCanvas::Events events;
-		m_Canvas.Render(m_Graph, NodeRegistry::Get(), events,
-						[this](const GraphNode &node) {
-							return DrawNodeBody(node);
-						});
+		NodeCanvas::Presentation presentation;
+		presentation.Nodes.reserve(m_Graph.Nodes.size());
+		for (const GraphNode &graphNode : m_Graph.Nodes)
+		{
+			const NodeDef *def = NodeRegistry::Get().Find(graphNode.TypeId);
+			NodeCanvas::Node node;
+			node.Id = graphNode.Id;
+			node.Label = !graphNode.Title.empty() ? graphNode.Title
+				: (def != nullptr ? def->TypeId : graphNode.TypeId + " (?)");
+			node.Position = Point{graphNode.X, graphNode.Y};
+			node.Selected = graphNode.Id == m_Canvas.GetSelected();
+			node.TypeKnown = def != nullptr;
+			if (def != nullptr)
+			{
+				node.Pins.reserve(def->Pins.size());
+				for (const PinDef &pin : def->Pins)
+				{
+					NodeCanvas::Pin canvasPin;
+					canvasPin.Id = pin.Id;
+					canvasPin.Label = pin.Id;
+					canvasPin.Direction = pin.Dir == PinDir::In
+						? NodeCanvas::PinDirection::Input
+						: NodeCanvas::PinDirection::Output;
+					switch (pin.Type)
+					{
+					case PinType::Exec:   canvasPin.Style = NodeCanvas::PinStyle::Flow; break;
+					case PinType::Bool:   canvasPin.Style = NodeCanvas::PinStyle::Boolean; break;
+					case PinType::Int:
+					case PinType::Float:  canvasPin.Style = NodeCanvas::PinStyle::Number; break;
+					case PinType::String: canvasPin.Style = NodeCanvas::PinStyle::Text; break;
+					case PinType::Entity: canvasPin.Style = NodeCanvas::PinStyle::Entity; break;
+					default:              canvasPin.Style = NodeCanvas::PinStyle::Other; break;
+					}
+					node.Pins.push_back(std::move(canvasPin));
+				}
+			}
+			presentation.Nodes.push_back(std::move(node));
+		}
+		for (const GraphLink &link : m_Graph.Links)
+		{
+			NodeCanvas::Node *source = presentation.FindNode(link.FromNode);
+			if (source != nullptr)
+				source->WiredTo.push_back(NodeCanvas::Wire{link.FromPin, link.ToNode, link.ToPin});
+		}
 
-		// The canvas detects a completed drag and the PANEL performs the edit.
-		//
-		// That split is deliberate: the canvas owns geometry and interaction, the
-		// panel owns the graph and its rules -- so the one-producer-per-input
-		// refusal in Connect applies to a canvas-initiated wire exactly as it does
-		// to a programmatic one.
+		NodeCanvas::Events events;
+		m_Canvas.Render(presentation, events,
+			[this](const NodeCanvas::Node &node) {
+				const GraphNode *graphNode = m_Graph.FindNode(node.Id);
+				return graphNode != nullptr && DrawNodeBody(*graphNode);
+			});
+
 		if (events.WireAdded)
 			Connect(events.LinkFromNode, events.LinkFromPin,
 					events.LinkToNode, events.LinkToPin);
 		if (events.NodeDeleted)
 			DeleteNode(events.SelectedNodeId);
-		// The only edit path that sets dirty WITHOUT bracketing itself with
-		// BeginEdit/CommitEdit.
-		//
-		// DEFECT: a node drag is therefore not undoable, and does not run
-		// CollapseIdentical. Either it should bracket the move, or node movement
-		// should be excluded from history deliberately -- but as written it is an
-		// oversight, since every other mutation in this file is undoable. Note the
-		// position change also has to reach GraphHistory::Fingerprint, which does
-		// include X and Y -- so the machinery to support it is already there.
 		if (events.NodeMoved)
-			m_Dirty = true;
-
-		// Frame the content once per open graph. Re-framing every frame would
-		// fight the author's panning and make the canvas unusable.
-		// Frames the content once per open graph.
-		//
-		// Three guards: not yet framed, the author has not panned (so their view is
-		// never overridden), and there is something to frame.
-		if (!m_FramedOnce && !m_Canvas.HasBeenPanned() && !m_Graph.Nodes.empty())
 		{
-			m_Canvas.FrameAll(m_Graph, NodeRegistry::Get());
+			GraphNode *moved = m_Graph.FindNode(events.MovedNodeId);
+			if (moved != nullptr)
+			{
+				moved->X = events.MovedNodePosition.X;
+				moved->Y = events.MovedNodePosition.Y;
+			}
+			m_Dirty = true;
+		}
+
+		if (!m_FramedOnce && !m_Canvas.HasBeenPanned() && !presentation.Nodes.empty())
+		{
+			m_Canvas.FrameAll(presentation);
 			m_FramedOnce = true;
 		}
 	}
@@ -1163,44 +1196,6 @@ namespace Wasteland
 			// to the registry is therefore editable with the right
 			// widgets the day it is registered, with no editing code
 			// written for it.
-			// DEFECT, and the most consequential in this file: this inner loop REDECLARES
-			// `pin`, shadowing the outer loop's variable of the same name, and iterates
-			// ALL pins rather than handling the current one.
-			//
-			// So for a node with N unlinked data pins, the block below runs N times and
-			// draws N*N widgets -- every pin's editor once per unlinked pin. Worse, the
-			// shadowed inner `pin` is what every reference below uses, so the outer
-			// loop's progress is discarded entirely and the same set of editors is drawn
-			// repeatedly. Only one of those duplicates is interactive; the rest are
-			// stacked on top of each other.
-			//
-			// The comment above claims schema-driven editing, and the mechanism is
-			// right, but the loop as written cannot be doing what the surrounding code
-			// assumes. This looks like a loop that should not be there at all -- the
-			// outer `pin` is already the one to edit.
-			for (const PinDef &pin : def->Pins)
-			{
-				if (pin.Dir != PinDir::In || pin.Type == PinType::Exec)
-					continue;
-
-				// A linked input's value is its producer's output. Offering
-				// a control that silently does nothing is worse than saying
-				// where the value comes from.
-				// A SECOND linked check, inside the shadowing loop, after ResolveInput
-				// already established isLinked for this exact pin at the top of the outer
-				// iteration.
-				//
-				// Redundant even setting the shadowing aside.
-				if (ValueEditor::IsLinked(m_Graph, node->Id, pin.Id))
-				{
-					const std::string source =
-						ValueEditor::LinkSourceNode(m_Graph, node->Id, pin.Id);
-					ImGui::Text("%s", pin.Id.c_str());
-					ImGui::SameLine();
-					ImGui::TextDisabled("<- %s", source.c_str());
-					continue;
-				}
-
 				const PinLiteral *lit = node->FindLiteral(pin.Id);
 				const std::string current =
 					(lit != nullptr && lit->IsSet) ? lit->Value
@@ -1371,7 +1366,6 @@ namespace Wasteland
 				if (pin.Type == PinType::String || pin.Type == PinType::Any ||
 					pin.Type == PinType::Entity)
 					ImGui::TextDisabled("%s", ValueEditor::TypeName(pin.Type));
-			}
 			}
 			ImGui::PopID();
 		}

@@ -104,6 +104,10 @@ case "${1:-all}" in
     cd /c/Users/rtoue/AppData/Local/hermes/cache/scratch || exit 2
     exec "$PY314" -u run_all_suites.py "$@"
     ;;
+  regression)
+    shift
+    exec "$PY314" -u C:/dev/Wasteland/tools/run_all_suites.py "$@"
+    ;;
   repo)
     # Top-level tests/*.py suites that are not Visual Blocks. Each one prints
     # its own tally; the grep keeps the output to one line per suite so a
@@ -148,7 +152,7 @@ case "${1:-all}" in
     "$PY314" --version
     ;;
   *)
-    echo "usage: t.sh [headless|scratch|visualblocks|native|d1|which] [suite names...]"
+    echo "usage: t.sh [headless|scratch|regression|visualblocks|native|d1|which] [suite names...]"
     exit 2
     ;;
 esac

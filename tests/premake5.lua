@@ -645,6 +645,58 @@ project "AgeServiceTests"
 			optimize "On"
 			runtime "Release"
 
+-- Native audio output tests compile the shipping mixer and miniaudio-backed
+-- callback directly. They never open a physical device; endpoint conversion
+-- is exercised through miniaudio's own data converter API.
+filter {}
+project "AudioOutputTests"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/" .. outputdir)
+	objdir ("bin-int/tests/obj-audio-output/" .. outputdir)
+
+	files
+	{
+		"test_audio_output.cpp",
+		"../Wasteland/src/Wasteland/Audio/AudioClip.cpp",
+		"../Wasteland/src/Wasteland/Audio/Mixer.cpp",
+		"../Wasteland/src/Wasteland/Audio/AudioDevice.cpp",
+		"../Wasteland/src/Wasteland/Core/UUID.cpp",
+		"../Wasteland/src/Wasteland/Core/Log.cpp",
+	}
+
+	defines { "_CRT_SECURE_NO_WARNINGS" }
+
+	includedirs
+	{
+		"../Wasteland/src",
+		"../Wasteland/vendor/spdlog/include",
+		"../Wasteland/vendor/glm",
+		"../Wasteland/vendor/miniaudio",
+	}
+
+	filter "system:windows"
+		systemversion "latest"
+		links { "ole32.lib", "winmm.lib", "avrt.lib", "shell32.lib", "advapi32.lib" }
+
+	filter "system:linux"
+		links { "pthread", "dl" }
+
+	filter "system:macosx"
+		links { "CoreAudio.framework", "AudioToolbox.framework", "AudioUnit.framework" }
+
+	filter "configurations:Debug"
+		defines "WL_DEBUG"
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines "WL_RELEASE"
+		optimize "On"
+		runtime "Release"
+
 -- A second executable rather than another file in ProjectTests: it has its
 -- own main(). Creates a real project against the installed engine assets
 -- and checks the renderers can find every shader they load by name.
@@ -706,3 +758,305 @@ project "SeedingSmokeTest"
 		defines "WL_RELEASE"
 		optimize "On"
 		runtime "Release"
+
+-- Standalone AVB.3 procedural voice tests, included in the aggregate solution.
+filter {}
+project "AvbVoiceTests"
+	uuid "9B19506D-5CB4-4AB9-96F4-9B09AA3010D1"
+	location "avb_voices"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/avb-voices/" .. outputdir)
+	objdir ("bin-int/tests/obj-avb-voices/" .. outputdir)
+
+	files
+	{
+		"avb_voices/test_avb_voices.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbDsp.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbVoices.cpp",
+	}
+
+	defines { "_CRT_SECURE_NO_WARNINGS" }
+	includedirs { "../Wasteland/src", "../Wasteland/vendor/spdlog/include" }
+
+	filter "system:windows"
+		systemversion "latest"
+		buildoptions { "/utf-8" }
+		links { "ole32.lib" }
+
+	filter "configurations:Debug"
+		defines { "WL_DEBUG" }
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines { "WL_RELEASE" }
+		optimize "On"
+		runtime "Release"
+
+-- Standalone AVB.4 graph tests; yaml-cpp is required by the serializer.
+filter {}
+project "AvbGraphTests"
+	uuid "2A35988C-1F24-4B71-AC73-B4EC96DCE879"
+	location "avb_graph"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/avb-graph/" .. outputdir)
+	objdir ("bin-int/tests/obj-avb-graph/" .. outputdir)
+
+	files
+	{
+		"avb_graph/test_avb_graph.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Graph.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/GraphSerializer.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/NodeRegistry.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Validator.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Compiler.cpp",
+	}
+
+	defines { "YAML_CPP_STATIC_DEFINE", "_CRT_SECURE_NO_WARNINGS" }
+	includedirs
+	{
+		"../Wasteland/src",
+		"../Wasteland/vendor/spdlog/include",
+		"../Wasteland/vendor/yaml-cpp/include",
+	}
+
+	filter "system:windows"
+		systemversion "latest"
+		buildoptions { "/utf-8" }
+		libdirs { "../Wasteland/vendor/yaml-cpp/bin/%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}/yaml-cpp" }
+		links { "yaml-cpp" }
+
+	filter "configurations:Debug"
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		optimize "On"
+		runtime "Release"
+
+-- Standalone AVB.5 audio bus tests.
+filter {}
+project "AvbBusTests"
+	uuid "C064BAD7-8FB2-4E40-9A8C-6E559D1F4CB8"
+	location "avb_buses"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/avb-buses/" .. outputdir)
+	objdir ("bin-int/tests/obj-avb-buses/" .. outputdir)
+
+	files
+	{
+		"avb_buses/test_avb_buses.cpp",
+		"../Wasteland/src/Wasteland/Avb/AudioBus.cpp",
+	}
+
+	defines { "_CRT_SECURE_NO_WARNINGS" }
+	includedirs { "../Wasteland/src", "../Wasteland/vendor/spdlog/include" }
+
+	filter "system:windows"
+		systemversion "latest"
+		buildoptions { "/utf-8" }
+		links { "ole32.lib" }
+
+	filter "configurations:Debug"
+		defines { "WL_DEBUG" }
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines { "WL_RELEASE" }
+		optimize "On"
+		runtime "Release"
+
+-- Standalone AVB.6 audio bus effects tests.
+filter {}
+project "AvbEffectTests"
+	uuid "F26F1B38-7A95-45A7-91C4-6D2B8E03A572"
+	location "avb_effects"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/avb-effects/" .. outputdir)
+	objdir ("bin-int/tests/obj-avb-effects/" .. outputdir)
+
+	files
+	{
+		"avb_effects/test_avb_effects.cpp",
+		"../Wasteland/src/Wasteland/Avb/AudioBus.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbDsp.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbBusEffects.cpp",
+		"../Wasteland/src/Wasteland/Audio/AudioClip.cpp",
+		"../Wasteland/src/Wasteland/Core/UUID.cpp",
+	}
+
+	defines { "_CRT_SECURE_NO_WARNINGS" }
+	includedirs { "../Wasteland/src", "../Wasteland/vendor/spdlog/include" }
+
+	filter "system:windows"
+		systemversion "latest"
+		buildoptions { "/utf-8" }
+		links { "ole32.lib" }
+
+	filter "configurations:Debug"
+		defines { "WL_DEBUG" }
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines { "WL_RELEASE" }
+		optimize "On"
+		runtime "Release"
+
+-- Standalone AVB.7 graph runtime tests.
+filter {}
+project "AvbGraphRuntimeTests"
+	uuid "D7E24C91-35AF-4B68-8E13-A9C7402F5B6D"
+	location "avb_graph_runtime"
+	kind "ConsoleApp"
+	language "C++"
+	cppdialect "C++17"
+
+	targetdir ("bin-int/tests/avb-graph-runtime/" .. outputdir)
+	objdir ("bin-int/tests/obj-avb-graph-runtime/" .. outputdir)
+
+	files
+	{
+		"avb_graph_runtime/test_avb_graph_runtime.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Runtime.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/GraphSerializer.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/ProjectRuntime.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Graph.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Compiler.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/Validator.cpp",
+		"../Wasteland/src/Wasteland/Avb/Graph/NodeRegistry.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbDsp.cpp",
+		"../Wasteland/src/Wasteland/Avb/AvbVoices.cpp",
+		"../Wasteland/src/Wasteland/Avb/AudioBus.cpp",
+		"../Wasteland/src/Wasteland/Core/Log.cpp",
+		"../Wasteland/src/Wasteland/Audio/AudioClip.cpp",
+		"../Wasteland/src/Wasteland/Core/UUID.cpp",
+		"../Wasteland/src/Wasteland/Project/Project.cpp",
+	}
+
+	defines { "YAML_CPP_STATIC_DEFINE", "_CRT_SECURE_NO_WARNINGS" }
+	includedirs { "../Wasteland/src", "../Wasteland/vendor/spdlog/include", "../Wasteland/vendor/yaml-cpp/include" }
+	libdirs { "../Wasteland/vendor/yaml-cpp/bin/%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}/yaml-cpp" }
+	links { "yaml-cpp" }
+
+	filter "system:windows"
+		links { "shell32.lib", "advapi32.lib" }
+	filter {}
+
+	filter "system:windows"
+		systemversion "latest"
+		buildoptions { "/utf-8" }
+		links { "ole32.lib" }
+
+	filter "configurations:Debug"
+		defines { "WL_DEBUG" }
+		symbols "On"
+		runtime "Debug"
+
+	filter "configurations:Release"
+		defines { "WL_RELEASE" }
+		optimize "On"
+		runtime "Release"
+
+-- Standalone AVB.11 recording and stem-export tests. Recording uses the
+-- deterministic ingest seam instead of opening a miniaudio capture device.
+filter {}
+project "AvbRecordingTests"
+uuid "A4D92B3F-18C1-4F52-9B6A-7D03EBC4518E"
+location "avb_recording"
+kind "ConsoleApp"
+language "C++"
+cppdialect "C++17"
+flags { "NoPCH" }
+
+targetdir ("bin-int/tests/avb-recording/" .. outputdir)
+objdir ("bin-int/tests/obj-avb-recording/" .. outputdir)
+
+files
+{
+	"avb_recording/test_avb_recording.cpp",
+	"../Wasteland/src/Wasteland/Avb/Recorder.cpp",
+	"../Wasteland/src/Wasteland/Avb/AudioBus.cpp",
+	"../Wasteland/src/Wasteland/Audio/AudioClip.cpp",
+	"../Wasteland/src/Wasteland/Core/UUID.cpp",
+}
+
+defines { "AVB_RECORDER_NO_MINIAUDIO_CAPTURE", "AVB_RECORDER_TEST_HOOKS", "_CRT_SECURE_NO_WARNINGS" }
+includedirs
+{
+	"../Wasteland/src",
+	"../Wasteland/vendor/spdlog/include",
+	"../Wasteland/vendor/miniaudio",
+}
+
+filter "system:windows"
+	systemversion "latest"
+	buildoptions { "/utf-8" }
+	links { "ole32.lib" }
+
+filter "configurations:Debug"
+	defines { "WL_DEBUG" }
+	symbols "On"
+	runtime "Debug"
+
+filter "configurations:Release"
+	defines { "WL_RELEASE" }
+	optimize "On"
+	runtime "Release"
+
+-- Standalone CPU terrain asset, sampling, splat and sidecar tests.
+filter {}
+project "TerrainTests"
+uuid "7A4D2A01-ED6C-45E6-91F0-9CEB121D8B7A"
+location "terrain"
+kind "ConsoleApp"
+language "C++"
+cppdialect "C++17"
+flags { "NoPCH" }
+
+targetdir ("bin-int/tests/terrain/" .. outputdir)
+objdir ("bin-int/tests/obj-terrain/" .. outputdir)
+
+files
+{
+	"terrain/test_terrain.cpp",
+	"../Wasteland/src/Wasteland/Terrain/Terrain.cpp",
+	"../Wasteland/src/Wasteland/Terrain/TerrainCollision.cpp",
+	"../Wasteland/src/Wasteland/Terrain/TerrainRuntime.cpp",
+}
+
+defines { "_CRT_SECURE_NO_WARNINGS" }
+includedirs
+{
+	"../Wasteland/src",
+	"../Wasteland/vendor/spdlog/include",
+	"../Wasteland/vendor/Box3D/include",
+}
+
+filter "system:windows"
+	systemversion "latest"
+	buildoptions { "/utf-8" }
+	links { "Box3D", "ole32.lib" }
+
+filter "configurations:Debug"
+	defines { "WL_DEBUG" }
+	symbols "On"
+	runtime "Debug"
+
+filter "configurations:Release"
+	defines { "WL_RELEASE" }
+	optimize "On"
+	runtime "Release"

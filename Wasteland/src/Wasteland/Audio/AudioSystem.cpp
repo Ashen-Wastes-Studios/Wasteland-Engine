@@ -17,16 +17,20 @@
 namespace Wasteland::Audio
 {
 
-	// Takes a Ref to the scene, so the mixer outlives nothing it depends on:
-	// destroying the scene first drops this system's reference, not vice versa.
+	// The scene owns this subsystem; keep only a borrowed parent pointer here.
+	// Do not create a shared_ptr from `this` or the Scene would have a second
+	// independent ownership control block.
 
 	// No null check here, though every method below tests m_Scene -- so a null
 	// scene constructs cleanly and fails later, at the first Update.
 	AudioSystem::AudioSystem(Scene *scene)
-		// Member initialiser. m_Mixer is default-constructed, which is fine: Mixer is
-		// documented as having no platform device.
-		: m_Scene(scene)
+		: m_Scene(scene), m_AudioDevice(m_Mixer)
 	{
+	}
+
+	AudioSystem::~AudioSystem()
+	{
+		StopOutput();
 	}
 
 	// Loads a WAV from disk and registers it under its file stem.
@@ -195,7 +199,7 @@ namespace Wasteland::Audio
 				// DEFECT: it uses the mixer's CURRENT listener position, which is only
 				// updated in Update() below. So during the frame before the first Update, this
 				// reads a default-constructed position rather than the real listener.
-				request.Position = m_Mixer.GetListener().Position;
+				request.Position = m_Mixer.GetListenerSnapshot().Position;
 		}
 
 		return m_Mixer.Play(request);
@@ -372,9 +376,11 @@ namespace Wasteland::Audio
 	// Called every frame, so everything here is on the hot path.
 	void AudioSystem::Update(float seconds)
 	{
-		// Advance voice envelopes and positions. Done unconditionally, even with a
-		// null scene, because the mixer is independent of the scene.
-		m_Mixer.Update(seconds);
+		// The live output callback owns mixer advancement when it is running. Calling
+		// wall-clock Update() as well would move each source position twice; the
+		// callback advances source positions and fades from rendered 48 kHz frames.
+		if (!m_AudioDevice.IsRunning())
+			m_Mixer.Update(seconds);
 
 		if (!m_Scene)
 			return;
@@ -384,9 +390,6 @@ namespace Wasteland::Audio
 		// Re-resolved rather than cached -- see the per-frame cost note at
 		// FindListenerEntity().
 		Entity listener = FindListenerEntity();
-		// A mutable reference to the mixer's listener state, which the next four
-		// lines overwrite.
-		auto &listenerState = m_Mixer.GetListener();
 
 		// Only update when there is a real listener with a transform.
 
@@ -396,7 +399,6 @@ namespace Wasteland::Audio
 		if (listener.IsValid() && listener.HasComponent<TransformComponent>())
 		{
 			const auto &transform = listener.GetComponent<TransformComponent>();
-			listenerState.Position = transform.Translation;
 
 			// The scene stores Euler degrees; the mixer wants a direction.
 			// glm's pitch convention is degrees-about-Y-then-X, so the YXZ
@@ -409,16 +411,10 @@ namespace Wasteland::Audio
 
 			// normalize is needed because the quaternion-times-vector product is not
 			// unit length after interpolation.
-			listenerState.Forward = glm::normalize(rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+			glm::vec3 forward = glm::normalize(rotation * glm::vec3(0.0f, 0.0f, -1.0f));
 			// Up is +Y rotated.
-			listenerState.Up = glm::normalize(rotation * glm::vec3(0.0f, 1.0f, 0.0f));
-			// Rebuilds the listener's orthonormal basis (right, up, forward) from the two
-			// vectors above.
-
-			// Not called in the constructor or on any other path, so it runs once per
-			// frame. The basis could drift from Forward/Up if a caller set those directly,
-			// since RecomputeBasis is the only thing keeping them consistent.
-			listenerState.RecomputeBasis();
+			glm::vec3 up = glm::normalize(rotation * glm::vec3(0.0f, 1.0f, 0.0f));
+			m_Mixer.SetListenerTransform(transform.Translation, forward, up);
 		}
 	}
 

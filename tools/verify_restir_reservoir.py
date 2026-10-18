@@ -10,19 +10,19 @@ a screenshot. So the maths is checked here as arithmetic (no engine link, no
 GPU, no numpy), matching what `verify_variance_math.py` already does for the
 SVGF moments, and matching the sibling GLSL gates in this directory.
 
-THE MATHS IS NOT THE SHADER. This file proves the ALGORITHM. It does not prove
-any engine code, because the engine code for it does not exist yet -- see the
-ENCODED-ALGORITHM TEXT section, which greps Renderer3D_NovaRenderer.hlsl and
-reports the reservoir constructs as ABSENT. What that grep can and cannot
-establish is stated explicitly in the output.
+THE MATHS IS NOT THE SHADER. The engine HLSL contains a ReSTIR DI reservoir
+implementation, but this standalone harness proves only the paper math it
+models. Its source grep is structural, not a shader/GPU correctness test. The
+shader currently uses point-sampled emissive instances; the area-correct disc
+model below is a separate analytic reference, not a claim about shader behavior.
 
 NEGATIVE CONTROLS are the point of this file. A test that cannot fail is
-worthless, so the same checks are re-run against four deliberately broken
-variants -- (a) W without wsum normalisation, (b) an additively-biased combine,
+worthless, so the same checks are re-run against deliberately broken variants:
+(a) W without wsum normalisation, (b) an additively-biased combine,
 (c) the point-light model scored against an AREA-correct analytic value,
-(d) an always-take-b combine -- and the run FAILS if any of them passes. The
-dropped normal-rejection spatial gate is a fifth, reported inside the spatial
-check itself.
+(d) a temporal chain that drops M, and (e) zero-weight proposals omitted from M.
+The run FAILS if any negative control passes. The dropped normal-rejection
+spatial gate is also reported inside the spatial check itself.
 
 Run: python tools/verify_restir_reservoir.py   (exit 0 = all green, 1 = failed)
 """
@@ -164,14 +164,14 @@ class Reservoir(object):
     def update(self, rng, x, w, p_hat):
         """The canonical update. Returns True if x became the stored candidate.
 
-        `w <= 0` returns early WITHOUT incrementing M. That matches Alg. 2 as
-        printed (M counts calls to update), and it matters: a zero-weight
-        candidate carries no mass, so counting it would only shrink W.
+        M counts every submitted proposal, including zero-weight proposals.
+        Only positive weights add mass or participate in weighted selection.
+        This matches the engine's proposal-count contract and Alg. 2's M += 1.
         """
+        self.M += 1
         if w <= 0.0:
             return False
         self.wsum += w
-        self.M += 1
         if rng.random() < (w / self.wsum):
             self.y, self._yhat = x, p_hat
             return True
@@ -198,8 +198,8 @@ class Reservoir(object):
 
     # -- Alg. 3 line 11 ---------------------------------------------------
     def shade(self, f_of_x):
-        """f(y) * W. Zero candidates contribute exactly nothing, not NaN."""
-        if self.M == 0 or self.occluded:
+        """f(y) * W. An all-zero reservoir has no selected y and shades to 0."""
+        if self.M == 0 or self.wsum <= 0.0 or self.y is None or self.occluded:
             return 0.0
         return f_of_x(self.y) * self.W()
 
@@ -260,6 +260,8 @@ def combine(rng, a, b, broken=None):
     else:
         for r in (a, b):
             if r.wsum <= 0.0:
+                # It has no selectable candidate or mass, but its submitted M
+                # is still included by the assignment below.
                 continue
             if broken == "AdditiveCombine":
                 s.update(rng, r.y, r.wsum + s.wsum, r._yhat)
@@ -998,10 +1000,14 @@ def check_spatial(scene, iters=SPATIAL_ITERS, m_centre=1, m_neighbour=1,
                    else "UNDETECTED (CONTROL FAILED)"))
 
 
-def check_edge_cases():
-    """M == 0, all-zero wsum, constant non-zero weight, and the unclamped
-    denominator. None may divide by zero, produce NaN, or return garbage; each
-    must return exactly zero, or the mathematically exact value."""
+def check_edge_cases(skip_zero_M=False):
+    """M == 0, submitted all-zero proposals, constant non-zero weight, and the
+    unclamped denominator. None may divide by zero, produce NaN, or return
+    garbage; each must return exactly zero, or the mathematically exact value.
+
+    `skip_zero_M` is a deliberately broken legacy behavior used only by the
+    negative control: it simulates update() dropping zero-weight submissions
+    from M, so this check must reject it."""
     rows, ok = [], True
 
     def want(label, got, expect, tol=0.0):
@@ -1020,14 +1026,31 @@ def check_edge_cases():
     ok &= want("M=0: shade()", pair.shade(f), 0.0)
     ok &= want("M=0: empty.unbiased_W()", Reservoir().unbiased_W(), 0.0)
 
-    # 2. M > 0 but every weight is zero -> wsum == 0. This is what Alg. 5 line 9
-    # produces when every input reservoir was occluded.
+    # 2. Four submitted zero-weight proposals count toward M, but add no mass
+    # and cannot become the selected candidate. The skip_zero_M path models the
+    # old, incorrect behavior for the negative control below.
     zero = Reservoir()
-    for _ in range(5):
-        zero.update(rng, (0.0, 0.0, 0.0), 0.0, 1.0)
-    ok &= want("M=0 (all weights zero): M", float(zero.M), 0.0)
-    ok &= want("all weights zero: W()", zero.W(), 0.0)
-    ok &= want("all weights zero: shade()", zero.shade(f), 0.0)
+    for _ in range(4):
+        if not skip_zero_M:
+            zero.update(rng, (0.0, 0.0, 0.0), 0.0, 1.0)
+    ok &= want("four zero-weight proposals: M", float(zero.M), 4.0)
+    ok &= want("four zero-weight proposals: wsum", zero.wsum, 0.0)
+    ok &= want("four zero-weight proposals: W()", zero.W(), 0.0)
+    ok &= want("four zero-weight proposals: shade()", zero.shade(f), 0.0)
+    # No candidate was selected; even a shading function that dereferences its
+    # argument must not be called for an all-zero reservoir.
+    ok &= want("four zero-weight proposals: shade without selected y",
+               zero.shade(lambda X: X[0]), 0.0)
+
+    # Combining that empty-mass reservoir with valid history preserves history's
+    # total weight while counting all submitted proposals in the merged M.
+    history = Reservoir()
+    history.update(rng, (1.0, 0.0, 0.0), 2.0, 0.5)
+    history.update(rng, (2.0, 0.0, 0.0), 3.0, 0.5)
+    merged_zero = combine(rng, zero, history)
+    ok &= want("zero + valid history: M", float(merged_zero.M), 6.0)
+    ok &= want("zero + valid history: wsum unchanged", merged_zero.wsum,
+               history.wsum)
 
     # 3. Occluded reservoir: Alg. 5 line 9 sets W <- 0 but MUST NOT drop M.
     occ = Reservoir()
@@ -1075,10 +1098,11 @@ VEC = [1.0]      # mutable cell so check_edge_cases can vary the integrand
 
 # ==================================================== encoded-algorithm ====
 #
-# A Python re-implementation proves a TRANSCRIPTION. If the HLSL never gets the
-# reservoir, this harness has proved arithmetic about a program that does not
-# exist. So the shader is grepped directly, READ ONLY, and the structural
-# invariants this file relies on are reported as PRESENT or ABSENT.
+# The engine HLSL contains a ReSTIR DI reservoir implementation. This read-only
+# grep reports structural source matches and a few model assumptions; it does
+# NOT test whether HLSL implements the paper math correctly. The standalone
+# checks below validate only this Python model of the paper math, never shader
+# or GPU correctness.
 #
 # What a grep CAN establish: whether a field name, a division, or a combine call
 # appears in the source at all.
@@ -1088,6 +1112,7 @@ VEC = [1.0]      # mutable cell so check_edge_cases can vary the integrand
 
 # Each probe is (label, regex, must_be_present_for_the_algorithm_to_exist).
 SHADER_PROBES = (
+    ("ReSTIR DI reservoir type",     r"\bstruct\s+LightReservoir\b", True),
     ("reservoir field: wsum",        r"\bwsum\b|\bwSum\b|_wSum", True),
     ("reservoir field: M / count",   r"\bM\s*=\s*0\b|uint\s+M\b|\.M\b", False),
     ("reservoir field: stored y",    r"\bReservoir\b|reservoir", True),
@@ -1103,9 +1128,12 @@ SHADER_PROBES = (
                                       r"sampleEmitter|emitterSample", False),
 )
 
-# Facts about the shader that the harness depends on for its MODEL, and which
-# are asserted present so a refactor cannot silently invalidate the comparison.
+# Selected source-level facts, printed for context only; a match does not check
+# runtime behavior or correctness. In particular, point-light assumptions are
+# separate from the area-correct analytic model above.
 SHADER_REQUIRED = (
+    ("ReSTIR DI reservoir type declared", r"struct\s+LightReservoir\s*\{"),
+    ("fixed proposal count assigned to reservoir M", r"\br\.M\s*=\s*M\s*;"),
     ("light list SSBO declared",
      r"StructuredBuffer\s*<\s*int\s*>\s*LightIndices\s*:\s*register\(t3\)"),
     ("light list indexed",           r"LightIndices\s*\["),
@@ -1167,9 +1195,9 @@ def shader_summary(invariant_rows):
 
 
 def reservoir_present(rows):
-    """True if the shader contains a reservoir at all. Used to word the closing
-    report honestly rather than implying engine code was verified."""
-    return any(s == "PRESENT" for s, _ in rows)
+    """True only when the explicit engine reservoir-type probe matches."""
+    return any(s == "PRESENT" and "ReSTIR DI reservoir type" in text
+               for s, text in rows)
 
 
 # ================================================================ driver ===
@@ -1189,7 +1217,7 @@ CHECKS = (
      lambda s: check_temporal(s, chains=TEMPORAL_CHAINS, frames=TEMPORAL_FRAMES)),
     ("spatial reuse: conservative gate preserves mean, dropped gate fails",
      lambda s: check_spatial(s)),
-    ("M=0, wsum=0, occluded, constant-weight edge cases",
+    ("zero-weight proposal counts, zero-mass merge, and reservoir edge cases",
      lambda s: check_edge_cases()),
 )
 
@@ -1215,6 +1243,10 @@ CONTROLS = (
      % (TEMPORAL_FRAMES, TEMPORAL_CHAINS),
      lambda s: check_temporal(s, chains=TEMPORAL_CHAINS,
                               frames=TEMPORAL_FRAMES, drop_M=True)),
+
+    ("(e) zero-weight proposals omitted from M",
+     "zero-weight proposal counts, zero-mass merge, and reservoir edge cases",
+     lambda s: check_edge_cases(skip_zero_M=True)),
 )
 
 # Variants that are KNOWN NOT to be rejected by the analytic test. Listed so the
@@ -1276,6 +1308,8 @@ def main():
           "angle)" % scene.point_analytic())
     print("  ratio area/point    = %.6f       <- what control (c) detects"
           % scene.model_ratio())
+    print("The area-correct disc model is a separate analytic reference; the "
+          "engine HLSL uses point-sampled emissive instances.")
     print("Proposal p = 1/A (area-uniform), target pHat proportional to f, "
           "w = pHat/p, W = wsum/(pHat(y)*M), L = f(y)*W.")
     print("Decision rule: %.1f-sigma on the sample standard error, NOT a "
@@ -1335,7 +1369,7 @@ def main():
         for status, text in rows:
             print("[%-7s] %s" % (status, text))
         print()
-        print("Model invariants the harness's comparison depends on:")
+        print("Structural/model matches (presence only; not correctness checks):")
         for ln in shader_summary(invariant_rows):
             print("       %s" % ln)
 
@@ -1344,11 +1378,16 @@ def main():
     print("=" * 100)
     print("WHAT THIS RUN PROVES -- and what it does not")
     print("=" * 100)
-    print("PROVEN (arithmetic on the published algorithm, verified against a")
-    print("closed-form integral cross-checked by independent quadrature):")
-    print("  * Alg. 2/3/4/5 reservoir update, Eq. (6) W, and the Alg. 4 combine")
-    print("    are unbiased as pure functions, over M in {8, 32} and 20000")
+    print("PROVEN BY THIS HARNESS (standalone paper-math model only; not shader")
+    print("or engine correctness; analytic reference cross-checked by independent")
+    print("quadrature):")
+    print("  * The modeled Alg. 2/3/4/5 reservoir update, Eq. (6) W, and Alg. 4")
+    print("    combine are unbiased as pure math, over M in {8, 32} and 20000")
     print("    independent M1+M2 pairs.")
+    print("  * Four zero-weight proposals count in M but add no weight; combining")
+    print("    them with valid history raises M without changing the weight sum.")
+    print("  * The zero-weight negative control rejects the old behavior that")
+    print("    omitted such proposals from M.")
     print("  * The identity pHat(y)*W*M == wsum holds exactly, which is the")
     print("    mechanism that makes the combine unbiased.")
     print("  * Combine invariance over %d M1+M2 pairs, temporal non-drift over"
@@ -1381,31 +1420,16 @@ def main():
     print("    a real risk this harness cannot address.")
     print()
     if not ran:
-        print("!! SHADER GREP DID NOT RUN -- the structural section is void.")
+        print("!! SHADER GREP DID NOT RUN -- no structural source observations "
+              "are available.")
     elif has_reservoir:
-        print("The shader grep found reservoir-like constructs. Re-read the "
-              "PROBE lines above: a")
-        print("name match is NOT a correctness proof -- it establishes presence, "
-              "not semantics.")
+        print("ReSTIR reservoir code is present in the engine HLSL. The grep is")
+        print("structural only: source matches do not establish shader semantics,")
+        print("paper-math agreement, compilation, or GPU correctness.")
     else:
-        print("!" * 100)
-        print("!! NO RESERVOIR IN THE SHADER. The grep found no wsum, no pHat, "
-              "no combineReservoir,")
-        print("!! no temporal/spatial reservoir reuse and no area-correct light "
-              "sampling. Read the")
-        print("!! PROBE table above for the exact counts.")
-        print("!!")
-        print("!! THE HONEST FRAMING: THE MATHS IS PROVEN; THE SHADER "
-              "INTEGRATION IS NOT YET WRITTEN.")
-        print("!! Every PASS above is a statement about the algorithm as "
-              "published, and about this")
-        print("!! transcription of it. None of it is a statement about "
-              "Wasteland's shipped renderer, which")
-        print("!! still treats an emissive instance as a point light at its "
-              "translation column")
-        print("!! (Renderer3D_NovaRenderer.hlsl:2029) and does no reservoir "
-              "resampling at all.")
-        print("!" * 100)
+        print("The HLSL file exists, but this limited grep found no reservoir-like")
+        print("matches. That is not proof that engine code is absent; the harness")
+        print("still makes no claim about shader behavior or GPU correctness.")
 
     print()
     if ctrl_failures:
@@ -1433,9 +1457,8 @@ def main():
     print()
     print("RESULT: PASS -- %d positive checks green, %d negative controls "
           "provably failable." % (len(res), len(CONTROLS)))
-    print("This proves the ALGORITHM is unbiased. It proves nothing about GPU "
-          "execution, descriptor")
-    print("binding, register allocation, or barrier correctness.")
+    print("This run verifies only the standalone paper-math model. It does not")
+    print("verify the engine shader or establish shader/GPU correctness.")
     return 0
 
 
