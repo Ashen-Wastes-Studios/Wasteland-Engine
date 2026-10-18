@@ -102,12 +102,26 @@ namespace Wasteland
         // NovaConstants, from spirv-cross: block_size 1744.
         static constexpr uint32_t kConstantBufferSize = 1744;
 
-        // HLSL register -> image index for the read_* SRVs (t64/65/66/69/71).
+        // HLSL register -> image index for the read_* SRVs.
+        //
+        // The .hlsl declares EIGHT read_* images at t64..t71, but only these
+        // five survive compilation: DXC drops any global nothing reads, and the
+        // shader's only read path is the IMG_LOAD(tex,pos) macro that
+        // token-pastes to read_##tex. img_MaterialPacked is only written and
+        // sized, img_AlbedoHit and img_TraceGBuffer are only written, so t67,
+        // t68 and t70 have no OpDecorate in the .spv and a descriptor bound
+        // there would be one the shader can never reference. This is an
+        // intentional exclusion of passes that never run on ANY backend, not a
+        // Vulkan gap; the full argument is on kReadImageSlot in the .cpp, and
+        // VerifySpirvBindings() enforces it against the loaded module at Init.
         static constexpr uint32_t kReadImageCount = 5;
         static const uint32_t kReadImageSlot[kReadImageCount];  // 64,65,66,69,71
         static const uint32_t kReadImageIndex[kReadImageCount]; //  0, 1,2, 5,  7
         // Sampled SRV slots t48..t52 -> (s_Accumulation, s_DepthBuffer,
-        // s_Output, s_NormalBuffer, s_InputAlbedo).
+        // s_Output, s_NormalBuffer, s_InputAlbedo). t48 is NOT one of the
+        // caller's scene textures: it is the temporal history texture written by
+        // CommitHistory() and read by the reprojection pass. See the t48 binding
+        // in VulkanNova::CreateBindingSet.
         static constexpr uint32_t kSampledCount = 5;
         static constexpr uint32_t kSampledSlot[kSampledCount] = {48, 49, 50, 51, 52};
 
@@ -148,7 +162,11 @@ namespace Wasteland
         std::unordered_map<nvrhi::ITexture *, nvrhi::TextureHandle> m_SceneSRVCache;
         std::vector<nvrhi::TextureHandle> m_SceneSRVs;
 
-        nvrhi::TextureHandle m_HistoryImage;
+        // The temporal history: written by CommitHistory() from the accumulation
+        // image and bound as an SRV at t48 (s_Accumulation). It is a separate
+        // texture from m_Images[1] because that one is the img_Accumulation UAV
+        // in the same descriptor set, and a resource cannot be written and
+        // sampled in one dispatch.
         nvrhi::TextureHandle m_HistorySnapshot;
 
         void CreateImages(uint32_t w, uint32_t h);
@@ -160,6 +178,15 @@ namespace Wasteland
         nvrhi::ITexture *ResolveSceneTexture(Texture2D *texture);
         void RecordCopy(nvrhi::ITexture *dst, nvrhi::ITexture *src);
         bool EnsureCommandList();
+
+        // Parses the SPIR-V module and throws unless its set of OpDecorate
+        // Binding numbers matches the set this class's layout creates, in both
+        // directions. Called from Init() before any Vulkan object is built from
+        // these tables, so a table that has drifted from the .spv fails loudly
+        // instead of producing a valid descriptor set holding the wrong
+        // texture. See the comment on the implementation for why the build-time
+        // tool cannot cover this.
+        void VerifySpirvBindings(const std::vector<char> &spirv) const;
 
         static const ConstantField *FindConstant(const char *name);
     };

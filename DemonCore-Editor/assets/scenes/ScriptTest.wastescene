@@ -1,0 +1,340 @@
+Scene: ScriptTest
+
+Entities:
+  - Entity: 1000000001
+    TagComponent:
+      Tag: Directional Light
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [0.737254918, 1, 0.443137258, 1]
+      Intensity: 1.5
+
+  - Entity: 1000000002
+    TagComponent:
+      Tag: Volumetric Fog
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [0, 0, 0]
+      Scale: [10000, 150, 10000]
+    VolumetricFogComponent:
+      Enabled: true
+      Color: [0.7, 0.75, 0.8, 1]
+      Density: 0.05
+      Anisotropy: 0.3
+      HeightFalloff: 1
+      NoiseStrength: 0.5
+      NoiseScale: 0.25
+      WindSpeed: 0.05
+
+  - Entity: 1000000003
+    TagComponent:
+      Tag: Ground
+    TransformComponent:
+      Translation: [0, -0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [100, 1, 100]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 225
+      TextureHeight: 225
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 1
+      Roughness: 1
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0.3
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 0.5, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+
+  # --- Player (rewritten) ---
+  - Entity: 1000000010
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 1, 10]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.01
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+    ScriptComponent:
+      ScriptPath: assets/scripts/Player.py
+      ScriptName: Player
+
+  # --- Mover test ---
+  - Entity: 1000000020
+    TagComponent:
+      Tag: MoverDemo
+    TransformComponent:
+      Translation: [-10, 1, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 0.2, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.2, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 0.2, 0.2, 1]
+      EmissionIntensity: 0.3
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Mover.py
+      ScriptName: Mover
+
+  # --- Rotator test ---
+  - Entity: 1000000021
+    TagComponent:
+      Tag: RotatorDemo
+    TransformComponent:
+      Translation: [0, 1.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [0.2, 1, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 1, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.2, 1, 0.2, 1]
+      EmissionIntensity: 0.3
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Rotator.py
+      ScriptName: Rotator
+
+  # --- Bouncer test ---
+  - Entity: 1000000022
+    TagComponent:
+      Tag: BouncerDemo
+    TransformComponent:
+      Translation: [5, 5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 1, 0.2, 1]
+      EmissionIntensity: 0.5
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Dynamic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    SphereCollider3DComponent:
+      Radius: 0.5
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0.99
+    ScriptComponent:
+      ScriptPath: assets/scripts/Bouncer.py
+      ScriptName: Bouncer
+
+  # --- ColorCycler test ---
+  - Entity: 1000000023
+    TagComponent:
+      Tag: ColorCyclerDemo
+    TransformComponent:
+      Translation: [-5, 1, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 0, 0, 1]
+      EmissionIntensity: 1.0
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/ColorCycler.py
+      ScriptName: ColorCycler
+
+  # --- Follower test (follows the Player) ---
+  - Entity: 1000000024
+    TagComponent:
+      Tag: FollowerDemo
+    TransformComponent:
+      Translation: [0, 2, 5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.2, 0.2, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.3
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.2, 0.2, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.2, 0.2, 1, 1]
+      EmissionIntensity: 0.5
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Follower.py
+      ScriptName: Follower
+
+  # --- Spawner test ---
+  - Entity: 1000000025
+    TagComponent:
+      Tag: SpawnerDemo
+    TransformComponent:
+      Translation: [10, 1, -5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 0.5, 0, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 0.5, 0, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [1, 0.5, 0, 1]
+      EmissionIntensity: 0.5
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Spawner.py
+      ScriptName: Spawner
+
+  # --- Floaty test ---
+  - Entity: 1000000026
+    TagComponent:
+      Tag: FloatyDemo
+    TransformComponent:
+      Translation: [-8, 2, -5]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [0.5, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.4
+      Sectors: 3
+      Stacks: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.5, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/
+      HasGeneratedMaps: false
+      NormalStrength: 0
+      Metallic: 0
+      Roughness: 0.5
+      EmissionColor: [0.5, 1, 1, 1]
+      EmissionIntensity: 0.6
+      DisplacementScale: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Floaty.py
+      ScriptName: Floaty

@@ -1,0 +1,310 @@
+Scene: Primitive Gallery
+Entities:
+  - Entity: 9000000000000000137
+    TagComponent:
+      Tag: Gallery Camera
+    TransformComponent:
+      Translation: [0, 3.5, 9.5]
+      Rotation: [-0.320000006, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 0.785398185
+        PerspectiveNear: 0.00999999978
+        PerspectiveFar: 1000
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+  - Entity: 9000000000000000274
+    TagComponent:
+      Tag: Directional Light
+    TransformComponent:
+      Translation: [0, 0, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [1, 0.960784316, 0.882352948, 1]
+      Intensity: 1.5
+  - Entity: 9000000000000000411
+    TagComponent:
+      Tag: Plane
+    TransformComponent:
+      Translation: [-6, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    PlaneRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Subdivisions: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000000548
+    TagComponent:
+      Tag: Grid
+    TransformComponent:
+      Translation: [-4, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    GridRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      XSubdivisions: 10
+      YSubdivisions: 10
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000000685
+    TagComponent:
+      Tag: Circle3D
+    TransformComponent:
+      Translation: [-2, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    Circle3DRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Segments: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000000822
+    TagComponent:
+      Tag: IcoSphere
+    TransformComponent:
+      Translation: [0, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    IcoSphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Subdivisions: 2
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000000959
+    TagComponent:
+      Tag: Sphere (existing)
+    TransformComponent:
+      Translation: [2, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    SphereRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Sectors: 32
+      Stacks: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000001096
+    TagComponent:
+      Tag: Cylinder
+    TransformComponent:
+      Translation: [4, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CylinderRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Height: 1
+      Segments: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000001233
+    TagComponent:
+      Tag: Cone
+    TransformComponent:
+      Translation: [6, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    ConeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      Radius: 0.5
+      Height: 1
+      Segments: 32
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000001370
+    TagComponent:
+      Tag: Torus
+    TransformComponent:
+      Translation: [8, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    TorusRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      MajorRadius: 0.375
+      MinorRadius: 0.125
+      MajorSegments: 48
+      MinorSegments: 12
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000001507
+    TagComponent:
+      Tag: Cube (existing)
+    TransformComponent:
+      Translation: [10, 0.5, 0]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/metal_floor.jpg
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.7
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+  - Entity: 9000000000000001644
+    TagComponent:
+      Tag: Floor
+    TransformComponent:
+      Translation: [2, -0.02, 0]
+      Rotation: [0, 0, 0]
+      Scale: [40, 1, 40]
+    CubeRendererComponent:
+      Color: [1, 1, 1, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.35, 0.35, 0.38, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: assets/textures/Checkerboard.png
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.9
+      EmissionColor: [1, 1, 1, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0

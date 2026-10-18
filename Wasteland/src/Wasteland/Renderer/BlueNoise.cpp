@@ -107,10 +107,21 @@ namespace Wasteland
     {
         float a = 0.0f, b = 0.0f;
         Sample(width, height, frameIndex, 0, a, b);
-        // Centre the sample and scale to pixels, matching the old
-        // "Halton - 0.5, then 2/viewport" convention.
-        outJitterX = (a - 0.5f) * 2.0f / static_cast<float>(width ? width : 1);
-        outJitterY = (b - 0.5f) * 2.0f / static_cast<float>(height ? height : 1);
+        // Centre to [-0.5, 0.5] and leave it in PIXEL units.
+        //
+        // The width/height factors that used to be here divided the offset by the
+        // viewport size, on the assumption that the shader consumed jitter in
+        // normalized [0,1] UV. It does not: both shaders compute
+        //     jitteredUV = ((pixelCoords + jitter) / traceSize) * 2 - 1
+        // (Renderer3D_NovaRenderer.glsl:3473, .hlsl:3513), adding jitter to a
+        // PIXEL coordinate before the divide. Dividing here as well made the
+        // effective sub-pixel offset ~1/1920 of a pixel at 1080p -- numerically
+        // indistinguishable from no jitter at all, which would have silently
+        // disabled temporal supersampling on every backend. The old Halton path
+        // returned a bare (Halton - 0.5), i.e. already +/-0.5 pixel, which is the
+        // convention restored here.
+        outJitterX = a - 0.5f;
+        outJitterY = b - 0.5f;
     }
 
 } // namespace Wasteland

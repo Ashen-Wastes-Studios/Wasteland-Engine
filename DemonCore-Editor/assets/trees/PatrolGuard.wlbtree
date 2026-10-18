@@ -1,0 +1,72 @@
+kind: tree
+schema: 1
+name: PatrolGuard
+blackboard:
+  # Unwritten until a sweep finds somebody -- see the same note in
+  # EnemyChase.wlbtree.
+  - name: intruder
+    type: entity
+
+nodes:
+  # A DIFFERENT behaviour from EnemyChase on purpose. If the v1 taxonomy can
+  # only express one of these, the taxonomy is wrong, and finding that out
+  # here is the point of the control.
+  #
+  # EnemyChase  : acquire a target, chase it, hit it on an interval.
+  # PatrolGuard : hold a post facing outward; only leave it on contact.
+  - id: root
+    type: Selector
+    children: [dead, alert, holdPost]
+
+  - id: dead
+    type: IsDead
+
+  # Contact response: something got close enough to matter. This is the
+  # only path that moves the guard off its post.
+  - id: alert
+    type: Sequence
+    children: [hasIntruder, faceIt]
+
+  - id: hasIntruder
+    type: BlackboardIsSet
+    pins:
+      - pin: Key
+        value: intruder
+
+  # Face but do NOT chase. A guard that walks off its post every time
+  # something passes is not a guard, so there is no MoveTo on this branch.
+  - id: faceIt
+    type: FaceTarget
+    pins:
+      - pin: Target
+        value: intruder
+      - pin: TurnRate
+        value: '240.0'
+
+  # Nothing near: sweep the area, then hold. The root Selector is re-entered
+  # every tick, so a guard here still notices an approach as soon as the
+  # Wait completes and the branch falls through.
+  - id: holdPost
+    type: Sequence
+    children: [sweep, wait]
+
+  - id: sweep
+    type: SenseNearest
+    pins:
+      - pin: Key
+        value: intruder
+      # Much tighter than EnemyChase's 30 -- a guard notices what is CLOSE.
+      - pin: Radius
+        value: '9.0'
+
+  # Wait is latent, so this branch genuinely SUSPENDS. Without the flag the
+  # validator says so, and the runtime would treat the sweep as complete on
+  # tick one and fall straight through.
+  - id: wait
+    type: Wait
+    latent: true
+    pins:
+      - pin: Seconds
+        value: '0.4'
+
+links: []

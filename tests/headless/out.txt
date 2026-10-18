@@ -1,0 +1,7 @@
+[2mmodule: C:\dev\Wasteland\bin\Release-windows-x86_64\DemonCore-Editor[0m
+[2mpython: 3.14.5[0m
+
+[33m== test_audio_clip ==[0m
+  [32m35/35 passed[0m  [2mtest_audio_clip[0m
+
+[32m35/35 checks passed[0m across 1 suite(s) in 0.06s

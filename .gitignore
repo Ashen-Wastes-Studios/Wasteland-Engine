@@ -373,3 +373,19 @@ FodyWeavers.xsd
 *.json
 
 test_timeline.cpp
+
+# --- added 2026-10-05: build products and agent scratch ---
+# .buildlogs/ had 20+ entries staged, including compiled .pyd/.lib and
+# .exe files. Build output is never source; a stray staged artifact is
+# how a 7 MB binary ends up in a commit.
+.buildlogs/
+*.tlog
+tests/**/_probe*.py
+tools/probe_*.exe
+**/*.exe
+# vendor build output: the existing `bin/` rule is anchored to the repo
+# root, so Wasteland/vendor/**/bin/ was never matched and .idb
+# files were staged.
+**/vendor/**/bin/
+*.idb
+*.exp

@@ -56,8 +56,12 @@ namespace Wasteland
                            uint32_t index, float &outA, float &outB);
 
         // Replaces GetCurrentJitter's Halton path. Returns the sub-pixel offset
-        // in pixels. Signature-compatible with the old helper so call sites do
-        // not change.
+        // in PIXELS, centred on zero: the shaders compute
+        //     jitteredUV = ((pixelCoords + jitter) / traceSize) * 2 - 1
+        // so the offset is added to a pixel coordinate and must be scaled in
+        // pixels. It previously divided by width/height as well, which made the
+        // effective offset ~1/1920 of a pixel at 1080p -- indistinguishable
+        // from no jitter. Signature unchanged so call sites do not change.
         static void Jitter(uint32_t frameIndex, uint32_t width, uint32_t height,
                            float &outJitterX, float &outJitterY);
 

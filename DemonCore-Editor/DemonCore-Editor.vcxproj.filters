@@ -16,6 +16,9 @@
     <ClInclude Include="src\Panels\ContentBrowserPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
+    <ClInclude Include="src\Panels\GraphHistory.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
     <ClInclude Include="src\Panels\HttpClient.h">
       <Filter>Panels</Filter>
     </ClInclude>
@@ -23,6 +26,12 @@
       <Filter>Panels</Filter>
     </ClInclude>
     <ClInclude Include="src\Panels\ModelDownloaderPanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\NPCBehaviorPanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\NodeCanvas.h">
       <Filter>Panels</Filter>
     </ClInclude>
     <ClInclude Include="src\Panels\SceneHierarchyPanel.h">
@@ -35,6 +44,12 @@
       <Filter>Panels</Filter>
     </ClInclude>
     <ClInclude Include="src\Panels\ToolServer.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\ValueEditor.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\VisualBlocksPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
   </ItemGroup>
@@ -50,6 +65,9 @@
     <ClCompile Include="src\Panels\ContentBrowserPanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
+    <ClCompile Include="src\Panels\GraphHistory.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
     <ClCompile Include="src\Panels\HttpClient.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
@@ -57,6 +75,12 @@
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\ModelDownloaderPanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\NPCBehaviorPanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\NodeCanvas.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\SceneHierarchyPanel.cpp">
@@ -69,6 +93,12 @@
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\ToolServer.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\ValueEditor.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\VisualBlocksPanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
   </ItemGroup>

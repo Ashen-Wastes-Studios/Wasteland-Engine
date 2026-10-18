@@ -1,0 +1,907 @@
+Scene: ExampleGame
+Entities:
+  - Entity: 1100000000000000001
+    TagComponent:
+      Tag: Directional Light
+    TransformComponent:
+      Translation: [0, 10, 0]
+      Rotation: [-0.488692194, 0.785398185, 0.0366519131]
+      Scale: [1, 1, 1]
+    DirectionalLightComponent:
+      Color: [0.9, 0.92, 1, 1]
+      Intensity: 2.0
+  - Entity: 1100000000000000002
+    TagComponent:
+      Tag: Floor
+    TransformComponent:
+      Translation: [0.0, -0.5, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [44.0, 1.0, 44.0]
+    CubeRendererComponent:
+      Color: [0.3, 0.32, 0.35, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.3, 0.32, 0.35, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.9
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [22.0, 0.5, 22.0]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000003
+    TagComponent:
+      Tag: Wall North
+    TransformComponent:
+      Translation: [0.0, 2.0, -22.5]
+      Rotation: [0, 0, 0]
+      Scale: [46.0, 4.0, 1.0]
+    CubeRendererComponent:
+      Color: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [23.0, 2.0, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000004
+    TagComponent:
+      Tag: Wall South
+    TransformComponent:
+      Translation: [0.0, 2.0, 22.5]
+      Rotation: [0, 0, 0]
+      Scale: [46.0, 4.0, 1.0]
+    CubeRendererComponent:
+      Color: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [23.0, 2.0, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000005
+    TagComponent:
+      Tag: Wall East
+    TransformComponent:
+      Translation: [22.5, 2.0, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [1.0, 4.0, 46.0]
+    CubeRendererComponent:
+      Color: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 2.0, 23.0]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000006
+    TagComponent:
+      Tag: Wall West
+    TransformComponent:
+      Translation: [-22.5, 2.0, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [1.0, 4.0, 46.0]
+    CubeRendererComponent:
+      Color: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.45, 0.47, 0.5, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.5, 2.0, 23.0]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000007
+    TagComponent:
+      Tag: Central Platform
+    TransformComponent:
+      Translation: [0.0, 0.5, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [10.0, 1.0, 10.0]
+    CubeRendererComponent:
+      Color: [0.42, 0.44, 0.48, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.42, 0.44, 0.48, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [5.0, 0.5, 5.0]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000008
+    TagComponent:
+      Tag: Platform Step
+    TransformComponent:
+      Translation: [0.0, 0.25, -5.0]
+      Rotation: [0, 0, 0]
+      Scale: [10.0, 0.5, 1.0]
+    CubeRendererComponent:
+      Color: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [5.0, 0.25, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000021
+    TagComponent:
+      Tag: Platform Step
+    TransformComponent:
+      Translation: [0.0, 0.25, -6.0]
+      Rotation: [0, 0, 0]
+      Scale: [10.0, 0.5, 1.0]
+    CubeRendererComponent:
+      Color: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [5.0, 0.25, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000009
+    TagComponent:
+      Tag: Platform Step
+    TransformComponent:
+      Translation: [0.0, 0.25, 5.0]
+      Rotation: [0, 0, 0]
+      Scale: [10.0, 0.5, 1.0]
+    CubeRendererComponent:
+      Color: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [5.0, 0.25, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000022
+    TagComponent:
+      Tag: Platform Step
+    TransformComponent:
+      Translation: [0.0, 0.25, 6.0]
+      Rotation: [0, 0, 0]
+      Scale: [10.0, 0.5, 1.0]
+    CubeRendererComponent:
+      Color: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.4, 0.42, 0.45, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [5.0, 0.25, 0.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000010
+    TagComponent:
+      Tag: Cover A
+    TransformComponent:
+      Translation: [-9.0, 1.0, -9.0]
+      Rotation: [0, 0, 0]
+      Scale: [3.0, 2.0, 3.0]
+    CubeRendererComponent:
+      Color: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [1.5, 1.0, 1.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000011
+    TagComponent:
+      Tag: Cover B
+    TransformComponent:
+      Translation: [9.0, 1.0, -9.0]
+      Rotation: [0, 0, 0]
+      Scale: [3.0, 2.0, 3.0]
+    CubeRendererComponent:
+      Color: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [1.5, 1.0, 1.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000012
+    TagComponent:
+      Tag: Cover C
+    TransformComponent:
+      Translation: [-9.0, 1.0, 9.0]
+      Rotation: [0, 0, 0]
+      Scale: [3.0, 2.0, 3.0]
+    CubeRendererComponent:
+      Color: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [1.5, 1.0, 1.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000013
+    TagComponent:
+      Tag: Cover D
+    TransformComponent:
+      Translation: [9.0, 1.0, 9.0]
+      Rotation: [0, 0, 0]
+      Scale: [3.0, 2.0, 3.0]
+    CubeRendererComponent:
+      Color: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.55, 0.35, 0.28, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [1.5, 1.0, 1.5]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000014
+    TagComponent:
+      Tag: Pillar A
+    TransformComponent:
+      Translation: [-14.0, 2.0, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [1.2, 4.0, 1.2]
+    CubeRendererComponent:
+      Color: [0.5, 0.5, 0.55, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.5, 0.5, 0.55, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.6, 2.0, 0.6]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000015
+    TagComponent:
+      Tag: Pillar B
+    TransformComponent:
+      Translation: [14.0, 2.0, 0.0]
+      Rotation: [0, 0, 0]
+      Scale: [1.2, 4.0, 1.2]
+    CubeRendererComponent:
+      Color: [0.5, 0.5, 0.55, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.5, 0.5, 0.55, 1.0]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.0
+      Roughness: 0.85
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.6, 2.0, 0.6]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+  - Entity: 1100000000000000016
+    TagComponent:
+      Tag: Supply Crate
+    TransformComponent:
+      Translation: [0, 0.75, 12.0]
+      Rotation: [0, 0, 0]
+      Scale: [1.5, 1.5, 1.5]
+    CubeRendererComponent:
+      Color: [0.9, 0.75, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.9, 0.75, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0
+      Roughness: 0.6
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    RigidBody3DComponent:
+      BodyType: Static
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: false
+      FixedRotationY: false
+      FixedRotationZ: false
+    BoxCollider3DComponent:
+      HalfExtents: [0.75, 0.75, 0.75]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+    InteractableComponent:
+      Enabled: true
+      Label: "[E] Open Supply Crate"
+    ScriptComponent:
+      ScriptPath: assets/scripts/Crate.py
+      ScriptName: Crate
+  - Entity: 1100000000000000017
+    TagComponent:
+      Tag: Player
+    TransformComponent:
+      Translation: [0, 1, 16]
+      Rotation: [0, 0, 0]
+      Scale: [1, 1, 1]
+    CameraComponent:
+      Camera:
+        ProjectionType: 0
+        PerspectiveFOV: 1.04719755
+        PerspectiveNear: 0.05
+        PerspectiveFar: 500
+        OrthographicSize: 10
+        OrthographicNear: -1
+        OrthographicFar: 1
+      Primary: true
+      FixedAspectRatio: false
+    HealthComponent:
+      Current: 100
+      Max: 100
+      Invulnerable: false
+      DamageCooldown: 0
+      CooldownTimer: 0
+      IsDead: false
+    WeaponComponent:
+      Damage: 25
+      Range: 200
+      AmmoPerShot: 1
+      MaxAmmo: 30
+      CurrentAmmo: 30
+      ReserveAmmo: 120
+      ReloadTime: 1.5
+      AutoReload: true
+      FireRate: 10
+      FireCooldown: 0
+      ReloadTimer: 0
+      IsReloading: false
+      ShotsFired: 0
+      ShotsHit: 0
+    RaycastIgnoreComponent:
+      Enabled: true
+    ViewStateComponent:
+      TargetFOV: 1.04719755
+      FOVLerpSpeed: 8
+      IsSprinting: false
+      IsAiming: false
+    WeaponFeedbackComponent:
+      MuzzleFlashTimer: 0
+      HitMarkerTimer: 0
+      LastShotHit: false
+      LastShotKilled: false
+      MuzzleFlashDuration: 0.05
+      HitMarkerDuration: 0.25
+      ReloadProgress: 0
+      ReloadTotal: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Player.py
+      ScriptName: Player
+  - Entity: 1100000000000000018
+    TagComponent:
+      Tag: Enemy A
+    TransformComponent:
+      Translation: [-12.0, 1.0, -14.0]
+      Rotation: [0, 0, 0]
+      Scale: [0.8, 1.8, 0.8]
+    CubeRendererComponent:
+      Color: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.1
+      Roughness: 0.7
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    HealthComponent:
+      Current: 60
+      Max: 60
+      Invulnerable: false
+      DamageCooldown: 0
+      CooldownTimer: 0
+      IsDead: false
+    RigidBody3DComponent:
+      BodyType: Kinematic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: true
+      FixedRotationY: false
+      FixedRotationZ: true
+    BoxCollider3DComponent:
+      HalfExtents: [0.4, 0.9, 0.4]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Enemy.py
+      ScriptName: Enemy
+  - Entity: 1100000000000000019
+    TagComponent:
+      Tag: Enemy B
+    TransformComponent:
+      Translation: [12.0, 1.0, -14.0]
+      Rotation: [0, 0, 0]
+      Scale: [0.8, 1.8, 0.8]
+    CubeRendererComponent:
+      Color: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.1
+      Roughness: 0.7
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    HealthComponent:
+      Current: 60
+      Max: 60
+      Invulnerable: false
+      DamageCooldown: 0
+      CooldownTimer: 0
+      IsDead: false
+    RigidBody3DComponent:
+      BodyType: Kinematic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: true
+      FixedRotationY: false
+      FixedRotationZ: true
+    BoxCollider3DComponent:
+      HalfExtents: [0.4, 0.9, 0.4]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Enemy.py
+      ScriptName: Enemy
+  - Entity: 1100000000000000020
+    TagComponent:
+      Tag: Enemy C
+    TransformComponent:
+      Translation: [0.0, 1.0, -16.0]
+      Rotation: [0, 0, 0]
+      Scale: [0.8, 1.8, 0.8]
+    CubeRendererComponent:
+      Color: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TilingFactor: 1
+    MaterialComponent:
+      Albedo: [0.75, 0.15, 0.2, 1]
+      TextureWidth: 0
+      TextureHeight: 0
+      TextureIndex: 0
+      TexturePath: ""
+      HasGeneratedMaps: false
+      NormalStrength: 1
+      Metallic: 0.1
+      Roughness: 0.7
+      EmissionColor: [0, 0, 0, 1]
+      EmissionIntensity: 0
+      DisplacementScale: 0
+    HealthComponent:
+      Current: 60
+      Max: 60
+      Invulnerable: false
+      DamageCooldown: 0
+      CooldownTimer: 0
+      IsDead: false
+    RigidBody3DComponent:
+      BodyType: Kinematic
+      GravityScale: 1
+      LinearDamping: 0
+      AngularDamping: 0
+      FixedRotationX: true
+      FixedRotationY: false
+      FixedRotationZ: true
+    BoxCollider3DComponent:
+      HalfExtents: [0.4, 0.9, 0.4]
+      Offset: [0, 0, 0]
+      Density: 1
+      Friction: 0.5
+      Restitution: 0
+    ScriptComponent:
+      ScriptPath: assets/scripts/Enemy.py
+      ScriptName: Enemy

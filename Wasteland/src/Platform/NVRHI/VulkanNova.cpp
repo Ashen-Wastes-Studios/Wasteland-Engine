@@ -8,6 +8,7 @@
 #include "Wasteland/Core/Log.h"
 #include "Wasteland/Project/Project.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -16,9 +17,42 @@
 namespace Wasteland
 {
 
-    // HLSL register slots for the read_* SRVs (t64/65/66/69/71) and the image
-    // each one snapshots. Verified against the compiled SPIR-V by
-    // tools/compile_nova_spirv.py.
+    // NVRHI derives a Vulkan descriptor binding as offset + slot
+    // (vulkan-resource-bindings.cpp:100). These must equal the -fvk-*-shift
+    // values tools/compile_nova_spirv.py bakes into the SPIR-V; both the layout
+    // (CreatePipelineAndLayout) and the module cross-check
+    // (VerifySpirvBindings) are written against these, so they are defined once
+    // here rather than repeated as literals.
+    static constexpr uint32_t kBindingOffsetUav = 0;
+    static constexpr uint32_t kBindingOffsetConstantBuffer = 7;
+    static constexpr uint32_t kBindingOffsetShaderResource = 16;
+    static constexpr uint32_t kBindingOffsetSampler = 200;
+
+    // HLSL register slots for the read_* SRVs and the image each one snapshots.
+    //
+    // WHY ONLY FIVE OF THE EIGHT read_* DECLARATIONS IN THE HLSL:
+    // the .hlsl declares read_img_Output/Accumulation/Bloom/MaterialPacked/
+    // AlbedoHit/Velocity/TraceGBuffer/Bloom_Temp at t64..t71, but the compiled
+    // module declares only five of them. DXC eliminates a global that nothing
+    // reads, and the only read path is the IMG_LOAD(tex, pos) macro, which
+    // token-pastes to read_##tex. Every IMG_LOAD call site in the shader passes
+    // img_Output, img_Accumulation, img_Bloom, img_Velocity or img_Bloom_Temp --
+    // img_MaterialPacked is only ever written (IMG_STORE) and sized (IMG_SIZE),
+    // and img_AlbedoHit / img_TraceGBuffer are only ever written. So t67, t68 and
+    // t70 have no OpDecorate in the .spv at all, and binding descriptors for them
+    // would create Vulkan bindings the shader can never reference.
+    //
+    // This is an EXCLUSION, not an oversight, and it is checked rather than
+    // assumed: VerifySpirvBindings() (called from Init) parses the .spv this
+    // backend actually loads and throws if the module's binding set and this
+    // table disagree in either direction. If a future shader edit starts reading
+    // img_MaterialPacked, DXC emits binding 83, the sets stop matching, and Init
+    // throws -- which the caller turns into a raster fallback -- instead of the
+    // descriptor silently going missing.
+    //
+    // DX11Nova.h:465 and DX12Nova.cpp both bind all eight; binding an unused
+    // SRV is legal there, so the extra three cost nothing and hide the fact that
+    // the shader never reads them.
     const uint32_t VulkanNova::kReadImageSlot[kReadImageCount] = {64, 65, 66, 69, 71};
     const uint32_t VulkanNova::kReadImageIndex[kReadImageCount] = {0, 1, 2, 5, 7};
 
@@ -159,6 +193,182 @@ namespace Wasteland
     }
 
     // -------------------------------------------------------------------------
+    // SPIR-V cross-check
+    // -------------------------------------------------------------------------
+
+    // Parses the OpDecorate/OpName stream of a SPIR-V module and returns the
+    // binding number declared for each named resource.
+    //
+    // This is the same information tools/compile_nova_spirv.py gets from
+    // spirv-dis, reimplemented here so the RUNTIME can check the tables it
+    // actually binds against the module it actually loaded. The tool proves the
+    // committed .spv is self-consistent at build time; it cannot catch a C++
+    // table that has drifted away from that .spv, and nothing else in this file
+    // could. That drift is the whole failure mode: a valid descriptor set with
+    // the wrong texture in it, or a binding the shader needs that NVRHI never
+    // allocates.
+    static std::unordered_map<uint32_t, std::string> ParseSpirvBindings(
+        const std::vector<char> &spirv)
+    {
+        std::unordered_map<uint32_t, std::string> result;
+        if (spirv.size() < 20 || spirv.size() % 4 != 0)
+            return result;
+
+        const uint32_t *words = reinterpret_cast<const uint32_t *>(spirv.data());
+        const size_t wordCount = spirv.size() / 4;
+        if (words[0] != 0x07230203u) // SPIR-V magic, little-endian
+            return result;
+
+        // SPIR-V opcodes used here. OpName carries a debug string, OpDecorate
+        // with the Binding decoration carries the descriptor number.
+        constexpr uint32_t kOpName = 5;
+        constexpr uint32_t kOpDecorate = 71;
+        constexpr uint32_t kDecorationBinding = 33;
+
+        std::unordered_map<uint32_t, std::string> names;
+        std::unordered_map<uint32_t, uint32_t> bindings;
+
+        size_t i = 5; // skip the 5-word header
+        while (i < wordCount)
+        {
+            const uint32_t instruction = words[i];
+            const uint32_t opcode = instruction & 0xFFFFu;
+            const uint32_t length = instruction >> 16;
+            if (length == 0 || i + length > wordCount)
+                break; // malformed; stop rather than run off the end
+
+            if (opcode == kOpName && length >= 3)
+            {
+                std::string name;
+                for (size_t w = i + 2; w < i + length; ++w)
+                {
+                    for (uint32_t byte = 0; byte < 4; ++byte)
+                    {
+                        const char c =
+                            static_cast<char>((words[w] >> (8 * byte)) & 0xFFu);
+                        if (c == '\0')
+                        {
+                            w = i + length; // terminate the outer loop too
+                            break;
+                        }
+                        name.push_back(c);
+                    }
+                }
+                names.emplace(words[i + 1], name);
+            }
+            else if (opcode == kOpDecorate && length >= 4 &&
+                     words[i + 2] == kDecorationBinding)
+            {
+                bindings.emplace(words[i + 1], words[i + 3]);
+            }
+
+            i += length;
+        }
+
+        for (const auto &entry : bindings)
+        {
+            const auto name = names.find(entry.first);
+            result.emplace(entry.second,
+                           name != names.end() ? name->second
+                                               : "<unnamed id " +
+                                                     std::to_string(entry.first) + ">");
+        }
+        return result;
+    }
+
+    void VulkanNova::VerifySpirvBindings(const std::vector<char> &spirv) const
+    {
+        const std::unordered_map<uint32_t, std::string> module = ParseSpirvBindings(spirv);
+        if (module.empty())
+        {
+            WL_CORE_ERROR("VulkanNova: SPIR-V declares no bindings (bad magic or "
+                          "truncated module); cannot verify the binding contract");
+            throw std::runtime_error("VulkanNova: unreadable SPIR-V binding table");
+        }
+
+        // The bindings this class's layout will create, from the same tables the
+        // layout is built from. t15 is one descriptor of kSceneTextureCount
+        // elements, so it contributes a single binding number.
+        std::vector<uint32_t> expected;
+        expected.reserve(kImageCount + 3 + 2 + 1 + kSampledCount + kReadImageCount);
+        for (uint32_t i = 0; i < kImageCount; ++i)
+            expected.push_back(kBindingOffsetUav + i);
+        for (uint32_t i = 1; i <= 3; ++i)
+            expected.push_back(kBindingOffsetShaderResource + i);
+        expected.push_back(kBindingOffsetSampler);
+        expected.push_back(kBindingOffsetConstantBuffer + 1);
+        expected.push_back(kBindingOffsetShaderResource + 15);
+        for (uint32_t slot : kSampledSlot)
+            expected.push_back(kBindingOffsetShaderResource + slot);
+        for (uint32_t i = 0; i < kReadImageCount; ++i)
+            expected.push_back(kBindingOffsetShaderResource + kReadImageSlot[i]);
+
+        std::sort(expected.begin(), expected.end());
+
+        // Both directions are errors. A binding we allocate that the module does
+        // not declare wastes a descriptor and hides a stale table entry; a
+        // binding the module declares that we do not allocate is the descriptor
+        // the shader reads and gets nothing.
+        std::string missing;   // in the layout, absent from the module
+        std::string unexpected; // in the module, absent from the layout
+        size_t moduleIndex = 0;
+        std::vector<uint32_t> moduleBindings;
+        moduleBindings.reserve(module.size());
+        for (const auto &entry : module)
+            moduleBindings.push_back(entry.first);
+        std::sort(moduleBindings.begin(), moduleBindings.end());
+
+        size_t expectedIndex = 0;
+        while (expectedIndex < expected.size() || moduleIndex < moduleBindings.size())
+        {
+            const bool haveExpected = expectedIndex < expected.size();
+            const bool haveModule = moduleIndex < moduleBindings.size();
+            if (haveExpected && (!haveModule || expected[expectedIndex] < moduleBindings[moduleIndex]))
+            {
+                if (!missing.empty())
+                    missing += ", ";
+                missing += std::to_string(expected[expectedIndex]);
+                ++expectedIndex;
+            }
+            else if (haveModule && (!haveExpected || moduleBindings[moduleIndex] < expected[expectedIndex]))
+            {
+                if (!unexpected.empty())
+                    unexpected += ", ";
+                unexpected += std::to_string(moduleBindings[moduleIndex]) + " (" +
+                              module.at(moduleBindings[moduleIndex]) + ")";
+                ++moduleIndex;
+            }
+            else
+            {
+                if (expected.size() > 1 &&
+                    std::count(expected.begin(), expected.end(), expected[expectedIndex]) > 1)
+                {
+                    WL_CORE_ERROR("VulkanNova: binding {0} is claimed twice by the "
+                                  "layout tables", expected[expectedIndex]);
+                    throw std::runtime_error("VulkanNova: duplicate descriptor binding");
+                }
+                ++expectedIndex;
+                ++moduleIndex;
+            }
+        }
+
+        if (!missing.empty() || !unexpected.empty())
+        {
+            WL_CORE_ERROR("VulkanNova: SPIR-V binding table does not match the C++ "
+                          "tables. Unused by the shader: [{0}]. Read by the shader "
+                          "but never bound: [{1}]. Re-run "
+                          "tools/compile_nova_spirv.py and update the slot tables.",
+                          missing, unexpected);
+            throw std::runtime_error("VulkanNova: SPIR-V/C++ binding table mismatch");
+        }
+
+        WL_CORE_INFO("VulkanNova: SPIR-V binding cross-check passed ({0} bindings, "
+                     "offsets u={1} b={2} t={3} s={4})",
+                     module.size(), kBindingOffsetUav, kBindingOffsetConstantBuffer,
+                     kBindingOffsetShaderResource, kBindingOffsetSampler);
+    }
+
+    // -------------------------------------------------------------------------
     // Initialisation
     // -------------------------------------------------------------------------
 
@@ -191,6 +401,10 @@ namespace Wasteland
         std::vector<char> spirv(static_cast<size_t>(size));
         if (!file.read(spirv.data(), size))
             throw std::runtime_error("VulkanNova: failed to read SPIR-V");
+
+        // Check the tables in this file against the module that was just read,
+        // BEFORE any Vulkan object is created from them. See VerifySpirvBindings.
+        VerifySpirvBindings(spirv);
 
         nvrhi::ShaderDesc shaderDesc;
         shaderDesc.shaderType = nvrhi::ShaderType::Compute;
@@ -227,10 +441,10 @@ namespace Wasteland
         // The offsets must equal the -fvk-*-shift values baked into the SPIR-V.
         // See the header comment and tools/compile_nova_spirv.py.
         nvrhi::VulkanBindingOffsets offsets;
-        offsets.setShaderResourceOffset(16)
-            .setConstantBufferOffset(7)
-            .setUnorderedAccessViewOffset(0)
-            .setSamplerOffset(200);
+        offsets.setShaderResourceOffset(kBindingOffsetShaderResource)
+            .setConstantBufferOffset(kBindingOffsetConstantBuffer)
+            .setUnorderedAccessViewOffset(kBindingOffsetUav)
+            .setSamplerOffset(kBindingOffsetSampler);
 
         nvrhi::BindingLayoutDesc layoutDesc;
         layoutDesc.visibility = nvrhi::ShaderType::Compute;
@@ -275,9 +489,16 @@ namespace Wasteland
     {
         if (!m_BindingLayout)
             return;
-        WL_CORE_INFO("VulkanNova binding contract: offsets u=0 b=7 t=16 s=200; "
-                     "8 UAV + 3 SSBO + 1 CB + 1 sampler + 1x32 scene SRV + "
-                     "5 sampled SRV + 5 read SRV = 24 bindings, all distinct");
+        WL_CORE_INFO("VulkanNova binding contract: offsets u={0} b={1} t={2} s={3}; "
+                     "{4} UAV + 3 SSBO + 1 CB + 1 sampler + 1x{5} scene SRV + "
+                     "{6} sampled SRV (t48 = history) + {7} read SRV = {8} bindings, "
+                     "all distinct; t67/t68/t70 are declared in the .hlsl but "
+                     "eliminated by DXC, and Init cross-checked that against the "
+                     "loaded module",
+                     kBindingOffsetUav, kBindingOffsetConstantBuffer,
+                     kBindingOffsetShaderResource, kBindingOffsetSampler, kImageCount,
+                     kSceneTextureCount, kSampledCount, kReadImageCount,
+                     kImageCount + 3 + 1 + 1 + 1 + kSampledCount + kReadImageCount);
     }
 
     // -------------------------------------------------------------------------
@@ -345,14 +566,16 @@ namespace Wasteland
                 throw std::runtime_error("VulkanNova: failed to create pass images");
         }
 
-        // Only images the shader reads back need a snapshot view bound.
-        for (uint32_t i = 0; i < kReadImageCount; ++i)
-        {
-            const uint32_t img = kReadImageIndex[i];
-        }
-
-        // Temporal history lives outside the UAV set so Clear() can wipe it
-        // without aliasing an image the compute passes write.
+        // Temporal history. This is the texture the temporal reprojection pass
+        // reads at t48 (s_Accumulation), and the only thing CommitHistory()
+        // writes -- see the comment on that method for why it is a separate
+        // texture and not m_Images[1].
+        //
+        // It replaces a second "m_HistoryImage" that used to sit here: nothing
+        // ever copied INTO it, nothing bound it, and Clear() zeroed a texture
+        // no pass could observe. It was a create/clear/destroy cycle with no
+        // reader, i.e. the same class of dead resource this binding fixes, so it
+        // is gone rather than left behind.
         nvrhi::TextureDesc historyDesc;
         historyDesc.width = w;
         historyDesc.height = h;
@@ -362,10 +585,16 @@ namespace Wasteland
         historyDesc.sampleCount = 1;
         historyDesc.format = nvrhi::Format::RGBA32_FLOAT;
         historyDesc.isShaderResource = true;
-        historyDesc.initialState = nvrhi::ResourceStates::CopyDest;
+        // Both bits, not just CopyDest: CommitHistory() copies into this texture
+        // (needs CopyDest) and CreateBindingSet() binds it as an SRV (needs
+        // ShaderResource). keepInitialState makes NVRHI pin it to exactly these
+        // bits and verify every use against them via
+        // verifyPermanentResourceState, so declaring only one of the two makes
+        // the other use an error at binding-set creation.
+        historyDesc.initialState = nvrhi::ResourceStates::CopyDest |
+                                   nvrhi::ResourceStates::ShaderResource;
         historyDesc.keepInitialState = true;
         historyDesc.debugName = "NovaHistory";
-        m_HistoryImage = m_Device->createTexture(historyDesc);
         m_HistorySnapshot = m_Device->createTexture(historyDesc);
     }
 
@@ -402,10 +631,35 @@ namespace Wasteland
             desc.bindings.push_back(item);
         }
 
-        // s_Accumulation / s_DepthBuffer / s_Output / s_NormalBuffer /
-        // s_InputAlbedo. Bound from the same scene texture list; an unbound
-        // slot is left as None so the descriptor set stays complete.
-        for (uint32_t k = 0; k < kSampledCount; ++k)
+        // t48 is s_Accumulation, and the shader uses it as the TEMPORAL HISTORY,
+        // not as this frame's accumulation: the reprojection pass reads
+        //     float3 historyLight = TEX(s_Accumulation, histUV).rgb;
+        // at a reprojected UV, so it must be LAST frame's committed
+        // accumulation. CommitHistory() is what puts it there, and
+        // DX11Nova.h:456 binds t48 to exactly that texture (history.srv, an SRV
+        // over history.snapshot) for the same reason.
+        //
+        // It cannot be m_Images[1].texture: that is the img_Accumulation UAV
+        // (u1) in this same descriptor set, and Vulkan forbids a resource being
+        // written and sampled in one dispatch. m_Images[1].snapshot would be
+        // legal but is a different contract -- it holds whatever the pass order
+        // happened to leave there, and nothing guarantees it is the previous
+        // frame's result.
+        //
+        // This binding did not exist before: the slot was filled from
+        // m_SceneSRVs[0], i.e. the caller's first scene texture, which has no
+        // relationship to Nova's accumulation. That is the defect.
+        if (m_HistorySnapshot)
+        {
+            desc.bindings.push_back(nvrhi::BindingSetItem::Texture_SRV(
+                kSampledSlot[0], m_HistorySnapshot));
+        }
+
+        // s_DepthBuffer / s_Output / s_NormalBuffer / s_InputAlbedo (t49..t52)
+        // still come from the caller's scene texture list. k starts at 1 so t48
+        // is left to the history binding above; the remaining four keep exactly
+        // the source they had before this change.
+        for (uint32_t k = 1; k < kSampledCount; ++k)
         {
             const uint32_t slot = kSampledSlot[k];
             nvrhi::BindingSetItem item = nvrhi::BindingSetItem::None(slot);
@@ -562,7 +816,12 @@ namespace Wasteland
 
     void VulkanNova::CommitHistory()
     {
-        // Snapshot the accumulation image so next frame's pass 2 reprojects it.
+        // Fold this frame's accumulation into the history texture that t48 reads,
+        // so next frame's pass 2 reprojects it. This is the write half of the
+        // t48 binding in CreateBindingSet, and it is why the history is a
+        // separate texture: m_Images[1] is the img_Accumulation UAV in the same
+        // descriptor set, so it cannot also be the sampled history.
+        // Mirrors DX11Nova.h:496, which copies images[1] into history.snapshot.
         RecordCopy(m_HistorySnapshot, m_Images[1].texture);
     }
 
@@ -584,9 +843,13 @@ namespace Wasteland
                                              nvrhi::AllSubresources,
                                              nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
         }
-        if (m_HistoryImage)
+        if (m_HistorySnapshot)
         {
-            m_CommandList->clearTextureFloat(m_HistoryImage,
+            // This is now the texture bound at t48, so it is the one a reset has
+            // to reach: zeroing some other history texture would leave the
+            // reprojection pass blending against the previous view's
+            // accumulation and smearing it across the cut.
+            m_CommandList->clearTextureFloat(m_HistorySnapshot,
                                              nvrhi::AllSubresources,
                                              nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
         }
@@ -610,10 +873,9 @@ namespace Wasteland
         m_ComputeShader = nullptr;
         for (auto &image : m_Images)
         {
-                        image.snapshot = nullptr;
+            image.snapshot = nullptr;
             image.texture = nullptr;
         }
-        m_HistoryImage = nullptr;
         m_HistorySnapshot = nullptr;
         for (int i = 0; i < 3; ++i)
             m_StructuredBuffers[i] = nullptr;

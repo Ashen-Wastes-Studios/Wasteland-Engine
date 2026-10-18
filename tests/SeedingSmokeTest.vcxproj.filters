@@ -1,0 +1,29 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Wasteland">
+      <UniqueIdentifier>{E8DDB8B7-5448-6D2E-9D86-1ED409304B83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Wasteland\src">
+      <UniqueIdentifier>{FF4F6183-6B10-DDB9-344B-2637A0CA2196}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Wasteland\src\Wasteland">
+      <UniqueIdentifier>{119375E7-7DCA-BD7E-86D4-21A2F28AE477}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Wasteland\src\Wasteland\Core">
+      <UniqueIdentifier>{094A0AEA-F504-FA95-9EBC-72E08A564426}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Wasteland\src\Wasteland\Project">
+      <UniqueIdentifier>{57B8E53D-C39B-F47D-CC9E-22BA3801BBCE}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\Wasteland\src\Wasteland\Core\Log.cpp">
+      <Filter>Wasteland\src\Wasteland\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Wasteland\src\Wasteland\Project\Project.cpp">
+      <Filter>Wasteland\src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="test_project_seeding.cpp" />
+  </ItemGroup>
+</Project>

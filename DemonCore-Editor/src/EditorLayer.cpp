@@ -1,6 +1,8 @@
 #include "EditorLayer.h"
 
 #include <imgui/imgui.h>
+#include <cstdlib>
+#include <imgui/imgui_internal.h>
 #ifdef _WIN32
 #include <Windows.h>
 #include <dxgi1_4.h>
@@ -31,6 +33,110 @@
 
 #include <fstream>
 #include <filesystem>
+
+
+namespace
+{
+	// Minimal PNG writer: 8-bit RGB, no interlacing, zlib "stored" blocks.
+	//
+	// Written by hand rather than pulled from stb_image_write because that header
+	// is not on this project's include path (only stb_image.h is, under
+	// vendor\stb_image). A screenshot is a verification aid, not a feature, and
+	// adding a vendored file plus a build-path change to save ~40 lines would be
+	// the larger change.
+	//
+	// Stored (uncompressed) deflate blocks are valid zlib, so the output opens
+	// anywhere; the files are a few MB, which is fine for a debugging aid.
+	void PushU32(std::vector<unsigned char> &v, uint32_t x)
+	{
+		v.push_back((unsigned char)(x >> 24)); v.push_back((unsigned char)(x >> 16));
+		v.push_back((unsigned char)(x >> 8));  v.push_back((unsigned char)x);
+	}
+
+	uint32_t Crc32(const unsigned char *data, size_t len)
+	{
+		static uint32_t table[256];
+		static bool init = false;
+		if (!init)
+		{
+			for (uint32_t i = 0; i < 256; i++)
+			{
+				uint32_t c = i;
+				for (int k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+				table[i] = c;
+			}
+			init = true;
+		}
+		uint32_t crc = 0xFFFFFFFFu;
+		for (size_t i = 0; i < len; i++) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+		return crc ^ 0xFFFFFFFFu;
+	}
+
+	void PushChunk(std::vector<unsigned char> &out, const char *type,
+				   const std::vector<unsigned char> &payload)
+	{
+		PushU32(out, (uint32_t)payload.size());
+		size_t start = out.size();
+		out.insert(out.end(), type, type + 4);
+		out.insert(out.end(), payload.begin(), payload.end());
+		PushU32(out, Crc32(out.data() + start, out.size() - start));
+	}
+
+	bool WritePNG(const std::string &path, int width, int height, const std::vector<unsigned char> &rgb)
+	{
+		std::vector<unsigned char> raw;
+		raw.reserve((size_t)height * ((size_t)width * 3 + 1));
+		for (int y = 0; y < height; y++)
+		{
+			raw.push_back(0); // filter type 0 (None)
+			const unsigned char *row = rgb.data() + (size_t)y * width * 3;
+			raw.insert(raw.end(), row, row + (size_t)width * 3);
+		}
+
+		std::vector<unsigned char> z;
+		z.push_back(0x78); z.push_back(0x01);
+		size_t pos = 0;
+		while (pos < raw.size())
+		{
+			size_t chunk = raw.size() - pos;
+			if (chunk > 65535) chunk = 65535;
+			bool final = (pos + chunk >= raw.size());
+			z.push_back(final ? 1 : 0);
+			z.push_back((unsigned char)(chunk & 0xFF));
+			z.push_back((unsigned char)(chunk >> 8));
+			z.push_back((unsigned char)(~chunk & 0xFF));
+			z.push_back((unsigned char)((~chunk >> 8) & 0xFF));
+			z.insert(z.end(), raw.begin() + pos, raw.begin() + pos + chunk);
+			pos += chunk;
+		}
+		uint32_t a = 1, b = 0;
+		for (size_t i = 0; i < raw.size(); i++)
+		{
+			a = (a + raw[i]) % 65521;
+			b = (b + a) % 65521;
+		}
+		PushU32(z, (b << 16) | a);
+
+		std::vector<unsigned char> png = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+		std::vector<unsigned char> ihdr;
+		PushU32(ihdr, (uint32_t)width);
+		PushU32(ihdr, (uint32_t)height);
+		ihdr.push_back(8); // bit depth
+		ihdr.push_back(2); // colour type: truecolour RGB
+		ihdr.push_back(0); // deflate
+		ihdr.push_back(0); // adaptive filtering
+		ihdr.push_back(0); // no interlace
+		PushChunk(png, "IHDR", ihdr);
+		PushChunk(png, "IDAT", z);
+		PushChunk(png, "IEND", {});
+
+		std::ofstream f(path, std::ios::binary);
+		if (!f.is_open()) return false;
+		f.write((const char *)png.data(), (std::streamsize)png.size());
+		return f.good();
+	}
+}
+
 
 namespace Wasteland
 {
@@ -346,100 +452,6 @@ static bool HasGLExtension(const char *name)
 	static bool GetGPUVRAMUsagePercent(float &outPercent) { return false; }
 #endif
 
-	extern const std::filesystem::path g_AssetPath;
-
-	// ------------------------------------------------------------------
-	// Asset sync: the built exe runs from bin/<Config>/DemonCore-Editor and reads
-	// its local "assets" copy, which the postbuild step only refreshes on rebuild.
-	// To keep hand-edits under DemonCore-Editor/assets/ visible without rebuilding,
-	// mirror newer source files over on startup, and mirror in-editor saves back
-	// to the source tree so a later rebuild doesn't wipe them.
-	// ------------------------------------------------------------------
-	static std::filesystem::path s_SourceAssetsRoot;
-
-	static std::filesystem::path GetExecutableDir()
-	{
-		std::filesystem::path dir;
-#ifdef _WIN32
-		char buffer[MAX_PATH];
-		DWORD length = GetModuleFileNameA(NULL, buffer, MAX_PATH);
-		if (length > 0 && length < MAX_PATH)
-			dir = std::filesystem::path(buffer).parent_path();
-#endif
-		return dir;
-	}
-
-	static bool IsNewerFile(const std::filesystem::path &src, const std::filesystem::path &dst)
-	{
-		std::error_code ec;
-		if (!std::filesystem::exists(dst, ec))
-			return true;
-		auto srcTime = std::filesystem::last_write_time(src, ec);
-		if (ec) return true;
-		auto dstTime = std::filesystem::last_write_time(dst, ec);
-		if (ec) return true;
-		return srcTime > dstTime;
-	}
-
-	static void SyncRuntimeAssetsFromSource()
-	{
-		std::error_code ec;
-		std::filesystem::path exeDir = GetExecutableDir();
-		if (exeDir.empty())
-			return;
-
-		std::filesystem::path candidate = (exeDir / ".." / ".." / ".." / "DemonCore-Editor" / "assets").lexically_normal();
-		if (!std::filesystem::is_directory(candidate, ec))
-			return; // Not a repo-layout launch (e.g. packaged build) — nothing to sync.
-
-		std::filesystem::path runtimeAssets = (exeDir / "assets").lexically_normal();
-		if (std::filesystem::equivalent(candidate, runtimeAssets, ec))
-			return;
-
-		s_SourceAssetsRoot = candidate;
-		std::filesystem::create_directories(runtimeAssets, ec);
-
-		uint32_t copied = 0;
-		for (auto it = std::filesystem::recursive_directory_iterator(candidate, ec);
-			it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
-		{
-			if (ec) break;
-			if (!it->is_regular_file(ec))
-				continue;
-			std::filesystem::path rel = std::filesystem::relative(it->path(), candidate, ec);
-			if (ec) continue;
-			std::filesystem::path dst = runtimeAssets / rel;
-			if (!IsNewerFile(it->path(), dst))
-				continue;
-			std::filesystem::create_directories(dst.parent_path(), ec);
-			std::filesystem::copy_file(it->path(), dst, std::filesystem::copy_options::overwrite_existing, ec);
-			if (!ec)
-				copied++;
-		}
-		if (copied > 0)
-			WL_CORE_INFO("Asset sync: updated {0} file(s) from {1}", copied, candidate.string());
-	}
-
-	static void MirrorSavedAssetToSource(const std::filesystem::path &savedPath)
-	{
-		if (s_SourceAssetsRoot.empty())
-			return;
-		std::error_code ec;
-		std::filesystem::path runtimeAssets = std::filesystem::absolute("assets", ec);
-		std::filesystem::path absSaved = std::filesystem::absolute(savedPath, ec);
-		if (ec) return;
-		std::filesystem::path rel = std::filesystem::relative(absSaved, runtimeAssets, ec);
-		if (ec || rel.empty() || *rel.begin() == "..")
-			return; // Saved outside the runtime assets tree — nothing to mirror.
-		std::filesystem::path dst = s_SourceAssetsRoot / rel;
-		if (std::filesystem::equivalent(absSaved, dst, ec))
-			return;
-		std::filesystem::create_directories(dst.parent_path(), ec);
-		std::filesystem::copy_file(absSaved, dst, std::filesystem::copy_options::overwrite_existing, ec);
-		if (!ec)
-			WL_CORE_INFO("Asset sync: mirrored save to {0}", dst.string());
-	}
-
 	static const uint32_t s_MapWidth = 24;
 	static const char *s_MapTiles =
 		"WWWWWWWWWWWWWWWWWWWWWWWW"
@@ -472,7 +484,7 @@ static bool HasGLExtension(const char *name)
 		// Queue the path; the UI thread drains in OnImGuiRender (ImGui is single-threaded).
 		ToolServer::Instance().SetFileWrittenCallback([this](const std::string &path) {
 			std::filesystem::path p(path);
-			if (p.extension() == ".py")
+				if (p.extension() == ".py")
 			{
 				std::lock_guard<std::mutex> lock(m_PendingFileOpensMutex);
 				m_PendingFileOpens.push_back(p.string());
@@ -494,13 +506,27 @@ static bool HasGLExtension(const char *name)
 		m_EditorScene = CreateRef<Scene>();
 		m_ActiveScene = m_EditorScene;
 
-		SyncRuntimeAssetsFromSource();
+		// The content browser roots itself at the active project, which
+		// Project::Bootstrap already selected before the layer was created.
+		m_ContentBrowserPanel.ResetToRoot();
 
 		m_EditorCamera = EditorCamera(30.0f, 1.778f, 0.1f, 1000.0f);
 
-		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
-
 		m_CameraController.SetZoomLevel(5.0f);
+
+		// Load the bootstrap project's start scene.
+		//
+		// Project::Bootstrap opens the project itself (env var, --project, or the
+		// recent-projects list) BEFORE this layer exists, so OnProjectChanged --
+		// the only other place that loads StartScene -- never ran. The result was
+		// an empty editor: an empty hierarchy and a black viewport for every
+		// project opened at startup, which is most of them. Reusing
+		// OnProjectChanged here also wires the ToolServer callbacks.
+
+		// Deliberately LAST: it calls NewScene() and SetScene(), which replace
+		// m_ActiveScene, so every panel must already hold a context.
+		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
+		OnProjectChanged();
 	}
 
 	void EditorLayer::OnDetach()
@@ -508,9 +534,167 @@ static bool HasGLExtension(const char *name)
 		WL_PROFILE_FUNCTION();
 	}
 
+	// Reads the bound framebuffer's colour attachment 0 and writes a PNG.
+	//
+	// Backend-specific by necessity: there is no cross-backend readback API on
+	// Framebuffer, and glReadPixels / a D3D12 copy-to-buffer are genuinely
+	// different code. Both paths are implemented rather than stubbing one,
+	// because the Nova path this exists to verify is the DX12 one.
+	//
+	// DX12 reads the Nova output image itself rather than the default
+	// framebuffer -- under ray tracing the traced image never reaches the default
+	// framebuffer at all -- so the two branches do not agree on WHAT they read,
+	// only on the PNG they write.
+	//
+	// Returns false rather than throwing on failure, so a failed capture shows
+	// up in the log instead of taking the editor down mid-frame.
+	bool EditorLayer::CaptureFramebufferPNG(const std::string &path)
+	{
+		if (!m_Framebuffer)
+			return false;
+
+		// READS THE DEFAULT FRAMEBUFFER (the window), NOT m_Framebuffer.
+		//
+		// m_Framebuffer is the 2D renderer's own offscreen target; the 3D scene
+		// and the ImGui viewport both present to the window's default
+		// framebuffer. Binding m_Framebuffer here produced a uniformly black
+		// image while reporting success -- the first version of this function
+		// read the wrong buffer entirely.
+		if (m_FramebufferAPI == RendererAPI::API::None)
+			return false;
+
+		// DX12 NVRHI. Handled FIRST and before the glReadPixels path below, for a
+		// reason that is about ordering rather than preference: the Nova path tracer
+		// renders into its own UAV image and never touches the default framebuffer,
+		// so there is nothing for a GL readback to read on this backend. Worse, the
+		// GL viewport query below would measure a context this backend never set,
+		// yielding a plausible-looking width/height for an image that does not
+		// exist. Reporting failure is what made this backend look broken rather
+		// than unsupported.
+		//
+		// The readback goes through Renderer3D rather than reaching for the DX12
+		// device here: Renderer3D owns the Nova instance and knows which backend is
+		// active, and the copy has to be recorded on the same command queue and
+		// fenced against the same frame ring as the rendering that produced the
+		// image. Doing the copy here would mean duplicating all of that.
+		if (m_FramebufferAPI == RendererAPI::API::NVRHI_DX12)
+		{
+			std::vector<unsigned char> rgba;
+			uint32_t rtWidth = 0, rtHeight = 0;
+			if (!Renderer3D::ReadbackRayTraceTarget(rgba, rtWidth, rtHeight))
+			{
+				// Distinct from the "unsupported API" warning further down: the API IS
+				// supported, so this means there was nothing rendered to read (ray
+				// tracing off, or a frame captured before the first Nova flush).
+				WL_CORE_WARN("EditorLayer: DX12 screenshot found no Nova output to read; "
+							 "ray tracing may be disabled or nothing has rendered yet");
+				return false;
+			}
+
+			// RGBA to RGB. The PNG writer emits colour type 2 (truecolour RGB), and
+			// dropping the alpha is what the OpenGL branch below does with the same
+			// four-channel read, so the two backends produce byte-identical files for
+			// the same picture.
+			std::vector<unsigned char> pixels((size_t)rtWidth * (size_t)rtHeight * 3);
+			for (uint32_t y = 0; y < rtHeight; ++y)
+			{
+				const unsigned char *src = rgba.data() + (size_t)y * rtWidth * 4;
+				unsigned char *dst = pixels.data() + (size_t)y * rtWidth * 3;
+				for (uint32_t x = 0; x < rtWidth; ++x)
+				{
+					dst[x * 3 + 0] = src[x * 4 + 0];
+					dst[x * 3 + 1] = src[x * 4 + 1];
+					dst[x * 3 + 2] = src[x * 4 + 2];
+				}
+			}
+			return WritePNG(path, (int)rtWidth, (int)rtHeight, pixels);
+		}
+
+		// GL_VIEWPORT, not the window size: on a HiDPI display the drawable
+		// framebuffer is larger than the window, and glReadPixels measures in
+		// framebuffer pixels. GLFW headers are not available in this project,
+		// so the viewport state is queried through GL instead.
+		GLint vp[4] = { 0, 0, 0, 0 };
+		glGetIntegerv(GL_VIEWPORT, vp);
+		int width = vp[2];
+		int height = vp[3];
+		if (width <= 0 || height <= 0)
+			return false;
+
+		std::vector<unsigned char> pixels((size_t)width * (size_t)height * 3);
+
+		if (m_FramebufferAPI == RendererAPI::API::OpenGL)
+		{
+			// glReadPixels returns bottom-up rows and RGBA; the PNG writer wants
+			// top-down RGB.
+			std::vector<unsigned char> rgba((size_t)width * (size_t)height * 4);
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+			glPixelStorei(GL_PACK_ALIGNMENT, 1);
+			glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+			for (int y = 0; y < height; ++y)
+			{
+				const unsigned char *src = rgba.data() + (size_t)(height - 1 - y) * width * 4;
+				unsigned char *dst = pixels.data() + (size_t)y * width * 3;
+				for (int x = 0; x < width; ++x)
+				{
+					dst[x * 3 + 0] = src[x * 4 + 0];
+					dst[x * 3 + 1] = src[x * 4 + 1];
+					dst[x * 3 + 2] = src[x * 4 + 2];
+				}
+			}
+		}
+		else
+		{
+			// DX11 and Vulkan. Both render through NVRHI, and both put the Nova
+			// output in a backend-native image whose owner -- DX11Nova /
+			// VulkanNova -- has no readback. Reading the swap chain back instead
+			// would need a copy-to-buffer the NVRHI framebuffer does not expose, and
+			// would capture the window rather than the traced image anyway. So this
+			// path is honestly unsupported rather than silently producing a black
+			// image, which is exactly what it used to do on DX12 too.
+			WL_CORE_WARN("EditorLayer: screenshot not implemented for API {0}; "
+						 "only OpenGL and DX12 readback exist",
+						 (int)m_FramebufferAPI);
+			return false;
+		}
+
+		return WritePNG(path, width, height, pixels);
+	}
+
 	void EditorLayer::OnUpdate(Timestep ts)
 	{
 		WL_PROFILE_FUNCTION();
+
+		// FRAMEBUFFER SCREENSHOT. Needed because there was no way to verify
+		// rendering headlessly: a clean log does not prove pixels are correct
+		// (a deliberately broken shader produced no error output at all), and
+		// every Nova technique in the Phase -1 work is meant to be judged on the
+		// image, not the absence of a crash.
+		//
+		// F12 captures. WL_SCREENSHOT=<path> plus WL_SCREENSHOT_FRAME=<n> makes
+		// it hands-free, which is the only form usable from a script or CI.
+		// The file is written on the NEXT present, so the capture contains the
+		// frame as displayed.
+		++m_FrameCounter;
+		{
+			const char *shotPath = std::getenv("WL_SCREENSHOT");
+			int shotFrame = 0;
+			if (const char *f = std::getenv("WL_SCREENSHOT_FRAME"))
+				shotFrame = std::atoi(f);
+			bool wantShot = (shotPath && shotFrame > 0 && m_FrameCounter == shotFrame);
+			if (!shotPath && Input::IsKeyPressed(WL_KEY_F12))
+				wantShot = true;
+
+			if (wantShot)
+			{
+				std::string outPath = shotPath ? shotPath : "wasteland_screenshot.png";
+				if (CaptureFramebufferPNG(outPath))
+					WL_CORE_INFO("EditorLayer: screenshot written to {0}", outPath);
+				else
+					WL_CORE_ERROR("EditorLayer: screenshot FAILED ({0})", outPath);
+			}
+		}
 
 		Wasteland::Renderer3D::NotifyFrameTime((double)ts.GetMilliseconds());
 
@@ -630,10 +814,172 @@ static bool HasGLExtension(const char *name)
 		}
 	}
 
+
+	const char *EditorLayer::WorkflowName(Workflow workflow)
+	{
+		switch (workflow)
+		{
+		case Workflow::Scene:
+			return "Scene";
+		case Workflow::Scripting:
+			return "Scripting";
+		case Workflow::Visual:
+			return "Visual Blocks";
+		case Workflow::Review:
+			return "Review";
+		}
+		return "Scene";
+	}
+
+	void EditorLayer::ApplyLayout(Workflow workflow)
+	{
+		m_Workflow = workflow;
+
+		ImGuiIO &io = ImGui::GetIO();
+		if (!(io.ConfigFlags & ImGuiConfigFlags_DockingEnable))
+			return;
+
+		// Ratios are fractions of the dockspace. They are the whole point of
+		// a hardcoded layout: the viewport dominates in Scene, the code in
+		// Scripting, the graph in Visual -- without dragging a single splitter.
+		// Left stays narrow in every workflow because it always holds the
+		// same two scene panels; the centre keeps the majority for the panel
+		// the workflow is actually about.
+		float leftRatio = 0.20f;
+		float rightRatio = 0.24f;
+		float bottomRatio = 0.30f;
+		switch (workflow)
+		{
+		case Workflow::Scripting:
+			leftRatio = 0.20f;
+			rightRatio = 0.26f;
+			bottomRatio = 0.22f;
+			break;
+		case Workflow::Visual:
+			leftRatio = 0.20f;
+			rightRatio = 0.30f;
+			bottomRatio = 0.20f;
+			break;
+		case Workflow::Review:
+			leftRatio = 0.22f;
+			rightRatio = 0.28f;
+			bottomRatio = 0.26f;
+			break;
+		case Workflow::Scene:
+			break;
+		}
+
+		// Visibility first. A hidden panel still holds its dock tab, so an
+		// unrelated tool left visible just shows an empty frame.
+		m_SceneHierarchyPanel.SetHierarchyVisible(true);
+		m_SceneHierarchyPanel.SetPropertiesVisible(true);
+		m_ContentBrowserPanel.SetVisible(true);
+		m_ScriptEditorPanel.SetVisible(workflow == Workflow::Scripting);
+		m_ScriptInspectorPanel.SetVisible(workflow == Workflow::Scripting);
+		m_NPCBehaviorPanel.SetVisible(workflow == Workflow::Visual);
+		m_VisualBlocksPanel.SetVisible(workflow == Workflow::Visual);
+		m_AIChatPanel.SetVisible(workflow == Workflow::Review);
+		m_ModelDownloaderPanel.SetVisible(workflow == Workflow::Scene);
+		m_ShowViewport = workflow != Workflow::Review;
+
+		// ONE rebuild, on demand. RemoveNode/AddNode/Finish discards the
+		// whole dock tree, so this runs on the click (and once at startup),
+		// NEVER per frame -- per-frame is what made every panel move
+		// continuously and left the editor unusable.
+		ImGuiID dockspace = ImGui::GetID("MyDockSpace");
+		ImGui::DockBuilderRemoveNode(dockspace);
+		ImGui::DockBuilderAddNode(dockspace, ImGuiDockNodeFlags_DockSpace);
+		ImGui::DockBuilderSetNodeSize(dockspace, ImGui::GetMainViewport()->WorkSize);
+
+		ImGuiID rest = dockspace;
+		ImGuiID left = rest;
+		if (leftRatio > 0.0f)
+			left = ImGui::DockBuilderSplitNode(rest, ImGuiDir_Left, leftRatio, nullptr, &rest);
+		ImGuiID right = rest;
+		ImGuiID centre = rest;
+		if (rightRatio > 0.0f)
+			right = ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, rightRatio, nullptr, &centre);
+		ImGuiID bottom = centre;
+		ImGuiID top = centre;
+		if (bottomRatio > 0.0f)
+			bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, bottomRatio, nullptr, &top);
+
+		auto dock = [](const char *name, ImGuiID node) {
+			ImGui::DockBuilderDockWindow(name, node);
+		};
+
+		// Every panel the editor owns. Listed exhaustively because a window
+		// DockBuilderDockWindow never sees reverts to a free-floating window on
+		// first use -- that is exactly how Settings, Stats and Node Palette
+		// ended up loose on screen in every workflow.
+		const char *const kPanels[] = {
+			"Scene Hierarchy",
+			"Properties",
+			"Content Browser",
+			"Viewport",
+			"Script Editor",
+			"Script Inspector",
+			"NPC Behavior",
+			"Node Palette",
+			"Visual Blocks",
+			"AI Chatbot",
+			"Model Downloader",
+			"Settings",
+			"Stats",
+		};
+
+		// Left rail: hierarchy over properties. The centre: this workflow's
+		// primary panel. Both regions are therefore always occupied -- an
+		// empty dock region reads like a broken layout.
+		ImGuiID hierarchy = left;
+		ImGuiID properties = left;
+		if (left != 0)
+			properties = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, &hierarchy, nullptr);
+		dock("Scene Hierarchy", hierarchy);
+		dock("Properties", properties);
+		dock("Content Browser", bottom);
+
+		const char *primary = "Viewport";
+		switch (workflow)
+		{
+		case Workflow::Scripting:
+			primary = "Script Editor";
+			break;
+		case Workflow::Visual:
+			primary = "Visual Blocks";
+			break;
+		case Workflow::Review:
+			primary = "AI Chatbot";
+			break;
+		case Workflow::Scene:
+			break;
+		}
+		dock(primary, top);
+
+		// Everything not primary is docked into the side rail: docked but
+		// hidden unless the workflow uses it, so no panel floats and no
+		// region sits empty.
+		for (const char *name : kPanels)
+		{
+			if (std::strcmp(name, primary) == 0 ||
+				std::strcmp(name, "Scene Hierarchy") == 0 ||
+				std::strcmp(name, "Properties") == 0 ||
+				std::strcmp(name, "Content Browser") == 0)
+				continue;
+			// Model Downloader shares the bottom rail with the browser in
+			// Scene; the sidebar is the tidier home everywhere else.
+			if (workflow == Workflow::Scene && std::strcmp(name, "Model Downloader") == 0)
+				dock(name, bottom);
+			else
+				dock(name, right);
+		}
+
+		ImGui::DockBuilderFinish(dockspace);
+		WL_CORE_INFO("Applied '{0}' editor layout", WorkflowName(workflow));
+	}
+
 	void EditorLayer::OnImGuiRender()
 	{
-		WL_PROFILE_FUNCTION();
-
 		// Note: Switch this to true to enable dockspace
 		static bool dockingEnabled = true;
 		if (dockingEnabled)
@@ -677,6 +1023,48 @@ static bool HasGLExtension(const char *name)
 			if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
 			{
 				ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+				// Dock BEFORE submitting the dockspace, and only on this one
+				// frame. ImGui reads the saved imgui.ini layout, so without
+				// this the editor opens with whatever was last persisted --
+				// including panels floating free. Guarded by m_LayoutApplied
+				// because ApplyLayout destroys the whole dock tree; running it
+				// every frame is what destroyed the layout earlier.
+				// Applied HERE, before DockSpace() is submitted for this frame.
+				// Building it after submission -- straight from the menu -- left the
+				// submitted tree and the builder disagreeing, so switching layouts and
+				// coming back silently undocked the panels.
+				if (!m_LayoutApplied || m_PendingWorkflow != m_Workflow)
+				{
+					if (!m_LayoutApplied)
+					{
+										// WASTELAND_EDITOR_WORKFLOW seeds the layout the editor opens in.
+										// Clicking a menu is the only other route and that cannot be
+										// automated -- screenshots and CI have no cursor.
+										if (const char *seed = std::getenv("WASTELAND_EDITOR_WORKFLOW"))
+										{
+															const std::string name(seed);
+															if (name == "Scripting")
+																				m_Workflow = Workflow::Scripting;
+															else if (name == "Visual" || name == "Visual Blocks")
+																				m_Workflow = Workflow::Visual;
+															else if (name == "Review")
+																				m_Workflow = Workflow::Review;
+															else if (name != "Scene")
+																				WL_CORE_WARN("Unknown WASTELAND_EDITOR_WORKFLOW '{0}'", name);
+										}
+										m_PendingWorkflow = m_Workflow;
+					}
+					const Workflow requested = m_PendingWorkflow;
+					m_LayoutApplied = true;
+					m_Workflow = requested;
+					ApplyLayout(requested);
+
+					// WASTELAND_EDITOR_GRAPH opens a graph at startup. Opening one
+					// otherwise means clicking through the content browser, which
+					// screenshots and CI cannot do.
+					if (const char *graphPath = std::getenv("WASTELAND_EDITOR_GRAPH"))
+						m_VisualBlocksPanel.OpenGraph(graphPath);
+				}
 				ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 			}
 
@@ -699,6 +1087,8 @@ static bool HasGLExtension(const char *name)
 						Wasteland::Application::Get().Close();
 					ImGui::EndMenu();
 				}
+
+				UI_ProjectMenu();
 
 				if (ImGui::BeginMenu("Scripts"))
 				{
@@ -737,6 +1127,16 @@ static bool HasGLExtension(const char *name)
 					bool inspector = m_ScriptInspectorPanel.IsVisible();
 					if (ImGui::MenuItem("Script Inspector", nullptr, &inspector))
 						m_ScriptInspectorPanel.SetVisible(inspector);
+					bool npc = m_NPCBehaviorPanel.IsVisible();
+					if (ImGui::MenuItem("NPC Behavior", nullptr, &npc))
+						m_NPCBehaviorPanel.SetVisible(npc);
+					// General visual scripting (.wlblocks). Its own entry, not a
+					// sub-item of NPC Behavior: the two are sibling formats with
+					// different editors, and nesting one under the other is what
+					// made them look like one feature.
+					bool vb = m_VisualBlocksPanel.IsVisible();
+					if (ImGui::MenuItem("Visual Blocks", nullptr, &vb))
+						m_VisualBlocksPanel.SetVisible(vb);
 					ImGui::MenuItem("Stats", nullptr, &m_ShowStats);
 					ImGui::MenuItem("Settings", nullptr, &m_ShowSettings);
 					bool chatVisible = m_AIChatPanel.IsVisible();
@@ -750,6 +1150,30 @@ static bool HasGLExtension(const char *name)
 					ImGui::EndMenu();
 				}
 
+					// Hardcoded layouts, beside View because that is where the panel
+					// show/hide toggles already live: 'what is on screen' and 'where
+					// it sits' are then answered in one place.
+					if (ImGui::BeginMenu("Layout"))
+					{
+						const Workflow workflows[] = {Workflow::Scene, Workflow::Scripting,
+															 Workflow::Visual, Workflow::Review};
+						for (Workflow workflow : workflows)
+						{
+												// Checked rather than a plain item: the active layout shows a
+												// tick, so the current state can be read without moving it.
+												const bool active = m_Workflow == workflow;
+												if (ImGui::MenuItem(WorkflowName(workflow), nullptr, active))
+												{
+																		if (!active)
+												m_PendingWorkflow = workflow;
+												}
+						}
+						ImGui::Separator();
+						if (ImGui::MenuItem("Reset to \"Scene\""))
+							m_PendingWorkflow = Workflow::Scene;
+						ImGui::EndMenu();
+					}
+
 				ImGui::EndMenuBar();
 			}
 
@@ -758,20 +1182,50 @@ static bool HasGLExtension(const char *name)
 			std::lock_guard<std::mutex> lock(m_PendingFileOpensMutex);
 			for (const auto &p : m_PendingFileOpens)
 			{
-				m_ScriptEditorPanel.OpenFile(p);
+				// By EXTENSION, not unconditionally to the Script Editor:
+				// the drain used to open every queued path there, so a
+				// graph handed in by a tool landed in a text editor
+				// showing YAML. Dispatched through the same path the
+				// content browser uses.
+				OpenVisualFile(p);
 			}
 			m_PendingFileOpens.clear();
 		}
 
 		m_SceneHierarchyPanel.OnImGuiRender();
-			m_ContentBrowserPanel.OnImGuiRender();
+		m_ContentBrowserPanel.OnImGuiRender();
 
-			m_ScriptInspectorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());
-			m_ScriptInspectorPanel.OnImGuiRender();
-			m_ScriptEditorPanel.OnImGuiRender();
+		// Drain the content browser's Open request.
+		//
+		// Dispatch lives here rather than in the browser because the browser
+		// does not know which editor owns which extension. Drained AFTER the
+		// browser renders (so the request exists) and BEFORE the target panel
+		// renders (so a tree opened this frame is already drawn this frame
+		// rather than appearing one frame late).
+		{
+			std::string openRequest = m_ContentBrowserPanel.ConsumeOpenRequest();
+			if (!openRequest.empty())
+			{
+				OpenVisualFile(openRequest);
+			}
+		}
+
+		m_ScriptInspectorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());
+		m_ScriptInspectorPanel.OnImGuiRender();
+		m_NPCBehaviorPanel.SetEntity(m_SceneHierarchyPanel.GetSelectedEntity());
+		m_NPCBehaviorPanel.OnImGuiRender();
+		m_VisualBlocksPanel.OnImGuiRender();
+		m_ScriptEditorPanel.OnImGuiRender();
 
 			m_AIChatPanel.OnImGuiRender();
 			m_ModelDownloaderPanel.OnImGuiRender();
+
+			// In-game HUD: only while playing, and only over the viewport, so
+			// it never competes with the editor panels. Reads the same
+			// components the scripts write, so HUD and gameplay cannot
+			// disagree about health/ammo.
+			if (m_SceneState == SceneState::Play)
+				RenderGameplayHUD();
 
 			if (m_ShowStats)
 			{
@@ -937,13 +1391,12 @@ static bool HasGLExtension(const char *name)
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Ultra preset + dynamic resolution at 30fps target.\nVolumetric quality 0.75x, neural GI on (carries diffuse\nlighting when the scaler drops resolution).");
 
-			uint32_t samplesPerPixel = Wasteland::Renderer3D::GetSamplesPerPixel();
-			uint32_t minSamples = 1;
-			uint32_t maxSamples = 256;
-			if (ImGui::SliderScalar("Samples Per Pixel", ImGuiDataType_U32, &samplesPerPixel, &minSamples, &maxSamples))
-			{
-				Wasteland::Renderer3D::SetSamplesPerPixel(samplesPerPixel);
-			}
+			// D3: the "Samples Per Pixel" slider used to live here. It drove
+			// Renderer3D::SetSamplesPerPixel, which only stores a value no shader
+			// reads -- there is no per-pixel sample loop in the Nova path -- so the
+			// control did nothing visible while looking authoritative. Removed
+			// rather than left in place. Multi-sampling returns with the temporal
+			// work in Phase 4.
 
 			bool accumulate = Wasteland::Renderer3D::IsRayTracingAccumulate();
 			if (ImGui::Checkbox("Accumulate", &accumulate))
@@ -1091,6 +1544,137 @@ static bool HasGLExtension(const char *name)
 				}
 			}
 
+			ImGui::Separator();
+			ImGui::Text("Camera Effects (Post-Processing)");
+			ImGui::Separator();
+
+			// Bloom
+			bool bloomEnabled = Wasteland::Renderer3D::IsBloomEnabled();
+			if (ImGui::Checkbox("Bloom", &bloomEnabled))
+			{
+				Wasteland::Renderer3D::SetBloomEnabled(bloomEnabled);
+			}
+			if (Wasteland::Renderer3D::IsBloomEnabled())
+			{
+				float bloomIntensity = Wasteland::Renderer3D::GetBloomIntensity();
+				if (ImGui::SliderFloat("  Intensity", &bloomIntensity, 0.0f, 5.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetBloomIntensity(bloomIntensity);
+				}
+				float bloomThreshold = Wasteland::Renderer3D::GetBloomThreshold();
+				if (ImGui::SliderFloat("  Threshold", &bloomThreshold, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetBloomThreshold(bloomThreshold);
+				}
+			}
+
+			// Bilateral Blur (denoise)
+			bool bilateralBlurEnabled = Wasteland::Renderer3D::IsBilateralBlurEnabled();
+			if (ImGui::Checkbox("Bilateral Blur (Denoise)", &bilateralBlurEnabled))
+			{
+				Wasteland::Renderer3D::SetBilateralBlurEnabled(bilateralBlurEnabled);
+			}
+			if (Wasteland::Renderer3D::IsBilateralBlurEnabled())
+			{
+				int bilateralBlurPasses = Wasteland::Renderer3D::GetBilateralBlurPasses();
+				if (ImGui::SliderInt("  Passes", &bilateralBlurPasses, 0, 4))
+				{
+					Wasteland::Renderer3D::SetBilateralBlurPasses(bilateralBlurPasses);
+				}
+			}
+
+			ImGui::Separator();
+
+			// Vignette
+			bool vignetteEnabled = Wasteland::Renderer3D::IsVignetteEnabled();
+			if (ImGui::Checkbox("Vignette", &vignetteEnabled))
+			{
+				Wasteland::Renderer3D::SetVignetteEnabled(vignetteEnabled);
+			}
+			if (Wasteland::Renderer3D::IsVignetteEnabled())
+			{
+				float vignetteIntensity = Wasteland::Renderer3D::GetVignetteIntensity();
+				if (ImGui::SliderFloat("  Intensity", &vignetteIntensity, 0.0f, 2.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetVignetteIntensity(vignetteIntensity);
+				}
+				float vignetteRadius = Wasteland::Renderer3D::GetVignetteRadius();
+				if (ImGui::SliderFloat("  Radius", &vignetteRadius, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetVignetteRadius(vignetteRadius);
+				}
+				float vignetteSoftness = Wasteland::Renderer3D::GetVignetteSoftness();
+				if (ImGui::SliderFloat("  Softness", &vignetteSoftness, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetVignetteSoftness(vignetteSoftness);
+				}
+			}
+
+			ImGui::Separator();
+
+			// Chromatic Aberration
+			bool chromaticAberrationEnabled = Wasteland::Renderer3D::IsChromaticAberrationEnabled();
+			if (ImGui::Checkbox("Chromatic Aberration", &chromaticAberrationEnabled))
+			{
+				Wasteland::Renderer3D::SetChromaticAberrationEnabled(chromaticAberrationEnabled);
+			}
+			if (Wasteland::Renderer3D::IsChromaticAberrationEnabled())
+			{
+				float chromaticAberrationIntensity = Wasteland::Renderer3D::GetChromaticAberrationIntensity();
+				if (ImGui::SliderFloat("  Intensity", &chromaticAberrationIntensity, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetChromaticAberrationIntensity(chromaticAberrationIntensity);
+				}
+			}
+
+			ImGui::Separator();
+
+			// Color Grading
+			bool colorGradingEnabled = Wasteland::Renderer3D::IsColorGradingEnabled();
+			if (ImGui::Checkbox("Color Grading", &colorGradingEnabled))
+			{
+				Wasteland::Renderer3D::SetColorGradingEnabled(colorGradingEnabled);
+			}
+			if (Wasteland::Renderer3D::IsColorGradingEnabled())
+			{
+				float colorTemperature = Wasteland::Renderer3D::GetColorTemperature();
+				if (ImGui::SliderFloat("  Temperature", &colorTemperature, -1.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetColorTemperature(colorTemperature);
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("-1 = cold (blue), 0 = neutral, +1 = warm (orange)");
+				float colorTint = Wasteland::Renderer3D::GetColorTint();
+				if (ImGui::SliderFloat("  Tint", &colorTint, -1.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetColorTint(colorTint);
+				}
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("-1 = green, 0 = neutral, +1 = magenta");
+				float colorGamma = Wasteland::Renderer3D::GetColorGamma();
+				if (ImGui::SliderFloat("  Gamma", &colorGamma, 0.1f, 3.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetColorGamma(colorGamma);
+				}
+			}
+
+			ImGui::Separator();
+
+			// Film Grain
+			bool filmGrainEnabled = Wasteland::Renderer3D::IsFilmGrainEnabled();
+			if (ImGui::Checkbox("Film Grain", &filmGrainEnabled))
+			{
+				Wasteland::Renderer3D::SetFilmGrainEnabled(filmGrainEnabled);
+			}
+			if (Wasteland::Renderer3D::IsFilmGrainEnabled())
+			{
+				float filmGrainIntensity = Wasteland::Renderer3D::GetFilmGrainIntensity();
+				if (ImGui::SliderFloat("  Intensity", &filmGrainIntensity, 0.0f, 1.0f, "%.2f"))
+				{
+					Wasteland::Renderer3D::SetFilmGrainIntensity(filmGrainIntensity);
+				}
+			}
+
 			ImGui::TextWrapped("Add Volumetric Fog / Volumetric Clouds components to an entity; its Transform defines the volume box.");
 
 			ImGui::End();
@@ -1114,29 +1698,74 @@ static bool HasGLExtension(const char *name)
 			m_ViewportBounds[0] = {minBound.x, minBound.y};
 			m_ViewportBounds[1] = {maxBound.x, maxBound.y};
 
+			// ImGui's TexID is not a texture: it is whatever the ACTIVE backend
+			// binds, and that differs per backend (an SRV pointer on DX11, a GPU
+			// descriptor handle on DX12, a VkDescriptorSet on Vulkan, a GL name on
+			// OpenGL). So the handle is asked of the backend that owns the
+			// attachment rather than assembled here from whatever the texture
+			// happens to be addressable as -- that is what made DX12 bind a
+			// truncated nvrhi handle pointer as a descriptor and draw nothing.
 			uint32_t textureID = 0;
-			void *textureSRV = nullptr;
+			void *textureTexID = nullptr;
 			if (Wasteland::Renderer3D::IsRayTracingEnabled())
 			{
 				textureID = Wasteland::Renderer3D::GetRayTraceTargetID();
-                textureSRV = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
+				// Already in the active backend's own form: the DX12 Nova path
+				// inside Renderer3D converts its output to a descriptor handle (see
+				// GetRayTraceTargetNativeSRV), so no conversion belongs here.
+				textureTexID = Wasteland::Renderer3D::GetRayTraceTargetNativeSRV();
 			}
+
 			else
 			{
 				textureID = m_Framebuffer->GetColorAttachmentRendererID();
-				textureSRV = m_Framebuffer->GetColorAttachmentNativeSRV(0);
+				textureTexID = m_Framebuffer->GetColorAttachmentImGuiTexID(0);
 			}
 
-			ImGui::Image(textureSRV ? textureSRV : reinterpret_cast<void *>(static_cast<uintptr_t>(textureID)),
-						 ImVec2{m_ViewportSize.x, m_ViewportSize.y},
-						 ImVec2{0, 1}, ImVec2{1, 0});
+			// The integer id is a real TexID on OpenGL ONLY, where it IS the GL
+			// texture name. Under NVRHI it is a 64-bit texture handle truncated to
+			// 32 bits, so using it as a fallback would reinstate the garbage bind
+			// this accessor exists to replace. Restricted to GL, a null handle on
+			// any other backend means "skip the draw", not "bind this instead".
+			if (!textureTexID && RendererAPI::GetAPI() == RendererAPI::API::OpenGL)
+				textureTexID = reinterpret_cast<void *>(static_cast<uintptr_t>(textureID));
+
+			// A null TexID makes the backend skip the image. That remains the correct
+			// degradation when a backend genuinely cannot hand ImGui a token it
+			// binds -- and binding the truncated pointer instead is strictly
+			// worse, since the draw would sample whatever descriptor it landed
+			// on. All four backends are now expected to supply a real handle:
+			// DX11 an SRV pointer, DX12 a heap descriptor, Vulkan a descriptor
+			// set from ImGui_ImplVulkan_AddTexture, OpenGL a texture name. A
+			// null here therefore means a real failure worth saying out loud.
+			if (textureTexID)
+			{
+				ImGui::Image(textureTexID,
+							 ImVec2{m_ViewportSize.x, m_ViewportSize.y},
+							 ImVec2{0, 1}, ImVec2{1, 0});
+			}
+			else
+			{
+				// ONCE per session rather than per frame: this runs every frame
+				// while the viewport is open, and a warning per frame would bury
+				// the log rather than explain anything.
+				static bool warned = false;
+				if (!warned)
+				{
+					warned = true;
+					WL_CORE_WARN("EditorLayer: viewport has no ImGui texture handle on API {0}; "
+								 "the image is skipped rather than bound to a truncated handle",
+								 (int)RendererAPI::GetAPI());
+				}
+			}
 
 			if (ImGui::BeginDragDropTarget())
 			{
 				if (const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
 				{
-					const wchar_t *path = (const wchar_t *)payload->Data;
-					OpenScene(std::filesystem::path(g_AssetPath) / path);
+					// Payload is a UTF-8 project-relative path.
+					const char *relative = static_cast<const char *>(payload->Data);
+					OpenScene(Project::Get().GetAssetPath(relative));
 				}
 
 				ImGui::EndDragDropTarget();
@@ -1188,6 +1817,7 @@ static bool HasGLExtension(const char *name)
 			ImGui::End(); // End DockSpace
 
 			UI_NewScriptModal();
+		UI_NewProjectModal();
 		}
 		else
 		{
@@ -1276,7 +1906,7 @@ static bool HasGLExtension(const char *name)
 			{
 				if (strlen(m_NewScriptBuffer) > 0)
 				{
-					std::filesystem::path scriptDir = g_AssetPath / "scripts";
+					std::filesystem::path scriptDir = Project::Get().GetAssetPath("scripts");
 					if (!std::filesystem::exists(scriptDir))
 						std::filesystem::create_directories(scriptDir);
 
@@ -1386,6 +2016,11 @@ static bool HasGLExtension(const char *name)
 			if (m_SceneState == SceneState::Play)
 			{
 				m_IsPaused = !m_IsPaused;
+				// Escape is the player's way out of a fight, so it has to give
+				// the cursor back -- a paused game with an invisible pointer is
+				// a dead end, since ImGui cannot be clicked either. Re-entering
+				// the unpaused state re-captures.
+				Application::Get().GetWindow().SetMouseCaptured(!m_IsPaused);
 			}
 			break;
 		}
@@ -1406,6 +2041,258 @@ static bool HasGLExtension(const char *name)
 				m_SceneHierarchyPanel.SetSelectedEntity(m_HoveredEntity);
 		}
 		return false;
+	}
+
+	void EditorLayer::RenderGameplayHUD()
+	{
+		if (!m_ActiveScene)
+			return;
+
+		// The gameplay actors are attached to the primary camera entity (that
+		// is the entity a Player.py/Weapon.py pair runs on), so the HUD reads
+		// from the same place the scripts write to.
+		Entity actor = m_ActiveScene->GetPrimaryCameraEntity();
+		if (!actor || !actor.IsValid())
+			return;
+
+		ImGuiIO &io = ImGui::GetIO();
+		ImVec2 display = io.DisplaySize;
+
+		// ---- Crosshair: a small gap-plus-dot at screen centre. Drawn with
+		// the foreground draw list so it needs no window of its own. ----
+		{
+			// DisplaySize is already in screen space, so the draw-list origin
+			// is the viewport's top-left corner (the editor passes a viewport
+			// offset through ImGuiConfigFlags::ViewportsOffset, which this
+			// draw list does not carry).
+			ImVec2 center(display.x * 0.5f, display.y * 0.5f);
+
+			const float gap = 6.0f;
+			const float len = 7.0f;
+			const float thickness = 1.5f;
+			ImU32 col = actor.HasComponent<HealthComponent>() &&
+								actor.GetComponent<HealthComponent>().IsDead
+							? IM_COL32(180, 40, 40, 220)
+							: IM_COL32(255, 255, 255, 220);
+
+			ImDrawList *drawList = ImGui::GetBackgroundDrawList();
+			drawList->AddLine(ImVec2(center.x - gap - len, center.y), ImVec2(center.x - gap, center.y), col, thickness);
+			drawList->AddLine(ImVec2(center.x + gap, center.y), ImVec2(center.x + gap + len, center.y), col, thickness);
+			drawList->AddLine(ImVec2(center.x, center.y - gap - len), ImVec2(center.x, center.y - gap), col, thickness);
+			drawList->AddLine(ImVec2(center.x, center.y + gap), ImVec2(center.x, center.y + gap + len), col, thickness);
+
+			// ---- Hit marker: four diagonal ticks that appear on a confirmed
+			// hit. Distinct from the crosshair in shape, not just colour, so it
+			// still reads for a colour-blind player. ----
+			//
+			// Timed from WeaponFeedbackComponent, which Weapon.py writes. The
+			// HUD only renders it; it never decides whether a shot hit, so
+			// there is no second opinion on that to disagree with.
+			if (actor.TryGetComponent<WeaponFeedbackComponent>() &&
+				actor.GetComponent<WeaponFeedbackComponent>().HitMarkerTimer > 0.0f)
+			{
+				WeaponFeedbackComponent &fb = actor.GetComponent<WeaponFeedbackComponent>();
+
+				// Fade out over the marker's life rather than popping off at
+				// the end. `fraction` is how much of the duration is left, so
+				// it falls 1 -> 0 across the effect.
+				float fraction = fb.HitMarkerDuration > 0.0f
+									 ? fb.HitMarkerTimer / fb.HitMarkerDuration
+									 : 0.0f;
+				fraction = std::max(0.0f, std::min(1.0f, fraction));
+
+				// A kill is a bigger, red marker; a body hit is small and
+				// white. One extra bool in the component buys the distinction.
+				const float markerLen = fb.LastShotKilled ? 11.0f : 7.0f;
+				const float markerGap = fb.LastShotKilled ? 5.0f : 8.0f;
+				ImU32 markerCol = fb.LastShotKilled
+									  ? IM_COL32(255, 70, 70, static_cast<int>(255.0f * fraction))
+									  : IM_COL32(255, 255, 255, static_cast<int>(235.0f * fraction));
+
+				const float d = markerGap + markerLen;
+				const ImVec2 c = center;
+				drawList->AddLine(ImVec2(c.x - d, c.y - d), ImVec2(c.x - markerGap, c.y - markerGap), markerCol, 2.0f);
+				drawList->AddLine(ImVec2(c.x + markerGap, c.y - markerGap), ImVec2(c.x + d, c.y - d), markerCol, 2.0f);
+				drawList->AddLine(ImVec2(c.x - d, c.y + d), ImVec2(c.x - markerGap, c.y + markerGap), markerCol, 2.0f);
+				drawList->AddLine(ImVec2(c.x + markerGap, c.y + markerGap), ImVec2(c.x + d, c.y + d), markerCol, 2.0f);
+			}
+
+			// ---- Muzzle flash ----
+			// A warm bloom at the bottom-centre of the screen, sized as a
+			// fraction of the viewport so it scales with resolution instead
+			// of being a fixed pixel blob on a 4K display.
+			//
+			// Drawn in screen space rather than in the world: a world-space
+			// flash would need a model or particle system, and what the player
+			// needs to see is that the gun went off, not where the barrel is
+			// pointing -- the barrel is off-screen in a first-person view.
+			if (actor.TryGetComponent<WeaponFeedbackComponent>() &&
+				actor.GetComponent<WeaponFeedbackComponent>().MuzzleFlashTimer > 0.0f)
+			{
+				WeaponFeedbackComponent &fb = actor.GetComponent<WeaponFeedbackComponent>();
+				float flash = fb.MuzzleFlashDuration > 0.0f
+								  ? fb.MuzzleFlashTimer / fb.MuzzleFlashDuration
+								  : 0.0f;
+				flash = std::max(0.0f, std::min(1.0f, flash));
+
+				// Additive blend: a flash should ADD light. The overlay draw
+				// list draws on top with alpha blending, which dims as it
+				// fades -- the opposite of what a muzzle flash should do. So
+				// the strength is carried in the colour intensity and the
+				// alpha stays low, giving a brief warm pop rather than a grey
+				// veil over the screen.
+				const float radius = std::min(display.x, display.y) * (0.10f + 0.06f * flash);
+				const ImVec2 flashCenter(display.x * 0.5f, display.y * 0.82f);
+				// Stack three falloff rings: a wide dim halo, a mid ring, and
+				// a small hot core. One circle reads as a flat disc; the
+				// layering is what makes it read as light.
+				for (int i = 0; i < 3; ++i)
+				{
+					float ringScale = 1.0f - static_cast<float>(i) * 0.3f;
+					ImU32 flashCol = IM_COL32(255, static_cast<int>(200 - 40 * i),
+											 static_cast<int>(90 - 30 * i), static_cast<int>(90.0f * flash * ringScale));
+					drawList->AddCircleFilled(flashCenter, radius * ringScale, flashCol, 24);
+				}
+			}
+
+			// ---- Sprint / aim screen tint ----
+			// A subtle edge vignette keyed to the resolved view state, so the
+			// player can feel sprinting and aiming peripherally without having
+			// to look at the HUD. Read from ViewStateComponent because the
+			// player script is the only thing that can resolve "shift is down"
+			// into "actually sprinting".
+			if (actor.TryGetComponent<ViewStateComponent>())
+			{
+				ViewStateComponent &view = actor.GetComponent<ViewStateComponent>();
+				if (view.IsSprinting || view.IsAiming)
+				{
+					// Aiming tints cool and tightens inward; sprinting tints
+					// warm and pushes outward. Opposite colours so the two read
+					// as different states rather than "some effect".
+					const ImU32 tint = view.IsAiming ? IM_COL32(120, 170, 255, 34)
+													 : IM_COL32(255, 170, 90, 30);
+					const float inset = view.IsAiming ? display.x * 0.18f : 0.0f;
+					// Four edge bars rather than a real gradient: ImGui has no
+					// cheap way to do a radial vignette, and bars read fine at
+					// low alpha.
+					const float barH = display.y * 0.035f;
+					drawList->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(display.x, barH), tint);
+					drawList->AddRectFilled(ImVec2(0.0f, display.y - barH), ImVec2(display.x, display.y), tint);
+					if (inset > 0.0f)
+					{
+						const float barW = display.x * 0.02f;
+						drawList->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(barW, display.y), tint);
+						drawList->AddRectFilled(ImVec2(display.x - barW, 0.0f), ImVec2(display.x, display.y), tint);
+					}
+				}
+			}
+		}
+
+		// ---- Health / ammo panel, bottom-left ----
+		if (actor.HasComponent<HealthComponent>() || actor.HasComponent<WeaponComponent>())
+		{
+			const ImVec2 pad(16.0f, 16.0f);
+			ImGui::SetNextWindowPos(ImVec2(pad.x, display.y - 190.0f), ImGuiCond_Always);
+			ImGui::SetNextWindowBgAlpha(0.55f);
+			// Second arg is p_open; a null pointer means the window has no
+			// close button and the return value is ignored.
+			ImGui::Begin("##GameplayHUD", nullptr,
+						 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+							 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+							 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+							 ImGuiWindowFlags_NoNav);
+
+			if (actor.HasComponent<HealthComponent>())
+			{
+				const auto &health = actor.GetComponent<HealthComponent>();
+				float frac = health.Max > 0.0f ? health.Current / health.Max : 0.0f;
+				frac = glm::clamp(frac, 0.0f, 1.0f);
+
+				// Green when healthy, red as it drains, so the bar itself
+				// communicates the state without needing to read the number.
+				ImVec4 tint = frac > 0.5f ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f)
+								: frac > 0.25f ? ImVec4(0.95f, 0.75f, 0.2f, 1.0f)
+											   : ImVec4(0.9f, 0.25f, 0.25f, 1.0f);
+
+				ImGui::Text("Health");
+				ImGui::PushStyleColor(ImGuiCol_PlotHistogram, tint);
+				ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+				ImGui::PopStyleColor();
+				ImGui::Text("%.0f / %.0f", health.Current, health.Max);
+			}
+
+			if (actor.HasComponent<WeaponComponent>())
+			{
+				const auto &weapon = actor.GetComponent<WeaponComponent>();
+				ImGui::Separator();
+				if (weapon.IsReloading)
+				{
+					// Reloading is a timed state, so show it as one rather
+					// than as a number that silently changes.
+					float frac = weapon.ReloadTime > 0.0f
+									  ? 1.0f - (weapon.ReloadTimer / weapon.ReloadTime)
+									  : 1.0f;
+					ImGui::Text("Reloading...");
+					ImGui::ProgressBar(glm::clamp(frac, 0.0f, 1.0f), ImVec2(-1.0f, 0.0f));
+				}
+				else
+				{
+					ImGui::Text("Ammo  %d / %d", weapon.CurrentAmmo, weapon.MaxAmmo);
+					ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+									   "Reserve  %d", weapon.ReserveAmmo);
+				}
+			}
+
+			ImGui::End();
+		}
+
+		// ---- Interaction prompt, just under the crosshair ----
+		// Drawn when the player is looking at an InteractableComponent.
+		// Which entity that is, and what it should say, is gameplay state
+		// owned by Interactor.py; the HUD only renders the nearest one.
+		// Viewing through InteractableComponent means only opted-in entities
+		// are visited, rather than scanning every entity in the scene.
+		for (auto entityHandle : m_ActiveScene->GetAllEntitiesWith<Wasteland::InteractableComponent>())
+		{
+			Entity candidate(entityHandle, m_ActiveScene.get());
+			if (!candidate.IsValid())
+				continue;
+			const auto *interactable = candidate.TryGetComponent<Wasteland::InteractableComponent>();
+			if (!interactable || !interactable->Enabled || interactable->Label.empty())
+				continue;
+
+			ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.5f + 46.0f),
+									ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+			ImGui::SetNextWindowBgAlpha(0.0f);
+			ImGui::Begin("##InteractPrompt", nullptr,
+						 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+							 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+							 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+							 ImGuiWindowFlags_NoNav);
+			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "%s", interactable->Label.c_str());
+			ImGui::End();
+			break;  // nearest one wins; the interactor only ever labels one
+		}
+
+		// ---- Death banner, centred ----
+		if (actor.HasComponent<HealthComponent>() && actor.GetComponent<HealthComponent>().IsDead)
+		{
+			ImGui::SetNextWindowPos(ImVec2(display.x * 0.5f, display.y * 0.35f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+			ImGui::SetNextWindowBgAlpha(0.0f);
+			ImGui::Begin("##DeathBanner", nullptr,
+						 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+							 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+							 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+							 ImGuiWindowFlags_NoNav);
+
+			// Scaled to the viewport so it reads the same at 1080p and 4K.
+			float scale = glm::clamp(display.y / 1080.0f, 0.75f, 3.0f);
+			ImGui::SetWindowFontScale(scale);
+			ImGui::TextColored(ImVec4(0.86f, 0.13f, 0.23f, 1.0f), "YOU DIED");
+			ImGui::SetWindowFontScale(1.0f);
+
+			ImGui::End();
+		}
 	}
 
 	void EditorLayer::OnOverlayRender()
@@ -1539,11 +2426,283 @@ static bool HasGLExtension(const char *name)
 		}
 	}
 
+	void EditorLayer::NewProject()
+	{
+		m_ShowNewProjectModal = true;
+		m_ProjectError.clear();
+		memset(m_NewProjectBuffer, 0, sizeof(m_NewProjectBuffer));
+	}
+
+	void EditorLayer::OpenProject()
+	{
+		std::string filepath = FileDialogs::OpenFile("Wasteland Project (*.wasteland)\0*.wasteland\0\0All files (*.*)\0*.*\0\0");
+		if (!filepath.empty())
+			OpenProject(filepath);
+	}
+
+	void EditorLayer::OpenProject(const std::filesystem::path &path)
+	{
+		// A project switch invalidates the open scene, so leave play/simulate
+		// mode first rather than leaving the layer half in a runtime state.
+		if (m_SceneState != SceneState::Edit)
+			OnSceneStop();
+
+		std::string error;
+		if (!Project::Get().Open(path, &error))
+		{
+			m_ProjectError = error;
+			WL_CORE_ERROR("EditorLayer: could not open project '{0}': {1}", path.string(), error);
+			return;
+		}
+
+		OnProjectChanged();
+	}
+
+	// Pushes the project's persisted render settings into the renderer.
+	//
+	// These values used to live only as Renderer3D statics, so a reopened project
+	// silently reverted to engine defaults -- render scale, the entire
+	// post-processing chain and the ray-tracing toggle were all lost. Applied
+	// through the same setters the UI uses, so there is one code path that can
+	// change any of them.
+	void EditorLayer::ApplyRenderSettings()
+	{
+		const Project::Settings::RenderSettings &r = Project::Get().GetSettings().Render;
+
+		// RenderScale 0 is the "never chosen" sentinel; forcing 0 would collapse
+		// the render target, so leave the engine default alone.
+		if (r.RenderScale > 0.0f)
+			Renderer3D::SetRenderScale(r.RenderScale);
+
+		Renderer3D::SetBloomEnabled(r.BloomEnabled);
+		Renderer3D::SetBloomThreshold(r.BloomThreshold);
+		Renderer3D::SetBloomIntensity(r.BloomIntensity);
+
+		Renderer3D::SetVignetteEnabled(r.VignetteEnabled);
+		Renderer3D::SetVignetteIntensity(r.VignetteIntensity);
+		Renderer3D::SetVignetteRadius(r.VignetteRadius);
+		Renderer3D::SetVignetteSoftness(r.VignetteSoftness);
+
+		Renderer3D::SetChromaticAberrationEnabled(r.ChromaticAberrationEnabled);
+		Renderer3D::SetChromaticAberrationIntensity(r.ChromaticAberrationIntensity);
+
+		Renderer3D::SetColorGradingEnabled(r.ColorGradingEnabled);
+		Renderer3D::SetColorTemperature(r.ColorTemperature);
+		Renderer3D::SetColorTint(r.ColorTint);
+		Renderer3D::SetColorGamma(r.ColorGamma);
+
+		Renderer3D::SetFilmGrainEnabled(r.FilmGrainEnabled);
+		Renderer3D::SetFilmGrainIntensity(r.FilmGrainIntensity);
+
+		// Last: it forces a resize, so it happens after the rest.
+		if (r.HasRayTracingValue)
+			Renderer3D::SetRayTracingEnabled(r.RayTracingEnabled);
+	}
+
+	// Reads the renderer's current render settings back into the project, so the
+	// next Save() writes what is actually on screen.
+	void EditorLayer::CaptureRenderSettings()
+	{
+		Project::Settings::RenderSettings &r = Project::Get().GetSettings().Render;
+
+		r.RenderScale = Renderer3D::GetRenderScale();
+		r.RayTracingEnabled = Renderer3D::IsRayTracingEnabled();
+		r.HasRayTracingValue = true;
+
+		r.BloomEnabled = Renderer3D::GetBloomEnabled();
+		r.BloomThreshold = Renderer3D::GetBloomThreshold();
+		r.BloomIntensity = Renderer3D::GetBloomIntensity();
+
+		r.VignetteEnabled = Renderer3D::GetVignetteEnabled();
+		r.VignetteIntensity = Renderer3D::GetVignetteIntensity();
+		r.VignetteRadius = Renderer3D::GetVignetteRadius();
+		r.VignetteSoftness = Renderer3D::GetVignetteSoftness();
+
+		r.ChromaticAberrationEnabled = Renderer3D::GetChromaticAberrationEnabled();
+		r.ChromaticAberrationIntensity = Renderer3D::GetChromaticAberrationIntensity();
+
+		r.ColorGradingEnabled = Renderer3D::GetColorGradingEnabled();
+		r.ColorTemperature = Renderer3D::GetColorTemperature();
+		r.ColorTint = Renderer3D::GetColorTint();
+		r.ColorGamma = Renderer3D::GetColorGamma();
+
+		r.FilmGrainEnabled = Renderer3D::GetFilmGrainEnabled();
+		r.FilmGrainIntensity = Renderer3D::GetFilmGrainIntensity();
+	}
+
+	void EditorLayer::OnProjectChanged()
+	{
+		Project &project = Project::Get();
+
+		// The content browser was browsing the previous project's tree.
+		m_ContentBrowserPanel.ResetToRoot();
+
+		// Entities hold absolute texture paths resolved from the old asset
+		// root, so the open scene has to go. Reload the project's start
+		// scene when it names one.
+		NewScene();
+
+		if (!project.GetSettings().StartScene.empty())
+		{
+			const std::filesystem::path startScene =
+				project.GetAssetPath(project.GetSettings().StartScene);
+			if (std::filesystem::is_regular_file(startScene))
+			{
+				OpenScene(startScene);
+				WL_CORE_INFO("EditorLayer: loaded start scene {0}", startScene.string());
+			}
+			else
+			{
+				WL_CORE_WARN("EditorLayer: start scene '{0}' not found", startScene.string());
+			}
+		}
+
+		// Same reason as the scene load above: OnProjectChanged already ran
+		// before this layer existed, so the render settings it applies never
+		// were. Without this, a project opened at startup comes up on
+		// engine-default post-processing and render scale regardless of
+		// what the project file says.
+		ApplyRenderSettings();
+
+		// The tool server reads and writes files relative to the project.
+		ToolServer::Instance().SetScene(m_ActiveScene.get());
+		ToolServer::Instance().SetProjectChangedCallback([this]() { OnProjectChanged(); });
+
+		// Apply AFTER the callbacks are wired, so a project opened by the tool
+		// server gets the same treatment as one opened from the menu.
+		ApplyRenderSettings();
+
+		WL_CORE_INFO("EditorLayer: switched to project '{0}'", project.GetName());
+	}
+
+	void EditorLayer::UI_NewProjectModal()
+	{
+		if (m_ShowNewProjectModal)
+			ImGui::OpenPopup("New Project");
+
+		if (ImGui::BeginPopupModal("New Project", &m_ShowNewProjectModal, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Project name:");
+			ImGui::InputText("##ProjectName", m_NewProjectBuffer, IM_ARRAYSIZE(m_NewProjectBuffer));
+
+			// Show where it will actually land -- Documents is often
+			// redirected to OneDrive, so a hardcoded %USERPROFILE% guess
+			// would be wrong on most installs.
+			const std::string safeName = Project::SanitizeName(m_NewProjectBuffer);
+			if (!safeName.empty())
+			{
+				const std::filesystem::path target = Project::GetUserProjectsDirectory() / safeName;
+				ImGui::TextDisabled("Location: %s", target.string().c_str());
+			}
+
+			if (!m_ProjectError.empty())
+				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_ProjectError.c_str());
+
+			if (ImGui::Button("Create", ImVec2(120, 0)))
+			{
+				if (strlen(m_NewProjectBuffer) > 0)
+				{
+					// Seed from the editor's own assets so the new project
+					// starts with the engine's built-in shaders; without them
+					// the renderer would fail to find its shaders.
+					const std::filesystem::path seed = Project::Get().GetAssetRoot();
+
+					std::string error;
+					if (Project::Create(m_NewProjectBuffer, seed, &error))
+					{
+						OnProjectChanged();
+						m_ShowNewProjectModal = false;
+						ImGui::CloseCurrentPopup();
+					}
+					else
+					{
+						// Leave the modal open so the error is readable and
+						// the name can be corrected.
+						m_ProjectError = error;
+					}
+				}
+			}
+
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_ShowNewProjectModal = false;
+				m_ProjectError.clear();
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+	}
+
+	void EditorLayer::UI_ProjectMenu()
+	{
+		Project &project = Project::Get();
+
+		if (ImGui::BeginMenu("Project"))
+		{
+			if (ImGui::MenuItem("New Project..."))
+				NewProject();
+
+			if (ImGui::MenuItem("Open Project..."))
+				OpenProject();
+
+			ImGui::Separator();
+
+			if (ImGui::BeginMenu("Recent", !Project::GetRecentProjects().empty()))
+			{
+				for (const std::string &recent : Project::GetRecentProjects())
+				{
+					// Show just the project folder name; the full path is
+					// long enough to push the menu off screen.
+					std::filesystem::path nameOnly = std::filesystem::path(recent).parent_path().filename();
+					if (ImGui::MenuItem(nameOnly.string().c_str()))
+						OpenProject(recent);
+				}
+				ImGui::EndMenu();
+			}
+
+			ImGui::Separator();
+
+			if (project.IsOpen())
+			{
+				ImGui::MenuItem(project.GetName().c_str(), nullptr, false, false);
+
+				if (ImGui::MenuItem("Save Project Settings"))
+					// Pull the live render state into the project first, so the file
+					// records what is actually on screen rather than whatever was
+					// loaded at startup.
+					CaptureRenderSettings();
+					project.Save();
+
+				if (ImGui::MenuItem("Reveal in File Browser"))
+				{
+#if defined(_WIN32)
+					// "explorer /select" focuses the folder in Explorer.
+					const std::string command = "explorer.exe \"" + project.GetRoot().string() + "\"";
+					system(command.c_str());
+#elif defined(__APPLE__)
+					const std::string command = "open \"" + project.GetRoot().string() + "\"";
+					system(command.c_str());
+#else
+					const std::string command = "xdg-open \"" + project.GetRoot().string() + "\"";
+					system(command.c_str());
+#endif
+				}
+			}
+			else
+			{
+				ImGui::MenuItem("No project open", nullptr, false, false);
+			}
+
+			ImGui::EndMenu();
+		}
+	}
+
 	void EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
 	{
 		SceneSerializer serializer(scene);
 		serializer.Serialize(path.string());
-		MirrorSavedAssetToSource(path);
 	}
 
 	void EditorLayer::OnScenePlay()
@@ -1558,6 +2717,13 @@ static bool HasGLExtension(const char *name)
 		m_ActiveScene->OnRuntimeStart();
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
+
+		// Grab the cursor for first-person look. Done here rather than in the
+		// player script because the editor owns the play-mode transition and
+		// therefore owns the paired release -- a script that only captured
+		// would strand the user with an invisible pointer if it failed to
+		// load, errored, or the scene had no player at all.
+		Application::Get().GetWindow().SetMouseCaptured(true);
 	}
 
 	void EditorLayer::OnSceneSimulate()
@@ -1576,7 +2742,7 @@ static bool HasGLExtension(const char *name)
 
 	void EditorLayer::OnSceneStop()
 	{
-		WL_CORE_ASSERT(m_SceneState == SceneState::Play || m_SceneState == SceneState::Simulate, nullptr);
+		WL_CORE_ASSERT(m_SceneState == SceneState::Play || m_SceneState == SceneState::Simulate, "OnSceneStop called outside Play or Simulate!");
 
 		m_IsPaused = false;
 
@@ -1590,6 +2756,12 @@ static bool HasGLExtension(const char *name)
 		m_ActiveScene = m_EditorScene;
 
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
+
+		// Release the cursor taken in OnScenePlay. Without this the user is
+		// left with an invisible pointer and has to kill the process to get
+		// it back. Done unconditionally rather than only for the Play branch,
+		// because entering Simulate from Play also passes through here.
+		Application::Get().GetWindow().SetMouseCaptured(false);
 	}
 
 	void EditorLayer::OnDuplicateEntity()
@@ -1600,5 +2772,33 @@ static bool HasGLExtension(const char *name)
 		Entity selectedEntity = m_SceneHierarchyPanel.GetSelectedEntity();
 		if (selectedEntity)
 			m_EditorScene->DuplicateEntity(selectedEntity);
+	}
+
+	// Route a path to the panel that owns its extension. One dispatcher,
+	// shared by the content browser and the pending-open drain: those two
+	// had already drifted, which is how a .wlblocks graph ended up shown
+	// as raw YAML in the Script Editor.
+	void EditorLayer::OpenVisualFile(const std::string &path)
+	{
+		const std::filesystem::path p(path);
+		const std::string ext = p.extension().string();
+
+		if (ext == ".py")
+		{
+			m_ScriptEditorPanel.OpenFile(p);
+			m_ScriptEditorPanel.SetVisible(true);
+		}
+		else if (ext == ".wlbtree")
+		{
+			m_NPCBehaviorPanel.OpenTree(p.string());
+		}
+		else if (ext == ".wlblocks")
+		{
+			m_VisualBlocksPanel.OpenGraph(p.string());
+		}
+		else
+		{
+			WL_CORE_WARN("No editor for '{0}'", ext);
+		}
 	}
 }

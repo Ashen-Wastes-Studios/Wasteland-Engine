@@ -29,8 +29,6 @@ IncludeDir["NVRHI"] = "Wasteland/vendor/nvrhi/include"
 IncludeDir["DirectXHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/directx_headers-src/include"
 IncludeDir["VulkanHeaders"] = "Wasteland/vendor/nvrhi/build/_deps/vulkan_headers-src/include"
 IncludeDir["VulkanSDK"] = "C:/VulkanSDK/1.3.296.0/Include"
-IncludeDir["NRD"] = "Wasteland/vendor/NRD/Include"
-IncludeDir["NRD_Shaders"] = "Wasteland/vendor/NRD/_Shaders"
 
 pythonpath = "C:\\Users\\rtoue\\AppData\\Local\\Python\\pythoncore-3.14-64"
 
@@ -95,17 +93,15 @@ project "Wasteland"
 		"%{IncludeDir.DirectXHeaders}",
 		"%{IncludeDir.VulkanHeaders}",
 		"%{IncludeDir.VulkanSDK}",
-				"%{IncludeDir.NRD}",
-						pythonpath .. "/include"
+		pythonpath .. "/include"
 	}
 
 	libdirs
 	{
 		pythonpath .. "/libs",
 		"Wasteland/vendor/nvrhi/build/%{cfg.buildcfg}",
-				"Wasteland/vendor/NRD/_Bin/Release",
-				"C:/VulkanSDK/1.3.296.0/Lib"
-			}
+		"C:/VulkanSDK/1.3.296.0/Lib"
+	}
 
 	links
 	{
@@ -117,11 +113,10 @@ project "Wasteland"
 		"Box3D",
 		"python314",
 		"nvrhi",
-				"nvrhi_d3d11",
-				"nvrhi_d3d12",
-				"nvrhi_vk",
-				"NRD"
-					}
+		"nvrhi_d3d11",
+		"nvrhi_d3d12",
+		"nvrhi_vk"
+	}
 
 	filter "files:vendor/ImGuizmo/**.cpp"
 		flags

@@ -1,0 +1,132 @@
+kind: tree
+schema: 1
+name: EnemyGuard
+blackboard:
+  - name: target
+    type: entity
+    default: ''
+  - name: attackCooldown
+    type: float
+    default: '0.0'
+  - name: patrolIndex
+    type: int
+    default: '0'
+nodes:
+  # Root: dead first, then stay idle, otherwise engage.
+  - id: root
+    type: Selector
+    children: [dead, idle, engage]
+
+  - id: dead
+    type: ConditionBool
+    pins:
+      - pin: Value
+        value: 'false'
+
+  - id: idle
+    type: Sequence
+    children: [hasNoTarget, waitIdle]
+
+  - id: hasNoTarget
+    type: ConditionDistanceTo
+    pins:
+      - pin: Target
+        value: target
+      - pin: Range
+        value: '0.0'
+      - pin: Op
+        value: '>'
+
+  - id: waitIdle
+    type: Wait
+    latent: true
+    pins:
+      - pin: Seconds
+        value: '1.0'
+
+  - id: engage
+    type: Sequence
+    children: [healthy, act]
+
+  - id: healthy
+    type: Invert
+    children: [hurt]
+
+  - id: hurt
+    type: ConditionHealthBelow
+    pins:
+      - pin: Threshold
+        value: '25.0'
+
+  # Approach and attack are ALTERNATIVES under a Selector. Written as a
+  # Sequence, an in-range agent fails the approach gate, short-circuits the
+  # whole branch, and stands in melee range doing nothing.
+  - id: act
+    type: Selector
+    children: [approach, attack]
+
+  # The gate must WRAP MoveTo, not sit beside it: "move if NOT in range".
+  - id: approach
+    type: Sequence
+    children: [notInRange, moveTo]
+
+  - id: notInRange
+    type: Invert
+    children: [inRange]
+
+  - id: inRange
+    type: ConditionDistanceTo
+    pins:
+      - pin: Target
+        value: target
+      - pin: Range
+        value: '2.0'
+      - pin: Op
+        value: '<='
+
+  - id: moveTo
+    type: MoveTo
+    latent: true
+    pins:
+      - pin: Target
+        value: target
+      - pin: Speed
+        value: '3.5'
+
+  # id: attack
+  #   type: Sequence
+  #   children: [inRange2, attackCooldown]
+  #
+  # `strike` is NOT listed here as well. It is the Cooldown's child, and a
+  # node with two parents runs once per parent -- the attack would land twice
+  # per cooldown window and the validator rejects it rather than emitting that.
+  - id: attack
+    type: Sequence
+    children: [inRange2, attackCooldown]
+
+  - id: inRange2
+    type: ConditionDistanceTo
+    pins:
+      - pin: Target
+        value: target
+      - pin: Range
+        value: '2.0'
+      - pin: Op
+        value: '<='
+
+  # Cooldown gates ENTRY. It must not cancel the attack it rate-limits.
+  - id: attackCooldown
+    type: Cooldown
+    children: [strike]
+    pins:
+      - pin: Seconds
+        value: '1.0'
+
+  - id: strike
+    type: Attack
+    pins:
+      - pin: Target
+        value: target
+      - pin: Damage
+        value: '10.0'
+links: []

@@ -1,0 +1,47 @@
+<Project>
+  <!--
+    MSVC PDB write serialisation.
+
+    Two CL.EXE processes writing one .PDB makes the second fail with
+    "C1041: cannot open program database" or "C1090: PDB API call failed",
+    even under MSBuild -m:1, because MSBuild compiles a project's sources in
+    more than one batch. /FS routes every write through mspdbsrv so they queue
+    instead of colliding.
+
+    ClCompile ONLY. /FS on <Link> is not valid for the static-library
+    (lib.exe) targets this repo also builds. The PDB write race is entirely a
+    cl.exe-side concern, so that is the only place /FS belongs.
+
+    This lives here rather than in each vcxproj because the vendored projects
+    (imgui, yaml-cpp, GLFW, ...) are regenerated from upstream and would lose
+    a per-project edit; Directory.Build.props is imported by all of them.
+
+    Do NOT also set MinimalRebuild=false here. It swaps MSBuild into
+    TrackedVCToolTask.DeleteFiles, which then fails with MSB6003 on the tlog
+    cleanup, trading one intermittent failure for another.
+  -->
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <!--
+        /bigobj raises the section count the object format allows.
+
+        Without it the editor build dies with "MSB6006: CL.exe exited with
+        code 1" and NO diagnostic, right after "Generating Code...". That is
+        during LTCG codegen, where an object-file section overflow surfaces as
+        a bare process exit rather than a compile error. The engine passed the
+        default budget as pybind11, NVRHI and the Visual Blocks machinery came
+        in.
+
+        Global, not per-project, because the symptom is invisible: no error
+        line, just a compiler that vanishes. The module project already passed
+        /bigobj locally and built fine while the editor did not, which made
+        this look like a flaky build rather than a missing flag.
+
+        NB: no double hyphens in this comment. XML forbids them inside a
+        comment, and an illegal comment is a MSB4024 that stops EVERY project
+        in the repo from loading.
+      -->
+      <AdditionalOptions>/FS /bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

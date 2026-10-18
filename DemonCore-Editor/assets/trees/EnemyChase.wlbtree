@@ -1,0 +1,196 @@
+kind: tree
+schema: 1
+name: EnemyChase
+blackboard:
+  # An ENTITY key with no default is emitted as UNWRITTEN on purpose: the
+  # compiler omits it from the seeded blackboard, so BlackboardIsSet("target")
+  # is False until a sweep actually finds somebody. Seeding it as None would
+  # make the key read valid with nothing in it, and the acquire branch would
+  # never run.
+  - name: target
+    type: entity
+
+nodes:
+  # ------------------------------------------------------------------
+  # Root is a Selector, NOT a Sequence. Written as a Sequence, the
+  # approach branch and the attack branch would BOTH have to succeed --
+  # MoveTo returns RUNNING while walking, so the attack never fires and
+  # the NPC stands in melee range doing nothing. One thing per tick.
+  #
+  # Declaration order IS priority. Never let a tool sort these.
+  # ------------------------------------------------------------------
+  - id: root
+    type: Selector
+    children: [dead, hasNoTarget, engage]
+
+  # Dead wins over everything, always. Nothing below it should run.
+  - id: dead
+    type: IsDead
+
+  # ------------------------------------------------------------------
+  # No target: acquire one.
+  #
+  # `noTargetYet` inverts the key test, so this branch SUCCEEDS only when
+  # there is genuinely nothing to chase -- and a Selector stops at its first
+  # success. Having a target therefore falls straight through to `engage` on
+  # every single tick.
+  #
+  # That is the whole reason acquisition is shaped this way. An earlier
+  # version put a latent Wait FIRST in this branch, to throttle scanning the
+  # way Enemy.py's retarget timer does. A Wait returns RUNNING for its full
+  # 0.5s, so `engage` -- and the attack Cooldown inside it -- became
+  # reachable only one tick in six, and a 1.0s cooldown released every 12
+  # ticks instead of 10. The symptom looked like float drift in the deadline
+  # maths; the real cause was a branch starving its own sibling.
+  #
+  # Perception is cheap (an O(n) scan over entities with a transform), and
+  # running it every tick is what keeps a dead or departed target from
+  # lingering. Enemy.py caches for efficiency; correctness first.
+  # ------------------------------------------------------------------
+  # The branch FAILS once a target is held, which is what lets the root fall
+  # through to `engage` on the very same tick the target was found. A Selector
+  # stops at its first SUCCESS, so a branch that *succeeds* on acquisition
+  # silently starves every lower-priority sibling for that tick -- the first
+  # tick an NPC ever has is the one tick it cannot attack on.
+  #
+  # ForceFailure is the tool for that: it runs its child for its EFFECT and
+  # then reports failure regardless of what the child said. Sensing is a
+  # side-effecting task whose SUCCESS is meaningless here -- what matters is the
+  # key it wrote.
+  - id: hasNoTarget
+    type: ForceFailure
+    children: [findTarget]
+
+  # Instantaneous: senses and completes in the tick it runs.
+  #
+  # SenseNearest CLEARS the key when it finds nobody, which is what retires a
+  # target that died or walked out of range -- and it is what drives this
+  # branch back to False, returning the NPC to idle with no explicit
+  # "forget my target" node needed anywhere.
+  - id: findTarget
+    type: SenseNearest
+    pins:
+      - pin: Key
+        value: target
+      # Matches Enemy.py's loseRange. Past this the enemy stops chasing.
+      - pin: Radius
+        value: '30.0'
+
+  # ------------------------------------------------------------------
+  # engage: healthy enough to fight, then act.
+  # ------------------------------------------------------------------
+  - id: engage
+    type: Sequence
+    children: [healthy, act]
+
+  - id: healthy
+    type: Invert
+    children: [hurt]
+
+  - id: hurt
+    type: IsLowHealth
+    pins:
+      - pin: Fraction
+        value: '0.25'
+
+  # Approach and attack are ALTERNATIVES under a Selector. Under a
+  # Sequence, an agent already in range fails the approach gate,
+  # short-circuits the whole branch, and stands still doing nothing.
+  # turn is a SIBLING of approach/attack, not a child of approach. Inside
+  # approach it is unreachable once the enemy is in range -- which is exactly
+  # when facing matters most, and the enemy ends up standing at melee range
+  # staring wherever it spawned.
+  - id: act
+    type: Sequence
+    children: [approachOrAttack, turn]
+
+  # The gate must WRAP MoveTo, not sit beside it: this means
+  # "move only if NOT in range". Sequence[notInRange, moveTo].
+  - id: approachOrAttack
+    type: Selector
+    children: [approach, attack]
+
+  - id: approach
+    type: Sequence
+    children: [notInRange, walk]
+
+  - id: notInRange
+    type: Invert
+    children: [inRange]
+
+  - id: inRange
+    type: ConditionDistanceTo
+    pins:
+      - pin: Target
+        value: target
+      # Enemy.py's attackRange.
+      - pin: Range
+        value: '1.6'
+      - pin: Op
+        value: '<='
+
+  # walk: Latent, because MoveTo is a journey, not an instant. It holds
+  # the branch RUNNING and re-enters here each tick until arrival, so the
+  # attack sibling is NOT evaluated until the walk actually finishes.
+  - id: walk
+    type: MoveTo
+    latent: true
+    pins:
+      - pin: Target
+        value: target
+      - pin: Speed
+        value: '3.0'
+
+  # Facing runs on every engaged tick -- walking or striking -- so the enemy
+  # is turned toward its target the whole approach, not just at arrival.
+  - id: turn
+    type: FaceTarget
+    pins:
+      - pin: Target
+        value: target
+      # Enemy.py's turnSpeed is 6.0 rad/s == 343.8 deg/s.
+      - pin: TurnRate
+        value: '343.8'
+
+  # ------------------------------------------------------------------
+  # attack: in range, off cooldown, strike.
+  # ------------------------------------------------------------------
+  # strike appears ONCE, inside the Cooldown. Listing it here as well made the
+  # Sequence call it directly and the Cooldown call it as its own child, so
+  # every tick dealt 24.0 instead of 12.0 and the cooldown re-armed itself --
+  # two hits per tick, at twice the authored damage, from a single line.
+  - id: attack
+    type: Sequence
+    children: [inRange2, rested]
+
+  - id: inRange2
+    type: ConditionDistanceTo
+    pins:
+      - pin: Target
+        value: target
+      - pin: Range
+        value: '1.6'
+      - pin: Op
+        value: '<='
+
+  # Cooldown gates ENTRY. It must not gate progress: checking "is my
+  # child suspended?" BEFORE the deadline test is what stops it from
+  # cancelling the very attack it exists to rate-limit. Blocked means
+  # FAILURE, not RUNNING -- RUNNING would park the tree and starve
+  # every sibling below it.
+  - id: rested
+    type: Cooldown
+    children: [strike]
+    pins:
+      - pin: Seconds
+        value: '1.0'
+
+  - id: strike
+    type: ApplyDamage
+    pins:
+      - pin: Target
+        value: target
+      - pin: Damage
+        value: '12.0'
+
+links: []

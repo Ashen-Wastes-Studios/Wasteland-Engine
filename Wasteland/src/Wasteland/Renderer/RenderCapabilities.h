@@ -10,8 +10,11 @@ namespace Wasteland
     // resolution happens here so no feature code ever branches on the API enum.
     //
     //   HardwareRT     DXR / VK_KHR_ray_tracing: real RTX Kit SDKs.
-    //   DenoiseCompute NRD-class spatio-temporal denoising. Works on D3D11
-    //                  (which has no hardware RT) but never on OpenGL.
+    //   DenoiseCompute A dedicated denoiser that runs as plain compute, so it
+    //                  works on D3D11 (which has no hardware RT) but never on
+    //                  OpenGL. No such denoiser ships today -- denoising is the
+    //                  hand-rolled bilateral blur on every backend -- so this
+    //                  tier only ever resolves for a future component.
     //   ComputeEmulated Software tracing in plain compute shaders -- this is
     //                  the Nova path tracer, not a stub. It runs everywhere.
     //   Unavailable    The feature cannot run; caller must use its raster path.
@@ -40,8 +43,9 @@ namespace Wasteland
         // backends today -- this is what keeps OpenGL feature-complete
         // without hardware RT.
         bool computeRaytracing = false;
-        // NRD integration is possible (D3D11 / D3D12 / Vulkan).
-        bool nrdCapable = false;
+        // A compute-based denoiser can be built for this backend (D3D11 /
+        // D3D12 / Vulkan). False everywhere until one exists.
+        bool denoiseComputeCapable = false;
 
         // Degrade a TierA/TierB probe down to whatever this backend supports.
         FeatureTier TierFor(FeatureTier probe) const
@@ -56,7 +60,7 @@ namespace Wasteland
                 return FeatureTier::Unavailable;
 
             case FeatureTier::DenoiseCompute:
-                if (nrdCapable)
+                if (denoiseComputeCapable)
                     return FeatureTier::DenoiseCompute;
                 if (computeRaytracing)
                     return FeatureTier::ComputeEmulated;

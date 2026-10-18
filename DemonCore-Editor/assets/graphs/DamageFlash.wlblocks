@@ -1,0 +1,153 @@
+kind: flow
+schema: 1
+name: DamageFlash
+variables:
+  - name: flashTimer
+    type: float
+    default: 0
+  - name: wasHit
+    type: bool
+    default: False
+nodes:
+  - id: ev
+    type: FlowOnEvent
+    x: 60
+    y: 80
+    event: OnUpdate
+  - id: mark_hit
+    type: SetVariable
+    x: 380
+    y: 80
+    pins:
+      - pin: Name
+        value: wasHit
+      - pin: Value
+        value: True
+  - id: arm_timer
+    type: SetVariable
+    x: 700
+    y: 80
+    pins:
+      - pin: Name
+        value: flashTimer
+      - pin: Value
+        value: 0.35
+  - id: read_timer
+    type: GetVariable
+    x: 1020
+    y: 80
+    pins:
+      - pin: Name
+        value: flashTimer
+  - id: dec
+    type: Add
+    x: 1340
+    y: 80
+    pins:
+      - pin: B
+        value: -0.016
+  - id: write_timer
+    type: SetVariable
+    x: 1660
+    y: 80
+    pins:
+      - pin: Name
+        value: flashTimer
+  - id: read_back
+    type: GetVariable
+    x: 1980
+    y: 80
+    pins:
+      - pin: Name
+        value: flashTimer
+  - id: still_lit
+    type: GreaterThan
+    x: 2300
+    y: 80
+    pins:
+      - pin: B
+        value: 0
+  - id: br
+    type: Branch
+    x: 2620
+    y: 80
+    pins:
+      - pin: Condition
+        value: False
+  - id: clear_hit
+    type: SetVariable
+    x: 2940
+    y: 20
+    pins:
+      - pin: Name
+        value: wasHit
+      - pin: Value
+        value: False
+  - id: log_end
+    type: Log
+    x: 2940
+    y: 140
+    pins:
+      - pin: Message
+        value: flash ended
+links:
+  - from:
+      node: ev
+      pin: Out
+    to:
+      node: mark_hit
+      pin: In
+  - from:
+      node: mark_hit
+      pin: Out
+    to:
+      node: arm_timer
+      pin: In
+  - from:
+      node: arm_timer
+      pin: Out
+    to:
+      node: write_timer
+      pin: In
+  - from:
+      node: write_timer
+      pin: Out
+    to:
+      node: br
+      pin: In
+  - from:
+      node: br
+      pin: True
+    to:
+      node: clear_hit
+      pin: In
+  - from:
+      node: clear_hit
+      pin: Out
+    to:
+      node: log_end
+      pin: In
+  - from:
+      node: read_timer
+      pin: Value
+    to:
+      node: dec
+      pin: A
+  - from:
+      node: dec
+      pin: Value
+    to:
+      node: write_timer
+      pin: Value
+  - from:
+      node: read_back
+      pin: Value
+    to:
+      node: still_lit
+      pin: A
+  - from:
+      node: still_lit
+      pin: Value
+    to:
+      node: br
+      pin: Condition

@@ -230,7 +230,7 @@ ifneq (,$(PCH))
 $(OBJECTS): $(GCH) | $(PCH_PLACEHOLDER)
 $(GCH): $(PCH) | prebuild
 	@echo $(notdir $<)
-	$(SILENT) $(CXX) -x c++-header $(ALL_CXXFLAGS) -o "$@" -MF "$(@:%.gch=%.d)" -c "$<"
+	$(SILENT) $(CXX) -x c++-header $(ALL_CXXFLAGS) -o "$@" -MF "$(@:%.gch=%.d)" "$<"
 $(PCH_PLACEHOLDER): $(GCH) | $(OBJDIR)
 ifeq (posix,$(SHELLTYPE))
 	$(SILENT) touch "$@"

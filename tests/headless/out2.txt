@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "C:\dev\Wasteland\tests\headless\runner.py", line 168, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\dev\Wasteland\tests\headless\runner.py", line 128, in main
+    module_dir = wlpath.setup()
+  File "C:\dev\Wasteland\tests\headless\wlpath.py", line 77, in setup
+    import Wasteland  # noqa: F401  (import is the assertion)
+    ^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'Wasteland'
