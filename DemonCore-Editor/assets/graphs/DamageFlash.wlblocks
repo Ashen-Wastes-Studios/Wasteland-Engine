@@ -14,24 +14,21 @@ nodes:
     x: 60
     y: 80
     event: OnUpdate
-  - id: mark_hit
-    type: SetVariable
-    x: 380
-    y: 80
-    pins:
-      - pin: Name
-        value: wasHit
-      - pin: Value
-        value: True
-  - id: arm_timer
-    type: SetVariable
-    x: 700
-    y: 80
-    pins:
-      - pin: Name
-        value: flashTimer
-      - pin: Value
-        value: 0.35
+  # COUNTDOWN ONLY. This graph does NOT arm its own timer.
+  #
+  # The first version armed inside OnUpdate (mark_hit -> arm_timer -> dec ->
+  # still_lit -> clear_hit), so every frame set the timer back to 0.35 and then
+  # decremented it once. The timer therefore never counted down across frames,
+  # `wasHit` was set and cleared within a single frame so it never persisted, and
+  # the "still lit" branch always took -- emitting one "flash ended" line PER
+  # FRAME instead of once per flash.
+  #
+  # Arming is the HOST's job: scripts/DamageFlashHost.py sets wasHit/flashTimer
+  # when the entity's health drops. That split is deliberate. A flow graph has
+  # no damage event to trigger on -- ScriptEngine calls exactly one hook,
+  # OnUpdateEntity, and the node library has no damage event node -- so the
+  # graph owns the countdown and the hand-written host owns the trigger. Both
+  # halves are required for the flash to mean anything.
   - id: read_timer
     type: GetVariable
     x: 1020
@@ -67,9 +64,48 @@ nodes:
     pins:
       - pin: B
         value: 0
+  - id: read_hit
+    type: GetVariable
+    x: 1660
+    y: 260
+    pins:
+      - pin: Name
+        value: wasHit
+  # GetVariable's output pin is Float-ONLY -- NodeLibraryFlow.cpp records the
+  # constraint: "Typed Float, so a Bool or String variable is inconsistent with
+  # this node". So a boolean flag has to be compared against 0 before it can
+  # feed a Bool pin; connecting it straight into `Not` fails validation with
+  # "cannot connect float to bool".
+  - id: hit_now
+    type: GreaterThan
+    x: 1980
+    y: 260
+    pins:
+      - pin: B
+        value: 0
+  - id: neg_hit
+    type: Not
+    x: 2300
+    y: 260
+    pins:
+      - pin: A
+        value: False
+  # keep = still_lit OR (not wasHit). The second operand is what makes the
+  # clear-and-log fire ONCE: after the timer expires it clears wasHit, so every
+  # later frame has wasHit False and takes the pass branch instead of logging
+  # again. Without it the else branch ran on every frame the timer was negative.
+  - id: keep
+    type: Or
+    x: 2620
+    y: 160
+    pins:
+      - pin: A
+        value: False
+      - pin: B
+        value: False
   - id: br
     type: Branch
-    x: 2620
+    x: 2940
     y: 80
     pins:
       - pin: Condition
@@ -95,18 +131,6 @@ links:
       node: ev
       pin: Out
     to:
-      node: mark_hit
-      pin: In
-  - from:
-      node: mark_hit
-      pin: Out
-    to:
-      node: arm_timer
-      pin: In
-  - from:
-      node: arm_timer
-      pin: Out
-    to:
       node: write_timer
       pin: In
   - from:
@@ -117,7 +141,7 @@ links:
       pin: In
   - from:
       node: br
-      pin: True
+      pin: False
     to:
       node: clear_hit
       pin: In
@@ -147,6 +171,30 @@ links:
       pin: A
   - from:
       node: still_lit
+      pin: Value
+    to:
+      node: keep
+      pin: A
+  - from:
+      node: read_hit
+      pin: Value
+    to:
+      node: hit_now
+      pin: A
+  - from:
+      node: hit_now
+      pin: Value
+    to:
+      node: neg_hit
+      pin: A
+  - from:
+      node: neg_hit
+      pin: Value
+    to:
+      node: keep
+      pin: B
+  - from:
+      node: keep
       pin: Value
     to:
       node: br

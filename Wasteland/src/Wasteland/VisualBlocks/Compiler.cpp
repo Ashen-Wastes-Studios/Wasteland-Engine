@@ -817,6 +817,22 @@ def _is_dead(agent):
     return bool(agent.GetHealthComponent().IsDead)
 
 
+def _health(agent):
+    """Current health as an ABSOLUTE value (not a fraction of max).
+
+    The ConditionHealthBelow node thresholds in authored trees are absolute --
+    the shipped EnemyGuard uses 25.0 -- so the emitter compares against this
+    rather than against _health_fraction, which is what IsLowHealth uses.
+
+    Returns 0.0 with no health component. A missing component must not make
+    the condition succeed: an entity with no health bar has not been hurt
+    below 25, and treating it as such would take the hurt branch for scenery.
+    """
+    if agent is None or not agent.HasHealthComponent():
+        return 0.0
+    return agent.GetHealthComponent().Current
+
+
 def _health_fraction(agent):
     """Current health as a FRACTION of max, so one threshold reads correctly
     at any max health.

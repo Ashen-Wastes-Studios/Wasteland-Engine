@@ -28,6 +28,8 @@
 #include <box3d/box3d.h>
 #include <box3d/collision.h>
 #include "Wasteland/Audio/AudioSystem.h"
+#include "Platform/NVRHI/NVRHIRendererAPI.h"
+#include "Platform/NVRHI/NVRHIContext.h"
 
 namespace Wasteland
 {
@@ -1073,6 +1075,16 @@ namespace Wasteland
 					continue;
 
 				const auto &position = body->GetPosition();
+				// Same rule as the 3D path below: a Kinematic body is driven by
+				// code, so reading it back into the transform would overwrite
+				// whatever the script wrote this frame. Push the transform into
+				// the body instead and leave the transform alone.
+				if (rb2d.Type == Rigidbody2DComponent::BodyType::Kinematic)
+				{
+					body->SetTransform(b2Vec2(transform.Translation.x, transform.Translation.y),
+									   transform.Rotation.z);
+					continue;
+				}
 				transform.Translation.x = position.x;
 				transform.Translation.y = position.y;
 				transform.Rotation.z = body->GetAngle();
@@ -1110,6 +1122,30 @@ namespace Wasteland
 			b3BodyId bodyId = b3LoadBodyId(rb3d.RuntimeBody);
 			if (!b3Body_IsValid(bodyId))
 				continue;
+
+			// A Kinematic body is moved BY CODE, not by the solver. Reading the
+			// body back into the transform here -- AFTER the script pass --
+			// discards whatever a script or behaviour tree wrote this frame:
+			// the body has not moved, so the read-back restores the pre-script
+			// transform and the NPC stands still with no error anywhere.
+			//
+			// Verified against the built module: EnemyChase walked 12.6 m with
+			// physics stopped and 0.0 m with it running, and the hand-written
+			// Enemy_legacy_reference.py behaved identically -- so this is the
+			// mechanism, not the tree.
+			//
+			// Kinematic means "code drives it", so the data flows the OTHER way:
+			// push the transform into the body (so collision detection sees the
+			// new position this step) and leave the transform alone. Dynamic and
+			// Static keep the read-back below, which is where their motion comes
+			// from.
+			if (rb3d.Type == RigidBody3DType::Kinematic)
+			{
+				b3Body_SetTransform(bodyId,
+									{(float)transform.Translation.x, (float)transform.Translation.y, (float)transform.Translation.z},
+									EulerToB3Quat(transform.Rotation));
+				continue;
+			}
 
 			b3Pos pos = b3Body_GetPosition(bodyId);
 			b3Quat rot = b3Body_GetRotation(bodyId);
@@ -3338,17 +3374,27 @@ namespace Wasteland
 	// editor case and the runtime path passes the scene's own
 	// primary camera through the same slot.
 	void Scene::RenderScene(EditorCamera &camera)
-	{
-		// Render 2D
-		// Opens the 2D batch, submits sprites and circles, then closes it below
-		// with EndScene before any 3D work begins.
-		//
-		// Sprites and circles are drawn in SEPARATE loops rather than one loop over
-		// both. That means all sprites are submitted before all circles, so a
-		// circle always draws over a sprite regardless of scene position. With no
-		// depth sorting in a 2D batch that ordering is purely submission order, so
-		// this is the whole draw-order story for 2D.
-		Renderer2D::BeginScene(camera);
+		{
+			// Skip the entire render pipeline when the device is lost: every NVRHI
+			// command below (writeBuffer, drawIndexed, dispatch, etc.) dereferences
+			// m_ActiveCommandList, which is null because BeginFrame skipped open()
+			// after the TDR. Without this guard the editor crashes inside the first
+			// command list call.
+			if (auto *ctx = NVRHIRendererAPI::GetCurrentContext())
+			{
+				if (ctx->IsDeviceLost())
+					return;
+			}
+			// Render 2D
+			// Opens the 2D batch, submits sprites and circles, then closes it below
+			// with EndScene before any 3D work begins.
+			//
+			// Sprites and circles are drawn in SEPARATE loops rather than one loop over
+			// both. That means all sprites are submitted before all circles, so a
+			// circle always draws over a sprite regardless of scene position. With no
+			// depth sorting in a 2D batch that ordering is purely submission order, so
+			// this is the whole draw-order story for 2D.
+			Renderer2D::BeginScene(camera);
 
 		// Draw sprites
 		{

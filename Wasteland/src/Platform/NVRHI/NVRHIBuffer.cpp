@@ -168,9 +168,9 @@ namespace Wasteland {
 		// Borrowed, not owned. The list belongs to the context and is reused
 		// every frame, so the write is recorded rather than submitted.
 		nvrhi::ICommandList* cmd = context->GetCommandList();
-		if (!cmd)
+		if (!cmd || !context->IsCommandListOpen())
 		{
-			WL_CORE_ERROR("NVRHIVertexBuffer::SetData: No command list available");
+			WL_CORE_ERROR("NVRHIVertexBuffer::SetData: Command list not open");
 			return;
 		}
 
@@ -273,9 +273,9 @@ namespace Wasteland {
 		}
 
 		nvrhi::ICommandList* cmd = context->GetCommandList();
-		if (!cmd)
+		if (!cmd || !context->IsCommandListOpen())
 		{
-			WL_CORE_ERROR("NVRHIIndexBuffer::SetData: No command list available");
+			WL_CORE_ERROR("NVRHIIndexBuffer::SetData: Command list not open");
 			return;
 		}
 
@@ -350,9 +350,9 @@ namespace Wasteland {
 		}
 
 		nvrhi::ICommandList* cmd = context->GetCommandList();
-		if (!cmd)
+		if (!cmd || !context->IsCommandListOpen())
 		{
-			WL_CORE_ERROR("NVRHIStructuredBuffer::SetData: No command list available");
+			WL_CORE_ERROR("NVRHIStructuredBuffer::SetData: Command list not open");
 			return;
 		}
 

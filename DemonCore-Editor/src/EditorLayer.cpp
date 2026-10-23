@@ -2,6 +2,7 @@
 
 #include <imgui/imgui.h>
 #include <cstdlib>
+#include <cstdio>   // std::sscanf, for the WASTELAND_PIN_CAMERA harness hook
 #include <imgui/imgui_internal.h>
 #ifdef _WIN32
 #include <Windows.h>
@@ -515,6 +516,41 @@ static bool HasGLExtension(const char *name)
 
 		m_CameraController.SetZoomLevel(5.0f);
 
+		// Pinned-camera harness hook.
+		//
+		//   WASTELAND_PIN_CAMERA=<fx,fy,fz>,<distance>,<pitch>,<yaw>
+		//
+		// Holds the editor camera at a known transform and skips
+		// EditorCamera::OnUpdate, so two headless runs render from the same
+		// viewpoint. This exists because the camera otherwise starts from the
+		// constructor defaults (focal point and position both at the origin) and
+		// its transform is not persisted anywhere, which made every cross-run
+		// frame-time comparison in the Nova diagnosis unreliable: instance counts
+		// were observed to differ by 4x between runs of the same binary.
+		//
+		// The six values are degrees for pitch and yaw, matching MouseRotate's
+		// units, and metres for the focal point and distance. Absent or malformed
+		// input leaves the camera unpinned, so this is inert unless asked for.
+		if (const char *pinEnv = std::getenv("WASTELAND_PIN_CAMERA"))
+		{
+			float fx = 0.0f, fy = 0.0f, fz = 0.0f, dist = 10.0f, pitch = 0.0f, yaw = 0.0f;
+			if (std::sscanf(pinEnv, "%f,%f,%f,%f,%f,%f", &fx, &fy, &fz, &dist, &pitch, &yaw) == 6)
+			{
+				m_EditorCamera.SetFocalPoint({fx, fy, fz});
+				m_EditorCamera.SetDistance(dist);
+				m_EditorCamera.SetPitch(pitch);
+				m_EditorCamera.SetYaw(yaw);
+				m_CameraPinned = true;
+				WL_CORE_INFO("Pinned editor camera: focal ({},{},{}) distance {} pitch {} yaw {}",
+				             fx, fy, fz, dist, pitch, yaw);
+			}
+			else
+			{
+				WL_CORE_WARN("WASTELAND_PIN_CAMERA ignored: expected <fx,fy,fz>,<distance>,<pitch>,<yaw>, got '{}'",
+				             pinEnv);
+			}
+		}
+
 		// Load the bootstrap project's start scene.
 		//
 		// Project::Bootstrap opens the project itself (env var, --project, or the
@@ -760,7 +796,13 @@ static bool HasGLExtension(const char *name)
 				m_CameraController.OnUpdate(ts);
 			}
 
-			m_EditorCamera.OnUpdate(ts);
+			// Pinned harness mode: hold the transform the env var set and skip the
+			// update entirely. EditorCamera::OnUpdate only moves the camera while
+			// ALT is held, so in a headless run it is a no-op anyway -- but skipping
+			// it guarantees the view matrix cannot drift between two runs of the
+			// same binary, which is the whole point of pinning.
+			if (!m_CameraPinned)
+				m_EditorCamera.OnUpdate(ts);
 
 			m_ActiveScene->OnUpdateEditor(ts, m_EditorCamera);
 			break;
@@ -826,6 +868,8 @@ static bool HasGLExtension(const char *name)
 			return "Scripting";
 		case Workflow::Visual:
 			return "Visual Blocks";
+		case Workflow::Audio:
+			return "Audio";
 		case Workflow::Review:
 			return "Review";
 		}
@@ -861,6 +905,16 @@ static bool HasGLExtension(const char *name)
 			rightRatio = 0.30f;
 			bottomRatio = 0.20f;
 			break;
+		case Workflow::Audio:
+			// A wider right rail than any other workflow: the mixer's voice table
+			// is seven columns and is unreadable below about 34% of a 1920-wide
+			// dockspace. The left rail keeps the scene panels, because the point
+			// of the workflow is relating a source on an entity to the sound it
+			// produces.
+			leftRatio = 0.18f;
+			rightRatio = 0.34f;
+			bottomRatio = 0.30f;
+			break;
 		case Workflow::Review:
 			leftRatio = 0.22f;
 			rightRatio = 0.28f;
@@ -882,6 +936,23 @@ static bool HasGLExtension(const char *name)
 		m_TerrainAssetPanel.SetVisible(false);
 		m_AIChatPanel.SetVisible(workflow == Workflow::Review);
 		m_ModelDownloaderPanel.SetVisible(workflow == Workflow::Scene);
+		// The AVB graph is the routing half of the Audio workflow -- it is what
+		// shows where a clip actually goes after the mixer, so it is on in Audio
+		// as well as Visual. AvbGraphPanel defaults to hidden, so without this
+		// line the panel is docked into the layout and simply never appears.
+		m_AvbGraphPanel.SetVisible(workflow == Workflow::Visual || workflow == Workflow::Audio);
+		// Audio: all three panels, and the workflow is the only one that shows
+		// them. Hidden elsewhere but still constructed, so a selected clip and
+		// the retired-slot toggle survive a layout switch.
+		//
+		// The viewport STAYS: audio sources are spatial, and the workflow is
+		// about relating a source on an entity to the sound it produces. That is
+		// why the layout below gives the centre column to the viewport with the
+		// waveform under it, rather than replacing the viewport.
+		const bool audio = workflow == Workflow::Audio;
+		m_AudioClipPanel.SetVisible(audio);
+		m_AudioMixerPanel.SetVisible(audio);
+		m_AudioScenePanel.SetVisible(audio);
 		m_ShowViewport = workflow != Workflow::Review;
 
 		// ONE rebuild, on demand. RemoveNode/AddNode/Finish discards the
@@ -925,6 +996,9 @@ static bool HasGLExtension(const char *name)
 			"Node Palette",
 			"Visual Blocks",
 			"AVB Graph",
+			"Audio Clips",
+			"Audio Mixer",
+			"Audio Sources",
 			"Terrain Asset",
 			"AI Chatbot",
 			"Model Downloader",
@@ -938,10 +1012,91 @@ static bool HasGLExtension(const char *name)
 		ImGuiID hierarchy = left;
 		ImGuiID properties = left;
 		if (left != 0)
-			properties = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, &hierarchy, nullptr);
+		{
+			// Hierarchy on top, Properties below.
+			//
+			// DockBuilderSplitNode returns the node IN the split direction and
+			// writes the OPPOSITE half to its last argument, so the two halves
+			// have to be captured through the out-parameters. The original form
+			// passed nullptr for the opposite one, which handed BOTH names the
+			// bottom half and orphaned the top -- leaving Scene Hierarchy and
+			// Properties as tabs in a single region instead of the stacked pair
+			// the comment above them describes.
+			hierarchy = 0;
+			properties = 0;
+			(void)ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, &properties, &hierarchy);
+		}
 		dock("Scene Hierarchy", hierarchy);
 		dock("Properties", properties);
 		dock("Content Browser", bottom);
+
+		// Audio's regions, declared here because the generic loop further down
+		// needs to know where to put the panels Audio does not use.
+		//
+		// The layout this builds:
+		//
+		//   left    Scene Hierarchy / Properties   (stacked)
+		//   centre  Viewport                       (top)
+		//           AVB Graph                      (bottom)
+		//   right   Audio Mixer                    (top)
+		//           Audio Sources                  (bottom)
+		//   bottom  Content Browser | Audio Clips  (waveform on the right)
+		//
+		// The waveform gets the wider share of the bottom rail rather than a side
+		// rail: a waveform is the one audio surface that genuinely needs
+		// horizontal space, which is why this workflow splits the bottom region
+		// instead of stacking into it like every other workflow.
+		//
+		// DockBuilderSplitNode returns the node IN the split direction and writes
+		// the OPPOSITE half to its last argument, so both halves have to be
+		// captured through the out-parameters. Passing nullptr for the opposite
+		// one -- the obvious-looking call -- hands both names the same node and
+		// silently discards the other half, which put every audio panel into a
+		// single region in the first attempt.
+		//
+		// The splits must also happen BEFORE anything is docked into `right`: a
+		// window docked into a node that is already split lands in an arbitrary
+		// child, which is how Settings came to share the mixer's region.
+		const ImGuiID rightNode = right;
+		ImGuiID audioMixerNode = 0;
+		ImGuiID audioSourcesNode = 0;
+		const ImGuiID bottomNode = bottom;
+		ImGuiID audioClipsNode = 0;
+		ImGuiID browserNode = 0;
+
+		if (workflow == Workflow::Audio && right != 0 && bottom != 0)
+		{
+			// Centre column: Viewport on top, AVB Graph below. The graph is a
+			// canvas and wants the wide centre slot; the waveform below is the one
+			// surface that wants the full bottom-rail width, so the two are kept
+			// apart rather than sharing a rail.
+			//
+			// Split BEFORE `dock(primary, top)` further down, which is skipped
+			// for Audio for exactly this reason.
+			if (top != 0)
+			{
+				ImGuiID viewportNode = 0;
+				ImGuiID avbNode = 0;
+				(void)ImGui::DockBuilderSplitNode(top, ImGuiDir_Down, 0.55f, &avbNode, &viewportNode);
+				dock("Viewport", viewportNode);
+				dock("AVB Graph", avbNode);
+			}
+
+			// Right rail: mixer on top, scene sources below. Reading order for a
+			// mix -- the levels first, the things producing them second.
+			(void)ImGui::DockBuilderSplitNode(rightNode, ImGuiDir_Down, 0.5f,
+				&audioSourcesNode, &audioMixerNode);
+			dock("Audio Mixer", audioMixerNode);
+			dock("Audio Sources", audioSourcesNode);
+
+			// Bottom rail: browser left, waveform right. The waveform gets the
+			// wider share -- 0.55 is the fraction given to the node IN the split
+			// direction, which here is the right half.
+			(void)ImGui::DockBuilderSplitNode(bottomNode, ImGuiDir_Right, 0.55f,
+				&audioClipsNode, &browserNode);
+			dock("Content Browser", browserNode);
+			dock("Audio Clips", audioClipsNode);
+		}
 
 		const char *primary = "Viewport";
 		switch (workflow)
@@ -958,7 +1113,10 @@ static bool HasGLExtension(const char *name)
 		case Workflow::Scene:
 			break;
 		}
-		dock(primary, top);
+		// Audio docks its centre pair explicitly above (Viewport over AVB Graph),
+		// so the generic dock here would put the viewport in the wrong half.
+		if (workflow != Workflow::Audio)
+			dock(primary, top);
 
 		// Everything not primary is docked into the side rail: docked but
 		// hidden unless the workflow uses it, so no panel floats and no
@@ -970,10 +1128,33 @@ static bool HasGLExtension(const char *name)
 				std::strcmp(name, "Properties") == 0 ||
 				std::strcmp(name, "Content Browser") == 0)
 				continue;
+			// Audio's three panels are docked explicitly above, into regions the
+			// generic path does not have. Left in this loop they would all pile
+			// into the right rail as tabs, which is the one arrangement that
+			// makes the mixer unusable.
+			if (workflow == Workflow::Audio &&
+				(std::strcmp(name, "Audio Clips") == 0 ||
+				 std::strcmp(name, "Audio Mixer") == 0 ||
+				 std::strcmp(name, "Audio Sources") == 0 ||
+				 std::strcmp(name, "AVB Graph") == 0))
+				continue;
 			// Model Downloader shares the bottom rail with the browser in
 			// Scene; the sidebar is the tidier home everywhere else.
 			if (workflow == Workflow::Scene && std::strcmp(name, "Model Downloader") == 0)
 				dock(name, bottom);
+			else if (workflow == Workflow::Audio)
+			{
+				// Audio does not use these panels, but they still have to be
+				// docked somewhere real -- an undocked window reverts to a
+				// free-floating window on first use, which is how Settings and
+				// Stats ended up loose on screen.
+				//
+				// The scene-sources region rather than `right`: by this point
+				// `right` is a SPLIT node, and a window docked into a split node
+				// lands in an arbitrary child. Docking Settings there put it in
+				// the mixer's own region, sharing the voice table's space.
+				dock(name, audioSourcesNode);
+			}
 			else
 				dock(name, right);
 		}
@@ -1051,6 +1232,8 @@ static bool HasGLExtension(const char *name)
 																				m_Workflow = Workflow::Scripting;
 															else if (name == "Visual" || name == "Visual Blocks")
 																				m_Workflow = Workflow::Visual;
+															else if (name == "Audio")
+																				m_Workflow = Workflow::Audio;
 															else if (name == "Review")
 																				m_Workflow = Workflow::Review;
 															else if (name != "Scene")
@@ -1066,8 +1249,16 @@ static bool HasGLExtension(const char *name)
 					// WASTELAND_EDITOR_GRAPH opens a graph at startup. Opening one
 					// otherwise means clicking through the content browser, which
 					// screenshots and CI cannot do.
+					//
+					// Routed through the same extension dispatch as
+					// OpenVisualFile rather than straight to the Visual Blocks
+					// panel: this hook predates .wlavb, so passing an AVB graph
+					// to it silently did nothing -- the file was never opened
+					// anywhere, and the AVB Graph panel stayed on its
+					// "open a file" message. Dispatching by extension is what
+					// makes the hook able to open the graph it is handed.
 					if (const char *graphPath = std::getenv("WASTELAND_EDITOR_GRAPH"))
-						m_VisualBlocksPanel.OpenGraph(graphPath);
+						OpenVisualFile(graphPath);
 				}
 				ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 			}
@@ -1160,6 +1351,21 @@ static bool HasGLExtension(const char *name)
 					if (ImGui::MenuItem("Model Downloader", nullptr, &dlVisible))
 						m_ModelDownloaderPanel.SetVisible(dlVisible);
 
+					// Audio's three, grouped with the other panel toggles. Each is
+					// an independent show/hide, so the audio panels can be pulled
+					// into another workflow by hand rather than only through the
+					// Layout menu -- which is how the workflow layouts are meant to
+					// be a starting point.
+					bool audioClips = m_AudioClipPanel.IsVisible();
+					if (ImGui::MenuItem("Audio Clips", nullptr, &audioClips))
+						m_AudioClipPanel.SetVisible(audioClips);
+					bool audioMixer = m_AudioMixerPanel.IsVisible();
+					if (ImGui::MenuItem("Audio Mixer", nullptr, &audioMixer))
+						m_AudioMixerPanel.SetVisible(audioMixer);
+					bool audioScene = m_AudioScenePanel.IsVisible();
+					if (ImGui::MenuItem("Audio Sources", nullptr, &audioScene))
+						m_AudioScenePanel.SetVisible(audioScene);
+
 					ImGui::EndMenu();
 				}
 
@@ -1169,7 +1375,8 @@ static bool HasGLExtension(const char *name)
 					if (ImGui::BeginMenu("Layout"))
 					{
 						const Workflow workflows[] = {Workflow::Scene, Workflow::Scripting,
-															 Workflow::Visual, Workflow::Review};
+													 Workflow::Visual, Workflow::Audio,
+													 Workflow::Review};
 						for (Workflow workflow : workflows)
 						{
 												// Checked rather than a plain item: the active layout shows a
@@ -1236,6 +1443,28 @@ static bool HasGLExtension(const char *name)
 
 			m_AIChatPanel.OnImGuiRender();
 			m_ModelDownloaderPanel.OnImGuiRender();
+
+			// Audio. Guarded on m_ActiveScene because the panels dereference it
+			// directly: Scene::GetAudioSystem() lazily constructs the AudioSystem
+			// against the scene pointer, so a null scene would crash inside the
+			// first panel rather than being reported here.
+			if (m_ActiveScene)
+			{
+				m_AudioClipPanel.OnImGuiRender(*m_ActiveScene);
+				m_AudioMixerPanel.OnImGuiRender(*m_ActiveScene);
+				m_AudioScenePanel.OnImGuiRender(*m_ActiveScene);
+
+				// The scene panel asks for an entity to be focused; only this
+				// layer owns the hierarchy panel's selection, so the request is
+				// drained here. IsValid() first: an Entity can outlive its scene,
+				// and that is exactly the case the check exists for.
+				const Entity &audioFocus = m_AudioScenePanel.GetPendingFocus();
+				if (audioFocus.IsValid())
+				{
+					m_SceneHierarchyPanel.SetSelectedEntity(audioFocus);
+					m_AudioScenePanel.ClearPendingFocus();
+				}
+			}
 
 			// In-game HUD: only while playing, and only over the viewport, so
 			// it never competes with the editor panels. Reads the same
@@ -1354,6 +1583,24 @@ static bool HasGLExtension(const char *name)
 			{
 				Wasteland::Renderer3D::SetQualityPreset((Wasteland::QualityPreset)currentQuality);
 			}
+
+			static const char *patternItems[] = {"Blue Noise", "Halton", "Rotated Grid (RGSS)", "Quincunx", "Ordered Grid", "Centre (no jitter)"};
+			int currentPattern = (int)Wasteland::Renderer3D::GetSamplePattern();
+			if (ImGui::Combo("Sample Pattern", &currentPattern, patternItems, IM_ARRAYSIZE(patternItems)))
+			{
+				Wasteland::Renderer3D::SetSamplePattern((Wasteland::SamplePattern)currentPattern);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Where the per-sample sub-pixel offset comes from.\nSent through the existing u_Jitter uniform, so no extra pass is needed.\nBlue Noise is the current default; Centre is no jitter at all.");
+
+			static const char *filterItems[] = {"None (raw)", "Nearest", "Bilinear", "Box", "Bicubic", "Lanczos", "FXAA", "SMAA", "FSR1 (EASU+RCAS)", "TSR", "TAA (temporal)", "ATrous denoise"};
+			int currentFilter = (int)Wasteland::Renderer3D::GetReconstructionFilter();
+			if (ImGui::Combo("Reconstruction Filter", &currentFilter, filterItems, IM_ARRAYSIZE(filterItems)))
+			{
+				Wasteland::Renderer3D::SetReconstructionFilter((Wasteland::ReconstructionFilter)currentFilter);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("How the path tracer's samples are combined into the final image:\nspatial filters (Nearest..Lanczos) upscale from the current\nresolution scale, FSR1/TSR/TAA are the temporal/super-res options.\nBilinear is the current implicit default. FXAA/SMAA are post-process\nedge-AA fallbacks for old GPUs and are NOT the right default at Ultra.\n\nNOT YET WIRED TO THE SHADER: RunComposite still upscales with\nbilinear, so only that one is in effect today. The rest land with\nthe Phase 5 filter bank -- see docs/NOVA_FPS_DIAGNOSIS.md.");
 
 			float renderScale = Wasteland::Renderer3D::GetRenderScale();
 			if (ImGui::SliderFloat("Resolution Scale", &renderScale, 0.25f, 1.0f))
@@ -2529,7 +2776,61 @@ static bool HasGLExtension(const char *name)
 	// change any of them.
 	void EditorLayer::ApplyRenderSettings()
 	{
-		const Project::Settings::RenderSettings &r = Project::Get().GetSettings().Render;
+	const Project::Settings &settings = Project::Get().GetSettings();
+	const Project::Settings::RenderSettings &r = settings.Render;
+
+	// BACKEND. `settings.RendererAPI` is an int in the project file with -1 as
+	// the "never chose" sentinel, and its numbering is the RendererAPI::API
+	// numbering (None=0, OpenGL=1, DX11=2, DX12=3, Vulkan=4).
+	//
+	// It was parsed at load and written back at save, and read by NOTHING --
+	// so `RendererAPI: 3` in project.wasteland was silently ignored, on every
+	// backend, with the file faithfully round-tripping a value that did
+	// nothing. That is the same class of defect as the undeclared
+	// u_ReconstructionFilter: a value that is stored, transported and never
+	// consumed.
+	//
+	// Applied FIRST, because every setting below assumes a backend is live.
+	// Guarded on ">= 0" so an unset project keeps the process default, and on
+	// "different from the current API" so loading a project that already
+	// matches does not pay for a backend switch. Note the switch is expensive
+	// and lazy on some backends (DX12Nova construction can land minutes later),
+	// which is exactly why an accidental switch would be so damaging -- hence
+	// both guards.
+	if (settings.RendererAPI >= 0)
+	{
+		const auto requested = static_cast<Wasteland::RendererAPI::API>(settings.RendererAPI);
+		const auto current = Wasteland::RendererAPI::GetAPI();
+		if (requested != current && requested != Wasteland::RendererAPI::API::None)
+		{
+			WL_CORE_INFO("EditorLayer: project pins renderer API {0} (was {1}) -- switching",
+			             (int)requested, (int)current);
+			Wasteland::Application::Get().GetWindow().SwitchRendererAPI(requested);
+		}
+	}
+
+		// The project's QualityPreset is a STRING (see Project.h) precisely so the
+		// on-disk format never couples to the renderer's enum. That only works if
+		// something maps the string back to the enum -- and nothing did, so a
+		// project declaring "QualityPreset: Ultra" silently came up on the engine
+		// default (Low), with no warning anywhere. Mapped here.
+		//
+		// Done BEFORE the render scale below, so an explicit project RenderScale
+		// still wins over the preset's own -- the preset sets a ceiling, the
+		// project file states a preference, and the preference is the later word.
+		//
+		// An unrecognised or empty value leaves the preset alone rather than
+		// guessing: a typo in the project file should not silently drop the
+		// renderer to Low, which is the failure this mapping was missing.
+		const std::string &presetName = settings.QualityPreset;
+		if (presetName == "Low")
+			Wasteland::Renderer3D::SetQualityPreset(Wasteland::QualityPreset::Low);
+		else if (presetName == "Medium")
+			Wasteland::Renderer3D::SetQualityPreset(Wasteland::QualityPreset::Medium);
+		else if (presetName == "High")
+			Wasteland::Renderer3D::SetQualityPreset(Wasteland::QualityPreset::High);
+		else if (presetName == "Ultra")
+			Wasteland::Renderer3D::SetQualityPreset(Wasteland::QualityPreset::Ultra);
 
 		// RenderScale 0 is the "never chosen" sentinel; forcing 0 would collapse
 		// the render target, so leave the engine default alone.
@@ -2590,6 +2891,18 @@ static bool HasGLExtension(const char *name)
 
 		r.FilmGrainEnabled = Renderer3D::GetFilmGrainEnabled();
 		r.FilmGrainIntensity = Renderer3D::GetFilmGrainIntensity();
+
+		// Captured ONLY when the project already pinned a backend. Writing the
+		// current API unconditionally would turn an unset (-1) field into a real id
+		// on the first save, and a later load would then force that backend -- so
+		// "I never chose" would silently become "I chose whatever was running".
+		// Leaving it alone preserves the sentinel.
+		//
+		// Note this lives on Project::Settings, NOT on RenderSettings -- the
+		// renderer settings struct is the wrong home for a process-wide choice.
+		Project::Settings &s = Project::Get().GetSettings();
+		if (s.RendererAPI >= 0)
+			s.RendererAPI = (int)Wasteland::RendererAPI::GetAPI();
 	}
 
 	void EditorLayer::OnProjectChanged()

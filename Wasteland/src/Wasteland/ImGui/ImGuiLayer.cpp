@@ -2348,6 +2348,22 @@ namespace Wasteland
    break;
   }
 
+  // Harness: report the ImGui draw data size. The frame sections showed
+  // ImGuiLayer::End() holding ~195 ms of a ~213 ms frame while the scene
+  // render itself took 2.5 ms, and that 195 ms did NOT move when the renderer's
+  // GPU time changed by 32 ms -- so it is not the Nova render. This separates the
+  // two remaining explanations: the UI draw list is enormous, or the draw call
+  // itself is slow for another reason. Inert unless WL_IMGUI_STATS is set.
+  if (std::getenv("WL_IMGUI_STATS"))
+  {
+   ImDrawData *dd = ImGui::GetDrawData();
+   if (dd)
+    WL_CORE_INFO("ImGui draw data: cmdLists {0}  totalVtx {1}  totalIdx {2}  displayPos {3:.0f},{4:.0f}  displaySize {5:.0f}x{6:.0f}",
+                 dd->CmdListsCount, dd->TotalVtxCount, dd->TotalIdxCount,
+                 dd->DisplayPos.x, dd->DisplayPos.y,
+                 dd->DisplaySize.x, dd->DisplaySize.y);
+  }
+
   // The viewport tail: UpdatePlatformWindows creates or destroys the
   // detached OS windows, RenderPlatformWindowsDefault draws each
   // viewport's draw data, and the two context calls bracket the pair.

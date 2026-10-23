@@ -1,0 +1,153 @@
+schema: 1
+name: "AVB Editor Smoke Test"
+output: Stereo
+inputs:
+  - name: "Trigger"
+    type: Trigger
+    direction: in
+    default: null
+  - name: "Frequency"
+    type: Float
+    direction: in
+    default: 220.0
+  - name: "Drive"
+    type: Float
+    direction: in
+    default: 0.6
+variables:
+  - name: "phase"
+    type: Float
+    default: 0.0
+  - name: "enabled"
+    type: Bool
+    default: true
+nodes:
+  - id: "n_start"
+    type: "TriggerOnce"
+    title: "Start"
+    x: 0
+    y: 120
+    literals: []
+  - id: "n_player"
+    type: "WavePlayer"
+    title: "Showcase clip"
+    x: 200
+    y: 260
+    literals:
+      - pin: "Clip"
+        value: "assets/audio/showcase_tone.wav"
+      - pin: "Loop"
+        value: true
+      - pin: "PitchSemitones"
+        value: 0.0
+  - id: "n_osc"
+    type: "Sine"
+    title: "Oscillator"
+    x: 200
+    y: -40
+    literals:
+      - pin: "Frequency"
+        value: 220.0
+      - pin: "Amplitude"
+        value: 0.5
+  - id: "n_gain"
+    type: "Gain"
+    title: "Level"
+    x: 400
+    y: -40
+    literals:
+      - pin: "Gain"
+        value: 0.8
+  - id: "n_shape"
+    type: "WaveShaper"
+    title: "Drive"
+    x: 600
+    y: -40
+    literals:
+      - pin: "Amount"
+        value: 0.6
+      - pin: "Bias"
+        value: 0.0
+      - pin: "OutputGain"
+        value: 1.0
+  - id: "n_env"
+    type: "ADEnvelope"
+    title: "Envelope"
+    x: 400
+    y: 120
+    literals:
+      - pin: "Attack"
+        value: 0.01
+      - pin: "Decay"
+        value: 0.25
+  - id: "n_mix"
+    type: "StereoMixer"
+    title: "To stereo"
+    x: 800
+    y: 100
+    literals:
+      - pin: "GainA"
+        value: 0.8
+      - pin: "GainB"
+        value: 0.8
+  - id: "n_out"
+    type: "Output"
+    title: "Master out"
+    x: 1000
+    y: 100
+    literals: []
+links:
+  - from:
+      node: "n_start"
+      pin: "Out"
+    to:
+      node: "n_env"
+      pin: "Trigger"
+    feedback: false
+  - from:
+      node: "n_start"
+      pin: "Out"
+    to:
+      node: "n_player"
+      pin: "Play"
+    feedback: false
+  - from:
+      node: "n_osc"
+      pin: "Out"
+    to:
+      node: "n_gain"
+      pin: "In"
+    feedback: false
+  - from:
+      node: "n_gain"
+      pin: "Out"
+    to:
+      node: "n_shape"
+      pin: "In"
+    feedback: false
+  - from:
+      node: "n_shape"
+      pin: "Out"
+    to:
+      node: "n_mix"
+      pin: "A"
+    feedback: false
+  - from:
+      node: "n_player"
+      pin: "Out"
+    to:
+      node: "n_mix"
+      pin: "B"
+    feedback: false
+  - from:
+      node: "n_mix"
+      pin: "Out"
+    to:
+      node: "n_out"
+      pin: "In"
+    feedback: false
+sends:
+  - from: "n_out"
+    to: "Master"
+    mode: PostFade
+    gain: 1.0

@@ -291,14 +291,15 @@ void DX12Nova::CreateRootSignature()
     ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 64);
     rootParams[6].InitAsDescriptorTable(1, &ranges[2]);
 
-    // UAV count is 10, not 8. The comment above explains why: the history image
-    // needs its own descriptor so Clear() can clear it without aliasing an image
-    // the compute passes write, and the SVGF moments image needs one at u9.
-    // Getting this wrong silently writes a clear into a pass output.
-    // UAV descriptor table: kUavCount entries. The shader declares u0..u7 and u9;
-    // the extra descriptors cover the history image (u8's slot) and the moments
-    // image (u9). Binding fewer than the heap allocates would leave Clear()'s
-    // clear on a descriptor the root signature does not cover.
+    // UAV count is 12, not 8. The shader declares u0..u7, u9, u10 and u11 -- u8
+    // is a hole nothing declares. The history image is the u11 one (its own
+    // descriptor so Clear() can clear it without aliasing an image the compute
+    // passes write), the moments image is u9, and the ReSTIR reservoir write is
+    // u10. Getting this wrong silently writes a clear into a pass output.
+    // UAV descriptor table: kUavCount entries, covering u0..u11. The range is
+    // contiguous, so the hole at u8 still costs a slot. Sizing this from anything
+    // other than the shader's highest UAV register is what produced the
+    // E_INVALIDARG on CreateComputePipelineState.
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kUavCount, 0);
     rootParams[7].InitAsDescriptorTable(1, &ranges[3]);
 
@@ -525,8 +526,9 @@ void DX12Nova::CreateImages(UINT w, UINT h)
         }
     }
 
-    // The history image is a ninth UAV created outside the loop, which is
-    // why it does not appear in formats[] and why kUavCount is 9.
+    // The history image is a UAV created outside the loop, which is why it does
+    // not appear in formats[]. It binds at the shader's u11 -- see below -- not
+    // at the next index after the image block.
     desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
@@ -541,21 +543,23 @@ void DX12Nova::CreateImages(UINT w, UINT h)
 
     // The history image needs a UAV of its own: Clear() clears it directly.
     // It cannot share one of images[i]'s slots because that would clobber the
-    // descriptor the compute passes read as an output. Eight image UAVs occupy
-    // kUavBase..kUavBase+7, so history takes the next index -- which is why
-    // kDescriptorsPerHeap is 57 and not 56.
+    // descriptor the compute passes read as an output.
+    //
+    // `kUavBase + 11` because that is the shader's u11 -- `img_HistoryBuffer`
+    // is declared `register(u11)`. This is deliberately NOT "the slot after the
+    // eight image UAVs": u8 is a hole the shader never declares, so binding
+    // history there put a descriptor at a register nothing reads and left u11 --
+    // the one the shader actually samples -- with no descriptor at all. Combined
+    // with the UAV range stopping at u10, that is why every DX12 Nova init failed
+    // with E_INVALIDARG. The index must track the SHADER's register, not the
+    // position after the image block.
     D3D12_UNORDERED_ACCESS_VIEW_DESC histUavDesc = {};
     histUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     histUavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     for (UINT s = 0; s < kFramesInFlight; s++)
     {
         D3D12_CPU_DESCRIPTOR_HANDLE uavHandle = frames[s].heapCpuStart;
-        // `kUavBase + 8` is the history image's slot -- the index immediately
-        // after the eight loop-created ones. This hardcoded 8 is what the
-        // comment above ties kDescriptorsPerHeap = 57 to: eight images plus
-        // history is nine UAVs, and the heap must be large enough for the
-        // ninth.
-        uavHandle.ptr += (kUavBase + 8) * cbvSrvUavDescriptorSize;
+        uavHandle.ptr += (kUavBase + 11) * cbvSrvUavDescriptorSize;
         device->CreateUnorderedAccessView(history.texture.Get(), nullptr, &histUavDesc, uavHandle);
         history.uavCpu[s] = uavHandle;
     }
@@ -579,10 +583,10 @@ void DX12Nova::CreateImages(UINT w, UINT h)
     Check(hr);
     moments.snapshotState = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    // kUavBase + 9 is the moments slot. The range runs kUavBase..kUavBase+9 so
-    // u9 is covered; the descriptor at kUavBase + 8 (history's) sits in the gap
-    // the shader leaves at u8, which is harmless -- a descriptor the shader never
-    // names costs nothing but the slot.
+    // kUavBase + 9 is the moments slot, matching the shader's register(u9). The
+    // slot at kUavBase + 8 is the hole at u8 -- the shader never declares it, so
+    // it is simply left empty; a slot nothing binds costs nothing but the slot.
+    // History, which used to sit there, is now at kUavBase + 11 (see above).
     D3D12_UNORDERED_ACCESS_VIEW_DESC momUavDesc = {};
     momUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
     momUavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;

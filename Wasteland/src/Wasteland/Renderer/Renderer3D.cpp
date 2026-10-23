@@ -80,6 +80,27 @@ namespace Wasteland
         float BumpStrength;
     };
 
+    // The trace distance limit, in world units, shared by the CPU cull and by the
+    // shader's per-ray instance test (TestInstanceHit / TestInstanceOcclusion in
+    // both shader twins). Declared here, before RayTracingInstance, so the struct
+    // can default MaxDistance to it.
+    //
+    // WHY THE STRUCT NEEDS A DEFAULT: MaxDistance had no initializer, and every
+    // submission path builds its instance with `= {}`, so a path that forgot to
+    // assign the field uploaded exactly 0.0. Two things then reject the geometry:
+    //   - CullInstanceForTrace:  `camDist >= instance.MaxDistance` is
+    //     `camDist >= 0.0f`, true for every instance, so nothing is submitted.
+    //   - The shader: `dot(camToInstance, camToInstance) > MaxDistance^2` is
+    //     `> 0.0`, true for every instance not exactly at the eye, so nothing
+    //     would be hit even if it were.
+    // DrawProceduralPrimitive -- and therefore DrawPlane, DrawCylinder, DrawCone
+    // and DrawTorus -- was such a path: those four shapes rendered nothing at
+    // all, while DrawCube/DrawSphere/DrawWaterPlane/DrawTerrainChunk worked
+    // because they each assigned the field. The default makes the omission
+    // harmless, and deriving MaxDrawDistance from this constant makes the two
+    // drift-proof rather than merely equal today.
+    static constexpr float TraceMaxDistance = 10000.0f;
+
     // The per-instance record uploaded to the ray-tracing SSBO. alignas(16) is not
     // decoration: std430 mandates 16-byte alignment for the mat4 members, and a
     // mismatched stride corrupts every instance after the first rather than the
@@ -104,7 +125,9 @@ namespace Wasteland
         // MaxDrawDistance, so a smaller value here silently hides geometry the CPU
         // paid to upload and trace: the two drifted apart once (2000 vs 1000) and
         // everything between them was invisible in the ray-traced output.
-        float MaxDistance;
+        // KEEP THIS IN STEP WITH MaxDrawDistance below -- it now derives from the
+        // same TraceMaxDistance constant above, so they cannot drift.
+        float MaxDistance = TraceMaxDistance;
         int LODLevel;
         int TextureID;
         int PackedMaterialMapID;
@@ -318,11 +341,84 @@ namespace Wasteland
         return center - axisX - axisY - axisZ;
     }
 
-    // Duplicated from ComputeWorldAABBMin rather than shared. The two differ only
-    // in the sign of the final term and the compiler inlines both; merging them
-    // would need a sign parameter for no measurable gain.
-    // The Max counterpart of the Min helper just above, using the same conservative
-    // axis projection: sum the absolute basis vector times halfExtent over all three
+    // Screen-space footprint of an instance's conservative world AABB, in
+    // TRACE-resolution pixels (a diameter, not a radius: "spans 4px" means the
+    // object covers 4 pixels across).
+    //
+    // Returns NEGATIVE when the projection is not a valid basis for a cull
+    // decision -- any corner at or behind the near plane, or a degenerate box.
+    // The caller must treat that as "keep", because a perspective divide by a
+    // near-zero w flips the projection and would report a huge footprint for an
+    // object that is actually enormous and close.
+    static float ProjectedFootprintPixels(const glm::vec3 &center, const glm::vec3 &halfExtents,
+                                          const glm::mat4 &viewProj,
+                                          float traceWidth, float traceHeight)
+    {
+        if (halfExtents.x <= 0.0f && halfExtents.y <= 0.0f && halfExtents.z <= 0.0f)
+            return -1.0f;
+
+        glm::vec4 cClip = viewProj * glm::vec4(center, 1.0f);
+        // Behind the near plane. A box straddling it projects to a nonsense
+        // footprint; keeping it is the conservative choice.
+        if (cClip.w <= 1e-5f) return -1.0f;
+        glm::vec3 cNdc = glm::vec3(cClip) / cClip.w;
+
+        // Per-axis pixel scales: NDC spans 2 units across the viewport, so one
+        // NDC unit is half the resolution. Separate x and y because the trace
+        // target is not necessarily square and using min() would over-report the
+        // size of wide objects.
+        const float pxX = traceWidth * 0.5f;
+        const float pxY = traceHeight * 0.5f;
+
+        float maxRadiusPx = 0.0f;
+        for (int c = 0; c < 8; c++)
+        {
+            glm::vec3 corner = center + glm::vec3(
+                (c & 1) ? halfExtents.x : -halfExtents.x,
+                (c & 2) ? halfExtents.y : -halfExtents.y,
+                (c & 4) ? halfExtents.z : -halfExtents.z);
+            glm::vec4 clip = viewProj * glm::vec4(corner, 1.0f);
+            if (clip.w <= 1e-5f) return -1.0f;
+            glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            // Only x and y measure footprint; the z component measures depth
+            // extent, which does not make an object cover more pixels.
+            glm::vec2 offset((ndc.x - cNdc.x) * pxX, (ndc.y - cNdc.y) * pxY);
+            maxRadiusPx = glm::max(maxRadiusPx, glm::length(offset));
+        }
+        return maxRadiusPx * 2.0f;
+    }
+
+    // Conservative world AABB half-extents of an instance, from its transform and
+    // its LOCAL bounds. The absolute-basis trick absorbs rotation: summing
+    // |basis| * halfExtent over the three axes over-estimates rather than
+    // under-estimates a rotated box, which is what a cull needs.
+    static glm::vec3 InstanceWorldHalfExtents(const glm::mat4 &worldTransform,
+                                              const glm::vec3 &localMin,
+                                              const glm::vec3 &localMax)
+    {
+        glm::vec3 halfExtents = (localMax - localMin) * 0.5f;
+        glm::vec3 axisX = glm::abs(glm::vec3(worldTransform[0])) * halfExtents.x;
+        glm::vec3 axisY = glm::abs(glm::vec3(worldTransform[1])) * halfExtents.y;
+        glm::vec3 axisZ = glm::abs(glm::vec3(worldTransform[2])) * halfExtents.z;
+        return axisX + axisY + axisZ;
+    }
+
+    // Shared CPU-side cull for EVERY instance submission path. Returns false when
+    // the instance must not enter the BVH; when it returns true it has also set
+    // instance.LODLevel.
+    //
+    // WHY THIS IS SHARED. The frustum / distance-LOD / MaxDrawDistance cull
+    // originally lived only inside DrawProceduralPrimitive, whose own comment
+    // calls frustum culling "the single most impactful optimization -- a 2500x2500m
+    // city may have 1000+ buildings but only ~50 are visible". But DrawCube and
+    // DrawSphere -- 1024 + 678 of DemoGame's 1729 entities, 97% of the scene --
+    // submitted unconditionally: no frustum test, no distance LOD, no
+    // MaxDrawDistance cull. The shader's per-ray MaxDistance check still rejects
+    // them eventually, but it does so inside the BVH traversal for every ray,
+    // Duplicated from ComputeWorldAABBMin rather than shared: the two differ only
+    // in the sign of the final term and the compiler inlines both, so merging them
+    // would need a sign parameter for no measurable gain. Same conservative axis
+    // projection -- sum the absolute basis vector times halfExtent over all three
     // axes, which over-estimates rather than under-estimates a rotated box.
     static glm::vec3 ComputeWorldAABBMax(const RayTracingInstance &inst)
     {
@@ -556,7 +652,59 @@ namespace Wasteland
         // drops to LOD1 at LODNear but doesn't restore to LOD0 until closer than LODNear * 0.8.
         static constexpr float LODNearDistance = 500.0f;    // 0-500m: full detail
         static constexpr float LODFarDistance = 2000.0f;    // 500m-2km: reduced detail
-        static constexpr float MaxDrawDistance = 10000.0f;  // 2km-10km: lowest detail, beyond: culled
+        // Derived from TraceMaxDistance rather than written as a literal: the CPU
+        // cull and the shader's per-ray instance test must agree, and a duplicated
+        // literal is how they drifted before (see the note on RayTracingInstance::
+        // MaxDistance).
+        static constexpr float MaxDrawDistance = TraceMaxDistance;  // 2km-10km: lowest detail, beyond: culled
+        // Screen-space cull threshold, in TRACE-resolution pixels. An instance whose
+        // projected AABB spans fewer than this is not submitted to the BVH at all.
+        // 0 disables the cull, which is the default: it is an approximation (a
+        // culled instance leaves a hole where it should occlude what is behind it),
+        // so it ships off and is opt-in via WASTELAND_SCREEN_CULL=<px>.
+        //
+        // This is the Nanite principle -- do not process what is sub-pixel -- applied
+        // to the BVH rather than to a rasterizer. Unlike a per-ray skip it removes
+        // instances from the tree, which shrinks both the node count and every leaf
+        // loop in the traversal.
+        float ScreenCullPixels = 0.0f;
+        // Master switch for the CPU-side cull (frustum + distance LOD +
+        // MaxDrawDistance). Defaults to on; WASTELAND_CPU_CULL=0 turns it off so
+        // the cull can be A/B measured against a pinned camera. The screen-space
+        // cull above is separate and independently opt-in.
+        bool CpuCullEnabled = true;
+        // Upper bound on the volumetric march step count, mirroring the shader's
+        // u_VolStepCap. Defaults to 32 -- what the shader used to hardcode -- so
+        // default behaviour is unchanged. WASTELAND_VOL_STEPS=<n> overrides it,
+        // which is how the march cost gets measured rather than guessed.
+        int VolStepCap = 32;
+        // Volumetric light-loop cap. 0 means "not overridden", which the shader
+        // reads as the compile-time WL_VOL_LIGHT_CAP. WASTELAND_VOL_LIGHTS=<n>
+        // overrides it, which is how the march's light-loop cost gets measured.
+        int VolLightCap = 0;
+        // Hoisted segment range cull in the volumetric light loop. Default on.
+        // WASTELAND_VOL_NOCULL=1 turns it off, which restores the pre-cull
+        // behaviour of traversing every selected light -- the A/B baseline.
+        bool VolRangeCull = true;
+        // DRS query diagnostic logging. Off by default; WL_DRS_DEBUG=1 logs the
+        // raw GL_TIME_ELAPSED sample next to the EMA, so the scaler's reading can
+        // be compared against the frame time instead of inferred from the scale.
+        bool DRSDebug = false;
+        // How many NotifyFrameTime samples the app EMA has absorbed. The scaler
+        // refuses to act until this reaches DRSWarmupSamples -- see
+        // UpdateDynamicResolution. Counts UP without bound (it is only compared).
+        uint32_t AppFrameSamples = 0;
+        // How many times glBeginQuery(GL_TIME_ELAPSED) failed and was unwound.
+        // Non-zero means the GPU timer is degraded and the scaler is running on
+        // the app-time signal alone -- surfaced so that is visible rather than
+        // silent. See the error check at the query's open site.
+        uint32_t DRSBeginFailures = 0;
+        // Paces the periodic frame-time report. A MEMBER, not a file-scope static,
+        // because the report lives inside UpdateDynamicResolution and must keep
+        // firing when the DRS is disabled -- a file-scope static worked while the
+        // report sat behind the DynamicResolutionEnabled early return, but moving
+        // the report above that return is what makes it usable.
+        uint32_t FrameTimeLogCount = 0;
         // Hysteresis factor: when a building's LOD level changes, the threshold shifts
         // by this factor to prevent oscillation at the boundary.
         static constexpr float LODHysteresis = 0.8f;
@@ -618,6 +766,36 @@ namespace Wasteland
         bool RayTracingEnabled = true;
         bool RayTracingAccumulate = true;
         QualityPreset CurrentQualityPreset = QualityPreset::Low;
+        // Anti-aliasing, on the two orthogonal axes the header splits it into: where
+        // the sub-pixel offset comes from, and how samples are reconstructed.
+        //
+        // STATUS OF EACH AXIS -- they are not equally far along, and the difference
+        // matters when reading the dispatch sites below:
+        //
+        //   SamplePattern is LIVE, but CPU-side. GetCurrentJitter picks the pattern
+        //   and writes the result through the existing u_Jitter uniform, so no shader
+        //   declares u_SamplePattern today. The u_SamplePattern upload on each
+        //   dispatch path is therefore redundant with that, and is kept only so the
+        //   shader can take the decision over later without a caller change. It is a
+        //   no-op now, not a bug: all three NVRHI Set() implementations and
+        //   glGetUniformLocation silently drop a name the shader does not declare.
+        //
+        //   ReconstructionFilter IS NOW CONSUMED. It was plumbed-but-dead for a
+        //   long time: the enum, the editor combo, the GL location lookup, the
+        //   glUniform1i upload and all three NVRHI Set() calls all existed, but
+        //   NEITHER Nova twin declared the uniform, so glGetUniformLocation
+        //   returned -1 and every one of those uploads was silently dropped.
+        //   The editor's AA dropdown therefore did nothing at all on any backend.
+        //   Both twins now declare u_ReconstructionFilter and RunComposite has a
+        //   real branch per filter (Nearest, Box, Bicubic, Lanczos, with bilinear
+        //   as the default and the fall-through for the pass-style entries). See
+        //   docs/NOVA_FPS_DIAGNOSIS.md section 5.11.
+        //
+        //   LESSON: an enum plus a Set() call is not a feature. The uniform has to
+        //   be DECLARED in the shader, or the whole chain is a no-op -- and
+        //   silently so, which is the worst kind.
+        SamplePattern CurrentSamplePattern = SamplePattern::BlueNoise;
+        ReconstructionFilter CurrentReconstructionFilter = ReconstructionFilter::Temporal;
         uint32_t ComputeWidth = 1280;
         uint32_t ComputeHeight = 720;
         float RenderScale = 1.0f;
@@ -653,6 +831,27 @@ namespace Wasteland
         GLuint DRSTimerQueries[3] = {0, 0, 0};
         uint32_t DRSTimerIndex = 0;
         bool DRSTimerActive = false;
+        // Per-segment GPU profiling, enabled by WASTELAND_NOVA_PROFILE=1. Splits the
+        // whole-chain DRS query into four segments so a frame time can be attributed
+        // instead of just totalled: 0 = visibility (pass 0), 1 = hybrid trace (pass 1),
+        // 2 = accumulation + bilateral + ReSTIR (2, 3, 7, 11, 14),
+        // 3 = denoise + composite + bloom (12, 13, 6, 4, 5).
+        //
+        // When this is on the whole-chain DRS query is NOT opened: GL rejects a
+        // second active TIME_ELAPSED query with INVALID_OPERATION, so nesting the
+        // per-segment queries inside it is not an option.
+        bool NovaProfile = false;
+        GLuint NovaProfileQueries[4] = {0, 0, 0, 0};
+        // Last completed per-segment times in MILLISECONDS, read back two frames
+        // later (a query's result does not exist until the GPU has passed it).
+        double NovaSegmentMs[4] = {0.0, 0.0, 0.0, 0.0};
+        // Which segments actually ran in the frame whose queries are still
+        // outstanding. A segment skipped this frame leaves its query holding the
+        // previous frame's result, which would otherwise be read back as fresh.
+        uint32_t NovaSegmentMask = 0;
+        // Last frame's mask, consumed by the read-back at the top of the next frame.
+        uint32_t NovaSegmentMaskPrev = 0;
+        uint32_t NovaProfileLogCount = 0;
         char GPUTierName[64] = {};
         // D3: DEAD. Uploaded every frame, read by no shader. The real indirect
         // bounce/ray count is IndirectRays below. Kept (rather than deleted) because
@@ -846,6 +1045,12 @@ namespace Wasteland
         // How much weight the new sample gets in the accumulation blend. Uploaded every
         // frame and the mechanism by which a converged image stops changing.
         int Loc_AccumulationAlpha;
+        // Anti-aliasing: the sample-pattern index and the reconstruction-filter index.
+        // Both are `uniform int` in the shader, so both are uploaded with glUniform1i.
+        // Optional like every other cached location -- a shader that predates them
+        // yields -1, and glUniform with -1 is a documented no-op.
+        int Loc_SamplePattern;
+        int Loc_ReconstructionFilter;
         int Loc_StepSize;
         // The PREVIOUS frame's view-projection, needed to reproject the history buffer
         // and to derive motion vectors. Uploaded before pass 0 for that reason.
@@ -904,6 +1109,15 @@ namespace Wasteland
             // shading state, so adding a volume type means adding enum entries in BOTH places.
             Vol_CloudData3,
             Vol_VolFast,
+            // Upper bound on the volumetric march step count. See the GLSL twin's
+            // u_VolStepCap note: it exists so the march cost can be A/B measured
+            // against a pinned camera rather than guessed at.
+            Vol_VolStepCap,
+            // Runtime cap on the volumetric light loop, mirroring u_VolLightCap.
+            Vol_VolLightCap,
+            // Enables/disables the hoisted segment range cull, mirroring
+            // u_VolRangeCull. Default 1 (on).
+            Vol_VolRangeCull,
             Vol_SunLightColor,
             // Sentinel one past the last real slot. Used only as the array extent below,
             // never uploaded.
@@ -1420,14 +1634,137 @@ namespace Wasteland
     };
 
     static Renderer3DData s_Data;
+
+    // Shared CPU-side cull for EVERY instance submission path. Returns false when
+    // the instance must not enter the BVH; when it returns true it has also set
+    // instance.LODLevel.
+    //
+    // WHY THIS IS SHARED. The frustum / distance-LOD / MaxDrawDistance cull
+    // originally lived only inside DrawProceduralPrimitive, whose own comment
+    // calls frustum culling "the single most impactful optimization -- a 2500x2500m
+    // city may have 1000+ buildings but only ~50 are visible". But DrawCube and
+    // DrawSphere -- 1024 + 678 of DemoGame's 1729 entities, 97% of the scene --
+    // submitted unconditionally: no frustum test, no distance LOD, no
+    // MaxDrawDistance cull. The shader's per-ray MaxDistance check still rejects
+    // them eventually, but it does so inside the BVH traversal for every ray,
+    // which is exactly the work a CPU cull exists to avoid.
+    //
+    // Defined here, after s_Data, rather than beside the other geometry helpers:
+    // it reads s_Data, which is declared at namespace scope at the line above, so
+    // it cannot be defined earlier in the file. The helpers it calls
+    // (InstanceWorldHalfExtents, ProjectedFootprintPixels) take explicit
+    // parameters and so live with the rest of the geometry helpers.
+    static bool CullInstanceForTrace(const glm::mat4 &worldTransform,
+                                     const glm::vec3 &localMin,
+                                     const glm::vec3 &localMax,
+                                     RayTracingInstance &instance)
+    {
+        const glm::vec3 center = glm::vec3(worldTransform[3]);
+        const glm::vec3 worldHalf = InstanceWorldHalfExtents(worldTransform, localMin, localMax);
+        const float camDist = glm::length(center - s_Data.CurrentCameraPosition);
+
+        // Defect detector for the class of bug where a submission path forgets to
+        // assign MaxDistance. Must stay zero; see the field's note in Renderer3D.h.
+        if (!(instance.MaxDistance > 0.0f))
+            s_Data.Stats.ZeroMaxDistanceInstances++;
+
+        // Distance LOD bands. LODLevel is currently read by NO shader -- see the
+        // note at the field -- so this changes nothing visually today, but it is
+        // the hook that proxy substitution in HitPrimitive will key off. Applied
+        // regardless of CpuCullEnabled: it is a classification, not a cull.
+        if (camDist > s_Data.LODFarDistance)
+            instance.LODLevel = 2;  // Far: lowest detail (shader may skip entirely)
+        else if (camDist > s_Data.LODNearDistance)
+            instance.LODLevel = 1;  // Mid: reduced detail
+        else
+            instance.LODLevel = 0;  // Near: full detail
+
+        // The cull proper, gated on CpuCullEnabled so it can be A/B measured
+        // against a pinned camera (WASTELAND_CPU_CULL=0). The LOD bands above stay
+        // applied either way, so the only difference between the two arms is
+        // whether instances are dropped.
+        if (s_Data.CpuCullEnabled)
+        {
+            // Frustum cull against the six planes. Conservative: the signed distance
+            // from the AABB centre to the plane minus the AABB radius along the
+            // normal must be >= 0 for the box to possibly intersect it.
+            for (int p = 0; p < 6; p++)
+            {
+                const auto &plane = s_Data.FrustumPlanes[p];
+                float dist = glm::dot(plane.normal, center) + plane.distance;
+                float radius = glm::dot(worldHalf, glm::abs(plane.normal));
+                if (dist < -radius) return false;
+            }
+
+            // Hard distance cull. Equivalent to the shader's per-ray MaxDistance
+            // test (also camera-to-instance-centre distance), so hoisting it to the
+            // CPU changes nothing visually and removes the traversal work.
+            if (camDist >= instance.MaxDistance) return false;
+        }
+
+        // Screen-space cull, opt-in. See ProjectedFootprintPixels for why a
+        // negative footprint means "keep": it is the near-plane-straddle case.
+        if (s_Data.ScreenCullPixels > 0.0f)
+        {
+            float footprint = ProjectedFootprintPixels(center, worldHalf,
+                                                       s_Data.CurrentViewProjection,
+                                                       (float)s_Data.RayTracingWidth,
+                                                       (float)s_Data.RayTracingHeight);
+            if (footprint >= 0.0f && footprint < s_Data.ScreenCullPixels)
+            {
+                s_Data.Stats.ScreenCulledInstances++;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Reporting latch for the mid-frame batch overflow diagnostic. The counter
+    // itself lives in s_Data.Stats.MidFrameFlushes (Renderer3D.h) so it is
+    // readable from outside the renderer via GetMidFrameFlushCount(); this
+    // file static only remembers what was last logged, so a scene that overflows
+    // every frame logs once instead of once per frame.
+    static uint32_t s_LastReportedMidFrameFlushCount = 0;
     static std::unique_ptr<DX11Nova> s_Nova;
     static std::unique_ptr<DX12Nova> s_Nova12;
     static std::unique_ptr<VulkanNova> s_NovaVk;
 
     // Returns whether any backend-specific Nova instance is active.
     static bool HasNova() { return s_Nova != nullptr || s_Nova12 != nullptr || s_NovaVk != nullptr; }
+    // True when a mid-frame batch overflow must NOT dispatch Flush(). Consulted by every
+    // Draw* helper, which are members and can therefore reach the PRIVATE FlushAndReset
+    // -- a namespace-scope helper cannot, which is why the reset itself stays at the
+    // call sites.
+    //
+    // Flush() dispatches the ENTIRE trace + composite schedule, so flushing here traces
+    // the frame twice: the overflow flush renders the first part of the scene, and the
+    // EndScene flush then traces the rest and overwrites that result -- the second
+    // composite is what the viewport ends up showing. The tracer never reads the CPU
+    // tessellation batch at all (it reads s_Data.m_SceneInstances, which the Draw*
+    // helpers fill independently of the batch cursors), so on that path the overflow only
+    // has to reset the cursors so accumulation can continue; EndScene then traces the
+    // frame exactly once.
+    //
+    // Clearing m_SceneInstances at the overflow instead does NOT fix it: the end-of-frame
+    // flush would then trace only the instances submitted after the overflow and
+    // overwrite the correct image with a near-empty one. That was tried, and it is why
+    // the list is cleared in BeginScene only.
+    //
+    // The raster path has no trace schedule, so it must still flush -- without the
+    // upload, geometry already written into the batch would be dropped by the reset.
+    //
+    // The flag is a safe proxy for "a Nova backend is live" because
+    // SetRayTracingEnabled stores `enabled && available`, where `available` requires
+    // GL or a constructed DX11/DX12/Vulkan Nova instance. So a true here cannot
+    // coincide with a backend that has no tracer -- which is the case that would
+    // make skipping the upload drop geometry.
+    static bool OverflowFlushWouldRetrace() { return s_Data.RayTracingEnabled; }
     static DX11Nova* GetNovaDX11() { return s_Nova.get(); }
     static DX12Nova* GetNovaDX12() { return s_Nova12.get(); }
+    // Counts scaler adjustments for the periodic frame-time report.
+    // NOTE: s_FrameTimeLogCount was removed. The frame-time report moved into
+    // UpdateDynamicResolution and now uses s_Data.FrameTimeLogCount, so the
+    // file-scope static had no remaining reader.
 
     static void ApplyQualityPreset();
     static void DetectGPUTier();
@@ -1782,6 +2119,18 @@ namespace Wasteland
                         s_Data.CurrentQualityPreset == QualityPreset::Medium);
         if (loc[V::Vol_VolFast] >= 0)
             glUniform1i(loc[V::Vol_VolFast], volFast ? 1 : 0);
+        // March step cap. 0 means "not overridden", which the shader reads as the
+        // previous behaviour of 32 -- see u_VolStepCap in the GLSL twin.
+        if (loc[V::Vol_VolStepCap] >= 0)
+            glUniform1i(loc[V::Vol_VolStepCap], s_Data.VolStepCap);
+        // Volumetric light-loop cap. 0 means "not overridden", which the shader
+        // reads as the compile-time WL_VOL_LIGHT_CAP -- see u_VolLightCap.
+        if (loc[V::Vol_VolLightCap] >= 0)
+            glUniform1i(loc[V::Vol_VolLightCap], s_Data.VolLightCap);
+        // Segment range cull on/off. 1 by default; WASTELAND_VOL_NOCULL=1 turns it
+        // off to restore the pre-cull behaviour for comparison.
+        if (loc[V::Vol_VolRangeCull] >= 0)
+            glUniform1i(loc[V::Vol_VolRangeCull], s_Data.VolRangeCull ? 1 : 0);
         // A step multiplier, distinct from the step COUNT clamp applied per volume
         // further down. This scales quality; the clamp bounds worst-case cost.
         float presetStepFactor = 1.0f;
@@ -2282,6 +2631,10 @@ namespace Wasteland
         // writes and the later passes read. Uploaded as an int like every other uniform.
         s_Data.Loc_DepthBuffer = glGetUniformLocation(rtProg, "u_DepthBuffer");
         s_Data.Loc_AccumulationAlpha = glGetUniformLocation(rtProg, "u_AccumulationAlpha");
+        // Anti-aliasing uniforms, cached with the rest of the per-frame block. -1 when
+        // the shader predates them, and the upload site below is a no-op in that case.
+        s_Data.Loc_SamplePattern = glGetUniformLocation(rtProg, "u_SamplePattern");
+        s_Data.Loc_ReconstructionFilter = glGetUniformLocation(rtProg, "u_ReconstructionFilter");
         // The ray-march step length for the volumetrics. Uploaded per frame by the
         // volumetric helper above, not by the pass-0 batch.
         s_Data.Loc_StepSize = glGetUniformLocation(rtProg, "u_StepSize");
@@ -2317,7 +2670,7 @@ namespace Wasteland
                 "u_SunDirection", "u_Time",
                 "u_FogEnabled", "u_FogCount", "u_FogMin[0]", "u_FogMax[0]", "u_FogColor[0]", "u_FogData[0]", "u_FogData2[0]",
                 "u_CloudEnabled", "u_CloudCount", "u_CloudMin[0]", "u_CloudMax[0]", "u_CloudColor[0]",
-                "u_CloudAmbient[0]", "u_CloudData[0]", "u_CloudData2[0]", "u_CloudData3[0]", "u_VolFast", "u_SunLightColor"};
+                "u_CloudAmbient[0]", "u_CloudData[0]", "u_CloudData2[0]", "u_CloudData3[0]", "u_VolFast", "u_VolStepCap", "u_VolLightCap", "u_VolRangeCull", "u_SunLightColor"};
             // Cached for BOTH programs from the same table, which is why the names live in
             // a static array rather than being written out twice.
             for (int i = 0; i < Renderer3DData::VolLoc_Count; i++)
@@ -2515,6 +2868,82 @@ namespace Wasteland
         // them, and why UpdateDynamicResolution gets no GPU samples on DX11/DX12.
         glGenQueries(3, s_Data.DRSTimerQueries);
 
+        // Per-segment profiling queries. Generated unconditionally rather than only
+        // when the env var is set: WASTELAND_NOVA_PROFILE is read once at startup,
+        // so a query created lazily on the first profiled frame would be created
+        // mid-chain. Four names, one per segment.
+        glGenQueries(4, s_Data.NovaProfileQueries);
+        if (const char *profileEnv = std::getenv("WASTELAND_NOVA_PROFILE"))
+            s_Data.NovaProfile = (std::atoi(profileEnv) != 0);
+        // Screen-space cull threshold, read the same one-shot way. 0 (the default
+        // when the var is absent) disables the cull entirely.
+        if (const char *cullEnv = std::getenv("WASTELAND_SCREEN_CULL"))
+            s_Data.ScreenCullPixels = (float)std::atof(cullEnv);
+        // Master switch for the frustum/distance cull, so it can be A/B measured
+        // against a pinned camera. Absent means on.
+        if (const char *cpuCullEnv = std::getenv("WASTELAND_CPU_CULL"))
+            s_Data.CpuCullEnabled = (std::atoi(cpuCullEnv) != 0);
+        // Volumetric march step cap. Absent means 32, the shader's old hardcoded
+        // bound, so this is inert unless asked for.
+        if (const char *volStepsEnv = std::getenv("WASTELAND_VOL_STEPS"))
+        {
+            int cap = std::atoi(volStepsEnv);
+            if (cap > 0)
+                s_Data.VolStepCap = cap;
+        }
+        // Volumetric light-loop cap. Absent means 0, which the shader reads as the
+        // compile-time WL_VOL_LIGHT_CAP, so this is inert unless asked for.
+        if (const char *volLightsEnv = std::getenv("WASTELAND_VOL_LIGHTS"))
+        {
+            int cap = std::atoi(volLightsEnv);
+            if (cap > 0)
+                s_Data.VolLightCap = cap;
+        }
+        // Range cull off switch. Any value at all disables it, so WASTELAND_VOL_NOCULL=1
+        // and =0 both work; the point is the variable being present.
+        if (std::getenv("WASTELAND_VOL_NOCULL") != nullptr)
+            s_Data.VolRangeCull = false;
+        // DRS query diagnostic logging (see the DRSDebug field's comment).
+        if (std::getenv("WL_DRS_DEBUG") != nullptr)
+            s_Data.DRSDebug = true;
+        // DRS OFF switch, for cost-attribution measurements. WITHOUT THIS the DRS
+        // is a confound: it adapts to the very thing being measured, so a faster
+        // arm is handed a higher RenderScale and can end up SLOWER than the arm it
+        // beat. Measured directly: with the fog volume disabled the frame went
+        // 20.6 -> 26.6 ms and the scale went 0.45 -> 0.57 -- the saving was more
+        // than eaten by the extra pixels the scaler bought with it.
+        //
+        // Note this also means the pre-fix fog A/B (216.7 vs 180.4 ms) was VALID
+        // but for a reason nobody checked at the time: the scale was pinned at its
+        // 0.40 floor in both arms, so the scaler had nowhere to move and could not
+        // confound the comparison. Post-fix runs are NOT safe in the same way,
+        // because the scale is no longer saturated.
+        if (std::getenv("WL_DRS_OFF") != nullptr)
+        {
+            s_Data.DynamicResolutionEnabled = false;
+            WL_CORE_INFO("Dynamic resolution: DISABLED by WL_DRS_OFF -- RenderScale is now fixed");
+        }
+        // Reconstruction-filter override, for A/B testing the ladder without
+        // clicking through the editor UI: WL_AA_FILTER=<n> where n is the
+        // Renderer3D::ReconstructionFilter value (1 Nearest, 2 Bilinear, 3 Box,
+        // 4 Bicubic, 5 Lanczos). Absent means "use whatever the project/UI set",
+        // which is what a normal run wants.
+        const char *aaEnv = std::getenv("WL_AA_FILTER");
+        if (aaEnv != nullptr)
+        {
+            int v = std::atoi(aaEnv);
+            if (v >= (int)ReconstructionFilter::None && v <= (int)ReconstructionFilter::SpatialDenoise)
+            {
+                s_Data.CurrentReconstructionFilter = (ReconstructionFilter)v;
+                WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v,
+                             v == 1 ? "Nearest" : v == 3 ? "Box" : v == 4 ? "Bicubic"
+                                     : v == 5 ? "Lanczos" : v == 0 ? "None" : "Bilinear (default/fall-through)");
+            }
+        }
+        if (s_Data.ScreenCullPixels > 0.0f)
+            WL_CORE_INFO("Screen-space instance cull enabled: {} trace px", s_Data.ScreenCullPixels);
+        WL_CORE_INFO("CPU instance cull: {}", s_Data.CpuCullEnabled ? "on" : "OFF (WASTELAND_CPU_CULL=0)");
+
         ApplyQualityPreset();
     }
 
@@ -2572,6 +3001,13 @@ namespace Wasteland
         {
             glDeleteQueries(3, s_Data.DRSTimerQueries);
             s_Data.DRSTimerQueries[0] = s_Data.DRSTimerQueries[1] = s_Data.DRSTimerQueries[2] = 0;
+        }
+        // Same zero-then-check discipline as the DRS queries above.
+        if (s_Data.NovaProfileQueries[0] != 0)
+        {
+            glDeleteQueries(4, s_Data.NovaProfileQueries);
+            s_Data.NovaProfileQueries[0] = s_Data.NovaProfileQueries[1] =
+            s_Data.NovaProfileQueries[2] = s_Data.NovaProfileQueries[3] = 0;
         }
 
         }
@@ -2843,6 +3279,19 @@ namespace Wasteland
         // batch. This is why the volume and light lists are NOT cleared by
         // FlushAndReset -- they must survive to be uploaded with this same frame.
         Flush();
+        // Diagnostic for the mid-frame overflow path. Reported only when the per-frame count
+        // CHANGES, so a scene that overflows every frame logs once rather than once per
+        // frame. A non-zero delta is the signal that the batch is too small for the
+        // scene; a zero delta against a non-zero total means the overflow happened on an
+        // earlier frame and has not recurred.
+        if (s_Data.Stats.MidFrameFlushes != s_LastReportedMidFrameFlushCount)
+        {
+            const uint32_t perFrame = s_Data.Stats.MidFrameFlushes - s_LastReportedMidFrameFlushCount;
+            s_LastReportedMidFrameFlushCount = s_Data.Stats.MidFrameFlushes;
+            WL_CORE_WARN("Renderer3D: CPU tessellation batch overflowed mid-frame {0} time(s) this frame "
+                         "({1} total). The batch holds {2} vertices / {3} indices; raise MaxVertices if this recurs.",
+                         perFrame, s_Data.Stats.MidFrameFlushes, s_Data.MaxVertices, s_Data.MaxIndices);
+        }
     }
     // Shared Nova pass schedule for the DX11, DX12, and Vulkan backends.
     //
@@ -2948,6 +3397,11 @@ namespace Wasteland
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
         n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
+        // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
+        // The shader declares these as `uniform int`; without the upload they keep the
+        // zero default, which silently selects BlueNoise + None.
+        n.Set("u_SamplePattern",(int)s_Data.CurrentSamplePattern);
+        n.Set("u_ReconstructionFilter",(int)s_Data.CurrentReconstructionFilter);
         // The accumulation-restart flag the shader actually reads, as distinct from the
         // FrameIndex reset in BeginScene. Two mechanisms for one idea.
         n.Set("u_CameraMoved",s_Data.CurrentViewProjection!=s_Data.PrevViewProjection?1.0f:0.0f);
@@ -3065,7 +3519,7 @@ namespace Wasteland
         // u_VolFast uses `<= Medium` here, while the GL path spells the same condition
         // as an explicit `Low || Medium` pair. The two agree only while the preset enum
         // stays ordered Low < Medium < High < Ultra.
-        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));
+        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));n.Set("u_VolStepCap",s_Data.VolStepCap);n.Set("u_VolLightCap",s_Data.VolLightCap);n.Set("u_VolRangeCull",s_Data.VolRangeCull?1:0);
         // 0.5 / 0.75 / 1.0 by preset. The GL path applies this factor and THEN rounds
         // and clamps per volume; here the clamp is folded into each upload with the
         // same 1..32 bounds.
@@ -3189,6 +3643,11 @@ namespace Wasteland
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
         n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
+        // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
+        // The shader declares these as `uniform int`; without the upload they keep the
+        // zero default, which silently selects BlueNoise + None.
+        n.Set("u_SamplePattern",(int)s_Data.CurrentSamplePattern);
+        n.Set("u_ReconstructionFilter",(int)s_Data.CurrentReconstructionFilter);
         // DEFECT: an EXACT matrix compare, so any floating-point difference at all counts
         // as movement. The OpenGL path instead compares camera position and rotation
         // against a MovementThreshold, which is what makes a nearly-static camera hold
@@ -3312,7 +3771,7 @@ namespace Wasteland
         // with the god-ray projection below. The OpenGL path does not resolve a sun this
         // way, so a scene with a directional light gets different god rays per backend.
         n.Set("u_SunDirection",s_Data.EffSunDir);n.Set("u_SunLightColor",s_Data.EffSunColor);
-        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));
+        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));n.Set("u_VolStepCap",s_Data.VolStepCap);n.Set("u_VolLightCap",s_Data.VolLightCap);n.Set("u_VolRangeCull",s_Data.VolRangeCull?1:0);
         // A per-preset multiplier on the ray-march step count, folded into each volume's
         // Steps below. Cheaper presets take bigger steps, trading accuracy for speed in
         // exactly the passes where it is least visible.
@@ -3422,6 +3881,11 @@ namespace Wasteland
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
         n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
+        // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
+        // The shader declares these as `uniform int`; without the upload they keep the
+        // zero default, which silently selects BlueNoise + None.
+        n.Set("u_SamplePattern",(int)s_Data.CurrentSamplePattern);
+        n.Set("u_ReconstructionFilter",(int)s_Data.CurrentReconstructionFilter);
         // DEFECT: an EXACT matrix compare, so any floating-point difference at all counts
         // as movement. The OpenGL path instead compares camera position and rotation
         // against a MovementThreshold, which is what makes a nearly-static camera hold
@@ -3536,7 +4000,7 @@ namespace Wasteland
         // with the god-ray projection below. The OpenGL path does not resolve a sun this
         // way, so a scene with a directional light gets different god rays per backend.
         n.Set("u_SunDirection",s_Data.EffSunDir);n.Set("u_SunLightColor",s_Data.EffSunColor);
-        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));
+        n.Set("u_Time",GetVolumetricTimeSeconds());n.Set("u_VolFast",(int)(s_Data.CurrentQualityPreset<=QualityPreset::Medium));n.Set("u_VolStepCap",s_Data.VolStepCap);n.Set("u_VolLightCap",s_Data.VolLightCap);n.Set("u_VolRangeCull",s_Data.VolRangeCull?1:0);
         // A per-preset multiplier on the ray-march step count, folded into each volume's
         // Steps below. Cheaper presets take bigger steps, trading accuracy for speed in
         // exactly the passes where it is least visible.
@@ -3739,6 +4203,22 @@ void Renderer3D::Flush()
                 glGetQueryObjectiv(readQ, GL_QUERY_RESULT_AVAILABLE, &available);
                 // Non-blocking poll. A miss simply skips this frame's sample; the EMA below is
                 // built to tolerate gaps rather than requiring every frame to contribute.
+                if (s_Data.DRSDebug && !available)
+                {
+                    // DIAGNOSTIC: which of the three pool entries is ready, and what is the
+                    // GL error state? The poll succeeds ~1 time in 200, and the read index is
+                    // (DRSTimerIndex + 2) % 3 -- the query issued ONE frame ago, not two as
+                    // the comment above claims. If the GPU is ever more than a frame behind,
+                    // that query cannot be complete. Logging all three entries separates
+                    // "the pool is too shallow" from "the query is never ending".
+                    GLint av0 = 0, av1 = 0, av2 = 0;
+                    glGetQueryObjectiv(s_Data.DRSTimerQueries[0], GL_QUERY_RESULT_AVAILABLE, &av0);
+                    glGetQueryObjectiv(s_Data.DRSTimerQueries[1], GL_QUERY_RESULT_AVAILABLE, &av1);
+                    glGetQueryObjectiv(s_Data.DRSTimerQueries[2], GL_QUERY_RESULT_AVAILABLE, &av2);
+                    WL_CORE_INFO("DRS poll miss: readQ idx {0} avail {1} | pool avail [{2} {3} {4}] | glError {5}",
+                                 (s_Data.DRSTimerIndex + 2) % 3, available, av0, av1, av2,
+                                 (int)glGetError());
+                }
                 if (available)
                 {
                     GLuint64 elapsedNs = 0;
@@ -3756,6 +4236,21 @@ void Renderer3D::Flush()
                                                      ? ms
                                                      : s_Data.GPUFrameTimeEMA * 0.9 + ms * 0.1;
                         s_Data.DRSGpuSamples++;
+
+                        // DIAGNOSTIC (WL_DRS_DEBUG=1). The scaler was reading ~580 ms in runs
+                        // whose frame time was 22-28 ms, and it read ~580 ms BEFORE the traversal
+                        // fix too (frame 217 ms) -- so the reading does not track the frame at
+                        // all. GL_TIME_ELAPSED measures the GPU timestamp difference, which
+                        // INCLUDES idle time while the CPU is still submitting, so a
+                        // CPU-bound frame reads as a large "GPU" time. This logs the raw
+                        // query value next to the same frame's app/gpu/cpuSubmit so the two
+                        // can be compared directly instead of inferred.
+                        if (s_Data.DRSDebug)
+                        {
+                            WL_CORE_INFO("DRS query raw: {0:.2f} ms  (EMA {1:.2f} ms, sample #{2}, appSamples {3})",
+                                         ms, s_Data.GPUFrameTimeEMA, s_Data.DRSGpuSamples,
+                                         s_Data.AppFrameSamples);
+                        }
                     }
                 }
             }
@@ -3991,6 +4486,11 @@ void Renderer3D::Flush()
             glUniform1i(s_Data.InstanceCountLocation, (int)s_Data.m_SceneInstances.size());
             glUniform1i(s_Data.Loc_SamplesPerPixel, s_Data.SamplesPerPixel); // D3: dead uniform
             glUniform1i(s_Data.Loc_QualityLevel, (int)s_Data.CurrentQualityPreset);
+            // Anti-aliasing: sample pattern + reconstruction filter, uploaded every
+            // frame alongside the quality preset. Ints, because both shader uniforms
+            // are `uniform int` and the shader branches on the value.
+            glUniform1i(s_Data.Loc_SamplePattern, (int)s_Data.CurrentSamplePattern);
+            glUniform1i(s_Data.Loc_ReconstructionFilter, (int)s_Data.CurrentReconstructionFilter);
             glUniform1i(s_Data.Loc_MaxBounces, s_Data.MaxBounces); // D3: dead uniform
             glUniform1i(s_Data.Loc_MaxLights, s_Data.MaxLights);
             glUniform1i(s_Data.Loc_IndirectRays, s_Data.IndirectRays);
@@ -4126,15 +4626,89 @@ void Renderer3D::Flush()
             // bloom): feeds the dynamic-resolution scaler + FPS readout.
             // The query is opened at most once. DRSTimerActive guards against a nested or
             // repeated Begin, which GL treats as an error rather than a no-op.
-            if (s_Data.DRSTimerQueries[0] != 0 && !s_Data.DRSTimerActive)
+            // Suppressed while NovaProfile is on: a second active TIME_ELAPSED query
+            // is INVALID_OPERATION, so the per-segment queries take over instead.
+            if (s_Data.DRSTimerQueries[0] != 0 && !s_Data.DRSTimerActive && !s_Data.NovaProfile)
             {
                 glBeginQuery(GL_TIME_ELAPSED, s_Data.DRSTimerQueries[s_Data.DRSTimerIndex]);
-                // Advanced when the query OPENS, not when it closes. The poll two frames later
-                // therefore reads a query issued two frames ago -- the oldest one that can have
-                // completed.
-                s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 1) % 3;
-                s_Data.DRSTimerActive = true;
+                // ERROR CHECK, and the reason this exists: the begin was failing
+                // silently with GL_INVALID_OPERATION (1282) on this driver, measured
+                // by logging glGetError() after the poll. GL rejects a second active
+                // TIME_ELAPSED query, and once one is left active by an earlier
+                // failure every subsequent begin is rejected too -- so the timer
+                // starved: the poll succeeded 1 time in 200 frames, DRSTimerIndex
+                // stopped advancing (it rotated 2,1,2,0,1,2 instead of 0,1,2), and
+                // the GPU signal was never used by the scaler at all.
+                //
+                // The guard below DRSTimerActive is supposed to prevent a nested
+                // begin, but a FAILED begin leaves it set with no query running --
+                // the guard then suppresses every future begin for the rest of the
+                // session. Checking the error and unwinding both the flag and the
+                // index makes the next frame retry instead.
+                if (glGetError() != GL_NO_ERROR)
+                {
+                    // Roll the index back: the slot was claimed but never started, so
+                    // leaving it advanced would skip a slot and desynchronise the
+                    // read index (which is computed as (index + 2) % 3).
+                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 2) % 3;
+                    s_Data.DRSTimerActive = false;
+                    s_Data.DRSBeginFailures++;
+                }
+                else
+                {
+                    // Advanced when the query OPENS, not when it closes. The poll two frames later
+                    // therefore reads a query issued two frames ago -- the oldest one that can have
+                    // completed.
+                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 1) % 3;
+                    s_Data.DRSTimerActive = true;
+                }
             }
+            // Per-segment profiling. Two tiny lambdas rather than five copies of the
+            // same guard, and the guard is load-bearing: while NovaProfile is on,
+            // the whole-chain DRS query below is NOT opened, because GL rejects a
+            // second active TIME_ELAPSED query with INVALID_OPERATION.
+            auto novaSegBegin = [&](int seg) {
+                if (!s_Data.NovaProfile) return;
+                glBeginQuery(GL_TIME_ELAPSED, s_Data.NovaProfileQueries[seg]);
+                s_Data.NovaSegmentMask |= (1u << seg);
+            };
+            auto novaSegEnd = [&]() {
+                if (!s_Data.NovaProfile) return;
+                glEndQuery(GL_TIME_ELAPSED);
+            };
+            // Read back the PREVIOUS frame's segment times. A query's result does
+            // not exist until the GPU has passed it, and these are re-begun every
+            // frame, so this must run before the begins below. A segment that did
+            // not run last frame is skipped via the mask rather than read stale.
+            if (s_Data.NovaProfile && s_Data.NovaSegmentMaskPrev != 0)
+            {
+                for (int seg = 0; seg < 4; seg++)
+                {
+                    if (!(s_Data.NovaSegmentMaskPrev & (1u << seg))) continue;
+                    GLint available = 0;
+                    glGetQueryObjectiv(s_Data.NovaProfileQueries[seg], GL_QUERY_RESULT_AVAILABLE, &available);
+                    if (!available) continue;
+                    GLuint64 ns = 0;
+                    glGetQueryObjectui64v(s_Data.NovaProfileQueries[seg], GL_QUERY_RESULT, &ns);
+                    s_Data.NovaSegmentMs[seg] = (double)ns / 1000000.0;
+                }
+                // Log every 10 frames' worth of samples. Percentages, not just
+                // milliseconds: a segment's share is what says whether it is worth
+                // optimising, and the total is checked against the whole-chain time
+                // so a missing segment is visible rather than silently ignored.
+                if (++s_Data.NovaProfileLogCount % 10 == 0)
+                {
+                    double total = s_Data.NovaSegmentMs[0] + s_Data.NovaSegmentMs[1] +
+                                   s_Data.NovaSegmentMs[2] + s_Data.NovaSegmentMs[3];
+                    WL_CORE_INFO("Nova segments (ms): visibility {0:.1f}  trace {1:.1f}  accum+blur+restir {2:.1f}  denoise+composite+bloom {3:.1f}  | total {4:.1f}",
+                                 s_Data.NovaSegmentMs[0], s_Data.NovaSegmentMs[1],
+                                 s_Data.NovaSegmentMs[2], s_Data.NovaSegmentMs[3], total);
+                }
+                s_Data.NovaSegmentMaskPrev = 0;
+            }
+            // Cleared each frame so the mask describes THIS frame's segments only.
+            s_Data.NovaSegmentMask = 0;
+            novaSegBegin(0);
             // Passes are selected by a single uniform rather than by separate programs, so
             // the whole chain reuses one compute shader and one set of bindings.
             glUniform1i(s_Data.Loc_PassID, 0);
@@ -4144,6 +4718,8 @@ void Renderer3D::Flush()
             // would let a pass sample an image its producer had not finished with.
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
+            novaSegEnd();
+            novaSegBegin(1);
             // Pass 1: Hybrid Trace (direct + indirect rays)
             glUniform1i(s_Data.Loc_PassID, 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
@@ -4174,6 +4750,8 @@ void Renderer3D::Flush()
                 BindReservoirBuffers();
             }
 
+            novaSegEnd();
+            novaSegBegin(2);
             // Pass 2: Temporal Indirect Accumulation (velocity-reprojected)
             glUniform1i(s_Data.Loc_PassID, 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
@@ -4196,6 +4774,8 @@ void Renderer3D::Flush()
                 }
             }
 
+            novaSegEnd();
+            novaSegBegin(3);
             // SVGF denoiser: temporal moments (pass 12) then a fixed 4-step A-Trous
             // ladder (pass 13). OFF by default -- see s_Data.SvfgEnabled.
             //
@@ -4264,6 +4844,12 @@ void Renderer3D::Flush()
                 glEndQuery(GL_TIME_ELAPSED);
                 s_Data.DRSTimerActive = false;
             }
+            // Close the last profiling segment and hand this frame's mask to the
+            // read-back at the top of the next frame. Placed AFTER the DRS block
+            // rather than inside it: when profiling is on the DRS query is never
+            // opened, so the segment has to be closed on its own path.
+            novaSegEnd();
+            s_Data.NovaSegmentMaskPrev = s_Data.NovaSegmentMask;
             double drsCpuMs = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - drsFlushStart)
                                   .count();
@@ -4407,10 +4993,19 @@ void Renderer3D::Flush()
     {
         s_Data.Stats.DrawCalls = 0;
         s_Data.Stats.QuadCount = 0;
+        // Deliberately reset here, unlike MidFrameFlushes above which is
+        // cumulative: this is a per-frame readout of how much the screen-space
+        // cull removed, so a stale total would make the number meaningless.
+        s_Data.Stats.ScreenCulledInstances = 0;
+        s_Data.Stats.ZeroMaxDistanceInstances = 0;
     }
     // Returned BY VALUE. Statistics is a small POD, so a copy is cheaper than
     // exposing a reference into the singleton.
     Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
+    // Cumulative mid-frame batch-overflow total. Deliberately NOT reset by
+    // ResetStats(): it is a scene-capacity signal, so the running total is the
+    // useful form (a rising value means the tessellation batch is too small).
+    uint32_t Renderer3D::GetMidFrameFlushCount() { return s_Data.Stats.MidFrameFlushes; }
     bool Renderer3D::IsRayTracingEnabled() { return s_Data.RayTracingEnabled; }
     // Gated on a ray-tracing target actually existing for the ACTIVE backend,
     // and says so when it refuses.
@@ -4568,6 +5163,47 @@ void Renderer3D::Flush()
             ema = s_Data.CPUFlushTimeEMA;
         if (ema > 0.0)
             s_Data.CurrentFPS = (float)(1000.0 / ema);
+
+        // FRAME-TIME REPORT -- deliberately BEFORE the DynamicResolutionEnabled
+        // early return below. This used to sit after it, which meant that turning
+        // the DRS off (WL_DRS_OFF=1) also turned the perf log off: the only way to
+        // read `app` was to leave the very scaler that confounds the measurement
+        // running. A diagnostic that is disabled by the thing it is diagnosing is
+        // not usable, so the report moved up.
+        //
+        // Emitted every 100 frames. `app` is the wall-clock frame delta, which is
+        // the only trustworthy perf measure here -- the `gpu` field is not a real
+        // measurement (see step 60c) and the per-segment profiler stalls the CPU.
+        if (s_Data.FrameTimeLogCount++ % 100 == 0)
+        {
+            const glm::vec3 &camPos = s_Data.CurrentCameraPosition;
+            WL_CORE_INFO("Frame time: app {0:.1f}ms ({1:.1f} fps)  gpu {2:.1f}ms  cpuSubmit {3:.1f}ms  scale {4:.2f}  preset {5}  instances {6}  screenCulled {7}  cam ({8:.1f},{9:.1f},{10:.1f})",
+                         s_Data.AppFrameTimeEMA,
+                         s_Data.AppFrameTimeEMA > 0.0 ? 1000.0 / s_Data.AppFrameTimeEMA : 0.0,
+                         s_Data.GPUFrameTimeEMA,
+                         s_Data.CPUFlushTimeEMA,
+                         s_Data.RenderScale,
+                         (int)s_Data.CurrentQualityPreset,
+                         (uint32_t)s_Data.m_SceneInstances.size(),
+                         s_Data.Stats.ScreenCulledInstances,
+                         camPos.x, camPos.y, camPos.z);
+            // Same reason as the GPU TIMER DEGRADED line below: a second call keeps
+            // the healthy-session line byte-identical. Non-zero here means a
+            // submission path built an instance without assigning MaxDistance, so
+            // that path's geometry is invisible in the traced output.
+            if (s_Data.Stats.ZeroMaxDistanceInstances > 0)
+                WL_CORE_ERROR("TRACE DEFECT: {0} instance(s) submitted with MaxDistance <= 0 -- that geometry is invisible (see RayTracingInstance::MaxDistance)",
+                              s_Data.Stats.ZeroMaxDistanceInstances);
+            // Reported separately rather than appended to the line above: this file
+            // does not include fmt, and a second call keeps the healthy-session log
+            // line byte-identical. Zero failures means the GL_TIME_ELAPSED query is
+            // working and `gpu` is a real measurement; non-zero means the scaler is
+            // running on the app-time signal alone and `gpu` is stale or absent.
+            if (s_Data.DRSBeginFailures > 0)
+                WL_CORE_WARN("GPU TIMER DEGRADED: {0} glBeginQuery failures -- the gpu field is unreliable and the DRS is on the app-time signal",
+                             s_Data.DRSBeginFailures);
+        }
+
         if (!s_Data.DynamicResolutionEnabled)
             return;
         if (ema <= 0.0)
@@ -4579,6 +5215,36 @@ void Renderer3D::Flush()
         if (++s_Data.DRSFramesSinceAdjust < 10)
             return;
         s_Data.DRSFramesSinceAdjust = 0;
+
+        // DIAGNOSTIC (WL_DRS_DEBUG=1): report the sample counts next to the
+        // reading. The app EMA was observed decaying at ~0.99 per frame rather
+        // than the 0.95 the blend constant specifies, which is only possible if
+        // NotifyFrameTime is called less often than once per frame -- so the
+        // question to answer is whether AppFrameSamples tracks the frame count.
+        if (s_Data.DRSDebug)
+            WL_CORE_INFO("DRS adjust: ema {0:.2f} ms  appSamples {1}  drsGpuSamples {2}",
+                         ema, s_Data.AppFrameSamples, s_Data.DRSGpuSamples);
+
+        // WARMUP GATE. The scaler must not act while its only signal is still
+        // converging from the seed. With the seed clamped to 66.7 ms and a
+        // 0.95/0.05 blend, the EMA sits around 33-42 ms for the first ~30 frames
+        // while the true frame time is ~24 ms -- inside the dead band but above
+        // it, so the scaler stepped the render scale DOWN to its floor during
+        // startup and then, correctly, never stepped it back up (the up-path
+        // requires ema < 60% of target, i.e. under 20 ms, and 24 ms is above
+        // that). The result was a session permanently rendered at 0.40 scale
+        // because of its own first second.
+        //
+        // 100 samples, not 30. Measured: the app EMA decays 66.85 -> 60.72 ->
+        // 56.68 -> 50.52 -> 41.82 -> 33.80 -> 28.20 -> 24.88 over its first 80
+        // samples, so at 30 it still reads 56.7 ms against a true frame time of
+        // ~21 ms and the scaler steps down on a value that is not the workload.
+        // At 80 it is 24.88 ms, within ~4 ms of steady state. 100 samples is
+        // 3.3 s at 30 fps -- the cost is that the scaler cannot react to a real
+        // slowdown in the first three seconds, which is the correct trade for
+        // not pinning the resolution for the whole session.
+        if (s_Data.AppFrameSamples < 100)
+            return;
 
         // TargetFPS clamped before inversion, so a zero or negative value cannot produce
         // an infinite budget that makes every frame look fast.
@@ -4629,6 +5295,18 @@ void Renderer3D::Flush()
                 ClearAccumulationBuffers();
             }
         }
+
+    // Periodic frame-time report. The DRS log above fires only when the scale
+    // CHANGES, so a converged session goes silent -- and a session converged at its
+    // floor is exactly when you need to know why.
+    //
+    // SUPERSEDED: the frame-time report that used to live here (every 10
+    // adjustments = every 100 frames) has been MOVED to the top of
+    // UpdateDynamicResolution, above its DynamicResolutionEnabled early return.
+    // Leaving it here made it impossible to read `app` with the DRS turned off --
+    // the DRS being precisely the thing that confounds a cost-attribution
+    // measurement. The report now fires from the same place regardless of
+    // whether the scaler is enabled, using the same log field.
     }
 
     QualityPreset Renderer3D::GetQualityPreset() { return s_Data.CurrentQualityPreset; }
@@ -4636,6 +5314,20 @@ void Renderer3D::Flush()
     {
         s_Data.CurrentQualityPreset = preset;
         ApplyQualityPreset();
+    }
+    // Anti-aliasing accessors. Neither setter resets accumulation: the pattern and the
+    // filter are per-sample choices, not a change to the scene or the camera, so the
+    // existing history stays valid. Both are uploaded on the next dispatch regardless
+    // of backend.
+    SamplePattern Renderer3D::GetSamplePattern() { return s_Data.CurrentSamplePattern; }
+    void Renderer3D::SetSamplePattern(SamplePattern pattern)
+    {
+        s_Data.CurrentSamplePattern = pattern;
+    }
+    ReconstructionFilter Renderer3D::GetReconstructionFilter() { return s_Data.CurrentReconstructionFilter; }
+    void Renderer3D::SetReconstructionFilter(ReconstructionFilter filter)
+    {
+        s_Data.CurrentReconstructionFilter = filter;
     }
     bool Renderer3D::IsDynamicResolutionEnabled() { return s_Data.DynamicResolutionEnabled; }
     // Resets the adjust interval so enabling the scaler does not inherit a
@@ -4663,9 +5355,32 @@ void Renderer3D::Flush()
         // implausibly large values (a debugger break or a suspended process).
         if (ms <= 0.0 || ms >= 1000.0)
             return;
-        s_Data.AppFrameTimeEMA = (s_Data.AppFrameTimeEMA <= 0.0)
-                                     ? ms
-                                     : s_Data.AppFrameTimeEMA * 0.95 + ms * 0.05;
+
+        // SEEDING FIX. Previously the first sample seeded the EMA outright, and the
+        // first sample of a session is the shader-compilation frame -- measured at
+        // 600-900 ms in the Nova path. With a 0.95/0.05 blend that is a ~20-frame
+        // time constant, so the EMA decayed 5% per frame while the scaler adjusted
+        // every 10 frames. The logged trajectory was `GPU 556.8ms` then `GPU
+        // 348.1ms` in a run whose frame time was 22-28 ms, which drove the render
+        // scale to its 0.40 floor for the first ~50 frames of every session.
+        //
+        // The seed is now clamped to a plausible frame time before it is believed.
+        // A session's first frame legitimately costs more than a steady-state one
+        // (shader compilation, PSO creation, BVH build), so it is exactly the sample
+        // that must not be allowed to define the average. 66.7 ms is 15 fps -- a
+        // slow-but-real frame; anything worse is startup cost, not the workload.
+        // Once the EMA is non-zero the clamp no longer applies, so a genuine stall
+        // later in the session is still tracked.
+        if (s_Data.AppFrameTimeEMA <= 0.0)
+        {
+            s_Data.AppFrameTimeEMA = glm::min(ms, 66.7);
+            s_Data.AppFrameSamples++;
+            return;
+        }
+        s_Data.AppFrameTimeEMA = s_Data.AppFrameTimeEMA * 0.95 + ms * 0.05;
+        // Counted here as well as on the seed path, so the warmup gate below sees
+        // every sample the EMA absorbed rather than only the post-seed ones.
+        s_Data.AppFrameSamples++;
     }
     float Renderer3D::GetDynamicMinScale() { return s_Data.DynamicMinScale; }
     void Renderer3D::SetDynamicMinScale(float scale) { s_Data.DynamicMinScale = glm::clamp(scale, 0.25f, 1.0f); }
@@ -5032,8 +5747,19 @@ void Renderer3D::Flush()
         if (s_Data.SphereVertexCount + vertexCount >= s_Data.MaxVertices ||
             s_Data.SphereIndexCount + indexCount >= s_Data.MaxIndices)
         {
-            Flush();
-            FlushAndReset();
+            // Mid-frame batch overflow. On a ray-tracing backend this resets the batch
+            // WITHOUT dispatching Flush(), because a dispatch here traces the frame a
+            // second time -- see OverflowFlushWouldRetrace.
+            if (OverflowFlushWouldRetrace())
+            {
+                FlushAndReset();
+                ++s_Data.Stats.MidFrameFlushes;
+            }
+            else
+            {
+                Flush();
+                FlushAndReset();
+            }
         }
 
         // Not a full matrix inverse: the analytic shader only ever needs the inverse
@@ -5133,8 +5859,14 @@ void Renderer3D::Flush()
         // "no texture" here, which is safe for the ray tracer but would be an
         // out-of-range raster index.
         instance.TextureID = material.Texture ? FindOrAddTextureSlot(material.Texture) : -1;
-        // Always -1. Nothing in this file ever sets it, so any shader reading it is
-        // reading a sentinel rather than a packed channel ID.
+        // Always -1. Nothing in this file ever sets it.
+        //
+        // CORRECTION: an earlier version of this comment said "any shader reading
+        // it is reading a sentinel rather than a packed channel ID". Checked --
+        // NEITHER twin reads it. Both DECLARE it (glsl:151, hlsl:39) purely so the
+        // SSBO/StructuredBuffer layout matches the CPU struct field for field, and
+        // neither references it anywhere else. So this is a layout placeholder, not
+        // a value a shader depends on, and there is no sentinel-reading bug.
         instance.PackedMaterialMapID = -1;
         instance.TextureScale = glm::vec4(worldRadius * (localMax.x - localMin.x),
                                           worldRadius * (localMax.z - localMin.z),
@@ -5142,52 +5874,23 @@ void Renderer3D::Flush()
         float bumpStrength = material.NormalStrength > 0.0f ? material.NormalStrength : (material.Texture ? 1.0f : 0.0f);
         instance.DisplacementParams = glm::vec4(material.DisplacementScale, bumpStrength, 0.0f, 0.0f);
 
-        // Frustum culling: skip instances outside the camera frustum.
-        // For large open worlds this is the single most impactful optimization:
-        // a 2500x2500m city may have 1000+ buildings but only ~50 are visible.
+        // Frustum, distance-LOD, MaxDrawDistance and the opt-in screen-space cull,
+        // all in the one shared helper. Frustum culling is the most impactful of
+        // these for an open world -- a 2500x2500m city may have 1000+ buildings
+        // but only ~50 are visible -- and it now applies to every submission path.
+        //
+        // MaxDistance is NOT assigned here. This is the one path that relies on
+        // the struct default, and it did so silently for a long time: the field had
+        // no initializer, `= {}` zeroed it, and `camDist >= 0.0f` dropped every
+        // instance from this path -- so DrawPlane / DrawCylinder / DrawCone /
+        // DrawTorus rendered nothing while the four paths that assign the field
+        // explicitly were fine. The default now makes this correct by construction;
+        // the other paths assign it only because DrawTerrainChunk needs a different
+        // value (geometry.MaxDistance) and they predate the default.
+        if (CullInstanceForTrace(instance.WorldTransform,
+                                 glm::vec3(instance.Min), glm::vec3(instance.Max), instance))
         {
-            glm::vec3 center = glm::vec3(instance.WorldTransform[3]);
-            glm::vec3 halfExtents = (glm::vec3(instance.Max) - glm::vec3(instance.Min)) * 0.5f;
-            // Conservative AABB: absorb rotation by summing absolute basis vectors
-            glm::vec3 axisX = glm::abs(glm::vec3(instance.WorldTransform[0])) * halfExtents.x;
-            glm::vec3 axisY = glm::abs(glm::vec3(instance.WorldTransform[1])) * halfExtents.y;
-            glm::vec3 axisZ = glm::abs(glm::vec3(instance.WorldTransform[2])) * halfExtents.z;
-            glm::vec3 worldHalf = axisX + axisY + axisZ;
-
-            bool visible = true;
-            for (int p = 0; p < 6; p++)
-            {
-                const auto &plane = s_Data.FrustumPlanes[p];
-                // Signed distance from AABB center to plane, minus AABB radius along plane normal
-                float dist = glm::dot(plane.normal, center) + plane.distance;
-                float radius = glm::dot(worldHalf, glm::abs(plane.normal));
-                if (dist < -radius)
-                {
-                    visible = false;
-                    break;
-                }
-            }
-
-            if (visible)
-            {
-                // Distance LOD with hysteresis: buildings beyond LODDistance get LODLevel=1.
-                // The shader can use LODLevel to skip detailed geometry. Hysteresis prevents
-                // pop-in/pop-out by using a larger distance to drop LOD than to restore it.
-                float camDist = glm::length(center - s_Data.CurrentCameraPosition);
-                if (camDist > s_Data.LODFarDistance)
-                    instance.LODLevel = 2;  // Far: lowest detail (shader may skip entirely)
-                else if (camDist > s_Data.LODNearDistance)
-                    instance.LODLevel = 1;  // Mid: reduced detail
-                else
-                    instance.LODLevel = 0;  // Near: full detail
-
-                // Hard distance cull: skip instances beyond MaxDrawDistance entirely.
-                // This is the most aggressive culling — buildings 2km away are not traced at all.
-                if (camDist < s_Data.MaxDrawDistance)
-                {
-                    s_Data.m_SceneInstances.push_back(instance);
-                }
-            }
+            s_Data.m_SceneInstances.push_back(instance);
         }
         s_Data.m_SceneDirty = true;
     }
@@ -5789,10 +6492,9 @@ void Renderer3D::Flush()
         s_Data.FrameIndex = 0;
     }
 
-    // The classic radical-inverse construction. Still present and still correct, but
-    // GetCurrentJitter no longer calls it -- STBN replaced it because a low-
-    // discrepancy sequence still produces structured, repeating artefacts once
-    // accumulated, whereas blue noise does not.
+    // The classic radical-inverse construction. STBN is the default (see
+    // GetCurrentJitter), but Halton is still the backing for the SamplePattern::Halton
+    // option, so this is live code on that path rather than a leftover.
     float Renderer3D::Halton(int index, int base)
     {
         // The running 1/base^k weight, divided rather than multiplied by an inverse
@@ -5815,12 +6517,68 @@ void Renderer3D::Flush()
     // sequence rather than continuing a pattern computed for different dimensions.
     glm::vec2 Renderer3D::GetCurrentJitter(int frameIndex, glm::vec2 viewportSize)
     {
-        // STBN spatio-temporal blue noise instead of Halton(2,3). The old
-        // sequence was 'frameIndex % 16', so it repeated exactly every 16
-        // frames -- the same 16 structured artefacts recurred in the
-        // accumulation buffer. STBN gives 64 decorrelated frames with ~21x
-        // low-frequency suppression, and works identically on every backend
-        // including OpenGL because the jitter is a CPU-side uniform.
+        // Sample-pattern axis (s_Data.CurrentSamplePattern, see the SamplePattern
+        // enum in Renderer3D.h). The jitter is a CPU-side uniform on purpose: it is
+        // uploaded through the existing u_Jitter on all four dispatch paths, so a
+        // pattern costs no extra pass and adds no shader-side branch.
+        //
+        // Every pattern below is a fixed, predictable offset that cycles over a
+        // handful of frames, so the accumulation buffer eventually sees the whole
+        // set. They exist because they are cheap and because the old behaviour is
+        // worth having back as an option; none of them beats STBN, which is why
+        // BlueNoise is the default.
+        //
+        // Unit contract: PIXELS, inside [-0.5, 0.5]. The call site adds the result
+        // to pixelCoords BEFORE dividing by traceSize, so anything larger would
+        // leave the pixel. Same contract as BlueNoise::Jitter.
+        const SamplePattern pattern = s_Data.CurrentSamplePattern;
+
+        // Centre: no jitter at all. Still a valid choice -- it is the raw,
+        // un-accumulated image, and the baseline every other pattern is measured
+        // against.
+        if (pattern == SamplePattern::Centre) return glm::vec2(0.0f);
+
+        const int f = frameIndex & 15;
+
+        // Ordered grid: the axis-aligned 2x2 pattern, cycled over 4 frames.
+        if (pattern == SamplePattern::OrderedGrid)
+            return glm::vec2((float)(f & 1), (float)((f >> 1) & 1)) * 0.5f - 0.25f;
+
+        // Quincunx: the 4 corners then the centre, cycled over 5 frames. The centre
+        // sample is what makes it 5-sample rather than a plain 4x grid.
+        if (pattern == SamplePattern::Quincunx)
+        {
+            const int q = f % 5;
+            if (q == 4) return glm::vec2(0.0f);
+            return glm::vec2((float)(q & 1), (float)((q >> 1) & 1)) * 0.5f - 0.25f;
+        }
+
+        // Rotated grid (RGSS): the 2x2 pattern rotated by atan(1/2) -- the classic 4x
+        // supersampling angle -- and re-rotated by the golden angle each frame, so
+        // the structured pattern does not recur at the same phase every frame the
+        // way a fixed rotation would.
+        if (pattern == SamplePattern::RotatedGrid)
+        {
+            const float angle = 0.4636476f + (float)f * 2.3999632f;
+            const float c = glm::cos(angle);
+            const float s = glm::sin(angle);
+            const glm::vec2 g((float)(f & 1) * 0.5f - 0.25f,
+                              (float)((f >> 1) & 1) * 0.5f - 0.25f);
+            return glm::vec2(g.x * c - g.y * s, g.x * s + g.y * c);
+        }
+
+        // Halton(2,3): the classic radical-inverse pair, centred on the pixel. The
+        // one pattern still generated from Halton() rather than a table, because the
+        // sequence is only two calls long.
+        if (pattern == SamplePattern::Halton)
+            return glm::vec2(Halton(f + 1, 2), Halton(f + 1, 3)) - 0.5f;
+
+        // BlueNoise: STBN spatio-temporal blue noise. The old Halton(2,3) sequence
+        // was 'frameIndex % 16', so it repeated exactly every 16 frames -- the same
+        // 16 structured artefacts recurred in the accumulation buffer. STBN gives 64
+        // decorrelated frames with ~21x low-frequency suppression, and works
+        // identically on every backend including OpenGL because the jitter is a
+        // CPU-side uniform.
         float jitterX = 0.0f, jitterY = 0.0f;
         // The STBN volume lookup. It returns false and leaves the outputs untouched if
         // the asset failed to load, in which case jitterX/jitterY stay at the 0.0f
@@ -5882,18 +6640,21 @@ void Renderer3D::Flush()
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
 
-    // Called after every Flush, and after a mid-frame overflow flush inside Draw*. It
+    // Called after every Flush, and after a mid-frame overflow inside Draw*. It
     // resets the RASTER batch only.
     //
     // The ray-traced instance list is deliberately NOT reset here. Like the volume and
-    // light lists it is frame-wide, and for the same reason: the tracer is dispatched
-    // once per frame, at EndScene, and consumes every instance the frame submitted.
-    // Clearing it at a mid-frame overflow flush -- and re-adding only the terrain
-    // instances -- left the END-of-frame dispatch tracing just the few primitives
-    // emitted after the flush. That near-empty trace then overwrote the correct image
-    // the overflow flush had just produced, so any scene large enough to overflow the
-    // sphere batch rendered as sky and nothing else. BeginScene clears the list once
-    // per frame, which is where a per-frame reset belongs.
+    // light lists it is frame-wide: the tracer is dispatched once per frame, at
+    // EndScene, and consumes every instance the frame submitted. BeginScene clears the
+    // list once per frame, which is where a per-frame reset belongs.
+    //
+    // This is also why a mid-frame overflow no longer calls Flush() on a ray-tracing
+    // backend. It used to, and that was the double trace: the overflow dispatch
+    // rendered part of the scene and the EndScene dispatch then traced the rest and
+    // overwrote it. Clearing the list at the overflow instead was tried too, and left
+    // the END-of-frame dispatch tracing just the primitives emitted after the flush --
+    // a near-empty trace that overwrote the correct image, so any scene large enough to
+    // overflow the sphere batch rendered as sky and nothing else.
     void Renderer3D::FlushAndReset()
     {
         s_Data.CubeIndexCount = 0;
@@ -5923,8 +6684,19 @@ void Renderer3D::Flush()
         if (s_Data.CubeIndexCount + 36 >= s_Data.MaxIndices ||
             s_Data.CubeVertexCount + 24 >= s_Data.MaxVertices)
         {
-            Flush();
-            FlushAndReset();
+            // Mid-frame batch overflow. On a ray-tracing backend this resets the batch
+            // WITHOUT dispatching Flush(), because a dispatch here traces the frame a
+            // second time -- see OverflowFlushWouldRetrace.
+            if (OverflowFlushWouldRetrace())
+            {
+                FlushAndReset();
+                ++s_Data.Stats.MidFrameFlushes;
+            }
+            else
+            {
+                Flush();
+                FlushAndReset();
+            }
         }
 
         // Displacement-aware cull padding: relief pushes vertices outward.
@@ -6023,8 +6795,19 @@ void Renderer3D::Flush()
             if (s_Data.SphereVertexCount + needVerts >= s_Data.MaxVertices ||
                 s_Data.SphereIndexCount + needIdx >= s_Data.MaxIndices)
             {
-                Flush();
-                FlushAndReset();
+                // Mid-frame batch overflow. On a ray-tracing backend this resets the batch
+                // WITHOUT dispatching Flush(), because a dispatch here traces the frame a
+                // second time -- see OverflowFlushWouldRetrace.
+                if (OverflowFlushWouldRetrace())
+                {
+                    FlushAndReset();
+                    ++s_Data.Stats.MidFrameFlushes;
+                }
+                else
+                {
+                    Flush();
+                    FlushAndReset();
+                }
             }
             // Water borrows the SPHERE batch, like the subdivided cube does. So water and
             // relief-subdivided cubes can evict each other, even though neither uses a
@@ -6180,9 +6963,18 @@ void Renderer3D::Flush()
             instance.DisplacementParams = glm::vec4(material.DisplacementScale, bumpStrength, 0.0f, 0.0f);
 
             instance.MaxDistance = Renderer3DData::MaxDrawDistance;
-            instance.LODLevel = 0;
 
-            s_Data.m_SceneInstances.push_back(instance);
+            // Same shared cull as every other submission path -- frustum, distance
+            // LOD, MaxDrawDistance and the opt-in screen-space cull. Without this
+            // DrawCube/DrawSphere entered the BVH unconditionally: 1024 + 678 =
+            // 1702 of DemoGame's 1729 entities, 97% of the scene, with no frustum
+            // test at all. LODLevel is assigned by the cull, so the explicit 0 that
+            // used to sit here is gone.
+            if (CullInstanceForTrace(instance.WorldTransform,
+                                     glm::vec3(instance.Min), glm::vec3(instance.Max), instance))
+            {
+                s_Data.m_SceneInstances.push_back(instance);
+            }
             s_Data.m_SceneDirty = true;
             return;
         }
@@ -6240,8 +7032,19 @@ void Renderer3D::Flush()
         // frame alongside a cube.
         if (s_Data.SphereIndexCount + indexCount >= s_Data.MaxIndices || s_Data.SphereVertexCount + vertexCount >= s_Data.MaxVertices)
         {
-            Flush();
-            FlushAndReset();
+            // Mid-frame batch overflow. On a ray-tracing backend this resets the batch
+            // WITHOUT dispatching Flush(), because a dispatch here traces the frame a
+            // second time -- see OverflowFlushWouldRetrace.
+            if (OverflowFlushWouldRetrace())
+            {
+                FlushAndReset();
+                ++s_Data.Stats.MidFrameFlushes;
+            }
+            else
+            {
+                Flush();
+                FlushAndReset();
+            }
         }
 
         uint32_t startIndexOffset = s_Data.SphereVertexCount;
@@ -6376,9 +7179,18 @@ void Renderer3D::Flush()
             instance.DisplacementParams = glm::vec4(material.DisplacementScale, bumpStrength, 0.0f, 0.0f);
 
             instance.MaxDistance = Renderer3DData::MaxDrawDistance;
-            instance.LODLevel = 0;
 
-            s_Data.m_SceneInstances.push_back(instance);
+            // Same shared cull as every other submission path -- frustum, distance
+            // LOD, MaxDrawDistance and the opt-in screen-space cull. Without this
+            // DrawCube/DrawSphere entered the BVH unconditionally: 1024 + 678 =
+            // 1702 of DemoGame's 1729 entities, 97% of the scene, with no frustum
+            // test at all. LODLevel is assigned by the cull, so the explicit 0 that
+            // used to sit here is gone.
+            if (CullInstanceForTrace(instance.WorldTransform,
+                                     glm::vec3(instance.Min), glm::vec3(instance.Max), instance))
+            {
+                s_Data.m_SceneInstances.push_back(instance);
+            }
             s_Data.m_SceneDirty = true;
             return;
         }
@@ -6424,8 +7236,19 @@ void Renderer3D::Flush()
         if (s_Data.SphereVertexCount + needVerts >= s_Data.MaxVertices ||
             s_Data.SphereIndexCount + needIdx >= s_Data.MaxIndices)
         {
-            Flush();
-            FlushAndReset();
+            // Mid-frame batch overflow. On a ray-tracing backend this resets the batch
+            // WITHOUT dispatching Flush(), because a dispatch here traces the frame a
+            // second time -- see OverflowFlushWouldRetrace.
+            if (OverflowFlushWouldRetrace())
+            {
+                FlushAndReset();
+                ++s_Data.Stats.MidFrameFlushes;
+            }
+            else
+            {
+                Flush();
+                FlushAndReset();
+            }
         }
 
         glm::mat4 invTransform = FastTRSInverse(transform);
@@ -6650,8 +7473,15 @@ void Renderer3D::Flush()
             // WaveParams: x=amplitude, y=wavelength, z=speed, w=chop.
             instance.WaveParams = glm::vec4(water.WaveAmplitude, water.WaveLength, water.WaveSpeed, water.Chop);
             instance.MaxDistance = Renderer3DData::MaxDrawDistance;
-            instance.LODLevel = 0;
-            s_Data.m_SceneInstances.push_back(instance);
+
+            // Same shared cull as every other submission path. Water is a huge
+            // quad, so the frustum test rarely rejects it -- but the distance and
+            // screen-space culls do apply, and the LOD band is set consistently.
+            if (CullInstanceForTrace(instance.WorldTransform,
+                                     glm::vec3(instance.Min), glm::vec3(instance.Max), instance))
+            {
+                s_Data.m_SceneInstances.push_back(instance);
+            }
             s_Data.m_SceneDirty = true;
         }
     }
@@ -6710,8 +7540,18 @@ void Renderer3D::Flush()
         instance.TerrainPad0 = 0;
         instance.TerrainPad1 = 0;
 
-        s_Data.m_SceneInstances.push_back(instance);
-        s_Data.m_TerrainInstances.push_back(instance);
+        // Same shared cull as every other submission path. Terrain bounds are LOCAL
+        // to the chunk -- computed relative to its origin vertex, not the world
+        // origin -- so CullInstanceForTrace composes them with WorldTransform
+        // correctly. Both lists are gated together: a chunk that is culled must
+        // not appear in either, or the two would disagree about what is in the
+        // scene.
+        if (CullInstanceForTrace(instance.WorldTransform,
+                                 glm::vec3(instance.Min), glm::vec3(instance.Max), instance))
+        {
+            s_Data.m_SceneInstances.push_back(instance);
+            s_Data.m_TerrainInstances.push_back(instance);
+        }
         s_Data.m_SceneDirty = true;
     }
 }

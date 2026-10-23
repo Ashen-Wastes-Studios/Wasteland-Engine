@@ -176,6 +176,9 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ClInclude Include="src\EditorLayer.h" />
     <ClInclude Include="src\Panels\AIChatPanel.h" />
     <ClInclude Include="src\Panels\ApiKeyStore.h" />
+    <ClInclude Include="src\Panels\AudioClipPanel.h" />
+    <ClInclude Include="src\Panels\AudioMixerPanel.h" />
+    <ClInclude Include="src\Panels\AudioScenePanel.h" />
     <ClInclude Include="src\Panels\AvbGraphPanel.h" />
     <ClInclude Include="src\Panels\ContentBrowserPanel.h" />
     <ClInclude Include="src\Panels\GraphHistory.h" />
@@ -197,6 +200,9 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ClCompile Include="src\EditorLayer.cpp" />
     <ClCompile Include="src\Panels\AIChatPanel.cpp" />
     <ClCompile Include="src\Panels\ApiKeyStore.cpp" />
+    <ClCompile Include="src\Panels\AudioClipPanel.cpp" />
+    <ClCompile Include="src\Panels\AudioMixerPanel.cpp" />
+    <ClCompile Include="src\Panels\AudioScenePanel.cpp" />
     <ClCompile Include="src\Panels\AvbGraphPanel.cpp" />
     <ClCompile Include="src\Panels\ContentBrowserPanel.cpp" />
     <ClCompile Include="src\Panels\GraphHistory.cpp" />

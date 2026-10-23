@@ -266,7 +266,8 @@ namespace Wasteland
         // single quad, which is a valid mesh -- unlike the shapes below that need at
         // least three segments to close.
         subdivisions = ClampCount(subdivisions, 0, 64);
-        return g_PlaneCache.Get(subdivisions, [subdivisions]() {
+        return g_PlaneCache.Get(subdivisions, [subdivisions]()
+                                {
             ProceduralMesh mesh;
 
             // Blender's default Plane is a single quad (0 cuts). The general
@@ -350,8 +351,7 @@ namespace Wasteland
                 }
             }
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Editor grid, and a near-duplicate of Plane's general path.
@@ -367,7 +367,8 @@ namespace Wasteland
     {
         xSubdivisions = ClampCount(xSubdivisions, 1, 128);
         ySubdivisions = ClampCount(ySubdivisions, 1, 128);
-        return g_GridCache.Get({xSubdivisions, ySubdivisions}, [xSubdivisions, ySubdivisions]() {
+        return g_GridCache.Get({xSubdivisions, ySubdivisions}, [xSubdivisions, ySubdivisions]()
+                               {
             ProceduralMesh mesh;
             const int nx = xSubdivisions + 1;
             const int ny = ySubdivisions + 1;
@@ -409,8 +410,7 @@ namespace Wasteland
                 }
             }
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Unit disc on the XZ plane, radius 0.5, facing +Y.
@@ -421,7 +421,8 @@ namespace Wasteland
     const ProceduralMesh &ProceduralMeshes::Circle(int vertexCount)
     {
         vertexCount = ClampCount(vertexCount, 3, 256);
-        return g_CircleCache.Get(vertexCount, [vertexCount]() {
+        return g_CircleCache.Get(vertexCount, [vertexCount]()
+                                 {
             ProceduralMesh mesh;
             mesh.Positions.reserve(static_cast<size_t>(vertexCount) + 1);
             mesh.Normals.reserve(static_cast<size_t>(vertexCount) + 1);
@@ -476,8 +477,7 @@ namespace Wasteland
                 mesh.Indices.push_back(a);
             }
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Geodesic sphere by recursive edge-midpoint subdivision of an icosahedron.
@@ -504,7 +504,8 @@ namespace Wasteland
         // sphere-equivalent clamps, and why a higher level would need the clamp raised
         // deliberately rather than by copying a number from a neighbouring generator.
         subdivisions = ClampCount(subdivisions, 0, 4);
-        return g_IcoSphereCache.Get(subdivisions, [subdivisions]() {
+        return g_IcoSphereCache.Get(subdivisions, [subdivisions]()
+                                    {
             // THE GOLDEN RATIO, phi.
             //
             // The 12 vertices below are the Cartesian form of a regular icosahedron: the
@@ -661,8 +662,7 @@ namespace Wasteland
 
             mesh.Indices = std::move(indices);
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Cylinder, centred on the origin with radius and half-height 0.5, so a uniform
@@ -670,7 +670,8 @@ namespace Wasteland
     const ProceduralMesh &ProceduralMeshes::Cylinder(int vertexCount)
     {
         vertexCount = ClampCount(vertexCount, 3, 256);
-        return g_CylinderCache.Get(vertexCount, [vertexCount]() {
+        return g_CylinderCache.Get(vertexCount, [vertexCount]()
+                                   {
             ProceduralMesh mesh;
             // ONE EXTRA COLUMN, which is the seam.
             //
@@ -815,8 +816,7 @@ namespace Wasteland
             addCap(kHalfHeight, 1.0f);
             addCap(-kHalfHeight, -1.0f);
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Cone, centred on the origin, radius and half-height 0.5, so a uniform unit
@@ -824,7 +824,8 @@ namespace Wasteland
     const ProceduralMesh &ProceduralMeshes::Cone(int vertexCount)
     {
         vertexCount = ClampCount(vertexCount, 3, 256);
-        return g_ConeCache.Get(vertexCount, [vertexCount]() {
+        return g_ConeCache.Get(vertexCount, [vertexCount]()
+                               {
             ProceduralMesh mesh;
             const int sideCount = vertexCount + 1;
             const float step = glm::two_pi<float>() / static_cast<float>(vertexCount);
@@ -905,8 +906,7 @@ namespace Wasteland
                 mesh.Indices.push_back(ringStart + static_cast<uint32_t>(i + 1));
             }
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 
     // Torus parameterised by two independent segment counts.
@@ -931,7 +931,8 @@ namespace Wasteland
         // note at the MeshCache declaration.
         majorSegments = ClampCount(majorSegments, 3, 256);
         minorSegments = ClampCount(minorSegments, 3, 256);
-        return g_TorusCache.Get({majorSegments, minorSegments}, [majorSegments, minorSegments]() {
+        return g_TorusCache.Get({majorSegments, minorSegments}, [majorSegments, minorSegments]()
+                                {
             ProceduralMesh mesh;
             // Blender's default torus is major 1, minor 0.25, scaled by 0.5 to
             // the engine convention -> outer radius 0.5.
@@ -1031,7 +1032,6 @@ namespace Wasteland
                 }
             }
             OrientTrianglesOutward(mesh);
-            return mesh;
-        });
+            return mesh; });
     }
 }

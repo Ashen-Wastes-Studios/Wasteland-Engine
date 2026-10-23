@@ -36,6 +36,39 @@ namespace Wasteland
         Ultra = 3
     };
 
+    // Anti-aliasing, split into two orthogonal axes.
+    // SamplePattern: where the sub-pixel offset comes from (a CPU-side choice
+    // expressed through the existing u_Jitter uniform -- no new pass needed).
+    // ReconstructionFilter: how samples are combined into the final image.
+    // They are separate enums because the combinations are meaningful
+    // (RGSS + TAA and RGSS + FSR1 are both valid); folding them into one enum
+    // would force a cross-product into the UI.
+    enum class SamplePattern : int
+    {
+        BlueNoise = 0,   // current default: STBN spatio-temporal blue noise
+        Halton = 1,      // classic radical inverse (code still present, currently unused)
+        RotatedGrid = 2, // RGSS, the classic 4x pattern
+        Quincunx = 3,    // 5-sample: 4 corners + centre
+        OrderedGrid = 4, // 2x2 axis-aligned
+        Centre = 5       // no jitter
+    };
+
+    enum class ReconstructionFilter : int
+    {
+        None = 0,          // raw output at RenderScale 1.0, no upscale, no accumulation
+        Nearest = 1,       // 1 tap, point sampling
+        Bilinear = 2,      // 4 tap -- the current implicit default
+        Box = 3,           // 4 tap unweighted
+        Bicubic = 4,       // 16 tap Catmull-Rom
+        Lanczos = 5,       // windowed sinc
+        FXAA = 6,          // post-process edge AA, cheap fallback for old GPUs
+        SMAA = 7,          // post-process edge AA, better quality than FXAA
+        FSR1 = 8,          // EASU + RCAS spatial upscaler
+        TSR = 9,           // temporal super resolution
+        Temporal = 10,     // TAA (temporal accumulation)
+        SpatialDenoise = 11 // ATrous wavelet only, no temporal
+    };
+
     // Entirely static: one process-wide renderer, no instance state. That is
     // why Init/Shutdown are explicit static calls rather than a ctor/dtor pair.
     class Renderer3D
@@ -106,14 +139,44 @@ namespace Wasteland
             // GetStats() getter, which is the one place the values are exposed.
             uint32_t GetTotalVertexCount() { return QuadCount * 4; }
             uint32_t GetTotalIndexCount() { return QuadCount * 6; }
+
+            // Cumulative count of CPU tessellation batch overflows that fired
+            // mid-frame (a Draw* pushed past MaxVertices/MaxIndices and had to
+            // reset the batch before EndScene). NOT reset per frame: it is a
+            // scene-capacity signal, so a monotonic total is the useful form.
+            // A rising value means the batch is too small for the scene.
+            uint32_t MidFrameFlushes = 0;
+
+            // Instances dropped by the screen-space cull (WASTELAND_SCREEN_CULL)
+            // rather than submitted to the BVH. Per-frame, and reset by
+            // ResetStats(): it is a tuning readout for that cull, not a
+            // scene-capacity signal like MidFrameFlushes above. A high value means
+            // the threshold is eating visible geometry; zero with the cull enabled
+            // means nothing was small enough to drop.
+            uint32_t ScreenCulledInstances = 0;
+
+            // Instances that reached CullInstanceForTrace with MaxDistance <= 0.
+            // Must be zero. A non-zero value means a submission path built its
+            // instance without assigning MaxDistance: the CPU cull then drops
+            // every instance from that path (`camDist >= 0.0f`), and the shader
+            // would reject them too. Per-frame, reset by ResetStats().
+            uint32_t ZeroMaxDistanceInstances = 0;
         };
         static void ResetStats();
         static Statistics GetStats();
+        // Cumulative mid-frame batch-overflow count, for the editor stats panel
+        // and any tooling that wants to know whether the tessellation batch is
+        // sized for the current scene.
+        static uint32_t GetMidFrameFlushCount();
         // The raster path is always live; this gates the Nova path tracer only.
         static bool IsRayTracingEnabled();
         static void SetRayTracingEnabled(bool enabled);
         static QualityPreset GetQualityPreset();
         static void SetQualityPreset(QualityPreset preset);
+        static SamplePattern GetSamplePattern();
+        static void SetSamplePattern(SamplePattern pattern);
+        static ReconstructionFilter GetReconstructionFilter();
+        static void SetReconstructionFilter(ReconstructionFilter filter);
         static bool IsRayTracingAccumulate();
         static void SetRayTracingAccumulate(bool enabled);
         static uint32_t GetRayTraceTargetID();

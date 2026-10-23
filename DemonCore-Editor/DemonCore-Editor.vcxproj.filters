@@ -13,6 +13,15 @@
     <ClInclude Include="src\Panels\ApiKeyStore.h">
       <Filter>Panels</Filter>
     </ClInclude>
+    <ClInclude Include="src\Panels\AudioClipPanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\AudioMixerPanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\AudioScenePanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
     <ClInclude Include="src\Panels\AvbGraphPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
@@ -66,6 +75,15 @@
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\ApiKeyStore.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\AudioClipPanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\AudioMixerPanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\AudioScenePanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\AvbGraphPanel.cpp">

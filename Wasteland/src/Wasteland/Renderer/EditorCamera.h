@@ -59,6 +59,16 @@ namespace Wasteland {
 		inline float GetDistance() const { return m_Distance; }
 		inline void SetDistance(float distance) { m_Distance = distance; }
 
+		// Orientation/aim setters. Nothing in the editor uses them yet: MousePan,
+		// MouseRotate and MouseZoom are the only writers. They exist so a
+		// measurement harness can pin the camera to a known transform -- the
+		// editor camera otherwise starts from the constructor defaults
+		// (focal point and position both at the origin, pitch and yaw 0), and
+		// without a fixed starting point two headless runs are not comparable.
+		inline void SetFocalPoint(const glm::vec3& focalPoint) { m_FocalPoint = focalPoint; UpdateView(); }
+		inline void SetPitch(float pitch) { m_Pitch = pitch; UpdateView(); }
+		inline void SetYaw(float yaw) { m_Yaw = yaw; UpdateView(); }
+
 				// Both assignments then ONE call to UpdateProjection. Splitting it this
 				// way matters: recomputing per assignment would derive the aspect ratio
 				// from a half-updated pair.

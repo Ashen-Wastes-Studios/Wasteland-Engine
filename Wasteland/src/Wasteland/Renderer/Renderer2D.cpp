@@ -5,6 +5,8 @@
 #include "Shader.h"
 #include "RenderCommand.h"
 #include "Wasteland/Project/Project.h"
+#include "Platform/NVRHI/NVRHIRendererAPI.h"
+#include "Platform/NVRHI/NVRHIContext.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -481,11 +483,19 @@ namespace Wasteland {
 	}
 
 	void Renderer2D::Flush()
-	{
-		// Skip an empty batch entirely: uploading zero bytes and issuing a
-		// zero-index draw would burn a draw call and show up in the stats.
-		// The index count doubles as the 'anything was drawn' flag.
-		if (s_Data.QuadIndexCount)
+		{
+			// Skip entirely when the device is lost: every NVRHI command below
+			// (writeBuffer, drawIndexed, etc.) dereferences m_ActiveCommandList,
+			// which is null because BeginFrame skipped open() after the TDR.
+			if (auto *ctx = NVRHIRendererAPI::GetCurrentContext())
+			{
+				if (ctx->IsDeviceLost())
+					return;
+			}
+			// Skip an empty batch entirely: uploading zero bytes and issuing a
+			// zero-index draw would burn a draw call and show up in the stats.
+			// The index count doubles as the 'anything was drawn' flag.
+			if (s_Data.QuadIndexCount)
 		{
 			// Upload size in BYTES, derived from the pointer delta rather than a
 			// separate vertex counter. Casting through uint8_t* first is what keeps

@@ -116,8 +116,8 @@ Entities:
       Friction: 0.5
       Restitution: 0
     ScriptComponent:
-      ScriptPath: assets/scripts/Enemy_legacy_reference.py
-      ScriptName: Enemy
+      ScriptPath: assets/scripts/EnemyHost.py
+      ScriptName: EnemyChaseHost
   - Entity: 9600000000000000021
     TagComponent:
       Tag: Enemy2
@@ -163,8 +163,8 @@ Entities:
       Friction: 0.5
       Restitution: 0
     ScriptComponent:
-      ScriptPath: assets/scripts/Enemy_legacy_reference.py
-      ScriptName: Enemy
+      ScriptPath: assets/scripts/EnemyHost.py
+      ScriptName: EnemyGuardHost
   - Entity: 9600000000000000022
     TagComponent:
       Tag: Enemy3
@@ -210,8 +210,8 @@ Entities:
       Friction: 0.5
       Restitution: 0
     ScriptComponent:
-      ScriptPath: assets/scripts/Enemy_legacy_reference.py
-      ScriptName: Enemy
+      ScriptPath: assets/scripts/EnemyHost.py
+      ScriptName: PatrolGuardHost
   - Entity: 9600000000000000030
     TagComponent:
       Tag: HealthPotion
@@ -40198,5 +40198,15 @@ Entities:
       Translation: [416, 1.7, 1090]
       Rotation: [0, 0, 0]
       Scale: [1, 1, 1]
-    AudioListenerComponent:
-      Enabled: true
+    # Deliberately has no AudioListenerComponent.
+    #
+    # FindListenerEntity gives an explicit AudioListenerComponent priority over
+    # the primary camera, so carrying one here pinned the ears to this static
+    # marker at x=416 -- 48 m from the showcase source, beyond its
+    # MaxDistance of 25 -- and ignored the player entirely. With no explicit
+    # listener the ears follow the camera, which is what AudioDemo.py's
+    # docstring always claimed, and the source becomes audible as the player
+    # walks down the showcase row toward it.
+    #
+    # The entity stays as a visual marker for the showcase row; it just no
+    # longer owns the listener.

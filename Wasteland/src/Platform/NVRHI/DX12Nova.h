@@ -145,15 +145,22 @@ class DX12Nova {
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> reservoirClearCpu{};
     std::array<Com<ID3D12DescriptorHeap>, 2> reservoirClearGpuHeaps;
 
-    // Eleven UAVs: the eight pass images (u0..u7), the temporal-accumulation history
-    // image (u8's slot), the SVGF moments image at u9, and the ReSTIR reservoir
-    // write at u10. The shader declares u0..u7, u9, and u10; u8 is a deliberate
-    // GAP in the shader (the moments UAV moved from u8 to u9 because on Vulkan
-    // the NVRHI binding for u8, offset 0 + 8, collides with NovaConstants at
-    // offset 7 + 1). The descriptor range is contiguous, so the gap still costs
-    // a descriptor: the range must run to u10 to cover it, which is why kUavCount
-    // is 11 and not 10.
-    static constexpr UINT kUavCount = 11;
+    // Twelve UAVs. The shader declares u0..u7, u9, u10 and u11 -- NOT u8.
+    // u8 is a hole: the moments UAV moved from u8 to u9 because on Vulkan the
+    // NVRHI binding for u8 (offset 0 + 8) collides with NovaConstants (offset
+    // 7 + 1), and the history image was later moved from u8 to u11 for the same
+    // reason. A D3D12 descriptor range is contiguous, so u8 still costs a
+    // descriptor even though nothing binds it: the range has to run to u11 to
+    // cover u11, which is why kUavCount is 12 and not 10.
+    //
+    // This constant MUST be >= (highest shader UAV index + 1). The root
+    // signature's UAV table is sized from it, so a shader that gains a UAV
+    // without bumping this fails CreateComputePipelineState with E_INVALIDARG
+    // (0x80070057) during Init -- the backend then silently falls back to raster
+    // and logs "DX12 Nova init failed". That is exactly what happened when
+    // img_HistoryBuffer moved to u11 while this stayed 11: every DX12 Nova init
+    // failed. When adding a UAV, bump this AND the heap layout comment below.
+    static constexpr UINT kUavCount = 12;
     UINT cbvSrvUavDescriptorSize = 0;
 
     // Heap layout, shared by every slot so the index arithmetic has one
@@ -162,7 +169,7 @@ class DX12Nova {
     //   4..35    scene-texture SRVs (32)
     //   36..41   sampled-snapshot SRVs (6: t48..t53)
     //   42..51   readable-snapshot SRVs (10: t64..t73)
-    //   52..62   UAVs (kUavCount = 11)
+    //   52..63   UAVs (kUavCount = 12)
     // Indices 1..3 are unused padding left from the original fixed layout.
     //
     // The two SRV blocks grew for the SVGF moments resource, which the shader
@@ -177,7 +184,7 @@ class DX12Nova {
     // kImageSrvBase and kUavBase therefore both shift, which is why they are
     // derived here rather than left as the old literals. Every relative offset
     // inside a block is unchanged (image i is still kImageSrvBase+i, history is
-    // still kUavBase+8), so only the block bases moved.
+    // still kUavBase+11), so only the block bases moved.
     static constexpr UINT kSceneTextureBase = 4;
     static constexpr UINT kSamplerBase = 36;
     static constexpr UINT kImageSrvBase = 42;

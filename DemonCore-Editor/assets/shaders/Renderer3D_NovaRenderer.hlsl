@@ -185,6 +185,14 @@ cbuffer NovaConstants : register(b1)
     int     u_StepSize;
     float   u_RenderScale;
     int     u_LightCount;
+    // RECONSTRUCTION FILTER -- the HLSL twin of the GLSL declaration. This was
+    // plumbed from the CPU (enum, cbuffer slot, all three NVRHI Set() calls) but
+    // never declared, so the upload went nowhere and the editor's AA dropdown did
+    // nothing on any backend. The values match Renderer3D::ReconstructionFilter:
+    // 0 None, 1 Nearest, 2 Bilinear, 3 Box, 4 Bicubic, 5 Lanczos, and 6..11 are
+    // separate passes that fall through to bilinear rather than being ignored.
+    int     u_ReconstructionFilter;
+    int     u_SamplePattern;
     // Neural rendering
     int     u_NeuralEnabled;
     float   u_NeuralTexStrength;
@@ -211,6 +219,15 @@ cbuffer NovaConstants : register(b1)
     float4  u_CloudData2[2];
     float4  u_CloudData3[2];
     int     u_VolFast;
+    // Upper bound on the volumetric march step count (see the GLSL twin's note).
+    // 0 means the previous behaviour, 32.
+    int     u_VolStepCap;
+    // Runtime cap on the per-step volumetric light loop (see the GLSL twin's
+    // u_VolLightCap note). 0 means "use WL_VOL_LIGHT_CAP", the previous behaviour.
+    int     u_VolLightCap;
+    // 1 enables the hoisted segment range cull; 0 restores the pre-cull
+    // behaviour of traversing every selected light. See the GLSL twin.
+    int     u_VolRangeCull;
     // Global atmospheric fog
     int     u_GlobalFogEnabled;
     float   u_GlobalFogDensity;
@@ -250,6 +267,24 @@ float3 lerp_safe(float3 a, float3 b, float t)  { return lerp(a, b, t); }
 float2 lerp_safe(float2 a, float2 b, float t)  { return lerp(a, b, t); }
 float3 lerp_safe(float3 a, float3 b, float3 t) { return lerp(a, b, t); }
 float4 lerp_safe(float4 a, float4 b, float t)  { return lerp(a, b, t); }
+
+// ---------------------------------------------------------------------------
+// TUNING CONSTANTS
+//
+// WL_VOL_LIGHT_CAP -- the volumetric multi-light cap. This number MUST be
+// identical in BOTH twins (Renderer3D_NovaRenderer.glsl / .hlsl).
+//
+// It is a PERFORMANCE multiplier, not a quality preference: every one of the
+// march steps below runs one BVH traversal per light, and IsOccluded() is a
+// complete scene traversal rather than a cheap test. So the per-pixel cost is
+// steps x WL_VOL_LIGHT_CAP traversals. A divergence between the twins is not a
+// "quality difference" -- the same scene, the same preset, renders DIFFERENT
+// LIGHTING on each backend, and it costs 4x here (32 vs 8 meant the OpenGL path
+// did 1024 traversals per pixel where DX did 256). tools/verify_nova_glsl.py
+// asserts the two files agree on this value; changing it in one twin alone
+// fails that check.
+// ---------------------------------------------------------------------------
+#define WL_VOL_LIGHT_CAP 8
 
 // image helpers: GLSL imageLoad/imageStore/imageSize on RWTexture2D
 #define IMG_STORE(tex, pos, val) (tex)[(pos)] = (val)
@@ -451,6 +486,42 @@ int2 wl_trace_extent(int2 fullSize)
 // subregion; trace-space UVs span [0,1] across dispatched pixels, so scale
 // them to buffer space when sampling. Identity at scale 1.
 float2 wl_buf_uv(float2 traceUV) { return traceUV * u_RenderScale; }
+
+// ---------------------------------------------------------------------------
+// RECONSTRUCTION FILTER KERNELS -- HLSL twin of the GLSL helpers.
+//
+// Applied separably so a 2D filter costs its tap count rather than its square.
+// Catmull-Rom is the cubic B-spline with a=-0.5; Lanczos-3 is sinc(x)*sinc(x/3)
+// truncated at |x|<3. Both are textbook forms from the published definitions.
+// ---------------------------------------------------------------------------
+
+// Catmull-Rom cubic. Returns a NEGATIVE value over part of its support -- the
+// negative lobes are what preserve edges rather than blur them, and they are why
+// the caller must normalise by the sum of the weights.
+float wl_cubic_kernel(float x)
+{
+    x = abs(x);
+    float x2 = x * x;
+    float x3 = x2 * x;
+    if (x < 1.0f)
+        return (1.5f * x3 - 2.5f * x2 + 1.0f);
+    if (x < 2.0f)
+        return (-0.5f * x3 + 2.5f * x2 - 4.0f * x + 2.0f);
+    return 0.0f;
+}
+
+// Lanczos with a 3-lobe window. The window is what makes the kernel decay to
+// zero at the boundary instead of continuing to oscillate.
+float wl_lanczos3(float x)
+{
+    if (x == 0.0f)
+        return 1.0f;
+    float px = 3.14159265359f * x;
+    float sinc = sin(px) / px;
+    float px3 = px / 3.0f;
+    float win = sin(px3) / px3;
+    return sinc * win;
+}
 
 float wl_hash12(float2 p)
 {
@@ -1237,7 +1308,10 @@ float4 wl_march_fog_vol(float3 ro, float3 rd, float tMax, float3 bmin, float3 bm
     float t1 = min(range.y, tMax);
     float fogLen = max(t1 - t0, 0.0f);
     float fogPerfK = lerp_safe(0.6f, 1.0f, smoothstep(0.6f, 0.9f, u_RenderScale));
-    int steps = (int)(clamp(d2.z * fogPerfK * clamp(fogLen / 16.0f, 0.15f, 1.0f), 2.0f, 32.0f));
+    // Guard: an unset cbuffer field is 0 and clamp(x, 2, 0) is 0, which would
+    // silently disable the volume. Fall back to the previous behaviour.
+    float stepCap = u_VolStepCap > 0 ? (float)u_VolStepCap : 32.0f;
+    int steps = (int)(clamp(d2.z * fogPerfK * clamp(fogLen / 16.0f, 0.15f, 1.0f), 2.0f, stepCap));
     if (t1 <= t0 || steps <= 0)
         return float4(0.0f, 0.0f, 0.0f, 1.0f);
     float dt = (t1 - t0) / (float)(steps);
@@ -1254,9 +1328,72 @@ float4 wl_march_fog_vol(float3 ro, float3 rd, float tMax, float3 bmin, float3 bm
     int lightStart = 0;
     int lightEnd = 0;
     if (u_QualityLevel >= 1 && u_ALightCount > 0)
-        lightEnd = min(u_ALightCount, 8);
+    {
+        int volLightCap = u_VolLightCap > 0 ? u_VolLightCap : WL_VOL_LIGHT_CAP;
+        // Never exceed the compile-time array size: lightVis is declared with
+        // WL_VOL_LIGHT_CAP elements and a larger runtime cap would overrun it.
+        volLightCap = min(volLightCap, WL_VOL_LIGHT_CAP);
+        lightEnd = min(u_ALightCount, volLightCap);
+    }
+
+    // The shadow test is HOISTED out of the march loop.
+    // ---
+    // IsOccluded() is a complete BVH traversal over every scene instance, not a
+    // cheap test. Running it per march step per light made the per-pixel cost
+    // steps x lightEnd traversals -- up to 32 x 32 = 1024 on the OpenGL path,
+    // against 32 x 8 = 256 on DX. Same scene, same preset, different lighting:
+    // the divergence was a correctness bug as well as a 4x backend difference.
+    //
+    // A light's visibility to a given RECEIVER changes far more slowly than the
+    // sample position does along the ray, so the traversal is done ONCE per light
+    // per pixel, from the volume entry point -- the representative position for
+    // the whole march -- and the result gates the per-step light loop.
+    //
+    // What stays INSIDE the loop, deliberately: the range cull (arange > 0 &&
+    // dL >= arange) and the spot-cone test. Both are functions of the per-step
+    // sample position p and cannot be hoisted without changing the answer.
+    //
+    // The guard makes the hoist a no-op at lightEnd == 0 (Low quality), which
+    // matches the previous behaviour exactly: the volume is then lit by the sun
+    // alone and the array is never built.
+    float lightVis[WL_VOL_LIGHT_CAP];
+    if (lightEnd > 0)
+    {
+        float3 entry = ro + rd * t0;
+        for (int li = 0; li < lightEnd; li++)
+        {
+            // RANGE CULL, hoisted above the traversal, tested against the whole
+            // segment rather than the entry point alone -- see the GLSL twin's
+            // note. The segment test is what makes this exact: if the closest
+            // point on [t0, t1] to the light is beyond the range, no sample in
+            // the volume can be within it, so skipping the traversal cannot
+            // change the answer.
+            float arange = max(u_ALightData[li].z, 0.0f);
+            float3 elpos = u_ALightPos[li];
+            float3 etoL = elpos - entry;
+            float edL = length(etoL);
+            if (u_VolRangeCull != 0 && arange > 0.0f)
+            {
+                float3 segEnd = ro + rd * t1;
+                float3 seg = segEnd - entry;
+                float segLen2 = dot(seg, seg);
+                float tSeg = segLen2 > 1e-6f ? clamp(dot(etoL, seg) / segLen2, 0.0f, 1.0f) : 0.0f;
+                float dClosest = length(etoL - seg * tSeg);
+                if (dClosest >= arange)
+                {
+                    lightVis[li] = 0.0f;
+                    continue;
+                }
+            }
+            // Same 1cm origin nudge the per-step ray uses, for the same reason:
+            // without it the ray starts exactly on a surface and self-occludes.
+            float3 eL = etoL / max(edL, 0.0001f);
+            Ray eRay = MakeRay(entry + eL * 0.01f, eL);
+            lightVis[li] = IsOccluded(eRay, edL, -1) ? 0.0f : 1.0f;
+        }
+    }
     
-    for (int s = 0; s < 32; s++)
+    for (int s = 0; s < (int)stepCap; s++)
     {
         if (s >= steps)
             break;
@@ -1278,6 +1415,10 @@ float4 wl_march_fog_vol(float3 ro, float3 rd, float tMax, float3 bmin, float3 bm
             {
                 float atype = u_ALightData[li].x;
                 if (atype < 0.5f) continue;
+                // The shadow traversal was hoisted out of this loop (see the note
+                // above the march): one BVH traversal per light per pixel, instead
+                // of one per step per light.
+                if (lightVis[li] < 0.5f) continue;
                 float3 lpos = u_ALightPos[li];
                 float3 lcol = u_ALightColor[li] * u_ALightData[li].y;
                 float arange = max(u_ALightData[li].z, 0.0f);
@@ -1296,8 +1437,10 @@ float4 wl_march_fog_vol(float3 ro, float3 rd, float tMax, float3 bmin, float3 bm
                     att *= smoothstep(u_ALightData2[li].y, u_ALightData2[li].x, c);
                     if (att <= 0.001f) continue;
                 }
-                Ray lRay = MakeRay(p + L * 0.01f, L);
-                if (IsOccluded(lRay, dL, -1)) continue;
+                // No shadow ray in this loop any more: the BVH traversal was hoisted
+                // out of it (see lightVis, above the march), so the per-step cost per
+                // light is now the compare at the top of the loop rather than a
+                // traversal. Only the phase depends on L.
                 float lPhase = wl_hg(dot(rd, L), clamp(d1.y, -0.9f, 0.9f));
                 sampleLight += lcol * att * (0.3f + lPhase * 2.0f);
             }
@@ -2918,11 +3061,85 @@ void RunComposite() {
         // and unclamped extrapolation rings bright/dark edges.
         float2 f = clamp(srcPixel - float2(s0), float2(0.0f, 0.0f), float2(1.0f, 1.0f));
 
-        float3 c00 = IMG_LOAD(img_Accumulation, s0).rgb;
-        float3 c10 = IMG_LOAD(img_Accumulation, int2(s1.x, s0.y)).rgb;
-        float3 c01 = IMG_LOAD(img_Accumulation, int2(s0.x, s1.y)).rgb;
-        float3 c11 = IMG_LOAD(img_Accumulation, s1).rgb;
-        denoised = lerp_safe(lerp_safe(c00, c10, f.x), lerp_safe(c01, c11, f.x), f.y);
+        // THE RECONSTRUCTION LADDER -- HLSL twin of the GLSL branch. This used to
+        // be a hardcoded bilinear, which is why the AA dropdown in the editor had
+        // no effect: the uniform was uploaded and then dropped because the shader
+        // never declared it. Each branch is a different way of rebuilding one
+        // output pixel from the trace-resolution image, cheapest first.
+        //
+        // The taps are weighted from the SAME fractional coordinate `f` that
+        // bilinear used, so switching filters changes the reconstruction kernel
+        // and nothing else -- no change to the trace, accumulation or denoiser.
+        //
+        // Values outside the spatial range (Temporal, FSR1, TSR, SMAA, FXAA,
+        // SpatialDenoise) are separate passes, not reconstruction filters; they
+        // fall through to bilinear rather than being ignored, so picking one
+        // degrades gracefully instead of appearing to do something it cannot.
+        if (u_ReconstructionFilter == 1)
+        {
+            // NEAREST -- 1 tap, point sampling. The cheapest possible upscale and
+            // the most aliased; a legitimate "no AA" diagnostic baseline.
+            denoised = IMG_LOAD(img_Accumulation, s0).rgb;
+        }
+        else if (u_ReconstructionFilter == 3)
+        {
+            // BOX -- 4 tap unweighted. The 2x2 footprint bilinear samples, with
+            // the weights forced to 0.5 regardless of position: softer than
+            // bilinear at edges because it does not interpolate.
+            float3 b00 = IMG_LOAD(img_Accumulation, int2(s0.x, s0.y)).rgb;
+            float3 b10 = IMG_LOAD(img_Accumulation, int2(s1.x, s0.y)).rgb;
+            float3 b01 = IMG_LOAD(img_Accumulation, int2(s0.x, s1.y)).rgb;
+            float3 b11 = IMG_LOAD(img_Accumulation, int2(s1.x, s1.y)).rgb;
+            denoised = (b00 + b10 + b01 + b11) * 0.25f;
+        }
+        else if (u_ReconstructionFilter == 4)
+        {
+            // BICUBIC -- 16 tap Catmull-Rom, separable, normalised by the weight
+            // sum so the filter cannot darken or brighten the image as a whole.
+            float3 acc = float3(0.0f, 0.0f, 0.0f);
+            float wsum = 0.0f;
+            for (int j = -1; j <= 2; j++)
+            {
+                float fy = wl_cubic_kernel((float)j - f.y);
+                for (int i = -1; i <= 2; i++)
+                {
+                    float w = wl_cubic_kernel((float)i - f.x) * fy;
+                    int2 c = clamp(s0 + int2(i, j), int2(0, 0), srcSize - int2(1, 1));
+                    acc += IMG_LOAD(img_Accumulation, c).rgb * w;
+                    wsum += w;
+                }
+            }
+            denoised = acc / max(wsum, 1e-5f);
+        }
+        else if (u_ReconstructionFilter == 5)
+        {
+            // LANCZOS -- 12 tap, 3-lobe windowed sinc. Best edge preservation of
+            // the spatial group, at the cost of the most ringing.
+            float3 acc = float3(0.0f, 0.0f, 0.0f);
+            float wsum = 0.0f;
+            for (int j = -2; j <= 3; j++)
+            {
+                float fy = wl_lanczos3((float)j - f.y);
+                for (int i = -2; i <= 3; i++)
+                {
+                    float w = wl_lanczos3((float)i - f.x) * fy;
+                    int2 c = clamp(s0 + int2(i, j), int2(0, 0), srcSize - int2(1, 1));
+                    acc += IMG_LOAD(img_Accumulation, c).rgb * w;
+                    wsum += w;
+                }
+            }
+            denoised = acc / max(wsum, 1e-5f);
+        }
+        else
+        {
+            // BILINEAR (the default) and the fall-through for every filter that
+            // is a separate pass rather than a reconstruction kernel.
+            float3 c00 = IMG_LOAD(img_Accumulation, s0).rgb;
+            float3 c10 = IMG_LOAD(img_Accumulation, int2(s1.x, s0.y)).rgb;
+            float3 c01 = IMG_LOAD(img_Accumulation, int2(s0.x, s1.y)).rgb;
+            float3 c11 = IMG_LOAD(img_Accumulation, s1).rgb;
+            denoised = lerp_safe(lerp_safe(c00, c10, f.x), lerp_safe(c01, c11, f.x), f.y);
+        }
     } else {
         denoised = IMG_LOAD(img_Accumulation, pos).rgb;
     }
@@ -3595,7 +3812,7 @@ void RunRestirSpatial() {
 // img_Accumulation and the history buffer.
 // Pass 16: copies img_Accumulation to img_Output (avoids read-write race).
 //
-// The history buffer (img_HistoryBuffer, u8) stores the TSR result from the
+// The history buffer (img_HistoryBuffer, u11) stores the TSR result from the
 // previous frame. The C++ side must clear it on camera cuts and frame 0.
 // ============================================================================
 void RunTSRResolve() {

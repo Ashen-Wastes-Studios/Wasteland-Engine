@@ -38,6 +38,11 @@ It also asserts the property this exercise exists to protect: GetJitter() must
 read u_Jitter and must NOT call Halton -- in BOTH twins, since they are
 hand-maintained and drift between them is silent.
 
+It also asserts that the volumetric multi-light cap is IDENTICAL in both twins.
+That cap is a performance multiplier (each march step runs one BVH traversal
+per light), so a divergence there is both a 4x backend difference and a
+lighting-correctness difference, and it compiles cleanly either way.
+
 Exit 0 = valid, 1 = failure.
 """
 import re
@@ -201,6 +206,102 @@ def check_twin_agreement(glsl_src, hlsl_src):
     overflow_probe = glsl_src + chr(10) + "layout(rgba32f, binding = 7) uniform image2D _ImageBudgetProbe;" + chr(10)
     overflow_count = len(re.findall(image_pattern, overflow_probe))
     checks.append((overflow_count > 8, "negative control: ninth image uniform is detected"))
+
+    # 8. The volumetric multi-light cap must be IDENTICAL in both twins.
+    #    lightEnd = min(u_ALightCount, <cap>) bounds the per-step light loop, and
+    #    every iteration of that loop runs IsOccluded() -- a COMPLETE BVH traversal
+    #    over every scene instance, not a cheap test. The per-pixel cost is
+    #    therefore steps x cap traversals: at 32 steps, cap 32 is 1024 traversals
+    #    and cap 8 is 256, a 4x backend difference.
+    #    Worse, it is a CORRECTNESS divergence, not a quality preference: the same
+    #    scene and the same quality preset light differently depending on the
+    #    backend. It compiles cleanly either way, so neither glslang nor fxc can
+    #    see it -- only a source-level agreement check can.
+    #    GLSL shipped 32 while HLSL shipped 8; that was the whole observed
+    #    "OpenGL <4 fps vs DX ~20 fps" gap. Both now read WL_VOL_LIGHT_CAP, and
+    #    this asserts the two files cannot drift apart again.
+    # The cap is read from the #define, not from the min() call: the min() call
+    # may legitimately say WL_VOL_LIGHT_CAP (that is the whole point of naming
+    # it), so the NUMBER lives in exactly one place per twin and the define is
+    # the only authoritative source. The two defines are then compared.
+    cap_define = re.compile(r"(?m)^#define\s+WL_VOL_LIGHT_CAP\s+(\d+)")
+    caps = {}
+    for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
+        m = cap_define.search(src)
+        # An unmatched detector is a FAILURE, not a pass: the mutator's target
+        # string no longer existing would otherwise be silently accepted. See
+        # "Every guard must be proven failable" in
+        # references/shader-twins-and-guard-design.md.
+        if not m:
+            checks.append((False, f"{name}: #define WL_VOL_LIGHT_CAP with a numeric "
+                                 f"value found"))
+            continue
+        caps[name] = int(m.group(1))
+        checks.append((True, f"{name}: volumetric light cap = {caps[name]}"))
+
+    if len(caps) == 2:
+        same = caps["glsl"] == caps["hlsl"]
+        detail = f" (glsl={caps['glsl']}, hlsl={caps['hlsl']})"
+        checks.append((same, "twins agree on the volumetric light cap" +
+                             ("" if same else detail)))
+
+    # 8a. Both twins must actually USE the named constant in the min(), not just
+    #     define it. A defined-but-unused symbol passes 8 and 8b while the loop
+    #     still reads a hardcoded number -- the divergence survives, only now it
+    #     is one step further from the guard. Assert the call site names it.
+    #
+    #     The cap is now applied through a local (`volLightCap`), because the
+    #     runtime uniform u_VolLightCap overrides it and the local must be clamped
+    #     to the compile-time array size. So the assertion accepts either form:
+    #     the direct `min(u_ALightCount, WL_VOL_LIGHT_CAP)`, or a local that is
+    #     itself derived from WL_VOL_LIGHT_CAP and then used in the min(). What
+    #     the guard is really asserting is that the effective cap cannot be a bare
+    #     number in either file.
+    direct = re.compile(
+        r"lightEnd\s*=\s*min\(\s*u_ALightCount\s*,\s*WL_VOL_LIGHT_CAP\s*\)")
+    local_derived = re.compile(
+        r"volLightCap\s*=\s*min\(\s*volLightCap\s*,\s*WL_VOL_LIGHT_CAP\s*\)")
+    local_used = re.compile(
+        r"lightEnd\s*=\s*min\(\s*u_ALightCount\s*,\s*volLightCap\s*\)")
+    for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
+        ok = (direct.search(src) is not None) or (
+            local_derived.search(src) is not None and local_used.search(src) is not None)
+        checks.append((ok, f"{name}: volumetric light loop bounds on WL_VOL_LIGHT_CAP"))
+
+    # 8b. Both twins must actually NAME the cap rather than hardcoding the
+    #     number. A literal in each file is how they diverged in the first place,
+    #     and it still passes the agreement check above while being two numbers
+    #     that can drift. (Redundant with the detector above by design -- a
+    #     second, independently-worded assertion so a single edit cannot
+    #     silently disable the check.)
+    for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
+        ok = bool(re.search(r"(?m)^#define\s+WL_VOL_LIGHT_CAP\s+\d+", src))
+        checks.append((ok, f"{name}: defines WL_VOL_LIGHT_CAP with a numeric value"))
+
+    # Negative control: the cap detector must reject a divergent cap. This is the
+    # exact defect that shipped -- GLSL 32, HLSL 8 -- injected into a temp copy.
+    # A control that only mutates a report cannot detect a broken comparison.
+    # 32 and 16 are chosen to differ from the real value (8) in BOTH twins, so
+    # each substitution is a real edit rather than a no-op -- a substitution that
+    # rewrites 8 as 8 changes nothing and the control passes vacuously.
+    g_mutated = cap_define.sub("#define WL_VOL_LIGHT_CAP 32", glsl_src, count=1)
+    h_mutated = cap_define.sub("#define WL_VOL_LIGHT_CAP 16", hlsl_src, count=1)
+    if g_mutated == glsl_src or h_mutated == hlsl_src:
+        checks.append((False, "negative control: cap mutator is vacuous -- the "
+                             "#define no longer exists in a twin"))
+    else:
+        gm = cap_define.search(g_mutated)
+        hm = cap_define.search(h_mutated)
+        diverges = bool(gm and hm and gm.group(1) != hm.group(1))
+        checks.append((diverges, f"negative control: divergent cap detected "
+                                 f"(mutated glsl={gm.group(1) if gm else '?'}, "
+                                 f"hlsl={hm.group(1) if hm else '?'})"))
+
+    # Negative control: a twin that hardcodes the cap instead of naming it must
+    # be rejected by check 8b even though check 8 would pass on the value alone.
+    g_literal = cap_define.sub("#define WL_VOL_LIGHT_CAP", glsl_src, count=1)
+    g_literal_ok = bool(cap_define.search(g_literal))
+    checks.append((not g_literal_ok, "negative control: hardcoded cap (no #define) is detected"))
 
     print()
     all_ok = True

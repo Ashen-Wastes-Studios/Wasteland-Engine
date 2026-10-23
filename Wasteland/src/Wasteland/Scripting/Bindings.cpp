@@ -276,6 +276,14 @@ PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::PinLiteralList);
 // and Scene.GetActiveScene both read.
 #include "Wasteland/Scripting/ScriptEngine.h"
 
+// Log.h is the engine's logging facade. It is included here for the ONE
+// binding below: `Wasteland.Log`, the name the Visual Blocks `Log` node emits
+// (NodeLibraryFlow.cpp). Without it the node compiled, rendered, and raised
+// AttributeError on the first tick -- the node library's own comment records
+// the same finding. The macros are lazy (Log::GetClientLogger() calls Init()
+// when needed), so binding them into a headless interpreter is safe.
+#include "Wasteland/Core/Log.h"
+
 // The namespace alias used by every binding below. Short because it appears
 // thousands of times; there is no functional reason for the choice.
 namespace py = pybind11;
@@ -6343,6 +6351,27 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
     // GetInstance above, and the same hazard reached by a shorter path.
     m.def("ScriptEngine_GetInstance",
          &Wasteland::ScriptEngine::GetInstance, py::arg("id"));
+
+    // ---------------------------------------------------------------------
+    // Logging. This is the name the Visual Blocks `Log` node emits:
+    // `Wasteland.Log("...")` (NodeLibraryFlow.cpp). It did not exist, so every
+    // graph using that node compiled clean, rendered clean, and raised
+    // AttributeError the first time it ran -- the node library's own comment
+    // records the finding.
+    //
+    // Bound at MODULE level, not on an object: the emitter writes the bare
+    // `Wasteland.Log(...)`, so it has to resolve as an attribute of the module.
+    //
+    // Routed to the CLIENT logger (WL_INFO), not the core one: a message from
+    // a game graph is authored by the game, and WL_CORE_* is reserved for
+    // engine-internal diagnostics. Keeping the two apart is the whole point of
+    // the split in Log.h.
+    //
+    // The message is taken by value and forwarded as a single fmt argument
+    // rather than passed through as a format string: an authored message
+    // containing `{0}` would otherwise be interpreted as a placeholder and
+    // throw inside spdlog, which is a failure mode a designer cannot see.
+    m.def("Log", [](const std::string &message) { WL_INFO("{0}", message); });
 
 // ======================================== ImGui =========================
     // ImGuiLayer with Begin/End framing the UI. The engine calls those itself,

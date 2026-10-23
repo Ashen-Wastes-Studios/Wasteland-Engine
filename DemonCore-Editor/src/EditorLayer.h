@@ -19,6 +19,12 @@
 #include "Panels/TerrainAssetPanel.h"
 #include "Panels/AIChatPanel.h"
 #include "Panels/ModelDownloaderPanel.h"
+// The three audio panels. Separate headers rather than a shared one: the Audio
+// workflow is the only consumer of any of them, and a barrel would imply the
+// other workflows use them too.
+#include "Panels/AudioClipPanel.h"
+#include "Panels/AudioMixerPanel.h"
+#include "Panels/AudioScenePanel.h"
 
 // Renderer-owned types used by value or by Ref<> below. These are the
 // engine's public renderer interface, so the editor compiles against
@@ -44,6 +50,7 @@ namespace Wasteland
 		Scene,     // Level design: viewport dominant, asset browser under it.
 		Scripting, // Hand-written Python and its inspector.
 		Visual,    // Visual Blocks graphs and behaviour trees.
+		Audio,     // Sound: clips, the live mixer, and the scene's sources.
 		Review,    // AI chat and inspection; no big viewport to steal space.
 	};
 
@@ -231,6 +238,13 @@ namespace Wasteland
 		// controller above: one flies, one is driven by the input controller,
 		// and they are not interchangeable during Play.
 		EditorCamera m_EditorCamera;
+		// Set by the WASTELAND_PIN_CAMERA harness hook (see OnProjectChanged). While
+		// true the editor camera is held at a fixed transform and
+		// EditorCamera::OnUpdate is skipped, so two headless runs render from an
+		// identical viewpoint and their frame times are comparable. Without it the
+		// camera starts from the constructor defaults and there is no way to
+		// reproduce a measurement.
+		bool m_CameraPinned = false;
 
 		// Ref<> because the same texture is sampled every viewport frame and by
 		// the picking blit; recreating it per frame would churn GPU memory.
@@ -346,6 +360,18 @@ namespace Wasteland
 		// target's dependency set rather than being conditionally compiled out,
 		// so its code is present in every build.
 		ModelDownloaderPanel m_ModelDownloaderPanel;
+
+		// The Audio workflow's three panels. By value like every other panel, and
+		// in the order the workflow shows them: clips on the left of the right
+		// rail, mixer under it, scene sources at the bottom.
+		//
+		// They are constructed in EVERY workflow and simply hidden outside Audio.
+		// That is the same treatment as the script and graph panels, and it is
+		// what lets a panel keep state (the selected clip, the retired-slot
+		// toggle) across a layout switch rather than resetting.
+		AudioClipPanel m_AudioClipPanel;
+		AudioMixerPanel m_AudioMixerPanel;
+		AudioScenePanel m_AudioScenePanel;
 
 		// Play mode has three states rather than a bool because Simulate is a
 		// third thing, not a variant of Play: it advances the simulation without

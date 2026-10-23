@@ -245,6 +245,24 @@ class _FakeTransform:
         self.Scale = scale if scale is not None else Wasteland.Vec3(1.0, 1.0, 1.0)
 
 
+class _FakeHealth:
+    """The value GetHealthComponent() hands back.
+
+    Mirrors the real HealthComponent's read side -- Current, Max and the
+    IsDead PROPERTY. IsDead is a property, not a method: calling it on the
+    real component raises "TypeError: bool object is not callable", and the
+    shim reads `agent.GetHealthComponent().IsDead` without calling it.
+    """
+
+    def __init__(self, current, max_health=None):
+        self.Current = current
+        self.Max = max_health if max_health is not None else current
+
+    @property
+    def IsDead(self):
+        return self.Current <= 0.0
+
+
 class FakeEntity:
     """Enough of an Entity for the generated leaves, and nothing more.
 
@@ -283,12 +301,16 @@ class FakeEntity:
         self._pos = Wasteland.Vec3(p.x + delta.x, p.y + delta.y, p.z + delta.z)
         self.moved.append(delta)
 
-    def health(self):
-        return self._health
+    # Health, as the binding actually exposes it: HasHealthComponent() plus
+    # GetHealthComponent().Current. The shim's _health() reads exactly those
+    # two, so the fake must provide them -- a bare `health()` method would
+    # pass a test while the shipped emitter called a name that does not exist.
+    def HasHealthComponent(self):
+        return True
 
-    # The shim's _dist needs two entities to compare. A target placed here
-    # gives the tree something real to approach, which is what makes the
-    # latent/approach assertions mean anything.
+    def GetHealthComponent(self):
+        return _FakeHealth(self._health)
+
     def set_target(self, entity):
         self._target = entity
 
@@ -376,6 +398,35 @@ if ok:
     inst2.tree.bb.set("t", far)
     low = [inst2.tick(0.1) for _ in range(3)]
     check("at low health the engage branch fails", B.FAILURE in low, low)
+
+    # ConditionHealthBelow: the emitter must read the health the BINDING
+    # actually exposes. It used to emit `ctx.entity.health()`, a name the
+    # Entity binding does not have -- the tree compiled clean and then raised
+    # AttributeError the moment the leaf ran, which is the silent-inert-NPC
+    # failure this suite exists to catch. A source-only assertion cannot see
+    # it, so the leaf is EXECUTED here.
+    #
+    # A tree-only test cannot catch emitter/shim drift either: if both sides
+    # moved together the test would still pass while shipping a broken name.
+    # Executing the emitted lambda against the fake is what pins it.
+    cond = tree(node("root", "ConditionHealthBelow", [], Threshold="25.0"),
+                name="HurtCheck")
+    ok, py, report, err = VB.CompileTree(cond)
+    check("a ConditionHealthBelow tree compiles", ok, report + err)
+    leaf = [l for l in py.splitlines() if "lambda" in l and "_health" in l]
+    check("the emitter reads _health, not ctx.entity.health()",
+          bool(leaf) and "ctx.entity.health()" not in py,
+          py[-400:])
+    check("and it does not emit the non-existent health() accessor",
+          "ctx.entity.health()" not in py, py[-400:])
+    if ok:
+        ns2, cls2 = load_generated(py, "HurtCheck")
+        hurt = FakeEntity(10.0)
+        healthy = FakeEntity(100.0)
+        check("10 <= 25 is SUCCESS", cls2(hurt).tick(0.1) == B.SUCCESS,
+              "hurt=%r" % cls2(hurt).tick(0.1))
+        check("100 <= 25 is FAILURE", cls2(healthy).tick(0.1) == B.FAILURE,
+              "healthy=%r" % cls2(healthy).tick(0.1))
 
 # ============================================================== determinism
 

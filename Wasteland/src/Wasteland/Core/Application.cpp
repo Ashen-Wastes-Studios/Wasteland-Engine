@@ -13,6 +13,8 @@
 
 #include <GLFW/glfw3.h>
 
+#include <cstdlib>   // std::getenv, for the WL_FRAME_TIMING harness hook
+
 #include <pybind11/pybind11.h>
 #include <Python.h>
 
@@ -377,6 +379,31 @@ void Application::Run()
 {
 	WL_PROFILE_FUNCTION();
 
+	// Per-section frame timing, for finding what actually bounds the frame rate.
+	//
+	// Why this exists: the renderer's own GPU timer reads ~211-253 ms while the
+	// wall-clock frame time sits at ~213 ms in every configuration, so the GPU
+	// number cannot be the whole story and `cpuSubmit` is 0.0 ms. These four
+	// samples split the loop into the only places the time can go:
+	//
+	//   begin   -- Window::BeginFrame
+	//   update  -- every layer's OnUpdate (the editor's scene update AND render)
+	//   imgui   -- ImGui Begin + every layer's OnImGuiRender + End (the present)
+	//   window  -- Window::OnUpdate, the OS event pump
+	//
+	// Reported every 100 frames, and only when WL_FRAME_TIMING=1, so it is inert
+	// unless asked for. Uses glfwGetTime because that is what the loop already
+	// uses for the timestep -- no second clock, no drift between them.
+	double ftBegin = 0.0, ftUpdate = 0.0, ftImGui = 0.0, ftWindow = 0.0;
+	// ImGui is split three ways because the first cut showed it holding ~all of
+	// the frame time, and the interesting question is which part: the ImGui draw
+	// itself, or the wait for the GPU that End()'s present implies.
+	double ftImGuiBegin = 0.0, ftImGuiDraw = 0.0, ftImGuiEnd = 0.0;
+	int ftFrames = 0;
+	double ftLogTime = 0.0;
+	const bool ftOn = (std::getenv("WL_FRAME_TIMING") != nullptr);
+	double ftT0 = glfwGetTime();
+
 	// Condition re-tested every iteration, and it is what Close() and
 	// OnWindowClose clear.
 	while (m_Running)
@@ -403,6 +430,7 @@ void Application::Run()
 		if (!m_Minimized)
 		{
 			m_Window->BeginFrame();
+			if (ftOn) { ftBegin += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			{
 				// Times the update pass as one block, so its cost is
@@ -414,6 +442,7 @@ void Application::Run()
 				for (Layer *layer : m_LayerStack)
 					layer->OnUpdate(timestep);
 			}
+			if (ftOn) { ftUpdate += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			// Flush NVRHI scene rendering before ImGui (scene must be behind UI)
 			//
@@ -461,6 +490,7 @@ void Application::Run()
 			// Open the ImGui frame. Must follow the scene submission above so
 			// the UI composites on top of the already-rendered scene.
 			m_ImGuiLayer->Begin();
+		if (ftOn) { ftImGuiBegin += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			// Draw pass, gated on a backend actually existing. A headless or
 			// backend-less build can construct the ImGuiLayer without one, and
@@ -474,12 +504,15 @@ void Application::Run()
 				for (Layer *layer : m_LayerStack)
 					layer->OnImGuiRender();
 			}
+			if (ftOn) { ftImGuiDraw += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			// Renders and presents. For the NVRHI backends this is where the
 			// recorded ImGui draw data reaches the GPU; for OpenGL it is also
 			// where the scene is drawn, which is why the NVRHI branch above
 			// submits separately.
 			m_ImGuiLayer->End();
+			if (ftOn) { ftImGuiEnd += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
+			ftImGui = ftImGuiBegin + ftImGuiDraw + ftImGuiEnd;
 		}
 
 		// Pump the OS event queue: retrieve platform events, convert them, and
@@ -488,6 +521,28 @@ void Application::Run()
 		// Deliberately OUTSIDE the minimized guard -- this must run every frame
 		// or a minimized window stops responding to being restored.
 		m_Window->OnUpdate();
+		if (ftOn) { ftWindow += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
+
+		// Report the split. Averaged over the last 100 frames so a single slow
+		// frame (a shader compile, a scene load) does not dominate the reading.
+		//
+		// ftFrames MUST be reset here. It is the divisor for every section total,
+		// and the section totals are reset with it -- an earlier version forgot
+		// this, so every sample after the first was divided by a cumulative frame
+		// count and reported a total four times too small at frame 400.
+		if (ftOn && ++ftFrames >= 100)
+		{
+			WL_CORE_INFO("Frame sections (ms/frame): begin {0:.1f}  update {1:.1f}  imguiBegin {2:.1f}  imguiDraw {3:.1f}  imguiEnd {4:.1f}  window {5:.1f}  total {6:.1f}",
+			             ftBegin * 1000.0 / ftFrames, ftUpdate * 1000.0 / ftFrames,
+			             ftImGuiBegin * 1000.0 / ftFrames, ftImGuiDraw * 1000.0 / ftFrames,
+			             ftImGuiEnd * 1000.0 / ftFrames, ftWindow * 1000.0 / ftFrames,
+			             (ftBegin + ftUpdate + ftImGui + ftWindow) * 1000.0 / ftFrames);
+			ftBegin = ftUpdate = ftImGui = ftWindow = 0.0;
+			ftImGuiBegin = ftImGuiDraw = ftImGuiEnd = 0.0;
+			ftFrames = 0;
+			ftLogTime = glfwGetTime();
+		}
+		(void)ftLogTime;
 	}
 }
 

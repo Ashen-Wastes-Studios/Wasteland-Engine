@@ -2665,7 +2665,13 @@ namespace Wasteland
 			// All writeBuffer / clear / draw calls between BeginFrame and ExecuteNVRHICommandList
 			// must be inside a single open/close pair — per-draw open/close overwrites previous chunks
 			// and writeBuffer outside open is illegal. See NVRHIRendererAPI.
-			if (m_Device && m_CommandList && !m_CommandListOpen)
+			//
+			// m_IsDeviceLost must be checked here: after a TDR the device pointer is still
+			// non-null but the underlying D3D12 device is removed. Calling open() on a lost
+			// device reaches createInternalCommandList -> CreateCommandAllocator/CreateCommandList
+			// on a removed device, which crashes. ExecuteNVRHICommandList already guards this;
+			// BeginFrame must too.
+			if (m_Device && m_CommandList && !m_CommandListOpen && !m_IsDeviceLost)
 			{
 				m_CommandList->open();
 				m_CommandListOpen = true;
@@ -2768,7 +2774,7 @@ namespace Wasteland
 		// writeBuffer/clear/draw must be inside open/close. Vulkan previously
 		// returned before opening it, so the first constant-buffer upload on a
 		// real scene aborted in NVRHI's writeBuffer (assert(m_CurrentCmdBuf)).
-		if (m_Device && m_CommandList && !m_CommandListOpen)
+		if (m_Device && m_CommandList && !m_CommandListOpen && !m_IsDeviceLost)
 		{
 			m_CommandList->open();
 			m_CommandListOpen = true;

@@ -1,0 +1,21 @@
+[2mmodule: C:/dev/Wasteland/bin/Release-windows-x86_64/DemonCore-Editor[0m
+[2mpython: 3.14.5[0m
+
+[33m== test_tree_attach.py ==[0m
+Traceback (most recent call last):
+  File "C:\dev\Wasteland\tests\headless\runner.py", line 179, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\dev\Wasteland\tests\headless\runner.py", line 155, in main
+    p, f, failures = run_module(name, verbose=verbose)
+                     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\dev\Wasteland\tests\headless\runner.py", line 73, in run_module
+    module = importlib.import_module(module_name)
+  File "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\Lib\importlib\__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1406, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1324, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'test_tree_attach.py'; 'test_tree_attach' is not a package
+[00:04:27] WASTELAND: ScriptEngine: Cleaned up instance cache.

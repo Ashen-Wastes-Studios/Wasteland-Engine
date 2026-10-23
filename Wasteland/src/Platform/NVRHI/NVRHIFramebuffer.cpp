@@ -686,9 +686,9 @@ namespace Wasteland
 		}
 
 		nvrhi::ICommandList *cmd = context->GetCommandList();
-		if (!cmd)
+		if (!cmd || !context->IsCommandListOpen())
 		{
-			WL_CORE_ERROR("NVRHIFramebuffer::ClearAttachment: No command list available");
+			WL_CORE_ERROR("NVRHIFramebuffer::ClearAttachment: Command list not open");
 			return;
 		}
 
@@ -697,24 +697,13 @@ namespace Wasteland
 		// asymmetry against the GL backend, which asserts instead.
 		if (attachmentIndex < m_ColorTextures.size())
 		{
-			// The clear colour is built as four identical FLOAT components from an
-			// int parameter. The call that follows is clearTextureFloat, i.e. the
-			// float-flavoured clear, on an attachment whose format here is R32_SINT
-			// (an integer format). NVRHI documents clearTextureFloat as requiring a
-			// "color type" format and implements it as ClearRenderTargetView on
-			// DX11/DX12 and vkCmdClearColorImage with Float32 values on Vulkan.
-			// Inference, not confirmed by running it: on the D3D backends the
-			// float -1.0f converts to the integer -1 the editor wants, so the
-			// result is right by coincidence of representation. On Vulkan the
-			// spec requires the clear value's component type to match the image
-			// format, and this path supplies Float32 for an integer image, so the
-			// sentinel is not guaranteed to arrive intact.
-			// The GL backend does this differently -- glClearTexImage with GL_INT
-			// and the int directly -- which is the correct integer-flavoured call
-			// for the same operation.
 			nvrhi::Color clearColor;
 			clearColor.r = clearColor.g = clearColor.b = clearColor.a = static_cast<float>(value);
-			cmd->clearTextureFloat(m_ColorTextures[attachmentIndex], nvrhi::TextureSubresourceSet(), clearColor);
+			// R32_SINT is an integer format — clearTextureFloat on an integer attachment
+			// is undefined behavior on D3D12 (spec requires component type match).
+			// Use the integer clear path; -1 as uint32_t is 0xFFFFFFFF which the
+			// shader reads back as -1 in the signed interpretation.
+			cmd->clearTextureUInt(m_ColorTextures[attachmentIndex], nvrhi::TextureSubresourceSet(), static_cast<uint32_t>(value));
 		}
 	}
 

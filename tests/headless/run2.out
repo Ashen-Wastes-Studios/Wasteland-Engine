@@ -1,0 +1,39 @@
+[2mmodule: C:/dev/Wasteland/bin/Release-windows-x86_64/DemonCore-Editor[0m
+[2mpython: 3.14.5[0m
+
+[33m== test_tree_attach ==[0m
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+  Attached=True CompileError=''
+  health 100.0 -> 52.0
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+  after StepPhysics x40: health 100.0, Attached=False
+  after OnUpdateRuntime x40: health 52.0, Attached=True
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+  35683  chars, class EnemyChase present: True
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+  dead NPC, victim health 100.0
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+[00:06:38] WASTELAND: BehaviorTree: entity 9255843720969777248 could not attach 'trees/NoSuchTree.wlbtree': behaviour tree not found at C:\dev\Wasteland\DemonCore-Editor\assets\trees\NoSuchTree.wlbtree
+  CompileError='behaviour tree not found at C:\\dev\\Wasteland\\DemonCore-Editor\\assets\\t' Attached=False
+  [32m5/5 passed[0m  [2mtest_tree_attach[0m
+
+[33m== test_shipped_graphs ==[0m
+  [32m5/5 passed[0m  [2mtest_shipped_graphs[0m
+
+[33m== test_behavior_trace ==[0m
+  [32m1/1 passed[0m  [2mtest_behavior_trace[0m
+
+[33m== test_ground_snap ==[0m
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+[00:06:38] WASTELAND: Project: no project file; using 'C:\dev\Wasteland\DemonCore-Editor' as a plain asset root
+  [32m4/4 passed[0m  [2mtest_ground_snap[0m
+
+[33m== test_los_contract ==[0m
+  [32m3/3 passed[0m  [2mtest_los_contract[0m
+
+[33m== test_perception_cache ==[0m
+  [32m13/13 passed[0m  [2mtest_perception_cache[0m
+
+[32m31/31 checks passed[0m across 6 suite(s) in 0.32s
+[00:06:38] WASTELAND: ScriptEngine: Cleaned up instance cache.

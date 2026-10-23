@@ -389,6 +389,14 @@ namespace Wasteland {
 			WL_CORE_ERROR("NVRHITexture2D::SetData: No command list available");
 			return;
 		}
+		// DEVICE-LOST GUARD. On a lost device IsCommandListOpen() is false, so the
+		// transient flag below would select the open/close/submit path on a REMOVED
+		// device. Skip the upload entirely rather than crash.
+		if (context->IsDeviceLost())
+		{
+			WL_CORE_ERROR("NVRHITexture2D::SetData: Device lost, skipping upload");
+			return;
+		}
 
 		// Requires a FULL-image upload. There is no sub-region and no
 		// single-level path, so a caller holding a cropped or partial buffer is

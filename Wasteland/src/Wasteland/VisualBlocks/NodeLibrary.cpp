@@ -514,16 +514,24 @@ namespace Wasteland::VisualBlocks
 
 		{
 			NodeDef def;
-			// CONDITIONHEALTHBELOW reads `ctx.entity.health()` directly -- a hard
-			// dependency on the runtime context exposing that method. The emitter
-			// cannot check it, so a runtime without it fails at tree-build time.
+			// CONDITIONHEALTHBELOW reads `_health(ctx.entity)`, a helper in the
+			// runtime shim (Compiler.cpp kRuntimeShim). It used to read
+			// `ctx.entity.health()` directly -- a name that does not exist on
+			// the Entity binding (verified: hasattr is False, and the only
+			// accessor is GetHealthComponent). The emitter cannot check it, so a
+			// runtime without the method failed at tree-build time with
+			// AttributeError, after compiling cleanly.
+			//
+			// The helper returns the ABSOLUTE Current, not a fraction: the
+			// thresholds authored against this node (EnemyGuard uses 25.0) are
+			// absolute, and _health_fraction would flip the comparison.
 			def.TypeId = "ConditionHealthBelow";
 			def.Category = "Behaviour/Condition";
 			def.BtRole = "condition";
 			def.Pins = {
-				// Threshold is a Float pin requiring a value, defaulting to 30.0 -- a
-				// percentage, so it presumes health is 0..100. Nothing in the emitter
-				// or the validator enforces that range.
+				// Threshold is a Float pin requiring a value, defaulting to 30.0.
+				// It is an ABSOLUTE health value, matching the emitted helper.
+				// Nothing in the emitter or the validator enforces a range.
 				// Target names a blackboard key (the pin comment above says so). The
 				// default "target" is a convention shared by MoveTo, Attack and
 				// ConditionDistanceTo, so the four agree out of the box.
@@ -532,7 +540,7 @@ namespace Wasteland::VisualBlocks
 			};
 			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
 				std::string body =
-					"lambda ctx: SUCCESS if (ctx.entity.health() <= " +
+					"lambda ctx: SUCCESS if (_health(ctx.entity) <= " +
 					ctx.InFloat("Threshold") + ") else FAILURE";
 				out.Outputs.push_back({ "Value", "{'t': 'Leaf', 'leaf': " + body + "}" });
 				return std::string();

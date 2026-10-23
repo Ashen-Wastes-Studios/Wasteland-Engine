@@ -5,6 +5,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -331,6 +334,78 @@ namespace
 	}
 }
 
+	// The graph the editor ships and the user opens from the Content Browser.
+	//
+	// Every other test here builds its graph in memory, so none of them would
+	// notice a .wlavb that stops loading -- which is the only way the editor
+	// consumes one. The file is the artifact under test, not the API.
+	//
+	// Resolved relative to the working directory rather than hardcoded: the
+	// test is built into tests/avb_graph/bin-*, and the editor assets live
+	// three levels up, so an absolute path would break the moment the tree
+	// moves and a CWD-relative one keeps working from any of the usual
+	// invocation directories.
+	void TestShippedEditorGraphLoadsValidatesAndCompiles()
+	{
+		namespace fs = std::filesystem;
+		const char* candidates[] = {
+			"DemonCore-Editor/assets/graphs/AvbEditorSmokeTest.wlavb",
+			"../DemonCore-Editor/assets/graphs/AvbEditorSmokeTest.wlavb",
+			"../../DemonCore-Editor/assets/graphs/AvbEditorSmokeTest.wlavb",
+			"../../../DemonCore-Editor/assets/graphs/AvbEditorSmokeTest.wlavb",
+		};
+		fs::path path;
+		for (const char* candidate : candidates)
+			if (fs::is_regular_file(candidate)) { path = candidate; break; }
+
+		if (path.empty())
+		{
+			Check(false, "shipped AVB editor graph AvbEditorSmokeTest.wlavb must exist on disk");
+			return;
+		}
+		Check(true, ("shipped AVB editor graph found at " + path.string()).c_str());
+
+		AvbGraph graph;
+		AvbGraphError error;
+		Check(AvbGraphSerializer::Load(path.string(), graph, error),
+		      "the shipped graph must load through the real serializer");
+		if (!error.Message.empty())
+			std::printf("  load error: %s\n", error.Format(path.string()).c_str());
+
+		// A graph the editor opens and then rejects is worse than one that
+		// fails to load: the panel shows a canvas full of nodes and then a
+		// wall of findings, with nothing indicating the file is the problem.
+		AvbValidationResult validation;
+		const bool valid = AvbValidator::Validate(graph, validation);
+		if (!valid)
+			for (const AvbDiagnostic& finding : validation.Findings)
+				std::printf("  finding: %s\n", finding.Format(path.string()).c_str());
+		Check(valid, "the shipped graph must pass validation with no findings");
+
+		AvbCompiledGraph compiled;
+		AvbValidationResult compileValidation;
+		Check(AvbCompiler::Compile(graph, compiled, compileValidation),
+		      "the shipped graph must compile");
+
+		// Every node type the graph exercises must be one the registry knows.
+		// A typo in a node type is a load error, so this is really asserting
+		// the graph covers the intended surface rather than catching a bug.
+		std::set<std::string> types;
+		for (const AvbNode& node : graph.Nodes) types.insert(node.TypeId);
+		Check(types.count("TriggerOnce") == 1 && types.count("WavePlayer") == 1 &&
+		      types.count("Sine") == 1 && types.count("Gain") == 1 &&
+		      types.count("WaveShaper") == 1 && types.count("ADEnvelope") == 1 &&
+		      types.count("StereoMixer") == 1 && types.count("Output") == 1,
+		      "the shipped graph exercises all eight intended node types");
+
+		// The WavePlayer's Clip is the one AssetRef in the graph, and it is
+		// required -- so it is also the only literal that can silently vanish.
+		const AvbNode* player = graph.FindNode("n_player");
+		const AvbLiteral* clip = player ? player->FindLiteral("Clip") : nullptr;
+		Check(clip && clip->IsSet() && std::get<std::string>(clip->Value) == "assets/audio/showcase_tone.wav",
+		      "the WavePlayer keeps its project-relative clip reference");
+	}
+
 int main()
 {
 	TestStableUniqueNodeIdsAndAliasResolution();
@@ -339,6 +414,7 @@ int main()
 	TestValidatorRulesAndPreciseDiagnostics();
 	TestStrictYamlRoundTripAndUnknownReferences();
 	TestDeterministicCompilerOutput();
+	TestShippedEditorGraphLoadsValidatesAndCompiles();
 	std::printf("AVB graph: %d checks, %d failures\n", g_Checks, g_Failures);
 	return g_Failures == 0 ? 0 : 1;
 }

@@ -24,6 +24,28 @@
 // it there alone under-dispatches and leaves the right edge unwritten.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+// Per-thread BVH traversal stacks, in SHARED memory.
+//
+// This is the HLSL twin's layout (groupshared int gs_trav_stack[64 * 32]) and it
+// exists because of a real backend divergence. The HLSL comment states the
+// reason: "fxc cannot compile a dynamically-indexed local array inside the
+// traversal call graph". So on DX the stack was forced into groupshared memory
+// and is on-chip. The GLSL twin instead declared `int stack[32]` -- a private
+// array -- and because every index into it is a runtime value, the compiler
+// places it in LOCAL memory, which is thread-private storage backed by global
+// memory. Every push and pop of the traversal is therefore a global-memory
+// access, in the hottest function in the shader: TraceScene and IsOccluded run
+// for every primary ray and every shadow ray.
+//
+// 64 threads per group (local_size 8x8, matching the HLSL numthreads(8,8,1))
+// times 32 slots each. Each thread touches only its own 32 slots, so no
+// barrier is required for correctness -- the same argument the HLSL makes.
+//
+// The shared array is declared once and reused by every traversal in the
+// dispatch; each traversal seeds its own slots before use, so no state leaks
+// between them.
+shared int gs_trav_stack[64 * 32];
+
 // Binding 0. The final colour target, written by RunComposite and
 // RunUpscale. rgba32f because the tonemap runs on float values in this
 // image before anything is narrowed.
@@ -269,6 +291,51 @@ uniform int u_DepthBuffer;
 // to the primary ray so N samples per frame walk the pixel rather than
 // hitting the same point.
 uniform vec2 u_Jitter;
+
+// ---------------------------------------------------------------------------
+// RECONSTRUCTION FILTER KERNELS
+//
+// Two 1D kernels, applied separably (once along x, once along y) so a 2D
+// filter costs its tap count rather than its square. Both are standard textbook
+// forms written from the published definitions -- Catmull-Rom is the cubic
+// B-spline with a=-0.5, and Lanczos-3 is sinc(x)*sinc(x/3) truncated at |x|<3.
+//
+// Neither is exotic, and neither needs a lookup table: the arguments are small
+// integers offset by a fractional part, so a direct evaluation is cheaper than
+// sampling a texture would be.
+// ---------------------------------------------------------------------------
+
+// Catmull-Rom cubic, the "smooth" bicubic. a = -0.5 gives the interpolating
+// form; a = -1.0 would be sharper at the cost of more ringing. Returns a
+// NEGATIVE value for part of the support, which is expected: the negative lobes
+// are what make the kernel preserve edges rather than blur them, and they are
+// why the caller must normalise by the sum of the weights.
+float wl_cubic_kernel(float x)
+{
+    x = abs(x);
+    float x2 = x * x;
+    float x3 = x2 * x;
+    if (x < 1.0f)
+        return (1.5f * x3 - 2.5f * x2 + 1.0f);
+    if (x < 2.0f)
+        return (-0.5f * x3 + 2.5f * x2 - 4.0f * x + 2.0f);
+    return 0.0f;
+}
+
+// Lanczos with a 3-lobe window. The window is sinc(x/3), which is what makes the
+// kernel decay to zero at the boundary instead of continuing to oscillate --
+// without it the sum of the weights would not converge.
+float wl_lanczos3(float x)
+{
+    if (x == 0.0f)
+        return 1.0f;
+    float px = 3.14159265359f * x;
+    float sinc = sin(px) / px;
+    float px3 = px / 3.0f;
+    float win = sin(px3) / px3;
+    return sinc * win;
+}
+
 // The previous frame's jitter, so the reprojection can undo it. The
 // difference between this and u_Jitter is what the velocity buffer records
 // -- a jittered frame would otherwise read as camera motion.
@@ -299,6 +366,38 @@ uniform float u_AOIntensity;
 // counts, march distances and step counts, so it is the shader's single
 // biggest quality knob.
 uniform int u_QualityLevel; // 0 = Low, 1 = Medium, 2 = High, 3 = Ultra
+
+// RECONSTRUCTION FILTER. This uniform was plumbed from the CPU (enum,
+// glGetUniformLocation, glUniform1i, and all three NVRHI Set() calls) but never
+// DECLARED here, so glGetUniformLocation returned -1, glUniform1i silently
+// dropped the upload, and the editor's AA dropdown did nothing at all. Declaring
+// it is what makes the ladder real.
+//
+// The values are the Renderer3D::ReconstructionFilter enum, and they split into
+// two groups. The first five are SPATIAL reconstruction filters -- they change
+// how the trace-resolution image is rebuilt at output resolution, which is the
+// only thing an upscale can do:
+//
+//   0 None     -- no upscale, raw output (only meaningful at RenderScale 1.0)
+//   1 Nearest  -- 1 tap, point sampling
+//   2 Bilinear -- 4 tap, the previous implicit default
+//   3 Box      -- 4 tap unweighted
+//   4 Bicubic  -- 16 tap Catmull-Rom
+//   5 Lanczos  -- 12 tap, 3-lobe windowed sinc
+//
+// The rest are not reconstruction filters at all -- they are separate passes
+// (TAA is the accumulation pass, FSR1/TSR/SMAA/FXAA would each need their own
+// dispatch). They are accepted here and fall through to bilinear rather than
+// being silently ignored, so selecting one degrades gracefully instead of
+// appearing to work. See docs/NOVA_FPS_DIAGNOSIS.md section 5.11.
+uniform int u_ReconstructionFilter;
+
+// SAMPLE PATTERN. Also plumbed from the CPU and also previously undeclared. This
+// one is genuinely CPU-side -- GetCurrentJitter picks the pattern and the shader
+// only ever sees the resulting u_Jitter -- so declaring it changes nothing
+// functionally. It is declared so the upload is not a silent no-op, which is the
+// failure mode that hid u_ReconstructionFilter for so long.
+uniform int u_SamplePattern;
 
 // ---------------------------------------------------------------------------
 // POST-PROCESSING UNIFORMS (reconstructed; see Phase -1 D3).
@@ -484,6 +583,35 @@ uniform vec4 u_CloudData3[2];
 // The duplication means the CPU can in principle set them inconsistently,
 // and nothing in the shader would notice.
 uniform int u_VolFast;
+
+// Upper bound on the volumetric march step count, as a uniform rather than the
+// literal 32 it used to be. The march is the largest per-pixel cost in the trace
+// pass (53.2 ms, 23.5% of it, measured by disabling the volumes), and by the time
+// this was made tunable it was already running its cheapest path: fogPerfK at its
+// 0.6 floor, the two-octave wl_vol_fbm2 forced by u_RenderScale < 0.75, shadow
+// traversals hoisted out of the step loop, and the light loop capped at
+// WL_VOL_LIGHT_CAP. The step count was the only remaining lever, and it trades
+// directly against fog quality -- so it is a knob to be measured, not a constant
+// to be edited. 0 or an unset uniform means the previous behaviour (32).
+uniform int u_VolStepCap;
+
+// Runtime cap on the per-step volumetric light loop, replacing the compile-time
+// WL_VOL_LIGHT_CAP. Both exist for the same reason u_VolStepCap does: the march
+// costs 36 ms of frame time on DemoGame, and halving the step count only moved
+// 3 ms of it, so the step count is not where that cost lives. The light loop is
+// the remaining per-step work -- 8 lights x up to 32 steps, each reading
+// u_ALightData/u_ALightPos/u_ALightColor/u_ALightData2 by a loop-varying index
+// and indexing the local lightVis[] array, which can spill to local memory.
+// Making the cap a uniform is how that gets measured instead of argued about.
+// 0 means "use WL_VOL_LIGHT_CAP", preserving the previous behaviour.
+uniform int u_VolLightCap;
+
+// 1 (the default) enables the hoisted segment range cull in the volumetric light
+// loop; 0 disables it, restoring the pre-cull behaviour of traversing every
+// selected light unconditionally. Exists so the cull can be A/B measured and so
+// its output can be compared against the unculled path -- the claim that it is
+// exact is only worth making if it can be checked.
+uniform int u_VolRangeCull;
 
 // Global atmospheric fog (distance haze everywhere)
 uniform int u_GlobalFogEnabled;
@@ -999,6 +1127,24 @@ vec3 random_in_hemisphere(vec3 normal)
     // reflected sample with the original.
     return dot(dir, normal) > 0.0f ? dir : -dir;
 }
+
+// ---------------------------------------------------------------------------
+// TUNING CONSTANTS
+//
+// WL_VOL_LIGHT_CAP -- the volumetric multi-light cap. This number MUST be
+// identical in BOTH twins (Renderer3D_NovaRenderer.glsl / .hlsl).
+//
+// It is a PERFORMANCE multiplier, not a quality preference: every one of the
+// march steps below runs one BVH traversal per light, and IsOccluded() is a
+// complete scene traversal rather than a cheap test. So the per-pixel cost is
+// steps x WL_VOL_LIGHT_CAP traversals. A divergence between the twins is not a
+// "quality difference" -- the same scene, the same preset, renders DIFFERENT
+// LIGHTING on each backend, and it costs 4x here (32 vs 8 meant the OpenGL path
+// did 1024 traversals per pixel where DX did 256). tools/verify_nova_glsl.py
+// asserts the two files agree on this value; changing it in one twin alone
+// fails that check.
+// ---------------------------------------------------------------------------
+#define WL_VOL_LIGHT_CAP 8
 
 const float PI = 3.14159265359f;
 
@@ -1559,17 +1705,20 @@ bool IsOccluded(Ray r, float maxDist, int skipIdx) {
     // a shadow ray report 'not occluded' through an occluder that lives in the
     // skipped branch. Correctness depends on the BVH builder keeping depth
     // under 30; nothing in this shader checks that.
-    int stack[32];
+    // Shared-memory stack base for this thread. See gs_trav_stack above: a
+    // dynamically-indexed PRIVATE array lands in local memory (global-backed),
+    // which made every push/pop here a global-memory access.
+    int stackBase = int(gl_LocalInvocationIndex) * 32;
     int stackPtr = 0;
     // Seed with the root. Node 0 is assumed to be the root by the builder's
     // contract, not discovered by traversal.
-    stack[stackPtr++] = 0;
+    gs_trav_stack[stackBase + stackPtr++] = 0;
 
     // Pop until empty. Stack order means this is depth-first, and the traversal
     // is not ordered front-to-back -- so this test has no early termination on
     // tNear, unlike a closest-hit loop.
     while (stackPtr > 0) {
-        int nodeIdx = stack[--stackPtr];
+        int nodeIdx = gs_trav_stack[stackBase + --stackPtr];
         BVHNode node = BVHNodes[nodeIdx];
 
         vec3 t0 = (node.MinBounds.xyz - r.Origin) * invDir;
@@ -1613,8 +1762,8 @@ bool IsOccluded(Ray r, float maxDist, int skipIdx) {
             if (stackPtr < 30) {
                 // Right child first, then left, so the left child is popped first -- i.e.
                 // the stack visits the left subtree before the right.
-                stack[stackPtr++] = int(node.MaxBounds.w);
-                stack[stackPtr++] = encoded;
+                gs_trav_stack[stackBase + stackPtr++] = int(node.MaxBounds.w);
+                gs_trav_stack[stackBase + stackPtr++] = encoded;
             }
         }
     }
@@ -1645,7 +1794,10 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
     // backwards from the usual argument (a short segment needs FEWER samples
     // only if it is also thin) -- but it is a heuristic on visual quality, not
     // a correctness issue.
-    int steps = int(clamp(d2.z * fogPerfK * clamp(fogLen / 16.0f, 0.15f, 1.0f), 2.0f, 32.0f));
+    // Guard: an unset uniform is 0 in GLSL, and clamp(x, 2, 0) is 0, which would
+    // silently disable the volume entirely. Fall back to the previous behaviour.
+    float stepCap = u_VolStepCap > 0 ? float(u_VolStepCap) : 32.0f;
+    int steps = int(clamp(d2.z * fogPerfK * clamp(fogLen / 16.0f, 0.15f, 1.0f), 2.0f, stepCap));
     if (t1 <= t0 || steps <= 0)
         return vec4(0.0f, 0.0f, 0.0f, 1.0f);
     float dt = (t1 - t0) / float(steps);
@@ -1678,9 +1830,92 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
     // At Low the volume is lit by the sun alone, which is the cheapest
     // acceptable answer and removes a shadow ray per step per light.
     if (u_QualityLevel >= 1 && u_ALightCount > 0)
-        lightEnd = min(u_ALightCount, 32);
+    {
+        int volLightCap = u_VolLightCap > 0 ? u_VolLightCap : WL_VOL_LIGHT_CAP;
+        // Never exceed the compile-time array size: lightVis is declared with
+        // WL_VOL_LIGHT_CAP elements and a larger runtime cap would overrun it.
+        volLightCap = min(volLightCap, WL_VOL_LIGHT_CAP);
+        lightEnd = min(u_ALightCount, volLightCap);
+    }
+
+    // The shadow test is HOISTED out of the march loop.
+    // ---
+    // IsOccluded() is a complete BVH traversal over every scene instance, not a
+    // cheap test. Running it per march step per light made the per-pixel cost
+    // steps x lightEnd traversals -- up to 32 x 32 = 1024 on the OpenGL path,
+    // against 32 x 8 = 256 on DX. Same scene, same preset, different lighting:
+    // the divergence was a correctness bug as well as a 4x backend difference.
+    //
+    // A light's visibility to a given RECEIVER changes far more slowly than the
+    // sample position does along the ray, so the traversal is done ONCE per light
+    // per pixel, from the volume entry point -- the representative position for
+    // the whole march -- and the result gates the per-step light loop.
+    //
+    // What stays INSIDE the loop, deliberately: the range cull (arange > 0 &&
+    // dL >= arange) and the spot-cone test. Both are functions of the per-step
+    // sample position p and cannot be hoisted without changing the answer.
+    //
+    // The guard makes the hoist a no-op at lightEnd == 0 (Low quality), which
+    // matches the previous behaviour exactly: the volume is then lit by the sun
+    // alone and the array is never built.
+    float lightVis[WL_VOL_LIGHT_CAP];
+    if (lightEnd > 0)
+    {
+        vec3 entry = ro + rd * t0;
+        for (int li = 0; li < lightEnd; li++)
+        {
+            // RANGE CULL, hoisted above the traversal, tested against the whole
+            // segment rather than the entry point alone.
+            //
+            // Why this is worth doing: the traversal below is a complete BVH walk
+            // over every scene instance, and it was paid once per light per pixel
+            // with no regard for whether the light can reach the volume at all. On
+            // DemoGame (677 point lights, 8 selected per pixel) that is 8
+            // traversals per pixel and 28.7 ms of frame time -- 79% of the fog's
+            // total 36.3 ms. Cutting the light cap from 8 to 1 measured 216.7 ->
+            // 188.0 ms; this cull recovers 19.7 ms of that.
+            //
+            // The segment test is what makes this exact. Testing only the ENTRY
+            // point would be an approximation, and a wrong one: the volume is
+            // 10000 m deep, so a light out of range of the entry can be well
+            // inside the range of a sample further along the ray, and culling it
+            // would silently drop real in-scattering. What is exact is the closest
+            // point on the segment [t0, t1] to the light -- if that is beyond the
+            // range, no sample in the volume can be within it, so the light
+            // contributes exactly zero and skipping its traversal cannot change
+            // the answer. (The test is conservative in the other direction: a
+            // light inside range of the segment's closest point but outside every
+            // discrete sample still pays its traversal and then contributes
+            // nothing, which is the previous behaviour, not a regression.)
+            //
+            // The spot-cone test is NOT hoisted -- it depends on the direction
+            // from the SAMPLE to the light, which varies along the ray.
+            float arange = max(u_ALightData[li].z, 0.0f);
+            vec3 elpos = u_ALightPos[li];
+            vec3 etoL = elpos - entry;
+            float edL = length(etoL);
+            if (u_VolRangeCull != 0 && arange > 0.0f)
+            {
+                vec3 segEnd = ro + rd * t1;
+                vec3 seg = segEnd - entry;
+                float segLen2 = dot(seg, seg);
+                float tSeg = segLen2 > 1e-6f ? clamp(dot(etoL, seg) / segLen2, 0.0f, 1.0f) : 0.0f;
+                float dClosest = length(etoL - seg * tSeg);
+                if (dClosest >= arange)
+                {
+                    lightVis[li] = 0.0f;
+                    continue;
+                }
+            }
+            // Same 1cm origin nudge the per-step ray uses, for the same reason:
+            // without it the ray starts exactly on a surface and self-occludes.
+            vec3 eL = etoL / max(edL, 0.0001f);
+            Ray eRay = Ray(entry + eL * 0.01f, eL);
+            lightVis[li] = IsOccluded(eRay, edL, -1) ? 0.0f : 1.0f;
+        }
+    }
     
-    for (int s = 0; s < 32; s++)
+    for (int s = 0; s < int(stepCap); s++)
     {
         if (s >= steps)
             break;
@@ -1721,6 +1956,10 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
                 // have no position to scatter from, and the sun is already handled
                 // separately by sunLight above.
                 if (atype < 0.5f) continue;
+                // The shadow traversal was hoisted out of this loop (see the note
+                // above the march): one BVH traversal per light per pixel, instead
+                // of one per step per light.
+                if (lightVis[li] < 0.5f) continue;
                 vec3 lpos = u_ALightPos[li];
                 vec3 lcol = u_ALightColor[li] * u_ALightData[li].y;
                 float arange = max(u_ALightData[li].z, 0.0f);
@@ -1750,10 +1989,10 @@ vec4 wl_march_fog_vol(vec3 ro, vec3 rd, float tMax, vec3 bmin, vec3 bmax,
                     att *= smoothstep(u_ALightData2[li].y, u_ALightData2[li].x, c);
                     if (att <= 0.001f) continue;
                 }
-                // The shadow ray origin, nudged 1cm along L. Without the offset the ray
-                // starts exactly on the surface and numerically self-occludes.
-                Ray lRay = Ray(p + L * 0.01f, L);
-                if (IsOccluded(lRay, dL, -1)) continue;
+                // No shadow ray in this loop any more: the BVH traversal was hoisted
+                // out of it (see lightVis, above the march), so the per-step cost per
+                // light is now the compare at the top of the loop rather than a
+                // traversal. Only the phase depends on L.
                 float lPhase = wl_hg(dot(rd, L), clamp(d1.y, -0.9f, 0.9f));
                 sampleLight += lcol * att * (0.3f + lPhase * 2.0f);
             }
@@ -3272,12 +3511,12 @@ HitInfo TraceScene(Ray ray) {
     vec3 safeDir = sign(ray.Direction) * max(abs(ray.Direction), vec3(0.00001f));
     vec3 invDir = 1.0f / safeDir;
 
-    int stack[32];
+    int stackBase = int(gl_LocalInvocationIndex) * 32;
     int stackPtr = 0;
-    stack[stackPtr++] = 0;
+    gs_trav_stack[stackBase + stackPtr++] = 0;
 
     while (stackPtr > 0) {
-        int nodeIdx = stack[--stackPtr];
+        int nodeIdx = gs_trav_stack[stackBase + --stackPtr];
         BVHNode node = BVHNodes[nodeIdx];
 
         vec3 t0 = (node.MinBounds.xyz - ray.Origin) * invDir;
@@ -3301,8 +3540,8 @@ HitInfo TraceScene(Ray ray) {
             }
         } else {
             if (stackPtr < 30) {
-                stack[stackPtr++] = int(node.MaxBounds.w);
-                stack[stackPtr++] = encoded;
+                gs_trav_stack[stackBase + stackPtr++] = int(node.MaxBounds.w);
+                gs_trav_stack[stackBase + stackPtr++] = encoded;
             }
         }
     }
@@ -4304,8 +4543,6 @@ void RunComposite() {
         vec2 srcPixel = srcCoord - vec2(0.5f);
         ivec2 s0 = clamp(ivec2(floor(srcPixel)), ivec2(0), srcSize - ivec2(1));
         ivec2 s1 = clamp(s0 + ivec2(1), ivec2(0), srcSize - ivec2(1));
-        // Clamp weights: at the frame border srcPixel can go slightly negative
-        // and unclamped extrapolation rings bright/dark edges.
         // Clamp the interpolation weights to [0,1].
         // ---
         // At a frame border srcPixel can go slightly outside the source extent,
@@ -4313,11 +4550,94 @@ void RunComposite() {
         // edge along the image border.
         vec2 f = clamp(srcPixel - vec2(s0), vec2(0.0f), vec2(1.0f));
 
-        vec3 c00 = imageLoad(img_Accumulation, s0).rgb;
-        vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
-        vec3 c01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
-        vec3 c11 = imageLoad(img_Accumulation, s1).rgb;
-        denoised = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+        // THE RECONSTRUCTION LADDER. This used to be a hardcoded bilinear, which
+        // is why the AA dropdown in the editor had no effect: the uniform was
+        // uploaded and then dropped because the shader never declared it. Each
+        // branch below is a different way of rebuilding one output pixel from the
+        // trace-resolution image, and they are ordered cheapest-first.
+        //
+        // The tap weights are computed from the SAME fractional coordinate `f`
+        // that bilinear used, so switching filters changes the reconstruction
+        // kernel and nothing else -- no change to the trace, the accumulation or
+        // the denoiser.
+        //
+        // Values outside the spatial range (Temporal, FSR1, TSR, SMAA, FXAA,
+        // SpatialDenoise) are separate passes, not reconstruction filters; they
+        // fall through to bilinear rather than being ignored, so picking one
+        // degrades gracefully instead of appearing to do something it cannot.
+        if (u_ReconstructionFilter == 1)
+        {
+            // NEAREST -- 1 tap, point sampling. The cheapest possible upscale,
+            // and the most aliased: it is what a "no AA" mode looks like, which
+            // is a legitimate choice for a diagnostic baseline.
+            denoised = imageLoad(img_Accumulation, s0).rgb;
+        }
+        else if (u_ReconstructionFilter == 3)
+        {
+            // BOX -- 4 tap unweighted. The 2x2 footprint bilinear samples, with
+            // the weights forced to 0.5 regardless of position. Softer than
+            // bilinear at edges because it does not interpolate, which is the
+            // trade: less ringing, more blur.
+            vec3 b00 = imageLoad(img_Accumulation, ivec2(s0.x, s0.y)).rgb;
+            vec3 b10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
+            vec3 b01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
+            vec3 b11 = imageLoad(img_Accumulation, ivec2(s1.x, s1.y)).rgb;
+            denoised = (b00 + b10 + b01 + b11) * 0.25f;
+        }
+        else if (u_ReconstructionFilter == 4)
+        {
+            // BICUBIC -- 16 tap Catmull-Rom. The classic "sharp" upscale: it
+            // overshoots slightly at edges, which reads as crispness on geometry
+            // and as ringing on high-contrast ones. The 1D kernel is applied
+            // separably, which is why this is 16 taps rather than 16 separate
+            // 2D samples. Weights are normalised by their sum, so the filter
+            // cannot darken or brighten the image as a whole.
+            vec3 acc = vec3(0.0f);
+            float wsum = 0.0f;
+            for (int j = -1; j <= 2; j++)
+            {
+                float fy = wl_cubic_kernel(float(j) - f.y);
+                for (int i = -1; i <= 2; i++)
+                {
+                    float w = wl_cubic_kernel(float(i) - f.x) * fy;
+                    ivec2 c = clamp(s0 + ivec2(i, j), ivec2(0), srcSize - ivec2(1));
+                    acc += imageLoad(img_Accumulation, c).rgb * w;
+                    wsum += w;
+                }
+            }
+            denoised = acc / max(wsum, 1e-5f);
+        }
+        else if (u_ReconstructionFilter == 5)
+        {
+            // LANCZOS -- 12 tap, 3-lobe windowed sinc. The strongest of the
+            // spatial filters: best edge preservation of the group, at the cost
+            // of the most ringing. The window is what keeps the negative lobes
+            // from making the kernel unbounded.
+            vec3 acc = vec3(0.0f);
+            float wsum = 0.0f;
+            for (int j = -2; j <= 3; j++)
+            {
+                float fy = wl_lanczos3(float(j) - f.y);
+                for (int i = -2; i <= 3; i++)
+                {
+                    float w = wl_lanczos3(float(i) - f.x) * fy;
+                    ivec2 c = clamp(s0 + ivec2(i, j), ivec2(0), srcSize - ivec2(1));
+                    acc += imageLoad(img_Accumulation, c).rgb * w;
+                    wsum += w;
+                }
+            }
+            denoised = acc / max(wsum, 1e-5f);
+        }
+        else
+        {
+            // BILINEAR (the default) and the fall-through for every filter that
+            // is a separate pass rather than a reconstruction kernel.
+            vec3 c00 = imageLoad(img_Accumulation, s0).rgb;
+            vec3 c10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
+            vec3 c01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
+            vec3 c11 = imageLoad(img_Accumulation, s1).rgb;
+            denoised = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+        }
     } else {
         // At full resolution there is no upscale to do, so the composite reads the
         // accumulation buffer directly -- except at Ultra, where the bloom chain

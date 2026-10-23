@@ -250,6 +250,17 @@ namespace Wasteland
 		// one extra submission.
 		if (!m_Context->IsCommandListOpen())
 		{
+			// DEVICE-LOST GUARD. On a lost device IsCommandListOpen() is false
+			// (BeginFrame skipped open()), so this transient path would otherwise
+			// call open()/close()/executeCommandList on a REMOVED device -- the same
+			// crash the device-lost guards in BeginFrame prevent. The transient path
+			// exists for init-time and out-of-frame calls on a LIVE device, so the
+			// right answer here is to skip the clear entirely.
+			if (m_Context->IsDeviceLost())
+			{
+				WL_CORE_ERROR("Clear: Device lost, skipping clear");
+				return;
+			}
 			WL_CORE_WARN("Clear: Command list not open (missing BeginFrame), recording with transient open/close");
 			// Only reached on the transient path. Opening inside a batched frame would
 			// reset the command list and discard every draw already recorded on it.
@@ -707,6 +718,14 @@ namespace Wasteland
 		// Fallback for outside-frame calls (e.g. init) uses transient open/close+execute.
 		if (!m_Context->IsCommandListOpen())
 		{
+			// DEVICE-LOST GUARD. Same hazard as Clear(): a lost device makes
+			// IsCommandListOpen() false, so the transient branch would open/close/
+			// execute on a removed device. Skip the draw instead.
+			if (m_Context->IsDeviceLost())
+			{
+				WL_CORE_ERROR("DrawIndexed: Device lost, skipping draw");
+				return;
+			}
 			WL_CORE_WARN("DrawIndexed: Command list not open, using transient open/close");
 			// Transient branch only, for the same reason as in Clear(): opening here during
 			// a batched frame would discard the frame's already-recorded draws.
@@ -881,6 +900,14 @@ namespace Wasteland
 		// clobber the frame's active list.
 		if (!m_Context->IsCommandListOpen())
 		{
+			// DEVICE-LOST GUARD. Same hazard as Clear() and DrawIndexed(): a lost
+			// device makes IsCommandListOpen() false, so the transient branch would
+			// open/close/execute on a removed device. Skip the dispatch instead.
+			if (m_Context->IsDeviceLost())
+			{
+				WL_CORE_ERROR("DispatchCompute: Device lost, skipping dispatch");
+				return;
+			}
 			WL_CORE_WARN("DispatchCompute: Command list not open, using transient");
 			// Transient branch only, mirroring DrawIndexed's split. Same hazard: opening
 			// mid-frame would reset the active command list.
