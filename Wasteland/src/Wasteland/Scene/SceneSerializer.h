@@ -10,6 +10,11 @@
 
 #include "Scene.h"
 
+// Forward-declared rather than included: DeserializeEntityNode takes a YAML::Node by
+// const reference, which needs the name only. Pulling <yaml-cpp/yaml.h> into this header
+// would put it in every translation unit that touches a scene.
+namespace YAML { class Node; }
+
 namespace Wasteland
 {
 
@@ -107,6 +112,15 @@ namespace Wasteland
 		}
 
 	private:
+		// Reads one entity from its YAML node into m_Scene.
+		//
+		// Split out of Deserialize's loop so the binary sidecar (SceneChunkStore) can
+		// replay individual entities that it could not represent in its fast records.
+		// Both paths share this one reader, so they cannot drift apart.
+		//
+		// @param entity  An element of the file's "Entities" sequence.
+		bool DeserializeEntityNode(const YAML::Node &entity);
+
 		// The scene this serializer reads and writes.
 		//
 		// Shared, not unique: the serializer is a view onto a scene the rest

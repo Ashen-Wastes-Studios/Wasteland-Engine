@@ -21,6 +21,7 @@
 #include "SceneSerializer.h"
 
 #include "Entity.h"
+#include "SceneChunkStore.h"
 #include "Wasteland/Project/Project.h"
 #include "Wasteland/Terrain/TerrainScenePersistence.h"
 
@@ -1480,6 +1481,19 @@ namespace Wasteland
 				const YAML::Node terrainNode = YAML::Load(terrainYaml);
 				out << YAML::Key << "Terrain" << YAML::Value << terrainNode;
 			}
+			// The trained neural stage's enabled flag. Written as its own top-level
+			// map rather than a bare scalar so a later field can be added without
+			// re-parsing existing files, and so the key is self-describing.
+			//
+			// yaml-cpp ignores keys it does not map, so a scene written before this
+			// key existed still loads -- and a scene written WITH it loads fine in a
+			// build that does not know about it. That is the whole reason this is
+			// safe to add to a format every scene file already uses.
+			out << YAML::Key << "NeuralStage" << YAML::Value << YAML::BeginMap;
+			out << YAML::Key << "Enabled" << YAML::Value
+				<< (m_Scene->IsNeuralStageEnabled() ? "true" : "false");
+			out << YAML::EndMap;
+
 			out << YAML::Key << "Entities" << YAML::Value << YAML::BeginSeq;
 			m_Scene->m_Registry.view<entt::entity>().each([&](auto entityID)
 			{
@@ -1549,6 +1563,35 @@ namespace Wasteland
 			std::filesystem::remove(temporaryPath, ignored);
 			return fail("could not publish scene file: " + publishError.message());
 		}
+
+		// The YAML is now the authoritative file on disk, so a binary sidecar can be
+		// derived from it. This must happen AFTER the rename: the sidecar records the
+		// published file's size and write time as its staleness key.
+		//
+		// Failure here is never fatal and never reported to the caller. A sidecar is a
+		// cache; the only way Write can fail now is an I/O error. Remove() is still called
+		// so a sidecar from an earlier save cannot be served against this new YAML --
+		// that would be the one way a stale cache could show wrong data.
+		{
+			// Entities the fast record cannot hold (an unsupported component, a resolved
+			// texture, an over-long tag) are stored as their authored YAML. This is the
+			// only writer in the file, so it is the only place that knows how a component
+			// becomes text.
+			const SceneChunkStore::FragmentEmitter emitFragment =
+				[](Scene &scene, const entt::entity entityID)
+			{
+				YAML::Emitter emitter;
+				SerializeEntity(emitter, Entity(entityID, &scene));
+				return std::string(emitter.c_str(), emitter.size());
+			};
+
+			std::string sidecarReason;
+			if (!SceneChunkStore::Write(*m_Scene, targetPath, emitFragment, &sidecarReason))
+			{
+				SceneChunkStore::Remove(targetPath);
+				WL_CORE_INFO("No scene sidecar for '{0}': {1}", filepath, sidecarReason);
+			}
+		}
 		return true;
 	}
 
@@ -1594,8 +1637,1148 @@ namespace Wasteland
 	// @param filepath  The file to read.
 	// @returns         Whether the scene was loaded. False for a file that
 	//                 could not be opened or whose contents are not a scene.
+	// Reads ONE entity from its YAML node into the scene.
+	//
+	// Extracted from Deserialize's loop so the binary sidecar can feed individual
+	// entities back through the same reader. That matters because a scene is only
+	// fully representable in the sidecar when every entity's components are in the
+	// supported set; rather than refuse such a scene entirely, the sidecar stores the
+	// handful of unsupported entities as their original YAML and replays them here.
+	// One reader means the two paths cannot drift.
+	//
+	// @param entity  The entity's node, as read from an "Entities" sequence.
+	// @return        Always true today. Present so a future per-entity failure can be
+	//                reported without changing every call site.
+	bool SceneSerializer::DeserializeEntityNode(const YAML::Node &entity)
+	{
+		// The identity is read UNCONDITIONALLY. A file hand-edited to drop the
+		// "Entity" key throws here rather than skipping the entity, because
+		// as<uint64_t>() on a missing node is a typed-conversion failure.
+		uint64_t uuid = entity["Entity"].as<uint64_t>(0);
+
+		std::string name;
+		// The tag is optional and read BEFORE the entity is created, because its
+		// value is a constructor argument. An entity with no TagComponent key
+		// therefore still gets created -- with Scene's default name.
+		const auto tagComponent = entity["TagComponent"];
+		if (tagComponent)
+			// The tag is read before the entity exists, then handed to
+			// CreateEntityWithUUID below. An entity with no TagComponent key loads with
+			// an empty name, which Scene::CreateEntityWithUUID turns into "Entity".
+			name = tagComponent["Tag"].as<std::string>();
+
+		// Traced per entity. In a Release build WL_CORE_TRACE compiles out, so
+		// this is a Debug-only record of load progress.
+		WL_CORE_TRACE("Deserialized entity with ID = {0}, name = {1}", uuid, name);
+
+		// Creation happens once per file entry, BEFORE any component is read. So a
+		// file whose later component throws still leaves a half-built entity in the
+		// registry -- the exception path has no rollback.
+		// The method also never clears the registry first, despite its own comment
+		// saying it replaces the scene's contents: entities from a previous load
+		// survive and accumulate.
+		Entity deserializedEntity = m_Scene->CreateEntityWithUUID(uuid, name);
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto transformComponent = entity["TransformComponent"];
+		// Guarded by node truthiness, but the three fields inside are read
+		// unguarded. This is the OLDEST block in the function and the pattern the
+		// newer blocks below it deliberately moved away from.
+		if (transformComponent)
+		{
+			// Entities always have transforms
+			// GetComponent, not AddComponent, because CreateEntityWithUUID above
+			// already attached a TransformComponent. Every other block here uses
+			// AddComponent, which is the asymmetry to watch when adding a new one.
+			auto &tc = deserializedEntity.GetComponent<TransformComponent>();
+			// All three vectors presence-checked: a partial node leaves defaults.
+			if (transformComponent["Translation"])
+				tc.Translation = transformComponent["Translation"].as<glm::vec3>();
+			if (transformComponent["Rotation"])
+				tc.Rotation = transformComponent["Rotation"].as<glm::vec3>();
+			if (transformComponent["Scale"])
+				tc.Scale = transformComponent["Scale"].as<glm::vec3>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto healthNode = entity["HealthComponent"];
+		if (healthNode)
+		{
+			// AddComponent, then every field presence-checked. This is the pattern the
+			// newer blocks follow and the older ones do not: a missing key leaves the
+			// component's default rather than throwing.
+			auto &hc = deserializedEntity.AddComponent<HealthComponent>();
+			// Every field presence-checked: a scene authored before a
+			// field existed must still load, keeping the default.
+			if (healthNode["Current"])
+				// The presence-check idiom: read the key only if it exists, otherwise
+				// leave the component's default alone. Every field in this block uses it,
+				// which is why a scene authored before a field existed still loads.
+				hc.Current = healthNode["Current"].as<float>();
+			// Health is the first component in the READER, though it is written
+			// later in the writer. The order of the reader does not have to match the
+			// writer's -- YAML mappings are unordered -- so the two halves drifted.
+			if (healthNode["Max"])
+				hc.Max = healthNode["Max"].as<float>();
+			if (healthNode["Invulnerable"])
+				hc.Invulnerable = healthNode["Invulnerable"].as<bool>();
+			if (healthNode["DamageCooldown"])
+				hc.DamageCooldown = healthNode["DamageCooldown"].as<float>();
+			if (healthNode["IsDead"])
+				// CooldownTimer is deliberately absent from the read, matching its absence
+				// from the write. Every accumulator that is not written is also not read, so
+				// the two halves agree on what 'resting state' means.
+				hc.IsDead = healthNode["IsDead"].as<bool>();
+			// CooldownTimer stays 0 -- never serialized, never resumed.
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto weaponNode = entity["WeaponComponent"];
+		if (weaponNode)
+		{
+			// AddComponent attaches a fresh component; the component's own defaults
+			// are what every unchecked field would otherwise keep. So the presence
+			// checks below are what make an old scene file load rather than reset.
+			auto &wc = deserializedEntity.AddComponent<WeaponComponent>();
+			// Weapon's AddComponent. Compare the health block above: both check every
+			// field, which is the convention the rest of this function follows and the
+			// renderer blocks below do not.
+			if (weaponNode["FireRate"])
+				wc.FireRate = weaponNode["FireRate"].as<float>();
+			if (weaponNode["Damage"])
+				wc.Damage = weaponNode["Damage"].as<float>();
+			if (weaponNode["Range"])
+				wc.Range = weaponNode["Range"].as<float>();
+			if (weaponNode["AmmoPerShot"])
+				wc.AmmoPerShot = weaponNode["AmmoPerShot"].as<int>();
+			if (weaponNode["CurrentAmmo"])
+				wc.CurrentAmmo = weaponNode["CurrentAmmo"].as<int>();
+			if (weaponNode["MaxAmmo"])
+				wc.MaxAmmo = weaponNode["MaxAmmo"].as<int>();
+			if (weaponNode["ReserveAmmo"])
+				wc.ReserveAmmo = weaponNode["ReserveAmmo"].as<int>();
+			if (weaponNode["ReloadTime"])
+				wc.ReloadTime = weaponNode["ReloadTime"].as<float>();
+			// AutoReload is the last authored weapon field. Everything after it -- the
+			// reload progress, the shots fired, the live cooldowns -- is deliberately
+			// absent from both halves, which is what makes a reload start clean.
+			if (weaponNode["AutoReload"])
+				wc.AutoReload = weaponNode["AutoReload"].as<bool>();
+			// FireCooldown / ReloadTimer / IsReloading / ShotsFired
+			// stay at their defaults; a load does not resume a reload.
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto interactableNode = entity["InteractableComponent"];
+		if (interactableNode)
+		{
+			// The label is presentation text stored in the scene file, which is why
+			// it round-trips: an interactable's prompt is part of the level design,
+			// not of the UI code.
+			auto &ic = deserializedEntity.AddComponent<InteractableComponent>();
+			if (interactableNode["Enabled"])
+				ic.Enabled = interactableNode["Enabled"].as<bool>();
+			if (interactableNode["Label"])
+				ic.Label = interactableNode["Label"].as<std::string>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto weaponFeedbackNode = entity["WeaponFeedbackComponent"];
+		if (weaponFeedbackNode)
+		{
+			// WeaponFeedback holds only durations. The live timers are zeroed by
+			// OnComponentAdded on load, which is why nothing needs to be read here.
+			auto &fb = deserializedEntity.AddComponent<WeaponFeedbackComponent>();
+			if (weaponFeedbackNode["MuzzleFlashDuration"])
+				fb.MuzzleFlashDuration = weaponFeedbackNode["MuzzleFlashDuration"].as<float>();
+			if (weaponFeedbackNode["HitMarkerDuration"])
+				fb.HitMarkerDuration = weaponFeedbackNode["HitMarkerDuration"].as<float>();
+			// Live timers are not written, and OnComponentAdded zeroes
+			// them, so a loaded gun never flashes spuriously.
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto viewStateNode = entity["ViewStateComponent"];
+		if (viewStateNode)
+		{
+			auto &vs = deserializedEntity.AddComponent<ViewStateComponent>();
+			if (viewStateNode["TargetFOV"])
+				vs.TargetFOV = viewStateNode["TargetFOV"].as<float>();
+			if (viewStateNode["FOVLerpSpeed"])
+				vs.FOVLerpSpeed = viewStateNode["FOVLerpSpeed"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto itemDefinitionNode = entity["ItemDefinitionComponent"];
+		if (itemDefinitionNode)
+		{
+			// ItemDefinition is added before its fields are read, and Name -- the
+			// lookup id -- is read first. A definition whose name is missing throws
+			// on the very first assignment in the block.
+			auto &def = deserializedEntity.AddComponent<ItemDefinitionComponent>();
+			if (itemDefinitionNode["Name"])
+				def.Name = itemDefinitionNode["Name"].as<std::string>();
+			if (itemDefinitionNode["DisplayName"])
+				def.DisplayName = itemDefinitionNode["DisplayName"].as<std::string>();
+			if (itemDefinitionNode["Description"])
+				def.Description = itemDefinitionNode["Description"].as<std::string>();
+			if (itemDefinitionNode["MaxStack"])
+				def.MaxStack = itemDefinitionNode["MaxStack"].as<int>();
+			if (itemDefinitionNode["Weight"])
+				def.Weight = itemDefinitionNode["Weight"].as<float>();
+			if (itemDefinitionNode["Tags"])
+			{
+				// clear() before the loop, so a re-authored tag list replaces rather than
+				// appends. Every other vector field in this file is assigned outright;
+				// this one needed clearing because the loop appends.
+				def.Tags.clear();
+				// Iterating the node directly rather than by index: yaml-cpp's Node
+				// exposes begin/end over its sequence elements, so this is the
+				// range-for over a YAML sequence.
+				for (const auto &tag : itemDefinitionNode["Tags"])
+					def.Tags.push_back(tag.as<std::string>());
+			}
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto inventoryNode = entity["InventoryComponent"];
+		if (inventoryNode)
+		{
+			// The component is created before its contents are known, so a scene with
+			// an empty inventory and one with no InventoryComponent key at all are
+			// distinguishable: the first has the key and an empty Items list.
+			auto &inv = deserializedEntity.AddComponent<InventoryComponent>();
+			// Both limits are presence-checked, unlike the item rows below, so an
+			// inventory written before a limit existed loads with the default limit
+			// rather than throwing.
+			if (inventoryNode["MaxWeight"])
+				inv.MaxWeight = inventoryNode["MaxWeight"].as<float>();
+			if (inventoryNode["MaxSlots"])
+				inv.MaxSlots = inventoryNode["MaxSlots"].as<int>();
+			if (inventoryNode["Items"])
+			{
+				// Same clear-then-fill shape as the tags above: the file is authoritative
+				// for the whole list, not a delta applied to whatever was there.
+				inv.Items.clear();
+				for (const auto &stackNode : inventoryNode["Items"])
+				{
+					// Skip rows with no ItemId rather than adding an
+					// empty stack: an empty row still consumes a slot.
+					// A row with no ItemId is SKIPPED rather than loaded as an empty stack.
+					// That is the one place in the reader where malformed input is discarded
+					// instead of throwing -- and it makes a typo'd id key silently drop a row.
+					if (!stackNode["ItemId"])
+						return true;
+					Wasteland::ItemStack stack;
+					// ItemId is read after the `if (!stackNode["ItemId"])` guard above, so
+					// the conversion is known to have a string behind it. Quantity is
+					// conditional, so a missing one takes the explicit 1 on the next line.
+					stack.ItemId = stackNode["ItemId"].as<std::string>();
+					// Quantity defaults to 1 when the key is absent, rather than the struct's
+					// own default of 1. Same value, but stated here, so changing the struct's
+					// default would not change what a hand-edited file loads as.
+					stack.Quantity = stackNode["Quantity"] ? stackNode["Quantity"].as<int>() : 1;
+					// IsValid() is the gate: a stack with an empty ItemId or a quantity <= 0 is
+					// dropped. The writer never emits such a stack, so this only rejects rows
+					// introduced by hand-editing.
+					if (stack.IsValid())
+						// push_back, not assignment: the read appends to the cleared vector.
+						// A duplicate ItemId in the file therefore produces two stacks rather
+						// than one merged stack -- IsValid does not deduplicate.
+						inv.Items.push_back(stack);
+				}
+			}
+		}
+
+		// Mirrors the writer's whole-block IsValid() gate exactly: a pile
+		// whose ItemId is missing or empty, or whose Quantity is missing,
+		// zero or negative, is DISCARDED rather than loaded. Adding the
+		// component and scrubbing it afterwards would leave an inert entity
+		// in the world that looks like an item and can never be picked up.
+		//
+		// Quantity defaults to 1 when the key is absent -- the same explicit
+		// 1 the InventoryComponent stack above uses, so a pile hand-written
+		// with only an id loads as ONE item rather than as zero (which would
+		// be dropped) or as the struct's own default quietly changing under us.
+		const auto droppedItemNode = entity["DroppedItemComponent"];
+		if (droppedItemNode)
+		{
+			std::string itemId = droppedItemNode["ItemId"] ? droppedItemNode["ItemId"].as<std::string>() : std::string();
+			int quantity = droppedItemNode["Quantity"] ? droppedItemNode["Quantity"].as<int>() : 1;
+			if (!itemId.empty() && quantity > 0)
+			{
+				auto &pile = deserializedEntity.AddComponent<DroppedItemComponent>();
+				pile.ItemId = itemId;
+				pile.Quantity = quantity;
+			}
+		}
+
+		// --- Audio (14.4) ---
+		//
+		// Every field is presence-checked, exactly like the InventoryComponent
+		// limits above and unlike the ViewStateComponent block that follows. A
+		// scene file written before a field existed must load with that field's
+		// COMPONENT DEFAULT rather than throwing: an audio clip that has been
+		// loading by path since 14.4 must not stop loading because a key is
+		// missing from an old file.
+		const auto audioSourceNode = entity["AudioSourceComponent"];
+		if (audioSourceNode)
+		{
+			// Added before its fields are read, so an authored source with every
+			// field at its default round-trips as a source rather than vanishing.
+			auto &src = deserializedEntity.AddComponent<AudioSourceComponent>();
+			if (audioSourceNode["ClipName"])
+				src.ClipName = audioSourceNode["ClipName"].as<std::string>();
+			if (audioSourceNode["Volume"])
+				src.Volume = audioSourceNode["Volume"].as<float>();
+			if (audioSourceNode["Pitch"])
+				src.Pitch = audioSourceNode["Pitch"].as<float>();
+			if (audioSourceNode["Loop"])
+				src.Loop = audioSourceNode["Loop"].as<bool>();
+			if (audioSourceNode["Priority"])
+				src.Priority = audioSourceNode["Priority"].as<int>();
+			if (audioSourceNode["Spatial"])
+				src.Spatial = audioSourceNode["Spatial"].as<bool>();
+			if (audioSourceNode["PositionOffset"])
+				src.PositionOffset = audioSourceNode["PositionOffset"].as<glm::vec3>();
+			if (audioSourceNode["MinDistance"])
+				src.MinDistance = audioSourceNode["MinDistance"].as<float>();
+			if (audioSourceNode["MaxDistance"])
+				src.MaxDistance = audioSourceNode["MaxDistance"].as<float>();
+			// MinPlayTime is left at 0, which is both the component default and
+			// the correct restored state: it counts the tail of a sound that is
+			// CURRENTLY playing, and a scene file describes an authored level
+			// rather than a moment in one.
+			//
+			// PlayOnStart IS DELIBERATELY NOT RESTORED, and this is the
+			// decision, recorded where anyone changing it will see it. The writer
+			// emits no such key, so every loaded source reads PlayOnStart ==
+			// false whatever the authoring tool had set.
+			//
+			// WHY: PlayOnStart is an ACTION REQUEST, not state. Round-tripping
+			// it would make every reload of every level replay its autostart
+			// sounds -- a door closing once per load, looping ambience
+			// restarting on every scene swap -- which is the classic reason a
+			// game "sounds wrong when you reopen the editor". The counterpart
+			// is already in place: AudioSystem::PlayAutoStartSources fires
+			// sources ONCE from OnRuntimeStart, and Deserialize never calls it,
+			// so loading a scene mid-session is silent by construction rather
+			// than by this omission.
+			//
+			// THE COST, stated plainly: an autostart flag authored in the editor
+			// is LOST across a reload. If a future tool needs it, the honest fix
+			// is a separate authored-only field on the editor path read into a
+			// different attribute -- not a blind round trip of this one, because
+			// the runtime save path shares this file and would replay on every load.
+		}
+
+		// Single bool, same presence-check convention.
+		const auto audioListenerNode = entity["AudioListenerComponent"];
+		if (audioListenerNode)
+		{
+			auto &listener = deserializedEntity.AddComponent<AudioListenerComponent>();
+			if (audioListenerNode["Enabled"])
+				listener.Enabled = audioListenerNode["Enabled"].as<bool>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto cameraComponent = entity["CameraComponent"];
+		if (cameraComponent)
+		{
+			auto &cc = deserializedEntity.AddComponent<CameraComponent>();
+
+				auto cameraProps = cameraComponent["Camera"];
+
+				if (cameraProps)
+				{
+					if (cameraProps["ProjectionType"])
+						cc.Camera.SetProjectionType((SceneCamera::ProjectionType)cameraProps["ProjectionType"].as<int>());
+					if (cameraProps["PerspectiveFOV"])
+						cc.Camera.SetPerspectiveVerticalFOV(cameraProps["PerspectiveFOV"].as<float>());
+					if (cameraProps["PerspectiveNear"])
+						cc.Camera.SetPerspectiveNearClip(cameraProps["PerspectiveNear"].as<float>());
+					if (cameraProps["PerspectiveFar"])
+						cc.Camera.SetPerspectiveFarClip(cameraProps["PerspectiveFar"].as<float>());
+					if (cameraProps["OrthographicSize"])
+						cc.Camera.SetOrthographicSize(cameraProps["OrthographicSize"].as<float>());
+					if (cameraProps["OrthographicNear"])
+						cc.Camera.SetOrthographicNearClip(cameraProps["OrthographicNear"].as<float>());
+					if (cameraProps["OrthographicFar"])
+						cc.Camera.SetOrthographicFarClip(cameraProps["OrthographicFar"].as<float>());
+				}
+
+				if (cameraComponent["Primary"])
+					cc.Primary = cameraComponent["Primary"].as<bool>();
+				if (cameraComponent["FixedAspectRatio"])
+					cc.FixedAspectRatio = cameraComponent["FixedAspectRatio"].as<bool>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto spriteRendererComponent = entity["SpriteRendererComponent"];
+		if (spriteRendererComponent)
+		{
+			// Entities always have transforms
+			// AddComponent, then ONE unguarded read. SpriteRendererComponent has a
+			// single field, so the block is the shortest in the function and the only
+			// one with nothing to check.
+			auto &src = deserializedEntity.AddComponent<SpriteRendererComponent>();
+				if (spriteRendererComponent["Color"])
+					src.Color = spriteRendererComponent["Color"].as<glm::vec4>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto circleRendererComponent = entity["CircleRendererComponent"];
+		// Guarded node, unguarded fields -- the pattern for every renderer block
+		// below. See the note on the sprite block above for the consequence.
+		if (circleRendererComponent)
+		{
+			// Entities always have transforms
+			auto &crc = deserializedEntity.AddComponent<CircleRendererComponent>();
+				if (circleRendererComponent["Color"])
+					crc.Color = circleRendererComponent["Color"].as<glm::vec4>();
+				if (circleRendererComponent["Thickness"])
+					crc.Thickness = circleRendererComponent["Thickness"].as<float>();
+				if (circleRendererComponent["Fade"])
+					crc.Fade = circleRendererComponent["Fade"].as<float>();
+		}
+
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto cubeRendererComponent = entity["CubeRendererComponent"];
+		if (cubeRendererComponent)
+		{
+			// Cube reads back only Colour, TextureIndex and TilingFactor -- the
+			// TextureWidth/Height the writer emitted are dropped. See the defect note
+			// on the writer side at line 442.
+			auto &crc = deserializedEntity.AddComponent<CubeRendererComponent>();
+				if (cubeRendererComponent["Color"])
+					crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
+				if (cubeRendererComponent["TextureIndex"])
+					crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
+				if (cubeRendererComponent["TilingFactor"])
+					crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
+		}
+
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto sphereRendererComponent = entity["SphereRendererComponent"];
+		if (sphereRendererComponent)
+		{
+			// Sphere's reader. Radius, Sectors and Stacks are the three fields that
+			// matter for how the mesh regenerates; TextureIndex and TilingFactor are
+			// the two texture fields. TextureWidth/Height are the two it skips.
+			auto &src = deserializedEntity.AddComponent<SphereRendererComponent>();
+				if (sphereRendererComponent["Color"])
+					src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
+				if (sphereRendererComponent["Radius"])
+					src.Radius = sphereRendererComponent["Radius"].as<float>();
+				if (sphereRendererComponent["Sectors"])
+					src.Sectors = sphereRendererComponent["Sectors"].as<int>();
+				if (sphereRendererComponent["Stacks"])
+					src.Stacks = sphereRendererComponent["Stacks"].as<int>();
+				if (sphereRendererComponent["TextureIndex"])
+					src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
+				if (sphereRendererComponent["TilingFactor"])
+					src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
+		}
+
+		// --- Blender "Add > Mesh" primitives ---
+		// Each block is guarded by YAML node truthiness: a scene file
+		// written before these shapes existed simply has no key, which
+		// is what keeps older files loading.
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto planeRendererComponent = entity["PlaneRendererComponent"];
+		if (planeRendererComponent)
+		{
+		// Every primitive reader from here to the torus has this same shape: add
+		// the component, then assign each field straight from the node with no
+		// presence check. The result is that a truncated node throws out of
+		// Deserialize rather than leaving defaults behind.
+		auto &prc = deserializedEntity.AddComponent<PlaneRendererComponent>();
+			if (planeRendererComponent["Color"])
+				prc.Color = planeRendererComponent["Color"].as<glm::vec4>();
+			if (planeRendererComponent["Subdivisions"])
+				prc.Subdivisions = planeRendererComponent["Subdivisions"].as<int>();
+			if (planeRendererComponent["TextureIndex"])
+				prc.TextureIndex = planeRendererComponent["TextureIndex"].as<int>();
+			if (planeRendererComponent["TilingFactor"])
+				prc.TilingFactor = planeRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto gridRendererComponent = entity["GridRendererComponent"];
+		if (gridRendererComponent)
+		{
+		// Grid's reader: the two subdivision counts then the two texture fields.
+		// The colour is read first and unguarded, so a grid node with no Color
+		// key throws rather than defaulting to white.
+		auto &grc = deserializedEntity.AddComponent<GridRendererComponent>();
+			if (gridRendererComponent["Color"])
+				grc.Color = gridRendererComponent["Color"].as<glm::vec4>();
+			if (gridRendererComponent["XSubdivisions"])
+				grc.XSubdivisions = gridRendererComponent["XSubdivisions"].as<int>();
+			if (gridRendererComponent["YSubdivisions"])
+				grc.YSubdivisions = gridRendererComponent["YSubdivisions"].as<int>();
+			if (gridRendererComponent["TextureIndex"])
+				grc.TextureIndex = gridRendererComponent["TextureIndex"].as<int>();
+			if (gridRendererComponent["TilingFactor"])
+				grc.TilingFactor = gridRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto circle3DRendererComponent = entity["Circle3DRendererComponent"];
+		if (circle3DRendererComponent)
+		{
+		// Segments is read as int, matching the writer's own integer. The
+		// tessellation parameters are all integral for the same reason: a
+		// fractional segment count would have no meaning.
+		auto &c3c = deserializedEntity.AddComponent<Circle3DRendererComponent>();
+			if (circle3DRendererComponent["Color"])
+				c3c.Color = circle3DRendererComponent["Color"].as<glm::vec4>();
+			if (circle3DRendererComponent["Radius"])
+				c3c.Radius = circle3DRendererComponent["Radius"].as<float>();
+			if (circle3DRendererComponent["Segments"])
+				c3c.Segments = circle3DRendererComponent["Segments"].as<int>();
+			if (circle3DRendererComponent["TextureIndex"])
+				c3c.TextureIndex = circle3DRendererComponent["TextureIndex"].as<int>();
+			if (circle3DRendererComponent["TilingFactor"])
+				c3c.TilingFactor = circle3DRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto icoSphereRendererComponent = entity["IcoSphereRendererComponent"];
+		if (icoSphereRendererComponent)
+		{
+		auto &isc = deserializedEntity.AddComponent<IcoSphereRendererComponent>();
+			if (icoSphereRendererComponent["Color"])
+				isc.Color = icoSphereRendererComponent["Color"].as<glm::vec4>();
+			if (icoSphereRendererComponent["Radius"])
+				isc.Radius = icoSphereRendererComponent["Radius"].as<float>();
+			if (icoSphereRendererComponent["Subdivisions"])
+				isc.Subdivisions = icoSphereRendererComponent["Subdivisions"].as<int>();
+			if (icoSphereRendererComponent["TextureIndex"])
+				isc.TextureIndex = icoSphereRendererComponent["TextureIndex"].as<int>();
+			if (icoSphereRendererComponent["TilingFactor"])
+				isc.TilingFactor = icoSphereRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto cylinderRendererComponent = entity["CylinderRendererComponent"];
+		if (cylinderRendererComponent)
+		{
+		// Height appears here but not on the plane or sphere -- the primitives
+		// that have an axis need it, the radially symmetric ones do not. Which
+		// keys a primitive carries is what distinguishes it in the file.
+		auto &cyc = deserializedEntity.AddComponent<CylinderRendererComponent>();
+			if (cylinderRendererComponent["Color"])
+				cyc.Color = cylinderRendererComponent["Color"].as<glm::vec4>();
+			if (cylinderRendererComponent["Radius"])
+				cyc.Radius = cylinderRendererComponent["Radius"].as<float>();
+			if (cylinderRendererComponent["Height"])
+				cyc.Height = cylinderRendererComponent["Height"].as<float>();
+			if (cylinderRendererComponent["Segments"])
+				cyc.Segments = cylinderRendererComponent["Segments"].as<int>();
+			if (cylinderRendererComponent["TextureIndex"])
+				cyc.TextureIndex = cylinderRendererComponent["TextureIndex"].as<int>();
+			if (cylinderRendererComponent["TilingFactor"])
+				cyc.TilingFactor = cylinderRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto coneRendererComponent = entity["ConeRendererComponent"];
+		if (coneRendererComponent)
+		{
+		auto &coc = deserializedEntity.AddComponent<ConeRendererComponent>();
+			if (coneRendererComponent["Color"])
+				coc.Color = coneRendererComponent["Color"].as<glm::vec4>();
+			if (coneRendererComponent["Radius"])
+				coc.Radius = coneRendererComponent["Radius"].as<float>();
+			if (coneRendererComponent["Height"])
+				coc.Height = coneRendererComponent["Height"].as<float>();
+			if (coneRendererComponent["Segments"])
+				coc.Segments = coneRendererComponent["Segments"].as<int>();
+			if (coneRendererComponent["TextureIndex"])
+				coc.TextureIndex = coneRendererComponent["TextureIndex"].as<int>();
+			if (coneRendererComponent["TilingFactor"])
+				coc.TilingFactor = coneRendererComponent["TilingFactor"].as<float>();
+		}
+		
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto torusRendererComponent = entity["TorusRendererComponent"];
+		if (torusRendererComponent)
+		{
+		auto &trc = deserializedEntity.AddComponent<TorusRendererComponent>();
+			if (torusRendererComponent["Color"])
+				trc.Color = torusRendererComponent["Color"].as<glm::vec4>();
+			if (torusRendererComponent["MajorRadius"])
+				trc.MajorRadius = torusRendererComponent["MajorRadius"].as<float>();
+			if (torusRendererComponent["MinorRadius"])
+				trc.MinorRadius = torusRendererComponent["MinorRadius"].as<float>();
+			if (torusRendererComponent["MajorSegments"])
+				trc.MajorSegments = torusRendererComponent["MajorSegments"].as<int>();
+			if (torusRendererComponent["MinorSegments"])
+				trc.MinorSegments = torusRendererComponent["MinorSegments"].as<int>();
+			if (torusRendererComponent["TextureIndex"])
+				trc.TextureIndex = torusRendererComponent["TextureIndex"].as<int>();
+			if (torusRendererComponent["TilingFactor"])
+				trc.TilingFactor = torusRendererComponent["TilingFactor"].as<float>();
+		}
+
+		// DEFECT: TextureWidth/TextureHeight are absent here though the writer
+		// emits them -- see line 480. Every one of these primitive blocks loses
+		// the same two fields, so the omission is systematic, not a one-off.
+		const auto materialComponent = entity["MaterialComponent"];
+		if (materialComponent)
+		{
+			// The material is added before its texture is resolved, so the component
+			// exists with a null Texture even if the file names one. That is the
+			// graceful-degradation path: a missing asset must not fail the load.
+			auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
+				// All fields presence-checked: a scene authored before a field
+				// existed must still load with that field's default.
+				if (materialComponent["Albedo"])
+					mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
+				if (materialComponent["TextureIndex"])
+					mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
+				// TexturePath defaults to empty string when missing.
+				std::string rawPath = materialComponent["TexturePath"] ? materialComponent["TexturePath"].as<std::string>() : "";
+				std::replace(rawPath.begin(), rawPath.end(), '\\', '/');
+				// Collapse any duplicate "assets/" prefixes (from old serialization bugs)
+				const std::string prefix = "assets/";
+				while (rawPath.find(prefix + prefix) == 0)
+					rawPath = rawPath.substr(prefix.size());
+				mc.TexturePath = rawPath;
+				// The texture is only CREATED if the file exists on disk.
+				if (!rawPath.empty() && std::filesystem::is_regular_file(rawPath))
+					mc.Texture = Texture2D::Create(rawPath);
+				if (materialComponent["HasGeneratedMaps"])
+					mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
+				if (materialComponent["NormalStrength"])
+					mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
+				if (materialComponent["Metallic"])
+					mc.Metallic = materialComponent["Metallic"].as<float>();
+				if (materialComponent["Roughness"])
+					mc.Roughness = materialComponent["Roughness"].as<float>();
+				if (materialComponent["EmissionColor"])
+					mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
+				if (materialComponent["EmissionIntensity"])
+					mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
+				if (materialComponent["DisplacementScale"])
+					mc.DisplacementScale = materialComponent["DisplacementScale"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		const auto rigidbody2DComponent = entity["Rigidbody2DComponent"];
+		if (rigidbody2DComponent)
+		{
+			// Entities always have transforms
+			// The string is parsed by the enum helper, which silently defaults.
+			// FixedRotation is read right after and IS restored, so a 2D body's
+			// rotation lock survives but its friction (line 1420) does not.
+			auto &rigidbody2D = deserializedEntity.AddComponent<Rigidbody2DComponent>();
+				if (rigidbody2DComponent["BodyType"])
+					rigidbody2D.Type = RigidBody2DBodyTypeFromString(rigidbody2DComponent["BodyType"].as<std::string>());
+				if (rigidbody2DComponent["FixedRotation"])
+					rigidbody2D.FixedRotation = rigidbody2DComponent["FixedRotation"].as<bool>();
+		}
+
+		// DEFECT: Friction is written by this component's writer block and read
+		// by no line here, so it resets to the component default on every load.
+		// Both 2D colliders do this; all three 3D colliders round-trip theirs.
+		auto boxCollider2DComponent = entity["BoxCollider2DComponent"];
+		if (boxCollider2DComponent)
+		{
+			// Entities always have transforms
+			auto &boxCollider2D = deserializedEntity.AddComponent<BoxCollider2DComponent>();
+				if (boxCollider2DComponent["Offset"])
+					boxCollider2D.Offset = boxCollider2DComponent["Offset"].as<glm::vec2>();
+				if (boxCollider2DComponent["Size"])
+					boxCollider2D.Size = boxCollider2DComponent["Size"].as<glm::vec2>();
+				if (boxCollider2DComponent["Density"])
+					boxCollider2D.Density = boxCollider2DComponent["Density"].as<float>();
+				if (boxCollider2DComponent["Restitution"])
+					boxCollider2D.Restitution = boxCollider2DComponent["Restitution"].as<float>();
+				if (boxCollider2DComponent["RestitutionThreshold"])
+					boxCollider2D.RestitutionThreshold = boxCollider2DComponent["RestitutionThreshold"].as<float>();
+		}
+
+		// DEFECT: Friction is written by this component's writer block and read
+		// by no line here, so it resets to the component default on every load.
+		// Both 2D colliders do this; all three 3D colliders round-trip theirs.
+		auto circleCollider2DComponent = entity["CircleCollider2DComponent"];
+		if (circleCollider2DComponent)
+		{
+			// Entities always have transforms
+			auto &circleCollider2D = deserializedEntity.AddComponent<CircleCollider2DComponent>();
+				if (circleCollider2DComponent["Offset"])
+					circleCollider2D.Offset = circleCollider2DComponent["Offset"].as<glm::vec2>();
+				if (circleCollider2DComponent["Radius"])
+					circleCollider2D.Radius = circleCollider2DComponent["Radius"].as<float>();
+				if (circleCollider2DComponent["Density"])
+					circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
+				if (circleCollider2DComponent["Restitution"])
+					circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
+				if (circleCollider2DComponent["RestitutionThreshold"])
+					circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto rigidBody3DComponent = entity["RigidBody3DComponent"];
+		if (rigidBody3DComponent)
+		{
+			auto &rb3d = deserializedEntity.AddComponent<RigidBody3DComponent>();
+				// All fields presence-checked: a partial node leaves defaults.
+				if (rigidBody3DComponent["BodyType"])
+					rb3d.Type = RigidBody3DTypeFromString(rigidBody3DComponent["BodyType"].as<std::string>());
+				if (rigidBody3DComponent["GravityScale"])
+					rb3d.GravityScale = rigidBody3DComponent["GravityScale"].as<float>();
+				if (rigidBody3DComponent["LinearDamping"])
+					rb3d.LinearDamping = rigidBody3DComponent["LinearDamping"].as<float>();
+				if (rigidBody3DComponent["AngularDamping"])
+					rb3d.AngularDamping = rigidBody3DComponent["AngularDamping"].as<float>();
+				if (rigidBody3DComponent["FixedRotationX"]) rb3d.FixedRotationX = rigidBody3DComponent["FixedRotationX"].as<bool>();
+				if (rigidBody3DComponent["FixedRotationY"]) rb3d.FixedRotationY = rigidBody3DComponent["FixedRotationY"].as<bool>();
+				if (rigidBody3DComponent["FixedRotationZ"]) rb3d.FixedRotationZ = rigidBody3DComponent["FixedRotationZ"].as<bool>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto boxCollider3DComponent = entity["BoxCollider3DComponent"];
+		if (boxCollider3DComponent)
+		{
+			auto &bc = deserializedEntity.AddComponent<BoxCollider3DComponent>();
+				if (boxCollider3DComponent["HalfExtents"])
+					bc.HalfExtents = boxCollider3DComponent["HalfExtents"].as<glm::vec3>();
+				if (boxCollider3DComponent["Offset"])
+					bc.Offset = boxCollider3DComponent["Offset"].as<glm::vec3>();
+				if (boxCollider3DComponent["Density"])
+					bc.Density = boxCollider3DComponent["Density"].as<float>();
+				if (boxCollider3DComponent["Friction"])
+					bc.Friction = boxCollider3DComponent["Friction"].as<float>();
+				if (boxCollider3DComponent["Restitution"])
+					bc.Restitution = boxCollider3DComponent["Restitution"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto sphereCollider3DComponent = entity["SphereCollider3DComponent"];
+		if (sphereCollider3DComponent)
+		{
+			auto &sc = deserializedEntity.AddComponent<SphereCollider3DComponent>();
+				if (sphereCollider3DComponent["Radius"])
+					sc.Radius = sphereCollider3DComponent["Radius"].as<float>();
+				if (sphereCollider3DComponent["Offset"])
+					sc.Offset = sphereCollider3DComponent["Offset"].as<glm::vec3>();
+				if (sphereCollider3DComponent["Density"])
+					sc.Density = sphereCollider3DComponent["Density"].as<float>();
+				if (sphereCollider3DComponent["Friction"])
+					sc.Friction = sphereCollider3DComponent["Friction"].as<float>();
+				if (sphereCollider3DComponent["Restitution"])
+					sc.Restitution = sphereCollider3DComponent["Restitution"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto capsuleCollider3DComponent = entity["CapsuleCollider3DComponent"];
+		if (capsuleCollider3DComponent)
+		{
+			auto &cc = deserializedEntity.AddComponent<CapsuleCollider3DComponent>();
+				if (capsuleCollider3DComponent["Radius"])
+					cc.Radius = capsuleCollider3DComponent["Radius"].as<float>();
+				if (capsuleCollider3DComponent["Height"])
+					cc.Height = capsuleCollider3DComponent["Height"].as<float>();
+				if (capsuleCollider3DComponent["Offset"])
+					cc.Offset = capsuleCollider3DComponent["Offset"].as<glm::vec3>();
+				if (capsuleCollider3DComponent["Density"])
+					cc.Density = capsuleCollider3DComponent["Density"].as<float>();
+				if (capsuleCollider3DComponent["Friction"])
+					cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
+				if (capsuleCollider3DComponent["Restitution"])
+					cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto volumetricFogComponent = entity["VolumetricFogComponent"];
+		if (volumetricFogComponent)
+		{
+			auto &fog = deserializedEntity.AddComponent<VolumetricFogComponent>();
+			// Fog's reader opens with a presence check on Enabled, then reads each
+			// field the same way. Twenty-four lines, twenty-four checks -- the most
+			// defensive block in the function, and the model the rest should follow.
+			if (volumetricFogComponent["Enabled"])
+				fog.Enabled = volumetricFogComponent["Enabled"].as<bool>();
+			if (volumetricFogComponent["Color"])
+				// glm::vec3(vec4): narrows the manufactured alpha away. The component
+				// stores a vec3, so this is the exact inverse of the widening at line 838 --
+				// including the fact that the round trip spends four file elements on a
+				// three-element value.
+				fog.Color = glm::vec3(volumetricFogComponent["Color"].as<glm::vec4>());
+			// Density, Anisotropy and HeightFalloff: how thick the fog is, how much
+			// it stretches along the view ray, and how quickly it thins with altitude.
+			// Each is independently authored rather than derived from the others.
+			if (volumetricFogComponent["Density"])
+				fog.Density = volumetricFogComponent["Density"].as<float>();
+			if (volumetricFogComponent["Anisotropy"])
+				fog.Anisotropy = volumetricFogComponent["Anisotropy"].as<float>();
+			if (volumetricFogComponent["HeightFalloff"])
+				fog.HeightFalloff = volumetricFogComponent["HeightFalloff"].as<float>();
+			if (volumetricFogComponent["NoiseStrength"])
+				fog.NoiseStrength = volumetricFogComponent["NoiseStrength"].as<float>();
+			if (volumetricFogComponent["NoiseScale"])
+				fog.NoiseScale = volumetricFogComponent["NoiseScale"].as<float>();
+			if (volumetricFogComponent["WindSpeed"])
+				fog.WindSpeed = volumetricFogComponent["WindSpeed"].as<float>();
+			if (volumetricFogComponent["MaxSteps"])
+				fog.MaxSteps = volumetricFogComponent["MaxSteps"].as<int>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto volumetricCloudsComponent = entity["VolumetricCloudsComponent"];
+		if (volumetricCloudsComponent)
+		{
+			// Clouds' reader: same shape as fog's, one field longer per colour because
+			// there are two of them. Both vec4-to-vec3 narrowings happen here.
+			auto &clouds = deserializedEntity.AddComponent<VolumetricCloudsComponent>();
+			if (volumetricCloudsComponent["Enabled"])
+				clouds.Enabled = volumetricCloudsComponent["Enabled"].as<bool>();
+			if (volumetricCloudsComponent["Color"])
+				clouds.Color = glm::vec3(volumetricCloudsComponent["Color"].as<glm::vec4>());
+			if (volumetricCloudsComponent["AmbientTint"])
+				clouds.AmbientTint = glm::vec3(volumetricCloudsComponent["AmbientTint"].as<glm::vec4>());
+			if (volumetricCloudsComponent["Coverage"])
+				clouds.Coverage = volumetricCloudsComponent["Coverage"].as<float>();
+			if (volumetricCloudsComponent["Density"])
+				clouds.Density = volumetricCloudsComponent["Density"].as<float>();
+			// NoiseScale and DetailAmount govern the cloud texture, then WindDirection
+			// and WindSpeed move it. SilverLining and ShadowStrength are appearance
+			// controls that a cheaper cloud renderer could drop without changing the
+			// scene's meaning -- which is why they are separate fields.
+			if (volumetricCloudsComponent["NoiseScale"])
+				clouds.NoiseScale = volumetricCloudsComponent["NoiseScale"].as<float>();
+			if (volumetricCloudsComponent["DetailAmount"])
+				clouds.DetailAmount = volumetricCloudsComponent["DetailAmount"].as<float>();
+			if (volumetricCloudsComponent["WindDirection"])
+				clouds.WindDirection = volumetricCloudsComponent["WindDirection"].as<glm::vec2>();
+			if (volumetricCloudsComponent["WindSpeed"])
+				clouds.WindSpeed = volumetricCloudsComponent["WindSpeed"].as<float>();
+			if (volumetricCloudsComponent["SilverLining"])
+				clouds.SilverLining = volumetricCloudsComponent["SilverLining"].as<float>();
+			if (volumetricCloudsComponent["ShadowStrength"])
+				clouds.ShadowStrength = volumetricCloudsComponent["ShadowStrength"].as<float>();
+			if (volumetricCloudsComponent["MaxSteps"])
+				clouds.MaxSteps = volumetricCloudsComponent["MaxSteps"].as<int>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto directionalLightComponent = entity["DirectionalLightComponent"];
+		if (directionalLightComponent)
+		{
+			auto &light = deserializedEntity.AddComponent<DirectionalLightComponent>();
+			if (directionalLightComponent["Color"])
+				// Colour is narrowed from the manufactured vec4 back to the component's
+				// vec3, exactly inverting the widening on the write side. See line 874.
+				light.Color = glm::vec3(directionalLightComponent["Color"].as<glm::vec4>());
+			if (directionalLightComponent["Intensity"])
+				light.Intensity = directionalLightComponent["Intensity"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto pointLightComponent = entity["PointLightComponent"];
+		if (pointLightComponent)
+		{
+			// Point light's reader. Every field checked, so a scene authored before
+			// Range or Falloff existed still loads -- the light simply keeps its
+			// default falloff.
+			auto &light = deserializedEntity.AddComponent<PointLightComponent>();
+			if (pointLightComponent["Color"])
+				// Point light: the same four fields the writer emits, each presence-
+				// checked. Unlike the renderer blocks above, a partial point-light node
+				// leaves defaults instead of throwing.
+				light.Color = glm::vec3(pointLightComponent["Color"].as<glm::vec4>());
+			if (pointLightComponent["Intensity"])
+				light.Intensity = pointLightComponent["Intensity"].as<float>();
+			if (pointLightComponent["Range"])
+				light.Range = pointLightComponent["Range"].as<float>();
+			if (pointLightComponent["Falloff"])
+				light.Falloff = pointLightComponent["Falloff"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto spotLightComponent = entity["SpotLightComponent"];
+		if (spotLightComponent)
+		{
+			auto &light = deserializedEntity.AddComponent<SpotLightComponent>();
+			if (spotLightComponent["Color"])
+				// The spot's five scalar fields, all presence-checked. Every field in
+				// every light reader is checked, so the light family is the most robust
+				// part of this function.
+				light.Color = glm::vec3(spotLightComponent["Color"].as<glm::vec4>());
+			if (spotLightComponent["Intensity"])
+				light.Intensity = spotLightComponent["Intensity"].as<float>();
+			if (spotLightComponent["Range"])
+				light.Range = spotLightComponent["Range"].as<float>();
+			if (spotLightComponent["Falloff"])
+				light.Falloff = spotLightComponent["Falloff"].as<float>();
+			if (spotLightComponent["InnerAngle"])
+				light.InnerAngle = spotLightComponent["InnerAngle"].as<float>();
+			if (spotLightComponent["OuterAngle"])
+				light.OuterAngle = spotLightComponent["OuterAngle"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto areaLightComponent = entity["AreaLightComponent"];
+		if (areaLightComponent)
+		{
+			// Area light's reader adds the two rectangle dimensions and DoubleSided.
+			// All six checked, matching the six the writer emits exactly.
+			auto &light = deserializedEntity.AddComponent<AreaLightComponent>();
+			if (areaLightComponent["Color"])
+				light.Color = glm::vec3(areaLightComponent["Color"].as<glm::vec4>());
+			if (areaLightComponent["Intensity"])
+				light.Intensity = areaLightComponent["Intensity"].as<float>();
+			if (areaLightComponent["Width"])
+				light.Width = areaLightComponent["Width"].as<float>();
+			if (areaLightComponent["Height"])
+				light.Height = areaLightComponent["Height"].as<float>();
+			if (areaLightComponent["Range"])
+				light.Range = areaLightComponent["Range"].as<float>();
+			if (areaLightComponent["DoubleSided"])
+				light.DoubleSided = areaLightComponent["DoubleSided"].as<bool>();
+		}
+
+		// The water block reads all 25 fields, each presence-checked. It is the
+		// most defensive reader in the file and the exact counterpart of the
+		// largest writer, so water round-trips completely where the colliders
+		// above silently lose Friction.
+		auto waterComponent = entity["WaterComponent"];
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		if (waterComponent)
+		{
+			// Water's reader opens with the component being added, then walks all 25
+			// fields with a presence check each. This is the only block in the file
+			// that is exhaustive on BOTH sides, which is why water is the one family
+			// that cannot silently lose a field.
+			auto &water = deserializedEntity.AddComponent<WaterComponent>();
+			// All 25 water fields are checked individually, in the same order the
+			// writer emits them. This block is the model the rest of the function
+			// should have followed: a scene authored before any of these fields
+			// existed still loads, keeping that field's default.
+			if (waterComponent["Enabled"])
+				water.Enabled = waterComponent["Enabled"].as<bool>();
+			if (waterComponent["BodyType"])
+				water.Type = WaterBodyTypeFromString(waterComponent["BodyType"].as<std::string>());
+			// ShallowColor, DeepColor and FoamColor each go through the same
+			// vec4-then-vec3 round trip. Three manufactured alpha values per load for
+			// colours that have no alpha channel on either side of it.
+			if (waterComponent["ShallowColor"])
+				water.ShallowColor = glm::vec3(waterComponent["ShallowColor"].as<glm::vec4>());
+			if (waterComponent["DeepColor"])
+				water.DeepColor = glm::vec3(waterComponent["DeepColor"].as<glm::vec4>());
+			if (waterComponent["FoamColor"])
+				water.FoamColor = glm::vec3(waterComponent["FoamColor"].as<glm::vec4>());
+			if (waterComponent["WaterDepth"])
+				water.WaterDepth = waterComponent["WaterDepth"].as<float>();
+			if (waterComponent["WaveAmplitude"])
+				water.WaveAmplitude = waterComponent["WaveAmplitude"].as<float>();
+			if (waterComponent["WaveLength"])
+				water.WaveLength = waterComponent["WaveLength"].as<float>();
+			if (waterComponent["WaveSpeed"])
+				water.WaveSpeed = waterComponent["WaveSpeed"].as<float>();
+			if (waterComponent["WaveDirection"])
+				// FlowDirection is a vec2 here, read through convert<glm::vec2> -- the
+				// two-element converter. WaveDirection above uses the same one, so the
+				// vec2 converter is not dead code despite no transform using it.
+				water.WaveDirection = waterComponent["WaveDirection"].as<glm::vec2>();
+			if (waterComponent["Chop"])
+				water.Chop = waterComponent["Chop"].as<float>();
+			if (waterComponent["Steepness"])
+				water.Steepness = waterComponent["Steepness"].as<float>();
+			if (waterComponent["FlowDirection"])
+				water.FlowDirection = waterComponent["FlowDirection"].as<glm::vec2>();
+			if (waterComponent["FlowSpeed"])
+				water.FlowSpeed = waterComponent["FlowSpeed"].as<float>();
+			if (waterComponent["FoamAmount"])
+				water.FoamAmount = waterComponent["FoamAmount"].as<float>();
+			if (waterComponent["FoamScale"])
+				water.FoamScale = waterComponent["FoamScale"].as<float>();
+			if (waterComponent["ShoreFoam"])
+				water.ShoreFoam = waterComponent["ShoreFoam"].as<float>();
+			if (waterComponent["ShoreWidth"])
+				water.ShoreWidth = waterComponent["ShoreWidth"].as<float>();
+			if (waterComponent["Transparency"])
+				water.Transparency = waterComponent["Transparency"].as<float>();
+			if (waterComponent["Roughness"])
+				water.Roughness = waterComponent["Roughness"].as<float>();
+			if (waterComponent["Metallic"])
+				water.Metallic = waterComponent["Metallic"].as<float>();
+			if (waterComponent["Segments"])
+				water.Segments = waterComponent["Segments"].as<int>();
+			if (waterComponent["TimeScale"])
+				water.TimeScale = waterComponent["TimeScale"].as<float>();
+			if (waterComponent["Buoyancy"])
+				water.Buoyancy = waterComponent["Buoyancy"].as<float>();
+			if (waterComponent["WaterDensity"])
+				water.WaterDensity = waterComponent["WaterDensity"].as<float>();
+		}
+
+		// Guarded by node truthiness only -- the fields inside are read
+		// unconditionally, so a partial node throws out of Deserialize instead of
+		// keeping the component's defaults. The health and weapon blocks above
+		// are the ones that check every field.
+		auto scriptComponent = entity["ScriptComponent"];
+		if (scriptComponent)
+		{
+			auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
+				// Presence-checked: a missing ScriptPath or ScriptName leaves
+				// the component's defaults.
+				if (scriptComponent["ScriptPath"])
+				{
+					std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
+					// Always store as a relative path
+					sc.ScriptPath = "scripts/" + std::filesystem::path(rawPath).filename().string();
+				}
+				if (scriptComponent["ScriptName"])
+					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
+		}
+
+		return true;
+	}
+
 	bool SceneSerializer::Deserialize(const std::string &filepath)
 	{
+		// Binary sidecar first. If one exists and validates against this exact revision of
+		// the YAML file, the scene is populated from it and the YAML is never parsed at
+		// all -- which is the entire point, since yaml-cpp parsing is ~510 ms per megabyte
+		// of scene text. Read() only accepts a sidecar whose recorded size and write time
+		// match the YAML on disk, so a stale sidecar is ignored rather than served.
+		//
+		// On failure the scene is left empty by Read() and we fall through to YAML. A
+		// sidecar is a cache: deleting it, or corrupting it, costs speed and nothing else.
+		{
+			std::string sidecarReason;
+			std::vector<std::string> fragments;
+			if (SceneChunkStore::Read(*m_Scene, std::filesystem::path(filepath),
+					&fragments, &sidecarReason))
+			{
+				// Replay the fragment entities through the same reader as YAML. This must
+				// happen here: SceneChunkStore hands back text, and the only code that
+				// knows how a component deserializes is DeserializeEntityNode. Replaying
+				// them anywhere else would be a second reader that could drift.
+				//
+				// A fragment failure is corruption, not a bad scene -- these came from our
+				// own writer. Fall back to YAML rather than returning a scene that is
+				// missing its script-bearing entities, which would fail silently.
+				try
+				{
+					for (const std::string &fragment : fragments)
+					{
+						const YAML::Node node = YAML::Load(fragment);
+						DeserializeEntityNode(node);
+					}
+				}
+				catch (const YAML::Exception &exception)
+				{
+					WL_CORE_WARN(
+						"Scene sidecar fragments for '{0}' did not parse ({1}); "
+						"falling back to YAML", filepath, exception.what());
+					m_Scene->m_Registry.clear();
+					goto reloadFromYaml;
+				}
+
+				return true;
+			}
+			if (sidecarReason != "no sidecar")
+			{
+				WL_CORE_WARN("Ignoring scene sidecar for '{0}': {1}", filepath,
+					sidecarReason);
+			}
+		}
+
+		reloadFromYaml:;
+
 		// Opened without an existence check. A missing file yields a failed
 		// stream, and the rdbuf copy below then produces an empty string, so
 		// YAML::Load sees "" and data["Scene"] is undefined -- the false below
@@ -1622,6 +2805,27 @@ namespace Wasteland
 		}
 		if (!data.IsMap() || !data["Scene"])
 			return false;
+
+		// The trained neural stage's enabled flag. Absent means default (true),
+		// per this file's documented error model: a missing key means default,
+		// never an error. A scene saved before this key existed therefore loads
+		// unchanged, which is the only behaviour that does not silently disable the
+		// stage for scenes that were fine.
+		if (data["NeuralStage"] && data["NeuralStage"].IsMap())
+		{
+			const YAML::Node enabled = data["NeuralStage"]["Enabled"];
+			if (enabled && enabled.IsScalar())
+			{
+				const std::string value = enabled.Scalar();
+				// Accept the spelling the emitter writes plus the YAML 1.1 booleans a
+				// hand edit is likely to use. A malformed value leaves the flag at its
+				// default rather than failing the load: refusing to open a whole scene
+				// over one optional toggle would be a far worse regression than
+				// honouring the default.
+				m_Scene->SetNeuralStageEnabled(!(value == "false" || value == "False" ||
+					value == "FALSE" || value == "no" || value == "off" || value == "0"));
+			}
+		}
 
 		Terrain::TerrainScenePayload terrainPayload;
 		const YAML::Node terrainNode = data["Terrain"];
@@ -1672,1087 +2876,35 @@ namespace Wasteland
 		// 'Entities' is optional: a scene file with only the Scene key loads as an
 		// empty scene and still returns true. There is no way to distinguish that
 		// from a scene that legitimately has no entities.
-		auto entities = data["Entities"];
+		//
+		// CONST, and the loop variable below is const too. This is not style.
+		// yaml-cpp's NON-const Node::operator[] routes to the non-const
+		// node_data::get(), which on a MISSING key CREATES a node and INSERTS it
+		// into the map (vendor/yaml-cpp/src/node_data.cpp:242-244). The const
+		// overload (include/yaml-cpp/node/impl.h:325) returns a ZombieNode and
+		// inserts nothing.
+		//
+		// The reader below probes 25 known component names per entity, of which
+		// about 21 are absent on a typical entity. With a mutable node that meant
+		// 21 node allocations AND 21 map insertions per entity, and because
+		// node_data::get() is a LINEAR scan over m_map, each insertion made every
+		// later probe scan a longer map -- the entity's map grew from ~5 entries to
+		// ~26 while being read. Measured at ~109 us/entity of pure overhead, which
+		// on a 1M-entity scene is ~21M wasted nodes and ~30 minutes of the load.
+		// It also corrupted the parsed DOM with keys that were never in the file.
+		const auto entities = data["Entities"];
 		if (entities)
 		{
 			// Iteration order is the file's, not the registry's -- the opposite of the
 			// write side, which visits in entt storage order. So a load-then-save
 			// round trip reorders the entities.
-			for (auto entity : entities)
-			{
-				// The identity is read UNCONDITIONALLY. A file hand-edited to drop the
-				// "Entity" key throws here rather than skipping the entity, because
-				// as<uint64_t>() on a missing node is a typed-conversion failure.
-				uint64_t uuid = entity["Entity"].as<uint64_t>(0);
-
-				std::string name;
-				// The tag is optional and read BEFORE the entity is created, because its
-				// value is a constructor argument. An entity with no TagComponent key
-				// therefore still gets created -- with Scene's default name.
-				auto tagComponent = entity["TagComponent"];
-				if (tagComponent)
-					// The tag is read before the entity exists, then handed to
-					// CreateEntityWithUUID below. An entity with no TagComponent key loads with
-					// an empty name, which Scene::CreateEntityWithUUID turns into "Entity".
-					name = tagComponent["Tag"].as<std::string>();
-
-				// Traced per entity. In a Release build WL_CORE_TRACE compiles out, so
-				// this is a Debug-only record of load progress.
-				WL_CORE_TRACE("Deserialized entity with ID = {0}, name = {1}", uuid, name);
-
-				// Creation happens once per file entry, BEFORE any component is read. So a
-				// file whose later component throws still leaves a half-built entity in the
-				// registry -- the exception path has no rollback.
-				// The method also never clears the registry first, despite its own comment
-				// saying it replaces the scene's contents: entities from a previous load
-				// survive and accumulate.
-				Entity deserializedEntity = m_Scene->CreateEntityWithUUID(uuid, name);
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto transformComponent = entity["TransformComponent"];
-				// Guarded by node truthiness, but the three fields inside are read
-				// unguarded. This is the OLDEST block in the function and the pattern the
-				// newer blocks below it deliberately moved away from.
-				if (transformComponent)
-				{
-					// Entities always have transforms
-					// GetComponent, not AddComponent, because CreateEntityWithUUID above
-					// already attached a TransformComponent. Every other block here uses
-					// AddComponent, which is the asymmetry to watch when adding a new one.
-					auto &tc = deserializedEntity.GetComponent<TransformComponent>();
-					// All three vectors presence-checked: a partial node leaves defaults.
-					if (transformComponent["Translation"])
-						tc.Translation = transformComponent["Translation"].as<glm::vec3>();
-					if (transformComponent["Rotation"])
-						tc.Rotation = transformComponent["Rotation"].as<glm::vec3>();
-					if (transformComponent["Scale"])
-						tc.Scale = transformComponent["Scale"].as<glm::vec3>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto healthNode = entity["HealthComponent"];
-				if (healthNode)
-				{
-					// AddComponent, then every field presence-checked. This is the pattern the
-					// newer blocks follow and the older ones do not: a missing key leaves the
-					// component's default rather than throwing.
-					auto &hc = deserializedEntity.AddComponent<HealthComponent>();
-					// Every field presence-checked: a scene authored before a
-					// field existed must still load, keeping the default.
-					if (healthNode["Current"])
-						// The presence-check idiom: read the key only if it exists, otherwise
-						// leave the component's default alone. Every field in this block uses it,
-						// which is why a scene authored before a field existed still loads.
-						hc.Current = healthNode["Current"].as<float>();
-					// Health is the first component in the READER, though it is written
-					// later in the writer. The order of the reader does not have to match the
-					// writer's -- YAML mappings are unordered -- so the two halves drifted.
-					if (healthNode["Max"])
-						hc.Max = healthNode["Max"].as<float>();
-					if (healthNode["Invulnerable"])
-						hc.Invulnerable = healthNode["Invulnerable"].as<bool>();
-					if (healthNode["DamageCooldown"])
-						hc.DamageCooldown = healthNode["DamageCooldown"].as<float>();
-					if (healthNode["IsDead"])
-						// CooldownTimer is deliberately absent from the read, matching its absence
-						// from the write. Every accumulator that is not written is also not read, so
-						// the two halves agree on what 'resting state' means.
-						hc.IsDead = healthNode["IsDead"].as<bool>();
-					// CooldownTimer stays 0 -- never serialized, never resumed.
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto weaponNode = entity["WeaponComponent"];
-				if (weaponNode)
-				{
-					// AddComponent attaches a fresh component; the component's own defaults
-					// are what every unchecked field would otherwise keep. So the presence
-					// checks below are what make an old scene file load rather than reset.
-					auto &wc = deserializedEntity.AddComponent<WeaponComponent>();
-					// Weapon's AddComponent. Compare the health block above: both check every
-					// field, which is the convention the rest of this function follows and the
-					// renderer blocks below do not.
-					if (weaponNode["FireRate"])
-						wc.FireRate = weaponNode["FireRate"].as<float>();
-					if (weaponNode["Damage"])
-						wc.Damage = weaponNode["Damage"].as<float>();
-					if (weaponNode["Range"])
-						wc.Range = weaponNode["Range"].as<float>();
-					if (weaponNode["AmmoPerShot"])
-						wc.AmmoPerShot = weaponNode["AmmoPerShot"].as<int>();
-					if (weaponNode["CurrentAmmo"])
-						wc.CurrentAmmo = weaponNode["CurrentAmmo"].as<int>();
-					if (weaponNode["MaxAmmo"])
-						wc.MaxAmmo = weaponNode["MaxAmmo"].as<int>();
-					if (weaponNode["ReserveAmmo"])
-						wc.ReserveAmmo = weaponNode["ReserveAmmo"].as<int>();
-					if (weaponNode["ReloadTime"])
-						wc.ReloadTime = weaponNode["ReloadTime"].as<float>();
-					// AutoReload is the last authored weapon field. Everything after it -- the
-					// reload progress, the shots fired, the live cooldowns -- is deliberately
-					// absent from both halves, which is what makes a reload start clean.
-					if (weaponNode["AutoReload"])
-						wc.AutoReload = weaponNode["AutoReload"].as<bool>();
-					// FireCooldown / ReloadTimer / IsReloading / ShotsFired
-					// stay at their defaults; a load does not resume a reload.
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto interactableNode = entity["InteractableComponent"];
-				if (interactableNode)
-				{
-					// The label is presentation text stored in the scene file, which is why
-					// it round-trips: an interactable's prompt is part of the level design,
-					// not of the UI code.
-					auto &ic = deserializedEntity.AddComponent<InteractableComponent>();
-					if (interactableNode["Enabled"])
-						ic.Enabled = interactableNode["Enabled"].as<bool>();
-					if (interactableNode["Label"])
-						ic.Label = interactableNode["Label"].as<std::string>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto weaponFeedbackNode = entity["WeaponFeedbackComponent"];
-				if (weaponFeedbackNode)
-				{
-					// WeaponFeedback holds only durations. The live timers are zeroed by
-					// OnComponentAdded on load, which is why nothing needs to be read here.
-					auto &fb = deserializedEntity.AddComponent<WeaponFeedbackComponent>();
-					if (weaponFeedbackNode["MuzzleFlashDuration"])
-						fb.MuzzleFlashDuration = weaponFeedbackNode["MuzzleFlashDuration"].as<float>();
-					if (weaponFeedbackNode["HitMarkerDuration"])
-						fb.HitMarkerDuration = weaponFeedbackNode["HitMarkerDuration"].as<float>();
-					// Live timers are not written, and OnComponentAdded zeroes
-					// them, so a loaded gun never flashes spuriously.
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto viewStateNode = entity["ViewStateComponent"];
-				if (viewStateNode)
-				{
-					auto &vs = deserializedEntity.AddComponent<ViewStateComponent>();
-					if (viewStateNode["TargetFOV"])
-						vs.TargetFOV = viewStateNode["TargetFOV"].as<float>();
-					if (viewStateNode["FOVLerpSpeed"])
-						vs.FOVLerpSpeed = viewStateNode["FOVLerpSpeed"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto itemDefinitionNode = entity["ItemDefinitionComponent"];
-				if (itemDefinitionNode)
-				{
-					// ItemDefinition is added before its fields are read, and Name -- the
-					// lookup id -- is read first. A definition whose name is missing throws
-					// on the very first assignment in the block.
-					auto &def = deserializedEntity.AddComponent<ItemDefinitionComponent>();
-					if (itemDefinitionNode["Name"])
-						def.Name = itemDefinitionNode["Name"].as<std::string>();
-					if (itemDefinitionNode["DisplayName"])
-						def.DisplayName = itemDefinitionNode["DisplayName"].as<std::string>();
-					if (itemDefinitionNode["Description"])
-						def.Description = itemDefinitionNode["Description"].as<std::string>();
-					if (itemDefinitionNode["MaxStack"])
-						def.MaxStack = itemDefinitionNode["MaxStack"].as<int>();
-					if (itemDefinitionNode["Weight"])
-						def.Weight = itemDefinitionNode["Weight"].as<float>();
-					if (itemDefinitionNode["Tags"])
-					{
-						// clear() before the loop, so a re-authored tag list replaces rather than
-						// appends. Every other vector field in this file is assigned outright;
-						// this one needed clearing because the loop appends.
-						def.Tags.clear();
-						// Iterating the node directly rather than by index: yaml-cpp's Node
-						// exposes begin/end over its sequence elements, so this is the
-						// range-for over a YAML sequence.
-						for (const auto &tag : itemDefinitionNode["Tags"])
-							def.Tags.push_back(tag.as<std::string>());
-					}
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto inventoryNode = entity["InventoryComponent"];
-				if (inventoryNode)
-				{
-					// The component is created before its contents are known, so a scene with
-					// an empty inventory and one with no InventoryComponent key at all are
-					// distinguishable: the first has the key and an empty Items list.
-					auto &inv = deserializedEntity.AddComponent<InventoryComponent>();
-					// Both limits are presence-checked, unlike the item rows below, so an
-					// inventory written before a limit existed loads with the default limit
-					// rather than throwing.
-					if (inventoryNode["MaxWeight"])
-						inv.MaxWeight = inventoryNode["MaxWeight"].as<float>();
-					if (inventoryNode["MaxSlots"])
-						inv.MaxSlots = inventoryNode["MaxSlots"].as<int>();
-					if (inventoryNode["Items"])
-					{
-						// Same clear-then-fill shape as the tags above: the file is authoritative
-						// for the whole list, not a delta applied to whatever was there.
-						inv.Items.clear();
-						for (const auto &stackNode : inventoryNode["Items"])
-						{
-							// Skip rows with no ItemId rather than adding an
-							// empty stack: an empty row still consumes a slot.
-							// A row with no ItemId is SKIPPED rather than loaded as an empty stack.
-							// That is the one place in the reader where malformed input is discarded
-							// instead of throwing -- and it makes a typo'd id key silently drop a row.
-							if (!stackNode["ItemId"])
-								continue;
-							Wasteland::ItemStack stack;
-							// ItemId is read after the `if (!stackNode["ItemId"])` guard above, so
-							// the conversion is known to have a string behind it. Quantity is
-							// conditional, so a missing one takes the explicit 1 on the next line.
-							stack.ItemId = stackNode["ItemId"].as<std::string>();
-							// Quantity defaults to 1 when the key is absent, rather than the struct's
-							// own default of 1. Same value, but stated here, so changing the struct's
-							// default would not change what a hand-edited file loads as.
-							stack.Quantity = stackNode["Quantity"] ? stackNode["Quantity"].as<int>() : 1;
-							// IsValid() is the gate: a stack with an empty ItemId or a quantity <= 0 is
-							// dropped. The writer never emits such a stack, so this only rejects rows
-							// introduced by hand-editing.
-							if (stack.IsValid())
-								// push_back, not assignment: the read appends to the cleared vector.
-								// A duplicate ItemId in the file therefore produces two stacks rather
-								// than one merged stack -- IsValid does not deduplicate.
-								inv.Items.push_back(stack);
-						}
-					}
-				}
-
-				// Mirrors the writer's whole-block IsValid() gate exactly: a pile
-				// whose ItemId is missing or empty, or whose Quantity is missing,
-				// zero or negative, is DISCARDED rather than loaded. Adding the
-				// component and scrubbing it afterwards would leave an inert entity
-				// in the world that looks like an item and can never be picked up.
-				//
-				// Quantity defaults to 1 when the key is absent -- the same explicit
-				// 1 the InventoryComponent stack above uses, so a pile hand-written
-				// with only an id loads as ONE item rather than as zero (which would
-				// be dropped) or as the struct's own default quietly changing under us.
-				auto droppedItemNode = entity["DroppedItemComponent"];
-				if (droppedItemNode)
-				{
-					std::string itemId = droppedItemNode["ItemId"] ? droppedItemNode["ItemId"].as<std::string>() : std::string();
-					int quantity = droppedItemNode["Quantity"] ? droppedItemNode["Quantity"].as<int>() : 1;
-					if (!itemId.empty() && quantity > 0)
-					{
-						auto &pile = deserializedEntity.AddComponent<DroppedItemComponent>();
-						pile.ItemId = itemId;
-						pile.Quantity = quantity;
-					}
-				}
-
-				// --- Audio (14.4) ---
-				//
-				// Every field is presence-checked, exactly like the InventoryComponent
-				// limits above and unlike the ViewStateComponent block that follows. A
-				// scene file written before a field existed must load with that field's
-				// COMPONENT DEFAULT rather than throwing: an audio clip that has been
-				// loading by path since 14.4 must not stop loading because a key is
-				// missing from an old file.
-				auto audioSourceNode = entity["AudioSourceComponent"];
-				if (audioSourceNode)
-				{
-					// Added before its fields are read, so an authored source with every
-					// field at its default round-trips as a source rather than vanishing.
-					auto &src = deserializedEntity.AddComponent<AudioSourceComponent>();
-					if (audioSourceNode["ClipName"])
-						src.ClipName = audioSourceNode["ClipName"].as<std::string>();
-					if (audioSourceNode["Volume"])
-						src.Volume = audioSourceNode["Volume"].as<float>();
-					if (audioSourceNode["Pitch"])
-						src.Pitch = audioSourceNode["Pitch"].as<float>();
-					if (audioSourceNode["Loop"])
-						src.Loop = audioSourceNode["Loop"].as<bool>();
-					if (audioSourceNode["Priority"])
-						src.Priority = audioSourceNode["Priority"].as<int>();
-					if (audioSourceNode["Spatial"])
-						src.Spatial = audioSourceNode["Spatial"].as<bool>();
-					if (audioSourceNode["PositionOffset"])
-						src.PositionOffset = audioSourceNode["PositionOffset"].as<glm::vec3>();
-					if (audioSourceNode["MinDistance"])
-						src.MinDistance = audioSourceNode["MinDistance"].as<float>();
-					if (audioSourceNode["MaxDistance"])
-						src.MaxDistance = audioSourceNode["MaxDistance"].as<float>();
-					// MinPlayTime is left at 0, which is both the component default and
-					// the correct restored state: it counts the tail of a sound that is
-					// CURRENTLY playing, and a scene file describes an authored level
-					// rather than a moment in one.
-					//
-					// PlayOnStart IS DELIBERATELY NOT RESTORED, and this is the
-					// decision, recorded where anyone changing it will see it. The writer
-					// emits no such key, so every loaded source reads PlayOnStart ==
-					// false whatever the authoring tool had set.
-					//
-					// WHY: PlayOnStart is an ACTION REQUEST, not state. Round-tripping
-					// it would make every reload of every level replay its autostart
-					// sounds -- a door closing once per load, looping ambience
-					// restarting on every scene swap -- which is the classic reason a
-					// game "sounds wrong when you reopen the editor". The counterpart
-					// is already in place: AudioSystem::PlayAutoStartSources fires
-					// sources ONCE from OnRuntimeStart, and Deserialize never calls it,
-					// so loading a scene mid-session is silent by construction rather
-					// than by this omission.
-					//
-					// THE COST, stated plainly: an autostart flag authored in the editor
-					// is LOST across a reload. If a future tool needs it, the honest fix
-					// is a separate authored-only field on the editor path read into a
-					// different attribute -- not a blind round trip of this one, because
-					// the runtime save path shares this file and would replay on every load.
-				}
-
-				// Single bool, same presence-check convention.
-				auto audioListenerNode = entity["AudioListenerComponent"];
-				if (audioListenerNode)
-				{
-					auto &listener = deserializedEntity.AddComponent<AudioListenerComponent>();
-					if (audioListenerNode["Enabled"])
-						listener.Enabled = audioListenerNode["Enabled"].as<bool>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto cameraComponent = entity["CameraComponent"];
-				if (cameraComponent)
-				{
-					auto &cc = deserializedEntity.AddComponent<CameraComponent>();
-
-						auto cameraProps = cameraComponent["Camera"];
-
-						if (cameraProps)
-						{
-							if (cameraProps["ProjectionType"])
-								cc.Camera.SetProjectionType((SceneCamera::ProjectionType)cameraProps["ProjectionType"].as<int>());
-							if (cameraProps["PerspectiveFOV"])
-								cc.Camera.SetPerspectiveVerticalFOV(cameraProps["PerspectiveFOV"].as<float>());
-							if (cameraProps["PerspectiveNear"])
-								cc.Camera.SetPerspectiveNearClip(cameraProps["PerspectiveNear"].as<float>());
-							if (cameraProps["PerspectiveFar"])
-								cc.Camera.SetPerspectiveFarClip(cameraProps["PerspectiveFar"].as<float>());
-							if (cameraProps["OrthographicSize"])
-								cc.Camera.SetOrthographicSize(cameraProps["OrthographicSize"].as<float>());
-							if (cameraProps["OrthographicNear"])
-								cc.Camera.SetOrthographicNearClip(cameraProps["OrthographicNear"].as<float>());
-							if (cameraProps["OrthographicFar"])
-								cc.Camera.SetOrthographicFarClip(cameraProps["OrthographicFar"].as<float>());
-						}
-
-						if (cameraComponent["Primary"])
-							cc.Primary = cameraComponent["Primary"].as<bool>();
-						if (cameraComponent["FixedAspectRatio"])
-							cc.FixedAspectRatio = cameraComponent["FixedAspectRatio"].as<bool>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto spriteRendererComponent = entity["SpriteRendererComponent"];
-				if (spriteRendererComponent)
-				{
-					// Entities always have transforms
-					// AddComponent, then ONE unguarded read. SpriteRendererComponent has a
-					// single field, so the block is the shortest in the function and the only
-					// one with nothing to check.
-					auto &src = deserializedEntity.AddComponent<SpriteRendererComponent>();
-						if (spriteRendererComponent["Color"])
-							src.Color = spriteRendererComponent["Color"].as<glm::vec4>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto circleRendererComponent = entity["CircleRendererComponent"];
-				// Guarded node, unguarded fields -- the pattern for every renderer block
-				// below. See the note on the sprite block above for the consequence.
-				if (circleRendererComponent)
-				{
-					// Entities always have transforms
-					auto &crc = deserializedEntity.AddComponent<CircleRendererComponent>();
-						if (circleRendererComponent["Color"])
-							crc.Color = circleRendererComponent["Color"].as<glm::vec4>();
-						if (circleRendererComponent["Thickness"])
-							crc.Thickness = circleRendererComponent["Thickness"].as<float>();
-						if (circleRendererComponent["Fade"])
-							crc.Fade = circleRendererComponent["Fade"].as<float>();
-				}
-
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto cubeRendererComponent = entity["CubeRendererComponent"];
-				if (cubeRendererComponent)
-				{
-					// Cube reads back only Colour, TextureIndex and TilingFactor -- the
-					// TextureWidth/Height the writer emitted are dropped. See the defect note
-					// on the writer side at line 442.
-					auto &crc = deserializedEntity.AddComponent<CubeRendererComponent>();
-						if (cubeRendererComponent["Color"])
-							crc.Color = cubeRendererComponent["Color"].as<glm::vec4>();
-						if (cubeRendererComponent["TextureIndex"])
-							crc.TextureIndex = cubeRendererComponent["TextureIndex"].as<int>();
-						if (cubeRendererComponent["TilingFactor"])
-							crc.TilingFactor = cubeRendererComponent["TilingFactor"].as<float>();
-				}
-
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto sphereRendererComponent = entity["SphereRendererComponent"];
-				if (sphereRendererComponent)
-				{
-					// Sphere's reader. Radius, Sectors and Stacks are the three fields that
-					// matter for how the mesh regenerates; TextureIndex and TilingFactor are
-					// the two texture fields. TextureWidth/Height are the two it skips.
-					auto &src = deserializedEntity.AddComponent<SphereRendererComponent>();
-						if (sphereRendererComponent["Color"])
-							src.Color = sphereRendererComponent["Color"].as<glm::vec4>();
-						if (sphereRendererComponent["Radius"])
-							src.Radius = sphereRendererComponent["Radius"].as<float>();
-						if (sphereRendererComponent["Sectors"])
-							src.Sectors = sphereRendererComponent["Sectors"].as<int>();
-						if (sphereRendererComponent["Stacks"])
-							src.Stacks = sphereRendererComponent["Stacks"].as<int>();
-						if (sphereRendererComponent["TextureIndex"])
-							src.TextureIndex = sphereRendererComponent["TextureIndex"].as<int>();
-						if (sphereRendererComponent["TilingFactor"])
-							src.TilingFactor = sphereRendererComponent["TilingFactor"].as<float>();
-				}
-
-				// --- Blender "Add > Mesh" primitives ---
-				// Each block is guarded by YAML node truthiness: a scene file
-				// written before these shapes existed simply has no key, which
-				// is what keeps older files loading.
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto planeRendererComponent = entity["PlaneRendererComponent"];
-				if (planeRendererComponent)
-				{
-				// Every primitive reader from here to the torus has this same shape: add
-				// the component, then assign each field straight from the node with no
-				// presence check. The result is that a truncated node throws out of
-				// Deserialize rather than leaving defaults behind.
-				auto &prc = deserializedEntity.AddComponent<PlaneRendererComponent>();
-					if (planeRendererComponent["Color"])
-						prc.Color = planeRendererComponent["Color"].as<glm::vec4>();
-					if (planeRendererComponent["Subdivisions"])
-						prc.Subdivisions = planeRendererComponent["Subdivisions"].as<int>();
-					if (planeRendererComponent["TextureIndex"])
-						prc.TextureIndex = planeRendererComponent["TextureIndex"].as<int>();
-					if (planeRendererComponent["TilingFactor"])
-						prc.TilingFactor = planeRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto gridRendererComponent = entity["GridRendererComponent"];
-				if (gridRendererComponent)
-				{
-				// Grid's reader: the two subdivision counts then the two texture fields.
-				// The colour is read first and unguarded, so a grid node with no Color
-				// key throws rather than defaulting to white.
-				auto &grc = deserializedEntity.AddComponent<GridRendererComponent>();
-					if (gridRendererComponent["Color"])
-						grc.Color = gridRendererComponent["Color"].as<glm::vec4>();
-					if (gridRendererComponent["XSubdivisions"])
-						grc.XSubdivisions = gridRendererComponent["XSubdivisions"].as<int>();
-					if (gridRendererComponent["YSubdivisions"])
-						grc.YSubdivisions = gridRendererComponent["YSubdivisions"].as<int>();
-					if (gridRendererComponent["TextureIndex"])
-						grc.TextureIndex = gridRendererComponent["TextureIndex"].as<int>();
-					if (gridRendererComponent["TilingFactor"])
-						grc.TilingFactor = gridRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto circle3DRendererComponent = entity["Circle3DRendererComponent"];
-				if (circle3DRendererComponent)
-				{
-				// Segments is read as int, matching the writer's own integer. The
-				// tessellation parameters are all integral for the same reason: a
-				// fractional segment count would have no meaning.
-				auto &c3c = deserializedEntity.AddComponent<Circle3DRendererComponent>();
-					if (circle3DRendererComponent["Color"])
-						c3c.Color = circle3DRendererComponent["Color"].as<glm::vec4>();
-					if (circle3DRendererComponent["Radius"])
-						c3c.Radius = circle3DRendererComponent["Radius"].as<float>();
-					if (circle3DRendererComponent["Segments"])
-						c3c.Segments = circle3DRendererComponent["Segments"].as<int>();
-					if (circle3DRendererComponent["TextureIndex"])
-						c3c.TextureIndex = circle3DRendererComponent["TextureIndex"].as<int>();
-					if (circle3DRendererComponent["TilingFactor"])
-						c3c.TilingFactor = circle3DRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto icoSphereRendererComponent = entity["IcoSphereRendererComponent"];
-				if (icoSphereRendererComponent)
-				{
-				auto &isc = deserializedEntity.AddComponent<IcoSphereRendererComponent>();
-					if (icoSphereRendererComponent["Color"])
-						isc.Color = icoSphereRendererComponent["Color"].as<glm::vec4>();
-					if (icoSphereRendererComponent["Radius"])
-						isc.Radius = icoSphereRendererComponent["Radius"].as<float>();
-					if (icoSphereRendererComponent["Subdivisions"])
-						isc.Subdivisions = icoSphereRendererComponent["Subdivisions"].as<int>();
-					if (icoSphereRendererComponent["TextureIndex"])
-						isc.TextureIndex = icoSphereRendererComponent["TextureIndex"].as<int>();
-					if (icoSphereRendererComponent["TilingFactor"])
-						isc.TilingFactor = icoSphereRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto cylinderRendererComponent = entity["CylinderRendererComponent"];
-				if (cylinderRendererComponent)
-				{
-				// Height appears here but not on the plane or sphere -- the primitives
-				// that have an axis need it, the radially symmetric ones do not. Which
-				// keys a primitive carries is what distinguishes it in the file.
-				auto &cyc = deserializedEntity.AddComponent<CylinderRendererComponent>();
-					if (cylinderRendererComponent["Color"])
-						cyc.Color = cylinderRendererComponent["Color"].as<glm::vec4>();
-					if (cylinderRendererComponent["Radius"])
-						cyc.Radius = cylinderRendererComponent["Radius"].as<float>();
-					if (cylinderRendererComponent["Height"])
-						cyc.Height = cylinderRendererComponent["Height"].as<float>();
-					if (cylinderRendererComponent["Segments"])
-						cyc.Segments = cylinderRendererComponent["Segments"].as<int>();
-					if (cylinderRendererComponent["TextureIndex"])
-						cyc.TextureIndex = cylinderRendererComponent["TextureIndex"].as<int>();
-					if (cylinderRendererComponent["TilingFactor"])
-						cyc.TilingFactor = cylinderRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto coneRendererComponent = entity["ConeRendererComponent"];
-				if (coneRendererComponent)
-				{
-				auto &coc = deserializedEntity.AddComponent<ConeRendererComponent>();
-					if (coneRendererComponent["Color"])
-						coc.Color = coneRendererComponent["Color"].as<glm::vec4>();
-					if (coneRendererComponent["Radius"])
-						coc.Radius = coneRendererComponent["Radius"].as<float>();
-					if (coneRendererComponent["Height"])
-						coc.Height = coneRendererComponent["Height"].as<float>();
-					if (coneRendererComponent["Segments"])
-						coc.Segments = coneRendererComponent["Segments"].as<int>();
-					if (coneRendererComponent["TextureIndex"])
-						coc.TextureIndex = coneRendererComponent["TextureIndex"].as<int>();
-					if (coneRendererComponent["TilingFactor"])
-						coc.TilingFactor = coneRendererComponent["TilingFactor"].as<float>();
-				}
-				
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto torusRendererComponent = entity["TorusRendererComponent"];
-				if (torusRendererComponent)
-				{
-				auto &trc = deserializedEntity.AddComponent<TorusRendererComponent>();
-					if (torusRendererComponent["Color"])
-						trc.Color = torusRendererComponent["Color"].as<glm::vec4>();
-					if (torusRendererComponent["MajorRadius"])
-						trc.MajorRadius = torusRendererComponent["MajorRadius"].as<float>();
-					if (torusRendererComponent["MinorRadius"])
-						trc.MinorRadius = torusRendererComponent["MinorRadius"].as<float>();
-					if (torusRendererComponent["MajorSegments"])
-						trc.MajorSegments = torusRendererComponent["MajorSegments"].as<int>();
-					if (torusRendererComponent["MinorSegments"])
-						trc.MinorSegments = torusRendererComponent["MinorSegments"].as<int>();
-					if (torusRendererComponent["TextureIndex"])
-						trc.TextureIndex = torusRendererComponent["TextureIndex"].as<int>();
-					if (torusRendererComponent["TilingFactor"])
-						trc.TilingFactor = torusRendererComponent["TilingFactor"].as<float>();
-				}
-
-				// DEFECT: TextureWidth/TextureHeight are absent here though the writer
-				// emits them -- see line 480. Every one of these primitive blocks loses
-				// the same two fields, so the omission is systematic, not a one-off.
-				auto materialComponent = entity["MaterialComponent"];
-				if (materialComponent)
-				{
-					// The material is added before its texture is resolved, so the component
-					// exists with a null Texture even if the file names one. That is the
-					// graceful-degradation path: a missing asset must not fail the load.
-					auto &mc = deserializedEntity.AddComponent<MaterialComponent>();
-						// All fields presence-checked: a scene authored before a field
-						// existed must still load with that field's default.
-						if (materialComponent["Albedo"])
-							mc.Albedo = materialComponent["Albedo"].as<glm::vec4>();
-						if (materialComponent["TextureIndex"])
-							mc.TextureIndex = materialComponent["TextureIndex"].as<int>();
-						// TexturePath defaults to empty string when missing.
-						std::string rawPath = materialComponent["TexturePath"] ? materialComponent["TexturePath"].as<std::string>() : "";
-						std::replace(rawPath.begin(), rawPath.end(), '\\', '/');
-						// Collapse any duplicate "assets/" prefixes (from old serialization bugs)
-						const std::string prefix = "assets/";
-						while (rawPath.find(prefix + prefix) == 0)
-							rawPath = rawPath.substr(prefix.size());
-						mc.TexturePath = rawPath;
-						// The texture is only CREATED if the file exists on disk.
-						if (!rawPath.empty() && std::filesystem::is_regular_file(rawPath))
-							mc.Texture = Texture2D::Create(rawPath);
-						if (materialComponent["HasGeneratedMaps"])
-							mc.HasGeneratedMaps = materialComponent["HasGeneratedMaps"].as<bool>();
-						if (materialComponent["NormalStrength"])
-							mc.NormalStrength = materialComponent["NormalStrength"].as<float>();
-						if (materialComponent["Metallic"])
-							mc.Metallic = materialComponent["Metallic"].as<float>();
-						if (materialComponent["Roughness"])
-							mc.Roughness = materialComponent["Roughness"].as<float>();
-						if (materialComponent["EmissionColor"])
-							mc.EmissionColor = materialComponent["EmissionColor"].as<glm::vec4>();
-						if (materialComponent["EmissionIntensity"])
-							mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
-						if (materialComponent["DisplacementScale"])
-							mc.DisplacementScale = materialComponent["DisplacementScale"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto rigidbody2DComponent = entity["Rigidbody2DComponent"];
-				if (rigidbody2DComponent)
-				{
-					// Entities always have transforms
-					// The string is parsed by the enum helper, which silently defaults.
-					// FixedRotation is read right after and IS restored, so a 2D body's
-					// rotation lock survives but its friction (line 1420) does not.
-					auto &rigidbody2D = deserializedEntity.AddComponent<Rigidbody2DComponent>();
-						if (rigidbody2DComponent["BodyType"])
-							rigidbody2D.Type = RigidBody2DBodyTypeFromString(rigidbody2DComponent["BodyType"].as<std::string>());
-						if (rigidbody2DComponent["FixedRotation"])
-							rigidbody2D.FixedRotation = rigidbody2DComponent["FixedRotation"].as<bool>();
-				}
-
-				// DEFECT: Friction is written by this component's writer block and read
-				// by no line here, so it resets to the component default on every load.
-				// Both 2D colliders do this; all three 3D colliders round-trip theirs.
-				auto boxCollider2DComponent = entity["BoxCollider2DComponent"];
-				if (boxCollider2DComponent)
-				{
-					// Entities always have transforms
-					auto &boxCollider2D = deserializedEntity.AddComponent<BoxCollider2DComponent>();
-						if (boxCollider2DComponent["Offset"])
-							boxCollider2D.Offset = boxCollider2DComponent["Offset"].as<glm::vec2>();
-						if (boxCollider2DComponent["Size"])
-							boxCollider2D.Size = boxCollider2DComponent["Size"].as<glm::vec2>();
-						if (boxCollider2DComponent["Density"])
-							boxCollider2D.Density = boxCollider2DComponent["Density"].as<float>();
-						if (boxCollider2DComponent["Restitution"])
-							boxCollider2D.Restitution = boxCollider2DComponent["Restitution"].as<float>();
-						if (boxCollider2DComponent["RestitutionThreshold"])
-							boxCollider2D.RestitutionThreshold = boxCollider2DComponent["RestitutionThreshold"].as<float>();
-				}
-
-				// DEFECT: Friction is written by this component's writer block and read
-				// by no line here, so it resets to the component default on every load.
-				// Both 2D colliders do this; all three 3D colliders round-trip theirs.
-				auto circleCollider2DComponent = entity["CircleCollider2DComponent"];
-				if (circleCollider2DComponent)
-				{
-					// Entities always have transforms
-					auto &circleCollider2D = deserializedEntity.AddComponent<CircleCollider2DComponent>();
-						if (circleCollider2DComponent["Offset"])
-							circleCollider2D.Offset = circleCollider2DComponent["Offset"].as<glm::vec2>();
-						if (circleCollider2DComponent["Radius"])
-							circleCollider2D.Radius = circleCollider2DComponent["Radius"].as<float>();
-						if (circleCollider2DComponent["Density"])
-							circleCollider2D.Density = circleCollider2DComponent["Density"].as<float>();
-						if (circleCollider2DComponent["Restitution"])
-							circleCollider2D.Restitution = circleCollider2DComponent["Restitution"].as<float>();
-						if (circleCollider2DComponent["RestitutionThreshold"])
-							circleCollider2D.RestitutionThreshold = circleCollider2DComponent["RestitutionThreshold"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto rigidBody3DComponent = entity["RigidBody3DComponent"];
-				if (rigidBody3DComponent)
-				{
-					auto &rb3d = deserializedEntity.AddComponent<RigidBody3DComponent>();
-						// All fields presence-checked: a partial node leaves defaults.
-						if (rigidBody3DComponent["BodyType"])
-							rb3d.Type = RigidBody3DTypeFromString(rigidBody3DComponent["BodyType"].as<std::string>());
-						if (rigidBody3DComponent["GravityScale"])
-							rb3d.GravityScale = rigidBody3DComponent["GravityScale"].as<float>();
-						if (rigidBody3DComponent["LinearDamping"])
-							rb3d.LinearDamping = rigidBody3DComponent["LinearDamping"].as<float>();
-						if (rigidBody3DComponent["AngularDamping"])
-							rb3d.AngularDamping = rigidBody3DComponent["AngularDamping"].as<float>();
-						if (rigidBody3DComponent["FixedRotationX"]) rb3d.FixedRotationX = rigidBody3DComponent["FixedRotationX"].as<bool>();
-						if (rigidBody3DComponent["FixedRotationY"]) rb3d.FixedRotationY = rigidBody3DComponent["FixedRotationY"].as<bool>();
-						if (rigidBody3DComponent["FixedRotationZ"]) rb3d.FixedRotationZ = rigidBody3DComponent["FixedRotationZ"].as<bool>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto boxCollider3DComponent = entity["BoxCollider3DComponent"];
-				if (boxCollider3DComponent)
-				{
-					auto &bc = deserializedEntity.AddComponent<BoxCollider3DComponent>();
-						if (boxCollider3DComponent["HalfExtents"])
-							bc.HalfExtents = boxCollider3DComponent["HalfExtents"].as<glm::vec3>();
-						if (boxCollider3DComponent["Offset"])
-							bc.Offset = boxCollider3DComponent["Offset"].as<glm::vec3>();
-						if (boxCollider3DComponent["Density"])
-							bc.Density = boxCollider3DComponent["Density"].as<float>();
-						if (boxCollider3DComponent["Friction"])
-							bc.Friction = boxCollider3DComponent["Friction"].as<float>();
-						if (boxCollider3DComponent["Restitution"])
-							bc.Restitution = boxCollider3DComponent["Restitution"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto sphereCollider3DComponent = entity["SphereCollider3DComponent"];
-				if (sphereCollider3DComponent)
-				{
-					auto &sc = deserializedEntity.AddComponent<SphereCollider3DComponent>();
-						if (sphereCollider3DComponent["Radius"])
-							sc.Radius = sphereCollider3DComponent["Radius"].as<float>();
-						if (sphereCollider3DComponent["Offset"])
-							sc.Offset = sphereCollider3DComponent["Offset"].as<glm::vec3>();
-						if (sphereCollider3DComponent["Density"])
-							sc.Density = sphereCollider3DComponent["Density"].as<float>();
-						if (sphereCollider3DComponent["Friction"])
-							sc.Friction = sphereCollider3DComponent["Friction"].as<float>();
-						if (sphereCollider3DComponent["Restitution"])
-							sc.Restitution = sphereCollider3DComponent["Restitution"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto capsuleCollider3DComponent = entity["CapsuleCollider3DComponent"];
-				if (capsuleCollider3DComponent)
-				{
-					auto &cc = deserializedEntity.AddComponent<CapsuleCollider3DComponent>();
-						if (capsuleCollider3DComponent["Radius"])
-							cc.Radius = capsuleCollider3DComponent["Radius"].as<float>();
-						if (capsuleCollider3DComponent["Height"])
-							cc.Height = capsuleCollider3DComponent["Height"].as<float>();
-						if (capsuleCollider3DComponent["Offset"])
-							cc.Offset = capsuleCollider3DComponent["Offset"].as<glm::vec3>();
-						if (capsuleCollider3DComponent["Density"])
-							cc.Density = capsuleCollider3DComponent["Density"].as<float>();
-						if (capsuleCollider3DComponent["Friction"])
-							cc.Friction = capsuleCollider3DComponent["Friction"].as<float>();
-						if (capsuleCollider3DComponent["Restitution"])
-							cc.Restitution = capsuleCollider3DComponent["Restitution"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto volumetricFogComponent = entity["VolumetricFogComponent"];
-				if (volumetricFogComponent)
-				{
-					auto &fog = deserializedEntity.AddComponent<VolumetricFogComponent>();
-					// Fog's reader opens with a presence check on Enabled, then reads each
-					// field the same way. Twenty-four lines, twenty-four checks -- the most
-					// defensive block in the function, and the model the rest should follow.
-					if (volumetricFogComponent["Enabled"])
-						fog.Enabled = volumetricFogComponent["Enabled"].as<bool>();
-					if (volumetricFogComponent["Color"])
-						// glm::vec3(vec4): narrows the manufactured alpha away. The component
-						// stores a vec3, so this is the exact inverse of the widening at line 838 --
-						// including the fact that the round trip spends four file elements on a
-						// three-element value.
-						fog.Color = glm::vec3(volumetricFogComponent["Color"].as<glm::vec4>());
-					// Density, Anisotropy and HeightFalloff: how thick the fog is, how much
-					// it stretches along the view ray, and how quickly it thins with altitude.
-					// Each is independently authored rather than derived from the others.
-					if (volumetricFogComponent["Density"])
-						fog.Density = volumetricFogComponent["Density"].as<float>();
-					if (volumetricFogComponent["Anisotropy"])
-						fog.Anisotropy = volumetricFogComponent["Anisotropy"].as<float>();
-					if (volumetricFogComponent["HeightFalloff"])
-						fog.HeightFalloff = volumetricFogComponent["HeightFalloff"].as<float>();
-					if (volumetricFogComponent["NoiseStrength"])
-						fog.NoiseStrength = volumetricFogComponent["NoiseStrength"].as<float>();
-					if (volumetricFogComponent["NoiseScale"])
-						fog.NoiseScale = volumetricFogComponent["NoiseScale"].as<float>();
-					if (volumetricFogComponent["WindSpeed"])
-						fog.WindSpeed = volumetricFogComponent["WindSpeed"].as<float>();
-					if (volumetricFogComponent["MaxSteps"])
-						fog.MaxSteps = volumetricFogComponent["MaxSteps"].as<int>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto volumetricCloudsComponent = entity["VolumetricCloudsComponent"];
-				if (volumetricCloudsComponent)
-				{
-					// Clouds' reader: same shape as fog's, one field longer per colour because
-					// there are two of them. Both vec4-to-vec3 narrowings happen here.
-					auto &clouds = deserializedEntity.AddComponent<VolumetricCloudsComponent>();
-					if (volumetricCloudsComponent["Enabled"])
-						clouds.Enabled = volumetricCloudsComponent["Enabled"].as<bool>();
-					if (volumetricCloudsComponent["Color"])
-						clouds.Color = glm::vec3(volumetricCloudsComponent["Color"].as<glm::vec4>());
-					if (volumetricCloudsComponent["AmbientTint"])
-						clouds.AmbientTint = glm::vec3(volumetricCloudsComponent["AmbientTint"].as<glm::vec4>());
-					if (volumetricCloudsComponent["Coverage"])
-						clouds.Coverage = volumetricCloudsComponent["Coverage"].as<float>();
-					if (volumetricCloudsComponent["Density"])
-						clouds.Density = volumetricCloudsComponent["Density"].as<float>();
-					// NoiseScale and DetailAmount govern the cloud texture, then WindDirection
-					// and WindSpeed move it. SilverLining and ShadowStrength are appearance
-					// controls that a cheaper cloud renderer could drop without changing the
-					// scene's meaning -- which is why they are separate fields.
-					if (volumetricCloudsComponent["NoiseScale"])
-						clouds.NoiseScale = volumetricCloudsComponent["NoiseScale"].as<float>();
-					if (volumetricCloudsComponent["DetailAmount"])
-						clouds.DetailAmount = volumetricCloudsComponent["DetailAmount"].as<float>();
-					if (volumetricCloudsComponent["WindDirection"])
-						clouds.WindDirection = volumetricCloudsComponent["WindDirection"].as<glm::vec2>();
-					if (volumetricCloudsComponent["WindSpeed"])
-						clouds.WindSpeed = volumetricCloudsComponent["WindSpeed"].as<float>();
-					if (volumetricCloudsComponent["SilverLining"])
-						clouds.SilverLining = volumetricCloudsComponent["SilverLining"].as<float>();
-					if (volumetricCloudsComponent["ShadowStrength"])
-						clouds.ShadowStrength = volumetricCloudsComponent["ShadowStrength"].as<float>();
-					if (volumetricCloudsComponent["MaxSteps"])
-						clouds.MaxSteps = volumetricCloudsComponent["MaxSteps"].as<int>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto directionalLightComponent = entity["DirectionalLightComponent"];
-				if (directionalLightComponent)
-				{
-					auto &light = deserializedEntity.AddComponent<DirectionalLightComponent>();
-					if (directionalLightComponent["Color"])
-						// Colour is narrowed from the manufactured vec4 back to the component's
-						// vec3, exactly inverting the widening on the write side. See line 874.
-						light.Color = glm::vec3(directionalLightComponent["Color"].as<glm::vec4>());
-					if (directionalLightComponent["Intensity"])
-						light.Intensity = directionalLightComponent["Intensity"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto pointLightComponent = entity["PointLightComponent"];
-				if (pointLightComponent)
-				{
-					// Point light's reader. Every field checked, so a scene authored before
-					// Range or Falloff existed still loads -- the light simply keeps its
-					// default falloff.
-					auto &light = deserializedEntity.AddComponent<PointLightComponent>();
-					if (pointLightComponent["Color"])
-						// Point light: the same four fields the writer emits, each presence-
-						// checked. Unlike the renderer blocks above, a partial point-light node
-						// leaves defaults instead of throwing.
-						light.Color = glm::vec3(pointLightComponent["Color"].as<glm::vec4>());
-					if (pointLightComponent["Intensity"])
-						light.Intensity = pointLightComponent["Intensity"].as<float>();
-					if (pointLightComponent["Range"])
-						light.Range = pointLightComponent["Range"].as<float>();
-					if (pointLightComponent["Falloff"])
-						light.Falloff = pointLightComponent["Falloff"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto spotLightComponent = entity["SpotLightComponent"];
-				if (spotLightComponent)
-				{
-					auto &light = deserializedEntity.AddComponent<SpotLightComponent>();
-					if (spotLightComponent["Color"])
-						// The spot's five scalar fields, all presence-checked. Every field in
-						// every light reader is checked, so the light family is the most robust
-						// part of this function.
-						light.Color = glm::vec3(spotLightComponent["Color"].as<glm::vec4>());
-					if (spotLightComponent["Intensity"])
-						light.Intensity = spotLightComponent["Intensity"].as<float>();
-					if (spotLightComponent["Range"])
-						light.Range = spotLightComponent["Range"].as<float>();
-					if (spotLightComponent["Falloff"])
-						light.Falloff = spotLightComponent["Falloff"].as<float>();
-					if (spotLightComponent["InnerAngle"])
-						light.InnerAngle = spotLightComponent["InnerAngle"].as<float>();
-					if (spotLightComponent["OuterAngle"])
-						light.OuterAngle = spotLightComponent["OuterAngle"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto areaLightComponent = entity["AreaLightComponent"];
-				if (areaLightComponent)
-				{
-					// Area light's reader adds the two rectangle dimensions and DoubleSided.
-					// All six checked, matching the six the writer emits exactly.
-					auto &light = deserializedEntity.AddComponent<AreaLightComponent>();
-					if (areaLightComponent["Color"])
-						light.Color = glm::vec3(areaLightComponent["Color"].as<glm::vec4>());
-					if (areaLightComponent["Intensity"])
-						light.Intensity = areaLightComponent["Intensity"].as<float>();
-					if (areaLightComponent["Width"])
-						light.Width = areaLightComponent["Width"].as<float>();
-					if (areaLightComponent["Height"])
-						light.Height = areaLightComponent["Height"].as<float>();
-					if (areaLightComponent["Range"])
-						light.Range = areaLightComponent["Range"].as<float>();
-					if (areaLightComponent["DoubleSided"])
-						light.DoubleSided = areaLightComponent["DoubleSided"].as<bool>();
-				}
-
-				// The water block reads all 25 fields, each presence-checked. It is the
-				// most defensive reader in the file and the exact counterpart of the
-				// largest writer, so water round-trips completely where the colliders
-				// above silently lose Friction.
-				auto waterComponent = entity["WaterComponent"];
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				if (waterComponent)
-				{
-					// Water's reader opens with the component being added, then walks all 25
-					// fields with a presence check each. This is the only block in the file
-					// that is exhaustive on BOTH sides, which is why water is the one family
-					// that cannot silently lose a field.
-					auto &water = deserializedEntity.AddComponent<WaterComponent>();
-					// All 25 water fields are checked individually, in the same order the
-					// writer emits them. This block is the model the rest of the function
-					// should have followed: a scene authored before any of these fields
-					// existed still loads, keeping that field's default.
-					if (waterComponent["Enabled"])
-						water.Enabled = waterComponent["Enabled"].as<bool>();
-					if (waterComponent["BodyType"])
-						water.Type = WaterBodyTypeFromString(waterComponent["BodyType"].as<std::string>());
-					// ShallowColor, DeepColor and FoamColor each go through the same
-					// vec4-then-vec3 round trip. Three manufactured alpha values per load for
-					// colours that have no alpha channel on either side of it.
-					if (waterComponent["ShallowColor"])
-						water.ShallowColor = glm::vec3(waterComponent["ShallowColor"].as<glm::vec4>());
-					if (waterComponent["DeepColor"])
-						water.DeepColor = glm::vec3(waterComponent["DeepColor"].as<glm::vec4>());
-					if (waterComponent["FoamColor"])
-						water.FoamColor = glm::vec3(waterComponent["FoamColor"].as<glm::vec4>());
-					if (waterComponent["WaterDepth"])
-						water.WaterDepth = waterComponent["WaterDepth"].as<float>();
-					if (waterComponent["WaveAmplitude"])
-						water.WaveAmplitude = waterComponent["WaveAmplitude"].as<float>();
-					if (waterComponent["WaveLength"])
-						water.WaveLength = waterComponent["WaveLength"].as<float>();
-					if (waterComponent["WaveSpeed"])
-						water.WaveSpeed = waterComponent["WaveSpeed"].as<float>();
-					if (waterComponent["WaveDirection"])
-						// FlowDirection is a vec2 here, read through convert<glm::vec2> -- the
-						// two-element converter. WaveDirection above uses the same one, so the
-						// vec2 converter is not dead code despite no transform using it.
-						water.WaveDirection = waterComponent["WaveDirection"].as<glm::vec2>();
-					if (waterComponent["Chop"])
-						water.Chop = waterComponent["Chop"].as<float>();
-					if (waterComponent["Steepness"])
-						water.Steepness = waterComponent["Steepness"].as<float>();
-					if (waterComponent["FlowDirection"])
-						water.FlowDirection = waterComponent["FlowDirection"].as<glm::vec2>();
-					if (waterComponent["FlowSpeed"])
-						water.FlowSpeed = waterComponent["FlowSpeed"].as<float>();
-					if (waterComponent["FoamAmount"])
-						water.FoamAmount = waterComponent["FoamAmount"].as<float>();
-					if (waterComponent["FoamScale"])
-						water.FoamScale = waterComponent["FoamScale"].as<float>();
-					if (waterComponent["ShoreFoam"])
-						water.ShoreFoam = waterComponent["ShoreFoam"].as<float>();
-					if (waterComponent["ShoreWidth"])
-						water.ShoreWidth = waterComponent["ShoreWidth"].as<float>();
-					if (waterComponent["Transparency"])
-						water.Transparency = waterComponent["Transparency"].as<float>();
-					if (waterComponent["Roughness"])
-						water.Roughness = waterComponent["Roughness"].as<float>();
-					if (waterComponent["Metallic"])
-						water.Metallic = waterComponent["Metallic"].as<float>();
-					if (waterComponent["Segments"])
-						water.Segments = waterComponent["Segments"].as<int>();
-					if (waterComponent["TimeScale"])
-						water.TimeScale = waterComponent["TimeScale"].as<float>();
-					if (waterComponent["Buoyancy"])
-						water.Buoyancy = waterComponent["Buoyancy"].as<float>();
-					if (waterComponent["WaterDensity"])
-						water.WaterDensity = waterComponent["WaterDensity"].as<float>();
-				}
-
-				// Guarded by node truthiness only -- the fields inside are read
-				// unconditionally, so a partial node throws out of Deserialize instead of
-				// keeping the component's defaults. The health and weapon blocks above
-				// are the ones that check every field.
-				auto scriptComponent = entity["ScriptComponent"];
-				if (scriptComponent)
-				{
-					auto &sc = deserializedEntity.AddComponent<ScriptComponent>();
-						// Presence-checked: a missing ScriptPath or ScriptName leaves
-						// the component's defaults.
-						if (scriptComponent["ScriptPath"])
-						{
-							std::string rawPath = scriptComponent["ScriptPath"].as<std::string>();
-							// Always store as a relative path
-							sc.ScriptPath = "scripts/" + std::filesystem::path(rawPath).filename().string();
-						}
-						if (scriptComponent["ScriptName"])
-							sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
-				}
-			}
+			// `const auto&`, not `auto`: see the note above `entities`. A mutable
+			// loop variable makes every `entity["X"]` probe below use the non-const
+			// operator[], which INSERTS a phantom key for each absent component.
+			// One call per entity. The reader itself lives in DeserializeEntityNode so
+			// the binary sidecar can replay individual unsupported entities through it.
+			for (const auto& entity : entities)
+				DeserializeEntityNode(entity);
 		}
 
 		if (hasTerrain)
