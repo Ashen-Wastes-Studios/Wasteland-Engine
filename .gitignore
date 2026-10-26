@@ -372,6 +372,15 @@ FodyWeavers.xsd
 
 *.json
 
+# Exceptions: these are SOURCE, not scratch. dataset_stats.json holds the per-feature
+# standardisation constants, which are part of the shader ABI -- the GLSL and HLSL twins
+# apply the same affine before the first matmul, so losing this file makes a retrained
+# network silently wrong. The manifests are the dataset's reproducibility record: every
+# capture's scene, camera, settings and sha256. Without them the 1.4 GB of generated
+# images cannot be verified or rebuilt.
+!tools/train_neural/dataset_stats.json
+!tools/train_neural/manifests/*.json
+
 test_timeline.cpp
 
 # --- added 2026-10-05: build products and agent scratch ---
@@ -389,3 +398,22 @@ tools/probe_*.exe
 **/vendor/**/bin/
 *.idb
 *.exp
+
+# Neural-rendering datasets (tools/train_neural/export_dataset.py writes here
+# by default). A 72-frame run is ~720 MB of PNGs -- engine output, not source,
+# and the manifest records the binary SHA-256 it was rendered from, so it is
+# always reproducible with:
+#   python tools/train_neural/export_dataset.py
+# Regenerating is cheaper than versioning 720 MB of incompressible pixels.
+dataset/
+# dataset_noisy/ was MISSING from this list while being the 703 MB set the shipped
+# network was actually trained on -- a single `git add -A` would have committed it.
+# Its manifest is tracked instead, at tools/train_neural/manifests/.
+dataset_noisy/
+tools/train_neural/__pycache__/
+
+# Scene sidecars. These are a derived CACHE of a .wastescene, written on save so the
+# next open can skip the YAML parse (measured 283x faster on a 50k-entity scene).
+# They carry no information the YAML does not, are invalidated automatically when the
+# YAML changes, and are safe to delete at any time -- so they must never be committed.
+*.wlbin

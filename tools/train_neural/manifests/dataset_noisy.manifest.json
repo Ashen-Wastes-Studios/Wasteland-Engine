@@ -1,0 +1,2104 @@
+{
+  "version": 1,
+  "generated": "2026-10-24T23:31:41-0400",
+  "engine": {
+    "exe": "C:\\dev\\Wasteland\\bin\\Release-windows-x86_64\\DemonCore-Editor\\DemonCore-Editor.exe",
+    "sha256": "4f3446dc19c52544214f6e81e149d1126366075fd571a170e610652c32d0404a"
+  },
+  "config": {
+    "converged_frame": 400,
+    "noisy_frame": 400,
+    "min_contrast_p99": 4.0
+  },
+  "frames": [
+    {
+      "id": "AtmosphereShowcase__auto_y0__gt",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/AtmosphereShowcase__auto_y0__gt.png",
+      "sha256": "bd9348b0d32b0d98bab1cc34a391e01eeb2f0b3f1a827187cdeb087adce96cca",
+      "mean_luma": 46.2517,
+      "contrast_p99": 6.7152,
+      "blank": false
+    },
+    {
+      "id": "AtmosphereShowcase__auto_y0__noisy",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/AtmosphereShowcase__auto_y0__noisy.png",
+      "sha256": "609d4cc984daa21f7786efe7fd53a1290299a4c44c257baa3c9e666642469fdb",
+      "mean_luma": 46.5763,
+      "contrast_p99": 8.3582,
+      "blank": false
+    },
+    {
+      "id": "AtmosphereShowcase__auto_y200__gt",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/AtmosphereShowcase__auto_y200__gt.png",
+      "sha256": "1e8ca00ad424b68e67ffc6d33a3d21b9d23791b8cbc8c8eac508441a409ca12b",
+      "mean_luma": 46.8167,
+      "contrast_p99": 6.7152,
+      "blank": false
+    },
+    {
+      "id": "AtmosphereShowcase__auto_y200__noisy",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/AtmosphereShowcase__auto_y200__noisy.png",
+      "sha256": "07589575cb7c4daf57355e11df47756904914e6b27358422ed0f78d73c9d40a5",
+      "mean_luma": 46.8245,
+      "contrast_p99": 7.7874,
+      "blank": false
+    },
+    {
+      "id": "AtmosphereShowcase__auto_y90__gt",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/AtmosphereShowcase__auto_y90__gt.png",
+      "sha256": "6a6794dcf136779964dd31565fbbde2669cee2313d7ff0a7b5617fbb9872d7f5",
+      "mean_luma": 45.3494,
+      "contrast_p99": 6.5708,
+      "blank": false
+    },
+    {
+      "id": "AtmosphereShowcase__auto_y90__noisy",
+      "scene": "scenes/AtmosphereShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.0,
+          4.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/AtmosphereShowcase__auto_y90__noisy.png",
+      "sha256": "bdc016aebf910b5cf617df3d32f4880f8f4bea1d6deb7a33802aca1bf38c4af6",
+      "mean_luma": 45.8349,
+      "contrast_p99": 7.5708,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y0__gt",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/DemoGame__auto_y0__gt.png",
+      "sha256": "5929bf8b9d590ee8f2fb7d074f06ccb47310f605aad3f4aff21ed6bdaf1a65a8",
+      "mean_luma": 13.3066,
+      "contrast_p99": 6.7204,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y0__noisy",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/DemoGame__auto_y0__noisy.png",
+      "sha256": "376b66523c41c360ec3879435373a8bc051ddcfe392f6d1fadc306f2c530b49f",
+      "mean_luma": 12.8382,
+      "contrast_p99": 7.223,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y200__gt",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/DemoGame__auto_y200__gt.png",
+      "sha256": "8af75accda21722fdc20b84529913ea33ee34b63e1e9cb6d71398472aaa0f190",
+      "mean_luma": 13.0121,
+      "contrast_p99": 6.6482,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y200__noisy",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/DemoGame__auto_y200__noisy.png",
+      "sha256": "2106447863457f1295b135a63ed6de9edd4b738246972069484d445950c6b3f4",
+      "mean_luma": 12.5602,
+      "contrast_p99": 7.2812,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y90__gt",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/DemoGame__auto_y90__gt.png",
+      "sha256": "a6e690f25eeceff754fb76aa777879783af227aa8f39debbae03fa11fd3dd7db",
+      "mean_luma": 12.6462,
+      "contrast_p99": 6.4056,
+      "blank": false
+    },
+    {
+      "id": "DemoGame__auto_y90__noisy",
+      "scene": "scenes/DemoGame.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          -1200.0,
+          9.72345,
+          -1047.69415
+        ],
+        "distance": 3696.83,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/DemoGame__auto_y90__noisy.png",
+      "sha256": "a9b48126a2a3600e44b1f3dceb016661c75ed84d3230c78dd315066059236938",
+      "mean_luma": 12.1758,
+      "contrast_p99": 6.7284,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y0__gt",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/Example3D__auto_y0__gt.png",
+      "sha256": "d914afa7fa5a4215c2f3ffe97e93c0d9a838304fd4dbb7fe6bd949d1e87f3c07",
+      "mean_luma": 54.2927,
+      "contrast_p99": 19.3382,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y0__noisy",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/Example3D__auto_y0__noisy.png",
+      "sha256": "816dad96f1f41dc9d790e8325f3a50f1378181f25adb8ce71e143bbb349fb3c9",
+      "mean_luma": 58.0157,
+      "contrast_p99": 37.6936,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y200__gt",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/Example3D__auto_y200__gt.png",
+      "sha256": "22a95959b6784dca4503add1b2925687e45418c4cfd6a76485b5e23ef2f9ab3d",
+      "mean_luma": 52.7039,
+      "contrast_p99": 20.714,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y200__noisy",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/Example3D__auto_y200__noisy.png",
+      "sha256": "4e9eca34dfdee38e8576f0a10634a429d91465d1b4ab5a7b4f981827ab33f060",
+      "mean_luma": 56.1834,
+      "contrast_p99": 39.2552,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y90__gt",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/Example3D__auto_y90__gt.png",
+      "sha256": "cba8ed060560e3aeac3190aace4e68ffee9b59c13a3a70cec854708bda118302",
+      "mean_luma": 53.1327,
+      "contrast_p99": 20.4064,
+      "blank": false
+    },
+    {
+      "id": "Example3D__auto_y90__noisy",
+      "scene": "scenes/Example3D.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          -0.0001422686835,
+          0.0
+        ],
+        "distance": 13.257,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/Example3D__auto_y90__noisy.png",
+      "sha256": "a025a4e5a2ea9fc66fa8e944c4eb876cd94cdb387f1d42e3d54dc9d1b654be39",
+      "mean_luma": 56.7004,
+      "contrast_p99": 38.187,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y0__gt",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ExampleGame__auto_y0__gt.png",
+      "sha256": "71a8270106c80d5b325bcab1a0e4374de1215cbad96e2dcbce8a006bc97f7960",
+      "mean_luma": 38.9357,
+      "contrast_p99": 11.5656,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y0__noisy",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ExampleGame__auto_y0__noisy.png",
+      "sha256": "e8c5557be3a3a886bd180d6a29701f1bf8d32a990de62840516362b381216463",
+      "mean_luma": 38.4875,
+      "contrast_p99": 15.9278,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y200__gt",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ExampleGame__auto_y200__gt.png",
+      "sha256": "8f37972389e8478fe36ffea023cc9248fef5679806b60fb0c4bdd430faae5483",
+      "mean_luma": 38.9646,
+      "contrast_p99": 16.8596,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y200__noisy",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ExampleGame__auto_y200__noisy.png",
+      "sha256": "088795d302c0ac05926f51b6665a16a38eb5d38c947b12080ec10c24130637c1",
+      "mean_luma": 38.4549,
+      "contrast_p99": 18.8636,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y90__gt",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ExampleGame__auto_y90__gt.png",
+      "sha256": "385f5c15bf638a9d3834f92f5bc5c782dbcff41d833d484673dc067448b40133",
+      "mean_luma": 38.8108,
+      "contrast_p99": 16.8556,
+      "blank": false
+    },
+    {
+      "id": "ExampleGame__auto_y90__noisy",
+      "scene": "scenes/ExampleGame.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 30.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ExampleGame__auto_y90__noisy.png",
+      "sha256": "270b4d6e47654e6928e2536cb01c25361e461f0e68890a3564c7a19bf5ceb545",
+      "mean_luma": 38.3079,
+      "contrast_p99": 19.0762,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y0__gt",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/InventoryDemo__auto_y0__gt.png",
+      "sha256": "e60470129e2a555aef0dd773ba04b38e2808e39c353163c0c44cf08c2e9bc837",
+      "mean_luma": 38.4365,
+      "contrast_p99": 10.2126,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y0__noisy",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/InventoryDemo__auto_y0__noisy.png",
+      "sha256": "99e81bf02cd4f61e67d170dc06114a02e357906cdb8cb50c014f3e8a9414fb36",
+      "mean_luma": 38.3798,
+      "contrast_p99": 12.0722,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y200__gt",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/InventoryDemo__auto_y200__gt.png",
+      "sha256": "560ab25c570a006fbed10cbc80eae9c7809f2b9526ba1657f7af9abdc1b3da69",
+      "mean_luma": 38.4666,
+      "contrast_p99": 10.0722,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y200__noisy",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/InventoryDemo__auto_y200__noisy.png",
+      "sha256": "cfc65b31298c7d901315fdf57933099d2048c30c0769a01a57fc85812cac9a4a",
+      "mean_luma": 38.4031,
+      "contrast_p99": 11.5014,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y90__gt",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/InventoryDemo__auto_y90__gt.png",
+      "sha256": "40ad28945274d944e3c901a402f4f392b21e932e6f2d8c7c03d17d7d64330df9",
+      "mean_luma": 38.7901,
+      "contrast_p99": 9.1404,
+      "blank": false
+    },
+    {
+      "id": "InventoryDemo__auto_y90__noisy",
+      "scene": "scenes/InventoryDemo.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.4,
+          1.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/InventoryDemo__auto_y90__noisy.png",
+      "sha256": "d310159a1f99f9cd7e09768e09ea3e7125ca860de8735af3b100af9f124c4cd3",
+      "mean_luma": 38.7498,
+      "contrast_p99": 11.004,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y0__gt",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/LightingShowcase__auto_y0__gt.png",
+      "sha256": "56bd09e3cb2dfc22ff7e62a64ed4496a0aeaace0160f17b57bd962b067efb770",
+      "mean_luma": 88.9358,
+      "contrast_p99": 28.1272,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y0__noisy",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/LightingShowcase__auto_y0__noisy.png",
+      "sha256": "afff0c0f2c4f2222e7d35414184a98c81570bb9f41cf49cebce4de10dfbdaaad",
+      "mean_luma": 89.4218,
+      "contrast_p99": 35.8344,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y200__gt",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/LightingShowcase__auto_y200__gt.png",
+      "sha256": "0d28d6776278c998c74a642da7f9a23ee29c1a58b26c1fa533273502e59751ec",
+      "mean_luma": 80.8136,
+      "contrast_p99": 25.7364,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y200__noisy",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/LightingShowcase__auto_y200__noisy.png",
+      "sha256": "ec774e6e4d35b9b55d2f6944ac0d773963b6965833f681059f459e19f5660cff",
+      "mean_luma": 81.2702,
+      "contrast_p99": 34.4802,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y90__gt",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/LightingShowcase__auto_y90__gt.png",
+      "sha256": "b9b6b31f464e95ea572f1b6f1e20af84a2d04705753cafd4fc2108f0e2f8b744",
+      "mean_luma": 76.9285,
+      "contrast_p99": 26.3748,
+      "blank": false
+    },
+    {
+      "id": "LightingShowcase__auto_y90__noisy",
+      "scene": "scenes/LightingShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.5,
+          5.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/LightingShowcase__auto_y90__noisy.png",
+      "sha256": "5ee12171f0095faeea7dba0fb5d7909e44b2e2514358333191d7469ccf710804",
+      "mean_luma": 77.493,
+      "contrast_p99": 34.7774,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y0__gt",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/MaterialGallery__auto_y0__gt.png",
+      "sha256": "96dcd415edea5c484d14112ff95c0377766cfd22cb4a5e010a155f6c0ea1ebf4",
+      "mean_luma": 42.3199,
+      "contrast_p99": 14.1656,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y0__noisy",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 2,
+      "path": "noisy/MaterialGallery__auto_y0__noisy.png",
+      "sha256": "adf0f0db3a307fdd7f67022338712812335a70d4add175bd041f83de2855f0e0",
+      "mean_luma": 42.5298,
+      "contrast_p99": 35.1556,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y200__gt",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/MaterialGallery__auto_y200__gt.png",
+      "sha256": "866967d7782fa18d92b7391297efb1126703c4605758aed2202c9ea5b5d3cecb",
+      "mean_luma": 40.5381,
+      "contrast_p99": 31.046,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y200__noisy",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 2,
+      "path": "noisy/MaterialGallery__auto_y200__noisy.png",
+      "sha256": "053b9e066b41e7d68c515c69419cc803315061bd489881af76b0a164fb72eb02",
+      "mean_luma": 40.633,
+      "contrast_p99": 38.879,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y90__gt",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/MaterialGallery__auto_y90__gt.png",
+      "sha256": "5d5a8b256362d21b631e7c872873d50850a5ffb19d69b71c2558807b465a0bdf",
+      "mean_luma": 39.5633,
+      "contrast_p99": 27.6904,
+      "blank": false
+    },
+    {
+      "id": "MaterialGallery__auto_y90__noisy",
+      "scene": "scenes/MaterialGallery.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 2,
+      "path": "noisy/MaterialGallery__auto_y90__noisy.png",
+      "sha256": "976f30b47e5cf1da631e1e0c128486afb6469ac8d76d9ffd55b3061720ffb005",
+      "mean_luma": 39.6071,
+      "contrast_p99": 37.854,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y0__gt",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PhysicsPlayground__auto_y0__gt.png",
+      "sha256": "cafaf40ea873c277de4eb5f8630d41d0c7a3914e1316237e6f26ae520a3fee25",
+      "mean_luma": 37.0525,
+      "contrast_p99": 9.7874,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y0__noisy",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PhysicsPlayground__auto_y0__noisy.png",
+      "sha256": "0edc14b5f3dab085282516a73ba8cb72889c1b5cf10f2511e270f905050b72c5",
+      "mean_luma": 36.8768,
+      "contrast_p99": 12.361,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y200__gt",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PhysicsPlayground__auto_y200__gt.png",
+      "sha256": "541c8b0ab4bf84235358235a4a7bc26359d2a8dc141c243a2b11a397de4998be",
+      "mean_luma": 37.0358,
+      "contrast_p99": 9.2872,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y200__noisy",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PhysicsPlayground__auto_y200__noisy.png",
+      "sha256": "c1ed43dac4dcce9fc0a325a33bab8399b6a663df8f9c0fccd28d00b8fd3f1ee2",
+      "mean_luma": 36.8825,
+      "contrast_p99": 17.1966,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y90__gt",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PhysicsPlayground__auto_y90__gt.png",
+      "sha256": "eef5a2afcfb0b0531389de1daf01b3fd4e314a302d8ca0a855a83a8465e0e1c6",
+      "mean_luma": 37.1979,
+      "contrast_p99": 8.7834,
+      "blank": false
+    },
+    {
+      "id": "PhysicsPlayground__auto_y90__noisy",
+      "scene": "scenes/PhysicsPlayground.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "distance": 15.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PhysicsPlayground__auto_y90__noisy.png",
+      "sha256": "4dd1064259b5fbe281a2e7d637944bc9c71da20ae47eba509bd976227663103b",
+      "mean_luma": 37.0475,
+      "contrast_p99": 16.377,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y0__gt",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PrimitiveGallery__auto_y0__gt.png",
+      "sha256": "e50f05aa68b7b27a6c5fa017474ef3e22754f89cd362c2098724cb7f1c08ed60",
+      "mean_luma": 20.4741,
+      "contrast_p99": 21.1994,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y0__noisy",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PrimitiveGallery__auto_y0__noisy.png",
+      "sha256": "6581073e63c47b4ec190c4d846b2c5e88dd9a72e7b6fd30a6601adcc466c1d46",
+      "mean_luma": 20.3829,
+      "contrast_p99": 21.8074,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y200__gt",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PrimitiveGallery__auto_y200__gt.png",
+      "sha256": "6d4248357593ba9f455a47cc170c74ec1bdc8d1e0b130766ca9267dcb6f75edc",
+      "mean_luma": 20.3499,
+      "contrast_p99": 19.1994,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y200__noisy",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PrimitiveGallery__auto_y200__noisy.png",
+      "sha256": "ee090c981a97adce5f2a35559a1454ae676c511aae5e861208964de2cd51ba6c",
+      "mean_luma": 20.2661,
+      "contrast_p99": 20.4412,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y90__gt",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/PrimitiveGallery__auto_y90__gt.png",
+      "sha256": "12ff9324c7231079deb00ed652132b0731aafc26908a3a4a0bd51ca5577ceb2f",
+      "mean_luma": 20.3024,
+      "contrast_p99": 15.004,
+      "blank": false
+    },
+    {
+      "id": "PrimitiveGallery__auto_y90__noisy",
+      "scene": "scenes/PrimitiveGallery.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          2.0,
+          0.5,
+          0.0
+        ],
+        "distance": 12.0,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/PrimitiveGallery__auto_y90__noisy.png",
+      "sha256": "23382bae534143c905fdd4759613ffa2231a605d12501e283322a2c7151a3547",
+      "mean_luma": 20.2149,
+      "contrast_p99": 17.365,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y0__gt",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ScriptTest__auto_y0__gt.png",
+      "sha256": "fe67ef4edb4e188871dd40a15b706d7ed352dc04f4bf7dbde9a150215f460767",
+      "mean_luma": 55.4701,
+      "contrast_p99": 32.0894,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y0__noisy",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ScriptTest__auto_y0__noisy.png",
+      "sha256": "5134599c0bc6fad03b308197b12d35c1598a41712e94ba88a7d1162125cb15d5",
+      "mean_luma": 54.9112,
+      "contrast_p99": 33.8836,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y200__gt",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ScriptTest__auto_y200__gt.png",
+      "sha256": "53065b994627bf53d77ee39d57998234254305762b735b79e1cdd80e494bdb54",
+      "mean_luma": 55.6808,
+      "contrast_p99": 29.2326,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y200__noisy",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ScriptTest__auto_y200__noisy.png",
+      "sha256": "2a3d9735c17dd350ca9a83f4f270ebbe36e31938c799376615ebd33e71e8a32b",
+      "mean_luma": 55.125,
+      "contrast_p99": 31.5174,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y90__gt",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/ScriptTest__auto_y90__gt.png",
+      "sha256": "463315e9839e65c055ec73588db14adc987b2fe19a7b15360456eee50cd598ae",
+      "mean_luma": 55.3822,
+      "contrast_p99": 28.9358,
+      "blank": false
+    },
+    {
+      "id": "ScriptTest__auto_y90__noisy",
+      "scene": "scenes/ScriptTest.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          1.25,
+          0.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/ScriptTest__auto_y90__noisy.png",
+      "sha256": "cc19e885a6982337d61864cda5dc1e9c1bb9fba59969da108d46b854d19f307b",
+      "mean_luma": 54.8674,
+      "contrast_p99": 31.3982,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y0__gt",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/TerrainShowcase__auto_y0__gt.png",
+      "sha256": "68fcfe7a9a759afa31d99e6660133fae2bb17aa807c4df1c2c93a1951e2aa373",
+      "mean_luma": 58.2116,
+      "contrast_p99": 9.4946,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y0__noisy",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/TerrainShowcase__auto_y0__noisy.png",
+      "sha256": "cdffb19c816f71050a9809d86102908fb2bbabc1a0d0e9ae5acdf7c39034582f",
+      "mean_luma": 61.2924,
+      "contrast_p99": 32.6804,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y200__gt",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/TerrainShowcase__auto_y200__gt.png",
+      "sha256": "a6ba17d78cdc5881f2410dce55f575d237c55e72a10136e7c1d7f8ad9a11197f",
+      "mean_luma": 46.4549,
+      "contrast_p99": 10.7794,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y200__noisy",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/TerrainShowcase__auto_y200__noisy.png",
+      "sha256": "d73dbe4335a6c7622562abe4c37be85adc06de13cca197bdcbfa88d61c776be6",
+      "mean_luma": 48.542,
+      "contrast_p99": 39.187,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y90__gt",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/TerrainShowcase__auto_y90__gt.png",
+      "sha256": "6877ad7135acb4249f819e0279a3a9da9fe2d153942b2c3d244b386ea314741c",
+      "mean_luma": 43.4549,
+      "contrast_p99": 10.635,
+      "blank": false
+    },
+    {
+      "id": "TerrainShowcase__auto_y90__noisy",
+      "scene": "scenes/TerrainShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          18.0,
+          15.0
+        ],
+        "distance": 12.5,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/TerrainShowcase__auto_y90__noisy.png",
+      "sha256": "144b1844cbfb35709cdb038db79e33d8be31a3f9f3f07afbbfca43b3a20d0eac",
+      "mean_luma": 45.6668,
+      "contrast_p99": 39.3326,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y0__gt",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/WaterShowcase__auto_y0__gt.png",
+      "sha256": "f5b3ffb3c4c170df5ad250041d3d1cf5f1bb68d20fc148ccbb451db09af08dd2",
+      "mean_luma": 35.8664,
+      "contrast_p99": 5.2086,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y0__noisy",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y0",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 0.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/WaterShowcase__auto_y0__noisy.png",
+      "sha256": "920209397926abd9c4304ae5436588a9694a688536267cef6dc0917ff4dd0883",
+      "mean_luma": 35.8298,
+      "contrast_p99": 6.1444,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y200__gt",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/WaterShowcase__auto_y200__gt.png",
+      "sha256": "2f77d1be9b01568b9b79ba61409ae1ac03c7711b2c07ed071c8106595274c830",
+      "mean_luma": 36.0438,
+      "contrast_p99": 6.4212,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y200__noisy",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y200",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 200.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/WaterShowcase__auto_y200__noisy.png",
+      "sha256": "13f9a9eded891bc017320b314009f7449b73839bcde8655120c745cc099fdb86",
+      "mean_luma": 35.7856,
+      "contrast_p99": 7.1352,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y90__gt",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "gt",
+      "render_scale": 1.0,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": true,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "gt/WaterShowcase__auto_y90__gt.png",
+      "sha256": "4aacff78e189d0a9e2a9386f4df7e4b0a03cfe56f75186fa34ccf03830da971b",
+      "mean_luma": 36.0126,
+      "contrast_p99": 4.7834,
+      "blank": false
+    },
+    {
+      "id": "WaterShowcase__auto_y90__noisy",
+      "scene": "scenes/WaterShowcase.wastescene",
+      "camera": {
+        "name": "auto_y90",
+        "focal": [
+          0.0,
+          0.05,
+          6.5
+        ],
+        "distance": 21.25,
+        "pitch": -30.0,
+        "yaw": 90.0
+      },
+      "pass_name": "noisy",
+      "render_scale": 0.5,
+      "quality_preset": 3,
+      "neural": 1,
+      "accumulate": false,
+      "frame_index": 400,
+      "width": 2332,
+      "height": 1451,
+      "attempts": 0,
+      "path": "noisy/WaterShowcase__auto_y90__noisy.png",
+      "sha256": "02b4e5b557f27554a29df1678fc00fc510f34fb599c2832a3a5f9253a6f2851c",
+      "mean_luma": 35.7583,
+      "contrast_p99": 7.9278,
+      "blank": false
+    }
+  ],
+  "failures": []
+}

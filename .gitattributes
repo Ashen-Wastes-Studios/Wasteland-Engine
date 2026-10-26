@@ -51,3 +51,10 @@
 *.wav filter=lfs diff=lfs merge=lfs -text
 *.json filter=lfs diff=lfs merge=lfs -text
 Wasteland.lib filter=lfs diff=lfs merge=lfs -text
+
+# Source JSON must NOT go through LFS. These files are small (56 KB manifests,
+# 129 B stats), and an LFS pointer in a clone without git-lfs is a 129-byte stub
+# that parses as neither JSON nor anything else -- which would silently destroy
+# both the dataset reproducibility record and the shader ABI constants above it.
+tools/train_neural/*.json !filter !diff !merge text
+tools/train_neural/manifests/*.json !filter !diff !merge text

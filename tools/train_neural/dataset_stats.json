@@ -1,0 +1,49 @@
+{
+  "description": "Per-feature standardisation constants for the neural rendering network. Part of the ABI: the shader must apply the same affine before the first matmul. Regenerate with `python tools/train_neural/dataset_stats.py`.",
+  "features": [
+    "r",
+    "g",
+    "b",
+    "luma",
+    "mean_r",
+    "mean_g",
+    "mean_b",
+    "mean_luma"
+  ],
+  "mean": [
+    0.174444,
+    0.169996,
+    0.224327,
+    0.174864,
+    0.174211,
+    0.169941,
+    0.224391,
+    0.17478
+  ],
+  "std": [
+    0.133053,
+    0.083476,
+    0.114503,
+    0.086315,
+    0.096396,
+    0.068805,
+    0.09686,
+    0.068674
+  ],
+  "measured_on": {
+    "train_pairs": 30,
+    "holdout_pairs": 6,
+    "holdout_keys": [
+      "AtmosphereShowcase__auto_y200",
+      "DemoGame__auto_y200",
+      "Example3D__auto_y90",
+      "InventoryDemo__auto_y200",
+      "PhysicsPlayground__auto_y90",
+      "PrimitiveGallery__auto_y0"
+    ],
+    "samples": 600000,
+    "pixels_per_pair": 20000,
+    "seed": 5
+  },
+  "why": "Without standardisation the layer-1 pre-activation std is 0.0118, half the ReLU units die at init, and training converges to `out = anchor + constant` -- a single number worth +2.4 dB that is indistinguishable from a working model by any accuracy metric."
+}
