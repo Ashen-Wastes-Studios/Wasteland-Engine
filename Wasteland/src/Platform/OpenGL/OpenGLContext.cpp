@@ -141,6 +141,16 @@ namespace Wasteland {
 		WL_CORE_INFO(" Vendor: {0}", (const char*)glGetString(GL_VENDOR));
 		WL_CORE_INFO(" Renderer: {0}", (const char*)glGetString(GL_RENDERER));
 		WL_CORE_INFO(" Version: {0}", (const char*)glGetString(GL_VERSION));
+		// The image-unit ceiling, not the guaranteed minimum. GL 4.3 guarantees
+		// only 8 image uniforms, and the Nova path is already at that edge; the
+		// neural feature pass (u12) needs a ninth binding. The ACTUAL limit is what
+		// decides whether that is possible, so it is logged rather than assumed --
+		// the alternative is a wrong-but-plausible image from an unbound unit.
+		// A driver below the need should fail with a message naming the limit, not
+		// silently, which is why this sits next to the other driver facts.
+		GLint maxImageUnits = 0;
+		glGetIntegerv(GL_MAX_IMAGE_UNITS, &maxImageUnits);
+		WL_CORE_INFO(" Max image units: {0} (GL 4.3 guarantees 8)", maxImageUnits);
 
 // The version floor check is compiled out entirely in Release. That is a real
 // limitation, documented in the header: a Release build on a pre-4.5 driver

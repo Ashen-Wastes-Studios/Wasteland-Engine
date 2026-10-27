@@ -92,7 +92,13 @@ def main():
             return 1
 
         for label, mutate in MUTATIONS.items():
-            text = original.decode("utf-8", errors="replace")
+            # Normalise CRLF to LF before mutating. The shader twins are stored with
+            # CRLF line endings, and a mutation whose pattern spans a line break can
+            # therefore never match -- which is exactly how the Halton-jitter control
+            # came to report "mutation did not apply" while the check it guards is
+            # real. A control that silently does nothing is worse than no control,
+            # because it reads as a pass.
+            text = original.decode("utf-8", errors="replace").replace("\r\n", "\n")
             mutated = mutate(text)
             if mutated == text:
                 # The mutator found nothing to replace -- meaning the guard's

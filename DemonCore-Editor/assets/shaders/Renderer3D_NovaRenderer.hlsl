@@ -91,6 +91,21 @@ RWTexture2D<unorm float4> img_MaterialPacked : register(u3);
 RWTexture2D<float4> img_AlbedoHit     : register(u4);
 RWTexture2D<float2> img_Moments       : register(u9);
 RWTexture2D<float4> img_HistoryBuffer : register(u11);
+// u12: the neural stage's globals. An RWStructuredBuffer<uint> whose element
+// layout is byte-for-byte the GLSL's NeuralGlobals SSBO -- elements 0..3 are the
+// four frame means as RAW FLOAT BITS (the GLSL's `float g_Mean[4]` at byte 0),
+// elements 4.. are g_Partial[] (the GLSL's `uint g_Partial[NEURAL_MAX_BLOCKS*4]`
+// at byte 16), then g_GateMean (a float at element 4+MAX*4) and g_GatePartial[].
+// The named NEURAL_*_BASE constants below carry the offsets so the two twins
+// cannot drift apart silently.
+// Both layouts put element i at byte 4i, so the two shaders agree without either
+// reinterpreting anything. `asfloat`/`asuint` are the only conversions.
+//
+// It was an empty slot before this stage: nothing in the shader claimed u12, and
+// the binding reservation (docs/NEURAL_RENDERING_BINDING_PLAN.md) assigns it
+// here. Taking it is what forced the DX12 descriptor tables wider -- see
+// DX12Nova.h's heap layout comment.
+RWStructuredBuffer<uint> NeuralGlobals : register(u12);
 
 // ---- scene data (GL SSBO bindings 1/2/3 -> t registers) ----
 StructuredBuffer<RayTracingInstance> Instances    : register(t1);
@@ -254,6 +269,10 @@ cbuffer NovaConstants : register(b1)
     // Temporal Super-Resolution (experimental, default-off)
     int     u_TSREnabled;
     float   u_TSRSharpenStrength;
+    // WLSR sharpen gate. RCAS (pass 15) is a no-op until this is 1, so the stage
+    // can be shipped inert and turned on by the A/B harness or the editor without
+    // a rebuild. See the comment above RunRCAS for why it must default off.
+    int     u_RCSEnabled;
 };
 
 // ---- GLSL-semantics helpers ----
@@ -297,6 +316,10 @@ Texture2D<float2> read_img_Velocity : register(t69);
 Texture2D<float4> read_img_TraceGBuffer : register(t70);
 Texture2D<float4> read_img_Bloom_Temp : register(t71);
 Texture2D<float2> read_img_Moments : register(t73);
+// t74 is claimed, by NeuralWeights below: the readable-snapshot block was widened
+// 10 -> 11 to cover it, which is what moved the DX12 UAV block from heap index 52
+// to 53. t75 remains spare.
+StructuredBuffer<float> NeuralWeights : register(t74);
 #define IMG_LOAD(tex, pos) read_##tex.Load(int3(clamp(int2(pos), int2(0,0), int2(g_dims)-1),0))
 #define IMG_SIZE(tex)            (g_dims)
 
@@ -365,6 +388,10 @@ float4 TEX_SLOT_IDX(int idx, float2 uv, float lod)
 
 // ---- per-thread mutable state (GLSL file-scope mutables) ----
 static uint3 g_dt   = uint3(0, 0, 0);
+// SV_GroupID, set in main. The neural reduction's block index needs it: the
+// GLSL equivalent multiplies gl_WorkGroupID.y by gl_NumWorkGroups.x, and HLSL has
+// no dispatch-extent builtin, so the x extent is derived from g_dims instead.
+static uint3 g_gid  = uint3(0, 0, 0);
 static uint2 g_dims = uint2(0, 0);
 static uint  seed   = 0; // re-seeded per pixel in RunTraceAndDenoise
 
@@ -404,8 +431,17 @@ static uint g_tid = 0; // flattened thread index within the group, set in main
 
 
 
-// Neural Rendering (OpenGL): tiny in-shader MLP radiance cache + texture detail.
-// u_NeuralEnabled gates both; strengths blend 0 (classic path) -> 1 (full neural).
+// Neural Rendering (HLSL): in-shader MLPs for texture detail and material
+// appearance. The GI network is gone from here -- it lived inside the shading
+// estimator and has moved to a trained end-of-frame stage
+// (docs/NEURAL_RENDERING.md).
+//
+// u_NeuralEnabled now selects between two MODES rather than a blend: 0 is the
+// classic PBR renderer with no neural term at all, 1 enables the neural
+// material and texture paths below. The strength uniforms still scale those
+// paths so they can be faded, but the toggle is a switch -- there is no
+// mid-estimator mix any more, which is what previously let "neural on" and
+// "neural off" differ only in degree.
 
 
 
@@ -1287,6 +1323,14 @@ bool IsOccluded(Ray r, float maxDist, int skipIdx) {
                 // light's center, so without this the light's own front
                 // surface always occludes and kills all direct light.
                 if (i == skipIdx) continue;
+                // Phase 1: LODLevel is a SHADING BUDGET, not a visibility switch.
+                // TestInstanceHit (primary + closest-hit) never reads LODLevel, so far
+                // geometry keeps its exact silhouette and nothing pops. Only shadow rays
+                // skip the far band here, which trades the shadow of a distant instance
+                // for a cheaper traversal. Never apply this to the closest-hit path: that
+                // would reproduce the 2 km distance-cull popping bug that raising
+                // TraceMaxDistance to 16 km was specifically done to fix.
+                if (Instances[i].LODLevel >= 2) continue;
                 if (TestInstanceOcclusion(r, maxDist, i)) return true;
             }
         } else {
@@ -2388,9 +2432,15 @@ float3 ComputeDirectLighting(HitInfo h, float3 V, uint lightSeed, bool skipEnv) 
     float3 diffuseColor = h.albedo * (1.0f - h.metal);
         float3 directLight = float3(0.0f, 0.0f, 0.0f);
 
+    // u_MaxLights, not a literal. The GLSL twin reads this uniform here; the HLSL
+    // hardcoded 32, which ignored a live uniform the CPU uploads every frame
+    // (Renderer3D.cpp:3450) and is set to 4 at Ultra (preset at :5117). That gave
+    // DX11/DX12/Vulkan 8x the intended light budget at the preset this engine
+    // actually ships. Only the Ultra branch differed -- Low/Medium/High are the
+    // same 1/2/4 ladder in both -- which is why no non-Ultra test could see it.
     int maxLightsCap = (u_QualityLevel == 0) ? 1 :
                        ((u_QualityLevel == 1) ? 2 :
-                       ((u_QualityLevel == 2) ? 4 : 32));
+                       ((u_QualityLevel == 2) ? 4 : u_MaxLights));
     int lightsToSample = min(u_LightCount, maxLightsCap);
 
     // Stochastic subset: evaluate 2 rotating lights instead of all N shadow
@@ -2606,13 +2656,11 @@ void RunTraceAndDenoise()
         uint lightSeed = (uint)(pixelCoords.x * 73 + pixelCoords.y * 149 + u_FrameIndex * 2);
         int maxIndirectRays = (u_QualityLevel == 0) ? 0 :
                               ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
-        // Perf tier: at reduced render scale the neural cache carries diffuse
-        // GI (it already blends 65% into the traced result) — skip the second
-        // traced bounce for non-metals and save ~40% of the trace pass.
-        // Metals keep the ray so reflections stay sharp.
-        if (maxIndirectRays > 0 && u_RenderScale <= 0.75f && tileHit.metal <= 0.5f &&
-            u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f)
-            maxIndirectRays = 0;
+        // The bounce is always traced now. This used to be skipped at reduced
+        // render scale on non-metals, because the neural cache stood in for the
+        // traced GI -- the skip existed only to save the trace cost the cache had
+        // replaced. With the cache removed the estimator is resolution-independent
+        // again, and the new end-of-frame neural stage owns the GI enhancement.
         // Mirror gap-fill: Low preset traces no indirect rays, so metals
         // would only get the analytic sky approx. Trace one real mirror ray
         // instead and skip the approx inside ComputeDirectLighting.
@@ -2649,16 +2697,13 @@ void RunTraceAndDenoise()
             }
             indirectLight /= (float)(maxIndirectRays);
             indirectLight *= tileHit.occlusion;
-            // Neural radiance cache blend: learned GI steadies the 1-ray estimate (OpenGL neural path).
-            // Weighted down on metals so the traced specular reflection dominates.
-            if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f) {
-                float3 neuralGI = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V);
-                float neuralK = clamp(u_NeuralLightStrength, 0.0f, 1.0f) * 0.65f * (1.0f - tileHit.metal * 0.8f);
-                indirectLight = lerp_safe(indirectLight, neuralGI * tileHit.occlusion, neuralK);
-            }
-        } else if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f) {
-            // No traced bounces at this quality level: neural cache IS the GI (e.g. Low preset)
-            indirectLight = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V) * tileHit.occlusion;
+            // The neural radiance cache blend is gone. It mixed wl_neural_indirect()
+            // into the traced estimate here at strength x 0.65, which is why the
+            // toggle was a mid-estimator blend rather than a mode switch: the traced
+            // bounce was always partially replaced, so "neural on" was never a
+            // different estimator, just a weighted average of two. The estimator is
+            // now unconditionally the traced one, and the new end-of-frame stage
+            // owns the neural enhancement instead.
         }
 
         // Sharp scene reflection for metals with no traced bounce (Low preset):
@@ -3036,6 +3081,377 @@ float3 BilinearAccum(float2 uv, float renderScale)
     return lerp_safe(lerp_safe(c00, c10, f.x), lerp_safe(c01, c11, f.x), f.y);
 }
 
+// ============================================================================
+// Edge-detect anti-aliasing: FXAA (ReconstructionFilter 6) and SMAA S1 (7).
+// ============================================================================
+// HLSL twin of the GLSL block of the same name -- see that comment for the full
+// reasoning. Summary: both entries were plumbed (enum, editor combo, all three
+// NVRHI Set() calls) and read by nothing, so the composite's ladder fell through
+// to bilinear and picking either one changed the image not at all.
+//
+// Runs inside RunComposite on the resolved image, before the tonemap/post chain.
+// The taps read the image the composite is READING (img_Accumulation, or
+// img_Bloom_Temp at Ultra full-res) -- never img_Output, which this dispatch and
+// pass 5 both write and which no compute dispatch orders between invocations.
+//
+// The edge metric is tonemapped luma even though the blend is in pre-tonemap
+// space: FXAA's threshold is only perceptually meaningful on display-referred
+// luma. The tonemap is applied per-tap for the metric alone, so the blend stays
+// in the space the composite already works in and the real tonemap still runs once.
+float EdgeMetricLuma(float3 c)
+{
+    float3 m = c / (c + float3(1.0f, 1.0f, 1.0f));
+    return dot(m, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 EdgeAASrcTap(int2 fullPos, int2 fullSize, int2 srcSize, float renderScale)
+{
+    if ((renderScale >= 1.0f) && (u_QualityLevel >= 3))
+        return IMG_LOAD(img_Bloom_Temp, clamp(fullPos, int2(0, 0), fullSize - int2(1, 1))).rgb;
+    int2 sp = int2(float2(fullPos) * renderScale);
+    return IMG_LOAD(img_Accumulation, clamp(sp, int2(0, 0), srcSize - int2(1, 1))).rgb;
+}
+
+float3 RunEdgeDetectAA(int2 pos, int2 fullSize, int2 srcSize, float renderScale)
+{
+    int2 maxC = fullSize - int2(1, 1);
+    int2 c = clamp(pos, int2(0, 0), maxC);
+
+    float3 rgbM = EdgeAASrcTap(c, fullSize, srcSize, renderScale);
+    float lumaM = EdgeMetricLuma(rgbM);
+
+    // The 4 diagonal neighbours, matching FXAA 3.11's NW/NE/SW/SE arrangement.
+    // The cardinal taps are fetched only if an edge survives the test below.
+    float3 rgbNW = EdgeAASrcTap(c + int2(-1, -1), fullSize, srcSize, renderScale);
+    float3 rgbNE = EdgeAASrcTap(c + int2( 1, -1), fullSize, srcSize, renderScale);
+    float3 rgbSW = EdgeAASrcTap(c + int2(-1,  1), fullSize, srcSize, renderScale);
+    float3 rgbSE = EdgeAASrcTap(c + int2( 1,  1), fullSize, srcSize, renderScale);
+
+    float lumaNW = EdgeMetricLuma(rgbNW);
+    float lumaNE = EdgeMetricLuma(rgbNE);
+    float lumaSW = EdgeMetricLuma(rgbSW);
+    float lumaSE = EdgeMetricLuma(rgbSE);
+
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+
+    // NO EDGE -> unchanged. FXAA 3.11's threshold is
+    // max(EDGE_THRESHOLD_MIN, lumaMax * EDGE_THRESHOLD) with
+    // EDGE_THRESHOLD_MIN = 0.0312 and EDGE_THRESHOLD = 0.125.
+    float lumaRange = lumaMax - lumaMin;
+    if (lumaRange < max(0.0312f, lumaMax * 0.125f))
+        return rgbM;
+
+    // The cardinal taps complete the 3x3.
+    float3 rgbN = EdgeAASrcTap(c + int2(0, -1), fullSize, srcSize, renderScale);
+    float3 rgbS = EdgeAASrcTap(c + int2(0,  1), fullSize, srcSize, renderScale);
+    float3 rgbW = EdgeAASrcTap(c + int2(-1, 0), fullSize, srcSize, renderScale);
+    float3 rgbE = EdgeAASrcTap(c + int2( 1, 0), fullSize, srcSize, renderScale);
+
+    float lumaN = EdgeMetricLuma(rgbN);
+    float lumaS = EdgeMetricLuma(rgbS);
+    float lumaW = EdgeMetricLuma(rgbW);
+    float lumaE = EdgeMetricLuma(rgbE);
+
+    // DIRECTION SELECTION, verbatim from FXAA 3.11.
+    float dirX = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    float dirY =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.03125f, 1.0f / 128.0f);
+    float rcpDirMin = 1.0f / (min(abs(dirX), abs(dirY)) + dirReduce);
+    float2 dir = clamp(float2(dirX, dirY) * rcpDirMin, -8.0f, 8.0f);
+
+    int2 halfOff = int2(clamp(int(dir.x * 0.5f), -1, 1),
+                        clamp(int(dir.y * 0.5f), -1, 1));
+
+    // rgbA: the blend at half a texel in each direction. SMAA S1's extra step is
+    // the symmetric half-texel pair; the FXAA entry point uses the plain 3-tap form.
+    float3 rgbA;
+    if (u_ReconstructionFilter == 7)
+    {
+        rgbA = (EdgeAASrcTap(c + halfOff, fullSize, srcSize, renderScale) +
+                EdgeAASrcTap(c - halfOff, fullSize, srcSize, renderScale)) * 0.5f;
+    }
+    else
+    {
+        rgbA = (rgbM +
+                EdgeAASrcTap(c + halfOff, fullSize, srcSize, renderScale) +
+                EdgeAASrcTap(c - halfOff, fullSize, srcSize, renderScale)) / 3.0f;
+    }
+
+    // rgbB: the 5-tap cross blend.
+    float3 rgbB = (rgbN + rgbS + rgbW + rgbE) * 0.25f * 0.5f + rgbM * 0.5f;
+    float lumaB = EdgeMetricLuma(rgbB);
+
+    // If the cross blend would land outside the local luma range the edge is too
+    // sharp for it, and the half-texel blend is the better answer.
+    if (lumaB < lumaMin || lumaB > lumaMax)
+        return rgbA;
+    return rgbB;
+}
+
+// ============================================================================
+// FSR1 EASU -- Edge Adaptive Spatial Upsampling (filter 8).
+//
+// The HLSL twin of the GLSL EASU in this same file's sibling. The two are kept
+// statement-for-statement identical so a difference between them cannot hide:
+// this backend is compiled by fxc/dxc and the GLSL by the GL driver, and a
+// divergence would show up only as a per-backend rendering difference.
+//
+// Adapted from the EASU stage of AMD FidelityFX Super Resolution 1
+// (ffx_fsr1.h, (c) 2021 Advanced Micro Devices, Inc., MIT licensed). The
+// adaptation is structural rather than a straight port: the reference gathers
+// 2x2 texel blocks with a gather and drives the taps from four precomputed
+// constant vectors, whereas this renderer samples a UAV, so the twelve taps are
+// written out explicitly and the cell origin is passed in directly. The filter
+// itself -- tap offsets, gradient and length shaping, the lanczos-2
+// approximation, the min/max deringing clamp -- is unchanged.
+//
+// WHY IT EARNS A SLOT IN THE LADDER. Every other entry is separable: it applies
+// a 1D kernel along x and then along y, which is why Lanczos rings along a
+// diagonal edge and Bicubic smears across one. EASU instead measures the local
+// gradient at the sample point and stretches the kernel ALONG the edge, so a
+// diagonal is reconstructed from taps lying on it rather than across it. A
+// ray tracer produces nothing but hard geometry edges -- exactly the case a
+// separable kernel handles worst -- so this is the one entry that is not just a
+// different trade of blur against ringing.
+//
+// WHY RCAS IS A SEPARATE PASS AND IS DEFERRED. FSR1 is EASU followed by RCAS, a
+// contrast-adaptive sharpen. The earlier text here claimed RCAS would cost five
+// EASU evaluations -- that is wrong, and it was worth correcting rather than
+// leaving: RCAS samples five taps of the RECONSTRUCTED image (the centre plus the
+// four diagonals) and drives a gain from the local contrast. It does not re-run
+// EASU at those offsets. So it is ~5 taps, not 60, and it is cheap.
+//
+// It still cannot be folded into this branch: the four diagonal taps live at
+// NEIGHBOURING OUTPUT PIXELS, and this invocation only holds the centre one in
+// registers. A pass boundary is required.
+//
+// It is deferred, not omitted, and the reason is scheduling rather than cost:
+// the clean-room reconstruction plan (.hermes/plans/
+// 2026-10-26_001250-clean-room-dlss-class-stack.md, section 1.3) already
+// allocates the dead pass-15/16 slots to RCAS and to the WLAA sharpen. Taking
+// those slots from inside this composite would collide with that work, and the
+// plan is also where the post-composite scratch-image rebind is designed.
+// EASU's own negative lobes supply most of the high-frequency response RCAS
+// would add, and the Bicubic entry covers the overshoot case for now.
+// ============================================================================
+
+// One of the twelve taps. Offsets are relative to the bilinear cell's upper-left
+// texel, which is also the cell the sample point falls in:
+//        b c
+//      e f g h
+//      i j k l
+//        n o
+float3 EASUTap(int2 cell, int2 srcSize, int2 off)
+{
+    return IMG_LOAD(img_Accumulation, clamp(cell + off, int2(0, 0), srcSize - int2(1, 1))).rgb;
+}
+
+// Two-channel luma, matching the reference's "luma times 2, in 2 FMA/MAD". The
+// factor of two is irrelevant (every use is a ratio) but keeping the same weights
+// means the gradient shaping is directly comparable to the original.
+float EASULuma(float3 c)
+{
+    return c.b * 0.5f + (c.r * 0.5f + c.g);
+}
+
+// Filtering for one tap. `off` is the tap's offset from the SAMPLE POINT (not
+// from the cell), which is why every call site passes (tapOffset - pp).
+void EASUTapAccum(inout float3 aC, inout float aW, float2 off, float2 dir, float2 len,
+                  float lob, float clp, float3 c)
+{
+    // Rotate the offset by the gradient direction.
+    float2 v;
+    v.x = off.x * dir.x + off.y * dir.y;
+    v.y = off.x * -dir.y + off.y * dir.x;
+    // Anisotropy.
+    v *= len;
+    // Distance^2, limited to the window -- at a corner two taps fall outside it.
+    float d2 = min(v.x * v.x + v.y * v.y, clp);
+    // lanczos-2 without sin(), rcp() or sqrt():
+    //   (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (1/4 * x^2 - 1)^2
+    //   |_______________________|   |_______________|
+    //             base                  window
+    float wB = 2.0f / 5.0f * d2 - 1.0f;
+    float wA = lob * d2 - 1.0f;
+    wB *= wB;
+    wA *= wA;
+    wB = 25.0f / 16.0f * wB - (25.0f / 16.0f - 1.0f);
+    float w = wB * wA;
+    aC += c * w;
+    aW += w;
+}
+
+// Accumulate gradient direction and length from one bilinear weight.
+void EASUSet(inout float2 dir, inout float len, float2 pp,
+             bool biS, bool biT, bool biU, bool biV,
+             float lA, float lB, float lC, float lD, float lE)
+{
+    // Bilinear weight. The predicates are compile-time constants here, so the
+    // three unused branches fold away.
+    //   s t
+    //   u v
+    float w = 0.0f;
+    if (biS) w = (1.0f - pp.x) * (1.0f - pp.y);
+    if (biT) w = pp.x * (1.0f - pp.y);
+    if (biU) w = (1.0f - pp.x) * pp.y;
+    if (biV) w = pp.x * pp.y;
+
+    // Direction is the '+' diff:
+    //     a
+    //   b c d
+    //     e
+    // Length converts gradient reversal to 0 and non-reversal to 1, shaped, then
+    // adds the horizontal and vertical terms.
+    float dc = lD - lC;
+    float cb = lC - lB;
+    float lenX = max(abs(dc), abs(cb));
+    // The reference uses a bit-level reciprocal approximation here precisely
+    // because a plain divide yields +inf for a flat neighbourhood, and that inf
+    // propagates into the length term. Flooring the denominator is equivalent
+    // for every non-zero input and removes the inf.
+    lenX = 1.0f / max(lenX, 1e-20f);
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    lenX = clamp(abs(dirX) * lenX, 0.0f, 1.0f);
+    lenX *= lenX;
+    len += lenX * w;
+
+    float ec = lE - lC;
+    float ca = lC - lA;
+    float lenY = max(abs(ec), abs(ca));
+    lenY = 1.0f / max(lenY, 1e-20f);
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    lenY = clamp(abs(dirY) * lenY, 0.0f, 1.0f);
+    lenY *= lenY;
+    len += lenY * w;
+}
+
+float3 RunFSR1EASU(int2 cell, float2 pp, int2 srcSize)
+{
+    // The twelve taps, in the reference's order.
+    float3 b = EASUTap(cell, srcSize, int2( 0, -1));
+    float3 c = EASUTap(cell, srcSize, int2( 1, -1));
+    float3 e = EASUTap(cell, srcSize, int2(-1,  0));
+    float3 f = EASUTap(cell, srcSize, int2( 0,  0));
+    float3 g = EASUTap(cell, srcSize, int2( 1,  0));
+    float3 h = EASUTap(cell, srcSize, int2( 2,  0));
+    float3 i = EASUTap(cell, srcSize, int2(-1,  1));
+    float3 j = EASUTap(cell, srcSize, int2( 0,  1));
+    float3 k = EASUTap(cell, srcSize, int2( 1,  1));
+    float3 l = EASUTap(cell, srcSize, int2( 2,  1));
+    float3 n = EASUTap(cell, srcSize, int2( 0,  2));
+    float3 o = EASUTap(cell, srcSize, int2( 1,  2));
+
+    float bL = EASULuma(b);
+    float cL = EASULuma(c);
+    float eL = EASULuma(e);
+    float fL = EASULuma(f);
+    float gL = EASULuma(g);
+    float hL = EASULuma(h);
+    float iL = EASULuma(i);
+    float jL = EASULuma(j);
+    float kL = EASULuma(k);
+    float lL = EASULuma(l);
+    float nL = EASULuma(n);
+    float oL = EASULuma(o);
+
+    // Accumulate for bilinear interpolation. Each call supplies the '+' cross
+    // around one of the four cell corners, weighted by that corner's bilinear
+    // weight -- so the four calls together cover the cell exactly once.
+    float2 dir = float2(0.0f, 0.0f);
+    float len = 0.0f;
+    EASUSet(dir, len, pp, true,  false, false, false, bL, eL, fL, gL, jL);
+    EASUSet(dir, len, pp, false, true,  false, false, cL, fL, gL, hL, kL);
+    EASUSet(dir, len, pp, false, false, true,  false, fL, iL, jL, kL, nL);
+    EASUSet(dir, len, pp, false, false, false, true,  gL, jL, kL, lL, oL);
+
+    // Normalize, and clean up values close to zero.
+    float2 dir2 = dir * dir;
+    float dirR = dir2.x + dir2.y;
+    bool zro = dirR < 1.0f / 32768.0f;
+    // max() rather than the raw value: rsqrt(0) is +inf, and the zro override
+    // only replaces the result, not the intermediate. dirR is a sum of squares
+    // so it is never negative.
+    dirR = rsqrt(max(dirR, 1.0f / 32768.0f));
+    dirR = zro ? 1.0f : dirR;
+    dir.x = zro ? 1.0f : dir.x;
+    dir *= dirR;
+
+    // Transform from {0 to 2} to {0 to 1} range, and shape with square.
+    len = len * 0.5f;
+    len *= len;
+
+    // Stretch kernel {1.0 vert|horz, to sqrt(2.0) on diagonal}. |dir| >= 1 after
+    // the normalization above, so the denominator cannot vanish.
+    float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
+
+    // Anisotropic length after rotation:
+    //   x := 1.0 lerp to 'stretch' on edges
+    //   y := 1.0 lerp to 2x on edges
+    float2 len2 = float2(1.0f + (stretch - 1.0f) * len, 1.0f - 0.5f * len);
+
+    // Based on the amount of 'edge', the window shifts from +/-sqrt(2.0) to
+    // slightly beyond 2.0.
+    float lob = 0.5f + (1.0f / 4.0f - 0.04f - 0.5f) * len;
+
+    // Distance^2 clipping point at the end of the adjustable window.
+    float clp = 1.0f / lob;
+
+    // Accumulation, mixed with the min/max of the four nearest texels. This is
+    // what removes the ringing the lanczos-2 negative lobes would otherwise
+    // produce: the result can never leave the range of the 2x2 cell it was
+    // reconstructed from.
+    float3 min4 = min(min(min(f, g), j), k);
+    float3 max4 = max(max(max(f, g), j), k);
+
+    float3 aC = float3(0.0f, 0.0f, 0.0f);
+    float aW = 0.0f;
+    EASUTapAccum(aC, aW, float2( 0.0f, -1.0f) - pp, dir, len2, lob, clp, b);
+    EASUTapAccum(aC, aW, float2( 1.0f, -1.0f) - pp, dir, len2, lob, clp, c);
+    EASUTapAccum(aC, aW, float2(-1.0f,  1.0f) - pp, dir, len2, lob, clp, i);
+    EASUTapAccum(aC, aW, float2( 0.0f,  1.0f) - pp, dir, len2, lob, clp, j);
+    EASUTapAccum(aC, aW, float2( 0.0f,  0.0f) - pp, dir, len2, lob, clp, f);
+    EASUTapAccum(aC, aW, float2(-1.0f,  0.0f) - pp, dir, len2, lob, clp, e);
+    EASUTapAccum(aC, aW, float2( 1.0f,  1.0f) - pp, dir, len2, lob, clp, k);
+    EASUTapAccum(aC, aW, float2( 2.0f,  1.0f) - pp, dir, len2, lob, clp, l);
+    EASUTapAccum(aC, aW, float2( 2.0f,  0.0f) - pp, dir, len2, lob, clp, h);
+    EASUTapAccum(aC, aW, float2( 1.0f,  0.0f) - pp, dir, len2, lob, clp, g);
+    EASUTapAccum(aC, aW, float2( 1.0f,  2.0f) - pp, dir, len2, lob, clp, o);
+    EASUTapAccum(aC, aW, float2( 0.0f,  2.0f) - pp, dir, len2, lob, clp, n);
+
+    // Normalize and dering. aW is always >= 1 because the centre tap has d2 = 0
+    // and therefore a weight of exactly 1.
+    return min(max4, max(min4, aC * (1.0f / aW)));
+}
+
+// ============================================================================
+// RCAS sharpen constants. Defined here, before RunComposite, because RunComposite's
+// WLAA branch references WLAA_SHARPNESS and HLSL resolves #defines textually -- a
+// use before the definition would not see it. The RunWlsrSharpenCore helper below
+// (defined later, so RunComposite's WLAA branch and the pass-15 RunRCAS can
+// forward-call it) uses RCAS_MAX_SHARPEN as its gain ceiling; a forward prototype
+// bridges the ordering.
+// ============================================================================
+#define RCAS_MAX_SHARPEN 0.75
+
+// The default sharpen amount for the WLAA native-resolution AA mode. WLAA is
+// TAA (the accumulation) plus a mild sharpen, so the amount is modest -- enough
+// to restore the edge crispness the temporal filter softens, not enough to ring.
+// Overridable via the WLSR sharpen knob (u_TSRSharpenStrength); clamped either
+// way. Kept a separate constant from RCAS_MAX_SHARPEN because that one is the
+// per-channel GAIN ceiling, not the user amount.
+#define WLAA_SHARPNESS 0.5f
+
+// Forward declarations: RunWlsrSharpenCore and RunRCAS are defined later in the
+// file (with the pass-15 entry point), but RunComposite's WLAA branch calls
+// RunWlsrSharpenCore and the pass-15 entry calls RunRCAS. HLSL needs the
+// prototypes because it does not scan the whole file for function bodies before
+// resolving calls the way GLSL does.
+float3 RunWlsrSharpenCore(float3 ctr, float3 t00, float3 t10, float3 t01, float3 t11, float sharpness, float mask);
+float3 RunRCAS(int2 pos, int2 size, float sharpness);
+
 void RunComposite() {
     int2 pos = int2(g_dt.xy);
     int2 fullSize = IMG_SIZE(img_Output);
@@ -3071,10 +3487,13 @@ void RunComposite() {
         // bilinear used, so switching filters changes the reconstruction kernel
         // and nothing else -- no change to the trace, accumulation or denoiser.
         //
-        // Values outside the spatial range (Temporal, FSR1, TSR, SMAA, FXAA,
-        // SpatialDenoise) are separate passes, not reconstruction filters; they
-        // fall through to bilinear rather than being ignored, so picking one
-        // degrades gracefully instead of appearing to do something it cannot.
+        // Values outside the spatial range (Temporal, TSR, SMAA, FXAA,
+        // SpatialDenoise) are separate passes rather than reconstruction
+        // filters; they fall through to bilinear instead of being ignored, so
+        // picking one degrades gracefully rather than appearing to do something
+        // it cannot. FSR1 used to be in that list -- it was a dead entry, since
+        // no EASU code existed anywhere in the tree -- and is now a real branch
+        // above.
         if (u_ReconstructionFilter == 1)
         {
             // NEAREST -- 1 tap, point sampling. The cheapest possible upscale and
@@ -3130,6 +3549,32 @@ void RunComposite() {
             }
             denoised = acc / max(wsum, 1e-5f);
         }
+        else if (u_ReconstructionFilter == 8)
+        {
+            // FSR1 EASU -- 12 tap, edge-adaptive, anisotropic lanczos-2. Unlike
+            // the separable kernels above it stretches the footprint along the
+            // local gradient, so it reconstructs a diagonal edge from taps lying
+            // on it instead of smearing across it. The cell origin s0 and the
+            // fractional offset f are the SAME values bilinear derived, so this
+            // changes the kernel and nothing else -- the trace, the accumulation
+            // and the denoiser are untouched.
+            // REACTIVE MASK. Where the mask says the current frame cannot be
+            // trusted (a disocclusion, fast motion, a camera cut), the EASU
+            // result is blended back toward bilinear. EASU stretches its kernel
+            // along an edge, which is exactly what must NOT happen across a
+            // disocclusion, where the "edge" is two different surfaces.
+            //
+            // Kept identical to the GLSL twin, including the bilinear taps being
+            // computed here rather than in the else-branch below.
+            float3 easu = RunFSR1EASU(s0, f, srcSize);
+            float3 bl00 = IMG_LOAD(img_Accumulation, s0).rgb;
+            float3 bl10 = IMG_LOAD(img_Accumulation, int2(s1.x, s0.y)).rgb;
+            float3 bl01 = IMG_LOAD(img_Accumulation, int2(s0.x, s1.y)).rgb;
+            float3 bl11 = IMG_LOAD(img_Accumulation, s1).rgb;
+            float3 bilinear = lerp(lerp(bl00, bl10, f.x), lerp(bl01, bl11, f.x), f.y);
+            float mask = IMG_LOAD(img_Bloom_Temp, clamp(s0, int2(0, 0), srcSize - int2(1, 1))).a;
+            denoised = lerp(easu, bilinear, clamp(mask, 0.0f, 1.0f));
+        }
         else
         {
             // BILINEAR (the default) and the fall-through for every filter that
@@ -3141,10 +3586,56 @@ void RunComposite() {
             denoised = lerp_safe(lerp_safe(c00, c10, f.x), lerp_safe(c01, c11, f.x), f.y);
         }
     } else {
-        denoised = IMG_LOAD(img_Accumulation, pos).rgb;
+        // Full resolution: no upscale. WLAA sharpens the resolved accumulation;
+        // otherwise the accumulation is the result.
+        if (u_ReconstructionFilter == 12)
+        {
+            // WLAA -- native-resolution anti-aliasing. The temporal accumulation
+            // (pass 2) already ran; WLAA is that result plus the RCAS sharpen,
+            // folded into the composite so the mode is one pass rather than a
+            // composite followed by a separate full-resolution sharpen stage.
+            // The sharpen reads the resolved accumulation -- exactly what a
+            // native-res AA mode reconstructs -- and the amount defaults to
+            // WLAA_SHARPNESS, overridable via the WLSR sharpen knob, clamped to
+            // the range either way.
+            float wlSharp = (u_TSRSharpenStrength > 0.001f) ? u_TSRSharpenStrength : WLAA_SHARPNESS;
+            // Load the five taps from the resolved accumulation (not img_Output,
+            // which is still the pre-composite trace colour here) and the mask
+            // from the trace-resolution reactive mask, at the trace coordinate.
+            int2 lo = int2(1, 1);
+            int2 hi = max(fullSize - int2(2, 2), lo);
+            int2 cc = clamp(pos, lo, hi);
+            float3 ctr = read_img_Accumulation.Load(int3(cc, 0)).rgb;
+            float3 t00 = read_img_Accumulation.Load(int3(clamp(cc + int2(-1, -1), lo, hi), 0)).rgb;
+            float3 t10 = read_img_Accumulation.Load(int3(clamp(cc + int2( 1, -1), lo, hi), 0)).rgb;
+            float3 t01 = read_img_Accumulation.Load(int3(clamp(cc + int2(-1,  1), lo, hi), 0)).rgb;
+            float3 t11 = read_img_Accumulation.Load(int3(clamp(cc + int2( 1,  1), lo, hi), 0)).rgb;
+            int2 traceSize = max(int2(float2(fullSize) * u_RenderScale), int2(1, 1));
+            int2 mpos = clamp(int2((float2(pos) + 0.5f) * u_RenderScale), int2(0, 0), traceSize - int2(1, 1));
+            float mask = IMG_LOAD(img_Bloom_Temp, mpos).a;
+            denoised = RunWlsrSharpenCore(ctr, t00, t10, t01, t11, clamp(wlSharp, 0.0f, 1.0f), mask);
+        }
+        else
+        {
+            denoised = IMG_LOAD(img_Accumulation, pos).rgb;
+        }
     }
 
     float3 combined = denoised;
+
+    // EDGE-DETECT AA (FXAA / SMAA S1). Runs on the RESOLVED image, before the
+    // tonemap/post chain, so the composite's existing post-processing still applies
+    // to the filtered result -- no duplicated grading, no second pass.
+    //
+    // Gated on the filter value so every other entry is untouched: the default
+    // path falls straight through to the post chain below, which is what keeps
+    // the no-AA output identical to before this was wired.
+    if (u_ReconstructionFilter == 6 || u_ReconstructionFilter == 7)
+    {
+        int2 srcSize = int2(float2(fullSize) * max(u_RenderScale, 0.001f));
+        srcSize = max(srcSize, int2(1, 1));
+        combined = RunEdgeDetectAA(pos, fullSize, srcSize, u_RenderScale);
+    }
 
     float2 uv = (float2(pos) + 0.5f) / float2(fullSize);
     float2 centered = uv * 2.0f - 1.0f;
@@ -3815,6 +4306,116 @@ void RunRestirSpatial() {
 // The history buffer (img_HistoryBuffer, u11) stores the TSR result from the
 // previous frame. The C++ side must clear it on camera cuts and frame 0.
 // ============================================================================
+// ============================================================================
+// RCAS -- Robust Contrast-Adaptive Sharpening (the WLSR sharpen stage).
+//
+// FIVE TAPS: the centre plus the four DIAGONALS. The diagonals are used rather
+// than the axis neighbours because the axis pair is already exercised by the
+// upscale's own kernel; the diagonals are what the upscale removed.
+//
+// THE GAIN COMES FROM THE LOCAL CONTRAST, not from a fixed slider -- that is
+// what makes it robust. On a high-contrast edge the neighbourhood's maximum is
+// large, the gain collapses toward zero, and the filter cannot ring. On a flat
+// region the gain is bounded by the minimum, so it cannot amplify noise beyond
+// the local range.
+//
+// THE REACTIVE MASK MODULATES THE GAIN, and the direction matters. Where the
+// mask says the current frame cannot be trusted (a disocclusion, fast motion, a
+// camera cut) the image is a single frame's worth of data, so sharpening it
+// amplifies noise and aliasing. The gain is therefore scaled by (1 - mask):
+// sharpening is REDUCED where the frame is untrusted, never increased.
+//
+// A PASS BOUNDARY IS REQUIRED. The four diagonal taps live at NEIGHBOURING
+// OUTPUT PIXELS, and one invocation only holds the centre in registers -- so
+// this cannot be folded into the EASU branch of RunComposite no matter how the
+// taps are arranged. That is the whole reason this is pass 15.
+//
+// RCAS_MAX_SHARPEN and WLAA_SHARPNESS are defined above, before RunComposite,
+// because RunComposite's WLAA branch references WLAA_SHARPNESS and HLSL resolves
+// #defines textually -- a use before the definition would not see it.
+//
+// The sharpen core, image-agnostic: given the centre texel and its four diagonal
+// neighbours plus the resolved sharpness and reactive mask, return the sharpened
+// centre. Kept free of any image so pass 15 (RunRCAS below, which reads
+// img_Output) and the WLAA branch of RunComposite (which reads img_Accumulation)
+// can share it -- the two callers load their own taps and hand the five colours
+// in, so the sharpen math lives in exactly one place.
+float3 RunWlsrSharpenCore(float3 ctr, float3 t00, float3 t10, float3 t01, float3 t11, float sharpness, float mask)
+{
+    // Per-channel local range over the four diagonals.
+    float3 mn = min(min(t00, t10), min(t01, t11));
+    float3 mx = max(max(t00, t10), max(t01, t11));
+
+    // Gain = local contrast x user sharpness x trust, per channel. The local
+    // range is per channel, and a luma-only gain would let a saturated channel's
+    // neighbours drag an unsaturated one. The gain is the CONTRAST (mx - mn),
+    // not a robust ratio, so the filter sharpens edges rather than flat regions.
+    // (1 - mask) is the trust term; the clamp is the anti-ringing guarantee.
+    // Written as a two-line form to match the GLSL twin exactly.
+    float3 contrast = mx - mn;
+    float3 gain = contrast * clamp(sharpness, 0.0f, 1.0f) * (1.0f - clamp(mask, 0.0f, 1.0f));
+    gain = clamp(gain, 0.0f, RCAS_MAX_SHARPEN);
+
+    // Unsharp mask: the centre is pushed away from the average of its diagonal
+    // neighbours. This is the symmetric, contrast-raising form. (The earlier
+    // weighted-average form `(ctr + gain*diag)/(1+4*gain)` is a weighted mean
+    // and can only move the centre toward its neighbours -- it blurs rather
+    // than sharpens, which is why it lowered p99 contrast instead of raising it.)
+    float3 blur = (t00 + t10 + t01 + t11) * 0.25f;
+    float3 result = ctr + gain * (ctr - blur);
+    return clamp(result, 0.0f, 1.0f);
+}
+
+// Pass 15 (WL_RCAS): the unsharp-mask sharpen over the final colour. Reads the
+// trace-resolution reactive mask at the trace coordinate -- a point sample
+// rather than a bilinear one, because the mask is a per-trace-texel decision and
+// interpolating it would blend two independent disocclusion verdicts.
+float3 RunRCAS(int2 pos, int2 size, float sharpness)
+{
+    // Clamp the five tap positions so the filter cannot read outside the image.
+    // These are raw loads, which have no CLAMP_TO_EDGE mode, so the clamp is
+    // explicit -- a clamped tap replicates the border texel.
+    int2 lo = int2(1, 1);
+    int2 hi = max(size - int2(2, 2), lo);
+    int2 c  = clamp(pos, lo, hi);
+
+    float3 ctr = read_img_Output.Load(int3(c, 0)).rgb;
+    float3 t00 = read_img_Output.Load(int3(clamp(c + int2(-1, -1), lo, hi), 0)).rgb;
+    float3 t10 = read_img_Output.Load(int3(clamp(c + int2( 1, -1), lo, hi), 0)).rgb;
+    float3 t01 = read_img_Output.Load(int3(clamp(c + int2(-1,  1), lo, hi), 0)).rgb;
+    float3 t11 = read_img_Output.Load(int3(clamp(c + int2( 1,  1), lo, hi), 0)).rgb;
+
+    int2 traceSize = max(int2(float2(size) * u_RenderScale), int2(1, 1));
+    int2 mpos = clamp(int2((float2(pos) + 0.5f) * u_RenderScale), int2(0, 0), traceSize - int2(1, 1));
+    float mask = IMG_LOAD(img_Bloom_Temp, mpos).a;
+
+    return RunWlsrSharpenCore(ctr, t00, t10, t01, t11, sharpness, mask);
+}
+
+// The pass entry point. Dispatches at FULL resolution and reads/writes
+// img_Output in place -- each invocation writes exactly the texel it loaded, so
+// there is no read/write race between invocations.
+void RunRCAS() {
+    int2 pos = int2(g_dt.xy);
+    int2 fullSize = IMG_SIZE(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
+
+    // u_TSRSharpenStrength is the existing WLSR sharpen knob: it is declared but
+    // never uploaded, so it is 0 by default and RCAS is inert until something
+    // sets it. That is the right default -- a sharpen stage that runs
+    // unconditionally is a quality change nobody asked for.
+    float sharpness = u_TSRSharpenStrength;
+
+    // u_RCSEnabled is the gate. Absent it the pass is a no-op, so dispatching it
+    // costs a full-resolution read/write and changes nothing. The gate is what
+    // lets the A/B harness turn the stage on and off without a rebuild.
+    if (u_RCSEnabled < 1 || sharpness <= 0.001f) {
+        return;
+    }
+
+    IMG_STORE(img_Output, pos, float4(RunRCAS(pos, fullSize, sharpness), 1.0f));
+}
+
 void RunTSRResolve() {
     int2 pos = int2(g_dt.xy);
     int2 fullSize = IMG_SIZE(img_Output);
@@ -3906,14 +4507,467 @@ void RunTSRCopy() {
     IMG_STORE(img_Output, pos, float4(color, 1.0f));
 }
 
+// ===========================================================================
+// Trained end-of-frame neural stage (docs/NEURAL_RENDERING.md)
+// ===========================================================================
+// The HLSL twin of the GLSL stage. Same three passes, same order, same
+// constants, same weight offsets -- the two files are kept in lockstep by
+// tools/verify_neural_stage_parity.py, which compares the statements that
+// actually compute rather than the comments around them.
+//
+// WHY THIS IS IN THE HLSL AT ALL: the HLSL serves DX11, DX12 and Vulkan (Vulkan
+// loads the SPIR-V that DXC builds from this file), so a stage present only in
+// the GLSL would be an OpenGL-only feature. The GL path is the only one that can
+// be verified on this machine -- DX12 hangs during init and VulkanNova is
+// compiled but never instantiated -- so this twin is verified by compilation and
+// by statement parity, not by rendering.
+//
+// THE ANCHOR IS READ THROUGH THE SNAPSHOT SRV, NOT THE UAV. GLSL's
+// imageLoad(img_Output, pos) reads the live image; HLSL's IMG_LOAD expands to
+// read_img_Output, which is the per-dispatch snapshot that DX12Nova::Dispatch
+// refreshes at the top of every dispatch (see the loop at ~DX12Nova.cpp:1423).
+// The two are the same data here: pass 17 does not write img_Output, and pass 18
+// has each thread read and write only its own texel, so the pre-pass value and
+// the live value agree. Reading the snapshot is strictly safer -- it removes the
+// read/write hazard on one texture through two bindings entirely.
+
+// groupshared, not per-thread StructuredBuffer reads: per-thread reads were
+// half of the ~238 ms/frame the naive version cost. Declared at file scope
+// because fxc/dxc cannot compile a dynamically-indexed local array.
+groupshared uint  gs_neural_r[64];
+groupshared uint  gs_neural_g[64];
+groupshared uint  gs_neural_b[64];
+groupshared uint  gs_neural_l[64];
+// Pass 18's per-block gate partial. Same shape and same reason as the four
+// above: a groupshared tree reduce is what makes the per-block sum O(1)
+// instead of a serialized UAV atomic.
+groupshared uint  gs_neural_gate[64];
+groupshared float gs_neural_w[1140];
+
+static const int NEURAL_N_IN  = 8;
+static const int NEURAL_N_HID = 32;
+
+// Weight offsets into w[], derived from LAYER_SHAPES in
+// tools/train_neural/model.py. W1 is (8,32), so W1[i][j] lives at i*32+j; every
+// later layer follows suit. These are the SAME numbers the GLSL uses -- the
+// parity verifier asserts it.
+static const int O_W1 = 0;
+static const int O_B1 = O_W1 + NEURAL_N_IN * NEURAL_N_HID;   // 256
+static const int O_W2 = O_B1 + NEURAL_N_HID;                 // 288
+static const int O_B2 = O_W2 + NEURAL_N_HID * NEURAL_N_IN;   // 544
+static const int O_W3 = O_B2 + NEURAL_N_IN;                  // 552
+static const int O_B3 = O_W3 + NEURAL_N_IN * NEURAL_N_HID;   // 808
+static const int O_W4 = O_B3 + NEURAL_N_HID;                 // 840
+static const int O_B4 = O_W4 + NEURAL_N_HID * NEURAL_N_IN;   // 1096
+static const int O_WH = O_B4 + NEURAL_N_IN;                  // 1104
+static const int O_BH = O_WH + NEURAL_N_IN * 3;              // 1128
+static const int O_WG = O_BH + 3;                            // 1131
+static const int O_BG = O_WG + NEURAL_N_IN;                  // 1139
+
+// Total weight count, for the groupshared staging array above.
+static const int NEURAL_N_W = 1140;
+
+// Must match NEURAL_MAX_BLOCKS in the GLSL twin. 131072 is the next power of two
+// above the 129600 blocks a 3840x2160 frame produces at 8x8 workgroups; 8192 was
+// tried first and silently under-counted a 2332x1451 frame by 6.5x.
+static const int NEURAL_MAX_BLOCKS = 131072;
+
+// Element offset of g_Partial inside NeuralGlobals. The GLSL's SSBO is
+// `float g_Mean[4]; uint g_Partial[]`, so the partials start at byte 16 -- which
+// is element 4 of a uint buffer. Keeping this as a named constant is what makes
+// the two files' layouts auditable rather than coincidental.
+static const int NEURAL_PARTIAL_BASE = 4;
+
+// Element offsets for the gate slots, derived from the GLSL SSBO's std430
+// layout:
+//   float g_Mean[4];              -> elements 0..3
+//   uint  g_Partial[MAX * 4];     -> elements 4 .. 4+MAX*4-1
+//   float g_GateMean;             -> element  4+MAX*4
+//   uint  g_GatePartial[MAX];     -> elements 4+MAX*4+1 .. 4+MAX*5
+// Both twins index this one buffer, so if this constant is wrong the DX12/Vulkan
+// gate readout is wrong while the GL one is right -- which is exactly the kind of
+// split that is invisible until someone checks the two against each other.
+static const int NEURAL_GATEMEAN_BASE       = 4 + NEURAL_MAX_BLOCKS * 4;
+static const int NEURAL_GATEPARTIAL_BASE    = NEURAL_GATEMEAN_BASE + 1;
+
+// Pass 17, stage one: each block reduces its own 64 pixels and writes four
+// fixed-point partials. NO atomics -- the atomic version cost 188 ms/frame
+// (886 ns per atomic) because 212k atomicAdds onto four addresses serialise.
+void RunNeuralReduce()
+{
+    const int2 size = int2(g_dims);
+    const int2 pos = int2(g_dt.xy);
+    const int li = int(g_tid);
+
+    // Both GLSL and HLSL convert with a truncating float->uint cast, so the two
+    // agree wherever the anchor is non-negative. The renderer cannot produce a
+    // negative channel here -- the composite sums radiance, bloom and god rays,
+    // all of which are non-negative -- but a negative value would be undefined
+    // in GLSL and 0 in HLSL, so this is a documented assumption rather than a
+    // silent divergence.
+    float3 c = float3(0.0f, 0.0f, 0.0f);
+    if (pos.x < size.x && pos.y < size.y)
+        c = IMG_LOAD(img_Output, pos).rgb;
+    const float lum = dot(c, float3(0.2126f, 0.7152f, 0.0722f));
+
+    gs_neural_r[li] = uint(c.r * 256.0f + 0.5f);
+    gs_neural_g[li] = uint(c.g * 256.0f + 0.5f);
+    gs_neural_b[li] = uint(c.b * 256.0f + 0.5f);
+    gs_neural_l[li] = uint(lum  * 256.0f + 0.5f);
+    GroupMemoryBarrierWithGroupSync();
+
+    for (int stride = 32; stride > 0; stride >>= 1)
+    {
+        if (li < stride)
+        {
+            gs_neural_r[li] += gs_neural_r[li + stride];
+            gs_neural_g[li] += gs_neural_g[li + stride];
+            gs_neural_b[li] += gs_neural_b[li + stride];
+            gs_neural_l[li] += gs_neural_l[li + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (li == 0)
+    {
+        // One slot per block. The guard keeps a frame larger than
+        // NEURAL_MAX_BLOCKS from writing past the allocation; such a frame would
+        // under-count rather than corrupt, and no frame this engine renders
+        // reaches it.
+        //
+        // The block index comes from SV_GroupID, which is the HLSL equivalent of
+        // GLSL's gl_WorkGroupID. The GLSL multiplies by gl_NumWorkGroups.x; here
+        // the same number is derived from g_dims, because SV_GroupID does not
+        // carry the dispatch extent and the dispatch is always ceil(size/8).
+        const uint blocksX = (size.x + 7u) / 8u;
+        const uint bid = g_gid.y * blocksX + g_gid.x;
+        if (bid < (uint)NEURAL_MAX_BLOCKS)
+        {
+            NeuralGlobals[NEURAL_PARTIAL_BASE + bid * 4u + 0u] = gs_neural_r[0];
+            NeuralGlobals[NEURAL_PARTIAL_BASE + bid * 4u + 1u] = gs_neural_g[0];
+            NeuralGlobals[NEURAL_PARTIAL_BASE + bid * 4u + 2u] = gs_neural_b[0];
+            NeuralGlobals[NEURAL_PARTIAL_BASE + bid * 4u + 3u] = gs_neural_l[0];
+        }
+    }
+}
+
+// Pass 17, stage two: ONE block sums the partials and writes the four means.
+//
+// A single 64-thread block, each thread striding over the array. 4K produces
+// 129600 partials; 64 threads is 2025 loads each, which is a few microseconds --
+// three orders of magnitude cheaper than the 212k atomics this replaced.
+//
+// The block count is DERIVED FROM THE IMAGE SIZE, not from the dispatch extent.
+// The GLSL version originally read gl_NumWorkGroups here, which reports the
+// CURRENT dispatch's extent -- and this pass runs as one block, so it summed a
+// single block's partials out of 129600 and wrote a mean of ~0. The eval pass
+// then produced exactly the output it would have with a zero global vector.
+// SV_GroupID has the same trap, so the count comes from g_dims in both files.
+void RunNeuralReduceFinal()
+{
+    const int2 size = int2(g_dims);
+    const uint blocksX = (size.x + 7u) / 8u;
+    const uint blocksY = (size.y + 7u) / 8u;
+    const uint numBlocks = blocksX * blocksY;
+    const uint clamped = min(numBlocks, (uint)NEURAL_MAX_BLOCKS);
+    const int li = int(g_tid);
+
+    uint sr = 0u, sg = 0u, sb = 0u, sl = 0u, sgate = 0u;
+    for (uint b = li; b < clamped; b += 64u)
+    {
+        sr    += NeuralGlobals[NEURAL_PARTIAL_BASE + b * 4u + 0u];
+        sg    += NeuralGlobals[NEURAL_PARTIAL_BASE + b * 4u + 1u];
+        sb    += NeuralGlobals[NEURAL_PARTIAL_BASE + b * 4u + 2u];
+        sl    += NeuralGlobals[NEURAL_PARTIAL_BASE + b * 4u + 3u];
+        sgate += NeuralGlobals[NEURAL_GATEPARTIAL_BASE + b];
+    }
+
+    gs_neural_r[li] = sr;
+    gs_neural_g[li] = sg;
+    gs_neural_b[li] = sb;
+    gs_neural_l[li] = sl;
+    gs_neural_gate[li] = sgate;
+    GroupMemoryBarrierWithGroupSync();
+
+    for (int stride = 32; stride > 0; stride >>= 1)
+    {
+        if (li < stride)
+        {
+            gs_neural_r[li] += gs_neural_r[li + stride];
+            gs_neural_g[li] += gs_neural_g[li + stride];
+            gs_neural_b[li] += gs_neural_b[li + stride];
+            gs_neural_l[li] += gs_neural_l[li + stride];
+            gs_neural_gate[li] += gs_neural_gate[li + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (li == 0)
+    {
+        // Fixed-point back to a mean: the sums are v * 256 accumulated over
+        // every pixel, so divide by (256 * pixelCount). Written as raw bits
+        // because NeuralGlobals is a uint buffer.
+        const float inv = 1.0f / (256.0f * float(size.x) * float(size.y));
+        NeuralGlobals[0] = asuint(float(gs_neural_r[0]) * inv);
+        NeuralGlobals[1] = asuint(float(gs_neural_g[0]) * inv);
+        NeuralGlobals[2] = asuint(float(gs_neural_b[0]) * inv);
+        NeuralGlobals[3] = asuint(float(gs_neural_l[0]) * inv);
+        NeuralGlobals[NEURAL_GATEMEAN_BASE] = asuint(float(gs_neural_gate[0]) * inv);
+    }
+}
+
+// Pass 18: evaluate the network for one pixel and write the enhanced texel.
+void RunNeuralEval()
+{
+    const int2 size = int2(g_dims);
+
+    // Stage the weights into groupshared memory ONCE per block. Every thread in
+    // the workgroup MUST run this loop and reach the barrier -- including the
+    // threads whose pixel is out of bounds.
+    //
+    // The bounds guard used to sit above this loop, so a ragged workgroup (the
+    // last row or column of a frame whose size is not a multiple of 8) had those
+    // threads return before the barrier. They then never wrote their share of
+    // gs_neural_w, and a barrier with absent threads is undefined behaviour: the
+    // survivors read uninitialised shared memory. Measured on a 2332x1451 frame
+    // (292x182 workgroups): the last 3 rows came out 79.9% wrong and the last 4
+    // columns 56.5% wrong -- matching the 40/64 and 32/64 of the weight array
+    // that the missing threads would have filled.
+    for (int i = int(g_tid); i < NEURAL_N_W; i += 64)
+        gs_neural_w[i] = NeuralWeights[i];
+    GroupMemoryBarrierWithGroupSync();
+
+    // The anchor is this thread's OWN texel, read through the snapshot SRV (see
+    // the note at the top of this section for why that is not the UAV).
+    const int2 pos = int2(g_dt.xy);
+    const bool inBounds = (pos.x < size.x && pos.y < size.y);
+
+    // The bounds guard is a BRANCH, not a return. Every thread has to reach the
+    // gate barrier at the end of this function, because a barrier that
+    // out-of-bounds threads skip is undefined behaviour -- and the ragged
+    // workgroup is not hypothetical: a 2332x1451 frame has 40/64 valid threads in
+    // its last row and 32/64 in its last column. Out-of-bounds lanes contribute
+    // 0 to the gate sum, so they cannot bias it.
+    // g must be declared OUTSIDE the bounds branch. It was declared inside the
+    // in-bounds body, which scoped it to that branch alone -- so the else below
+    // assigned to an undeclared identifier and the gate partial after the branch
+    // read one. Both are compile errors (dxc: "use of undeclared identifier 'g'"),
+    // and neither tools/verify_neural_stage_parity.py nor a GLSL compile can see
+    // them: only compiling THIS file does. The GLSL twin was fixed the same way.
+    float g = 0.0f;
+
+    if (inBounds)
+    {
+    const float4 px = IMG_LOAD(img_Output, pos);
+    const float3 anchor = px.rgb;
+    const float lum = dot(anchor, float3(0.2126f, 0.7152f, 0.0722f));
+
+    // The frame mean, written by pass 19.
+    const float mr = asfloat(NeuralGlobals[0]);
+    const float mg = asfloat(NeuralGlobals[1]);
+    const float mb = asfloat(NeuralGlobals[2]);
+    const float ml = asfloat(NeuralGlobals[3]);
+
+    // Standardise. These eight constants are part of the ABI -- measured on the
+    // 30 training pairs by tools/train_neural/dataset_stats.py. Without this
+    // affine the layer-1 pre-activation has a std of 0.0118, half the ReLU units
+    // die at init, and the network silently collapses to `out = anchor + const`.
+    float x[NEURAL_N_IN];
+    x[0] = (anchor.r - 0.1744f) / 0.1331f;
+    x[1] = (anchor.g - 0.1700f) / 0.0835f;
+    x[2] = (anchor.b - 0.2243f) / 0.1145f;
+    x[3] = (lum      - 0.1749f) / 0.0863f;
+    x[4] = (mr - 0.1742f) / 0.0964f;
+    x[5] = (mg - 0.1699f) / 0.0688f;
+    x[6] = (mb - 0.2244f) / 0.0969f;
+    x[7] = (ml - 0.1748f) / 0.0687f;
+
+    // Stage 1: 8 -> 32.
+    float h1[NEURAL_N_HID];
+    for (int j = 0; j < NEURAL_N_HID; ++j)
+    {
+        float s = gs_neural_w[O_B1 + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_W1 + i * NEURAL_N_HID + j] * x[i];
+        h1[j] = max(s, 0.0f);
+    }
+
+    // Stage 2: 32 -> 8.
+    float h2[NEURAL_N_IN];
+    for (int j = 0; j < NEURAL_N_IN; ++j)
+    {
+        float s = gs_neural_w[O_B2 + j];
+        for (int i = 0; i < NEURAL_N_HID; ++i)
+            s += gs_neural_w[O_W2 + i * NEURAL_N_IN + j] * h1[i];
+        h2[j] = max(s, 0.0f);
+    }
+
+    // Stage 3: 8 -> 32.
+    float h3[NEURAL_N_HID];
+    for (int j = 0; j < NEURAL_N_HID; ++j)
+    {
+        float s = gs_neural_w[O_B3 + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_W3 + i * NEURAL_N_HID + j] * h2[i];
+        h3[j] = max(s, 0.0f);
+    }
+
+    // Stage 4: 32 -> 8.
+    float h4[NEURAL_N_IN];
+    for (int j = 0; j < NEURAL_N_IN; ++j)
+    {
+        float s = gs_neural_w[O_B4 + j];
+        for (int i = 0; i < NEURAL_N_HID; ++i)
+            s += gs_neural_w[O_W4 + i * NEURAL_N_IN + j] * h3[i];
+        h4[j] = max(s, 0.0f);
+    }
+
+    // Head: 8 -> 3 residual.
+    float residual[3];
+    for (int j = 0; j < 3; ++j)
+    {
+        float s = gs_neural_w[O_BH + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_WH + i * 3 + j] * h4[i];
+        residual[j] = s;
+    }
+
+    // Gate: 8 -> 1 sigmoid.
+    g = gs_neural_w[O_BG];
+    for (int i = 0; i < NEURAL_N_IN; ++i)
+        g += gs_neural_w[O_WG + i] * h4[i];
+    g = 1.0f / (1.0f + exp(-g));
+
+    // Residual, never a replacement: with the head zeroed at init this is
+    // exactly the identity, so the worst case is "no enhancement".
+    const float3 outc = anchor + g * float3(residual[0], residual[1], residual[2]);
+    IMG_STORE(img_Output, pos, float4(clamp(outc, 0.0f, 1.0f), px.a));
+    }
+    else
+    {
+        // No pixel here. Contribute nothing to the gate sum, but still take the
+        // lane so the barrier below is uniform across the whole workgroup.
+        g = 0.0f;
+    }
+
+    // Per-block gate partial, reduced by thread 0 and written for pass 19 to
+    // sum. Same fixed-point form as the mean partials so pass 19 can share one
+    // code path, and the same 256x scale so the two are directly comparable.
+    gs_neural_gate[g_tid] = uint(g * 256.0f + 0.5f);
+    GroupMemoryBarrierWithGroupSync();
+
+    if (g_tid == 0)
+    {
+        uint sum = 0u;
+        for (int i = 0; i < 64; ++i)
+            sum += gs_neural_gate[i];
+
+        const int2 grid = (size + int2(7, 7)) / int2(8, 8);
+        const uint bid = uint(g_gid.y) * uint(grid.x) + uint(g_gid.x);
+        if (bid < (uint)NEURAL_MAX_BLOCKS)
+            NeuralGlobals[NEURAL_GATEPARTIAL_BASE + bid] = sum;
+    }
+}
+
+// ============================================================================
+// Pass 24: the reactive mask.
+// ============================================================================
+// The HLSL twin of RunReactiveMask in Renderer3D_NovaRenderer.glsl. Kept
+// IDENTICAL in constants and reprojection, because this is the shader DX11,
+// DX12 and Vulkan all consume (the .spv is built from the HLSL, not the GLSL).
+// A mask that differs between twins is a feature that behaves differently on
+// the backend that actually renders here (OpenGL) than on the other three.
+//
+// Same storage decision as the GLSL: img_Bloom_Temp.a, a spare channel, because
+// the GL side may declare at most 8 image uniforms. IMG_STORE writes a whole
+// float4, so the alpha is the whole payload and rgb is zeroed.
+void RunReactiveMask()
+{
+    int2 pos = int2(g_dt.xy);
+    int2 imgSize = int2(wl_trace_extent(int2(g_dims)));
+    if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
+
+    float2 uv = (float2(pos) + 0.5f) / float2(imgSize);
+    float2 velocity = IMG_LOAD(img_Velocity, pos).xy;
+    float2 prevUV = uv - velocity;
+
+    // Same clamp as the GLSL twin and as pass 2: the accumulation buffer holds
+    // the subregion, and outside it lives stale data from a previous
+    // full-resolution frame.
+    float2 fullRes = float2(imgSize);
+    // float2(u_RenderScale, u_RenderScale), NOT float2(u_RenderScale). GLSL
+    // accepts the single-argument broadcast constructor and DXC does not: it
+    // rejects it with "too few elements in vector initialization (expected 2
+    // elements, have 1)". This is the only place the two twins' constructor
+    // syntax legitimately differs, and it cost a failed Vulkan build -- which
+    // left the .spv stale, so the Vulkan path silently ran an older shader.
+    float2 histUV = clamp(prevUV * u_RenderScale,
+                          0.5f / fullRes,
+                          float2(u_RenderScale, u_RenderScale) - 0.5f / fullRes);
+
+    // Initialised to 0.0 ("trust the history"), not 1.0. See the GLSL twin's
+    // comment: starting at 1.0 with max() terms forces the mask to 1.0
+    // everywhere, which silently replaces the EASU with bilinear.
+    float mask = 0.0f;
+
+    bool validHistory = u_FrameIndex > 0
+        && prevUV.x >= 0.0f && prevUV.x <= 1.0f
+        && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+
+    if (!validHistory)
+    {
+        mask = 1.0f;
+    }
+    else
+    {
+        float currentDepth = s_DepthBuffer.SampleLevel(s_Sampler, wl_buf_uv(uv), 0).r;
+        float prevDepth = s_DepthBuffer.SampleLevel(s_Sampler, histUV, 0).r;
+
+        float depthErr = abs(currentDepth - prevDepth);
+        if (depthErr > 0.02f)
+        {
+            validHistory = false;
+            mask = 1.0f;
+        }
+        else
+        {
+            mask = min(depthErr / 0.10f, 1.0f) * 0.5f;
+        }
+
+        // .yzw, not .gba -- the G-buffer store puts NDC depth in .r and the
+        // packed normal in .yzw (see the GLSL twin's comment at .glsl:6421).
+        float3 currentNormal = IMG_LOAD(img_TraceGBuffer, pos).yzw;
+        float3 prevNormal = IMG_LOAD(img_TraceGBuffer,
+            int2(clamp(histUV * fullRes, float2(0.5f, 0.5f), fullRes - float2(0.5f, 0.5f)))).yzw;
+        float normalErr = length(currentNormal - prevNormal);
+        mask = max(mask, clamp(normalErr / 0.35f, 0.0f, 1.0f) * 0.75f);
+
+        float4 currentAlbedoHit = IMG_LOAD(img_AlbedoHit, pos);
+        float4 prevAlbedoHit = IMG_LOAD(img_AlbedoHit,
+            int2(clamp(histUV * fullRes, float2(0.5f, 0.5f), fullRes - float2(0.5f, 0.5f))));
+        mask = max(mask, abs(currentAlbedoHit.a - prevAlbedoHit.a));
+        mask = max(mask, clamp(length(currentAlbedoHit.rgb - prevAlbedoHit.rgb), 0.0f, 1.0f) * 0.5f);
+    }
+
+    float motionMag = length(velocity * float2(imgSize));
+    mask = max(mask, clamp(motionMag / 8.0f, 0.0f, 1.0f) * 0.5f);
+
+    // u_CameraMoved is deliberately NOT used -- see the GLSL twin's comment.
+    // It is `CurrentViewProjection != PrevViewProjection`, and TAA jitter makes
+    // those differ every frame, so it would force the mask to 1.0 everywhere.
+    IMG_STORE(img_Bloom_Temp, pos, float4(0.0f, 0.0f, 0.0f, clamp(mask, 0.0f, 1.0f)));
+}
+
 [numthreads(8, 8, 1)]
-void main(uint3 dispatchThreadID : SV_DispatchThreadID)
+void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_GroupID)
 {
     g_dt = dispatchThreadID;
+    g_gid = groupID;
     g_tid = (dispatchThreadID.y % 8) * 8 + (dispatchThreadID.x % 8);
     img_Output.GetDimensions(g_dims.x, g_dims.y);
     if (any(dispatchThreadID.xy >= g_dims)) return;
-    if ((u_PassID == 0 || u_PassID == 1 || u_PassID == 2 || u_PassID == 7) &&
+    if ((u_PassID == 0 || u_PassID == 1 || u_PassID == 2 || u_PassID == 7 ||
+         u_PassID == 24) &&
         any(dispatchThreadID.xy >= uint2(wl_trace_extent(int2(g_dims))))) return;
     switch(u_PassID)
     {
@@ -3931,6 +4985,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         // Pass 13: the A-Trous wavelet filter. Reads the temporal moments
         // from pass 12 and applies a variance-driven edge-preserving filter.
         case 13: RunATrousFilter(); break;
+        // Pass 24: the reactive mask. Writes img_Bloom_Temp.a, which every
+        // reconstruction pass (8/15/16) reads. Must run after the velocity and
+        // G-buffer are produced (passes 0/1) and before the composite consumes
+        // the bloom temp.
+        case 24: RunReactiveMask(); break;
         // Pass 3: ReSTIR DI generate (reservoir update)
         case 3: RunRestirGenerate(); break;
         // Pass 11: temporal combine writes the per-pixel reservoir only.
@@ -3938,8 +4997,19 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         // Pass 14: immutable-input spatial reuse and the sole ReSTIR shading write.
         case 14: RunRestirSpatial(); break;
         // Pass 15: Temporal Super-Resolution resolve (experimental).
-        case 15: RunTSRResolve(); break;
+        case 15: RunRCAS(); break;
         // Pass 16: copy TSR result to output.
         case 16: RunTSRCopy(); break;
+        // The trained end-of-frame neural stage, mirroring the GLSL. Run AFTER
+        // the god-ray pass (10) so the mean describes the finished frame, and
+        // before anything that reads img_Output.
+        //
+        // 17 reduces, 19 folds the partials into the four frame means, 18
+        // evaluates. The order is 17 -> 19 -> 18, which is NOT numerical order:
+        // 18 is the consumer and 19 is the producer, and 17 must run first. The
+        // GLSL switch lists them 17, 19, 18 for the same reason.
+        case 17: RunNeuralReduce(); break;
+        case 19: RunNeuralReduceFinal(); break;
+        case 18: RunNeuralEval(); break;
     }
 }

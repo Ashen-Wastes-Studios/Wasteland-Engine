@@ -3298,12 +3298,32 @@ py::class_<Wasteland::Renderer3D::Statistics>(m, "Renderer3DStatistics")
         .def("GetTotalVertexCount",
              &Wasteland::Renderer3D::Statistics::GetTotalVertexCount)
         .def("GetTotalIndexCount",
-             &Wasteland::Renderer3D::Statistics::GetTotalIndexCount);
+             &Wasteland::Renderer3D::Statistics::GetTotalIndexCount)
+        // The instance-delta counters. All cumulative; see the field comments in
+        // Renderer3D.h for why a per-frame form would read 0 on a static scene and
+        // could not distinguish "nothing changed" from "never consulted".
+        .def_readonly("InstancesSubmitted",
+             &Wasteland::Renderer3D::Statistics::InstancesSubmitted)
+        .def_readonly("BvhRebuilds",
+             &Wasteland::Renderer3D::Statistics::BvhRebuilds)
+        .def_readonly("InstanceInvalidations",
+             &Wasteland::Renderer3D::Statistics::InstanceInvalidations)
+        .def_readonly("EpochShortCircuits",
+             &Wasteland::Renderer3D::Statistics::EpochShortCircuits)
+        .def_readonly("SceneTransformEpoch",
+             &Wasteland::Renderer3D::Statistics::SceneTransformEpoch);
 
 // Renderer3D stats, same shape as the 2D ones. ResetStats and GetStats are
 // separate functions rather than methods, because Statistics is a plain
 // struct in C++ with no such methods.
 m.def("Renderer3D_ResetStats", &Wasteland::Renderer3D::ResetStats);
+
+// Publishes the scene's transform epoch for the frame about to be submitted.
+// Kept as a module-level function rather than a Renderer3D method because the
+// renderer is a singleton with no instance to hang it on -- same shape as the
+// Get/Set pairs around it.
+m.def("Renderer3D_SetSceneTransformEpoch",
+      &Wasteland::Renderer3D::SetSceneTransformEpoch, py::arg("epoch"));
     m.def("Renderer3D_GetStats", &Wasteland::Renderer3D::GetStats);
 
 // The ray-tracing block. Every setting is a Get/Set pair on the module,
@@ -3652,6 +3672,40 @@ m.def("Renderer3D_ResetStats", &Wasteland::Renderer3D::ResetStats);
     m.def("Renderer3D_SetNeuralMaterialStrength",
          &Wasteland::Renderer3D::SetNeuralMaterialStrength,
          py::arg("strength"));
+
+    // The trained end-of-frame neural stage -- a DIFFERENT thing from the three
+    // strength accessors above, and the distinction is not cosmetic:
+    //
+    //   NeuralRenderingEnabled  the in-estimator neural heuristics (texture,
+    //                           light, material strength) that run per shading
+    //                           sample inside the trace loop.
+    //   NeuralStageEnabled      the trained MLP that runs as three compute
+    //                           passes at the END of the frame, over the finished
+    //                           image, with weights loaded from a blob.
+    //
+    // They are independent flags and were never interchangeable. A script that
+    // set NeuralRenderingEnabled and expected the trained stage would silently
+    // get the wrong one, which is the failure mode this pair of accessors closes.
+    //
+    // IsNeuralStageAvailable is exposed because it is the only honest answer to
+    // "why did nothing happen": the stage is skipped whenever no usable weights
+    // blob is loaded, whatever the enabled flag says. A script that cannot ask
+    // that has to guess.
+    m.def("Renderer3D_IsNeuralStageEnabled",
+         &Wasteland::Renderer3D::IsNeuralStageEnabled);
+    m.def("Renderer3D_SetNeuralStageEnabled",
+         &Wasteland::Renderer3D::SetNeuralStageEnabled,
+         py::arg("enabled"));
+    m.def("Renderer3D_IsNeuralStageAvailable",
+         &Wasteland::Renderer3D::IsNeuralStageAvailable);
+
+    // The gate mean, read back from the stage's own pass 19 and surfaced through
+    // Statistics. This is the only way for a script to tell "the network decided
+    // not to enhance this frame" from "the stage is not running" -- both leave
+    // the image looking unchanged, and both were previously indistinguishable
+    // from outside the engine.
+    m.def("Renderer3D_GetNeuralGateMean",
+         []() { return Wasteland::Renderer3D::GetStats().NeuralGateMean; });
 
 // Halton / Jitter
     // Halton is the low-discrepancy sequence used for TAA jitter. Exposed so a
@@ -6282,6 +6336,13 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
                      result.append(Wasteland::Entity(e, &s));
                  return result;
              })
+        // The transform change epoch. Exposed so a test can prove the epoch MOVES
+        // when the runtime path writes a transform (physics read-back, the script
+        // pass) and stays put when it does not. See Scene::BumpTransformEpoch().
+        .def("GetTransformEpoch", &Wasteland::Scene::GetTransformEpoch)
+        // Deliberately NOT bound: a script must not be able to forge the stamp the
+        // renderer trusts to skip its BVH rebuild. BumpTransformEpoch is for the
+        // engine's own write paths only.
         // Tag filtering uses GetAllEntitiesWith<TagComponent>, so only entities that
         // HAVE a tag appear. An entity tagged with an empty string still matches --
         // the filter is on component presence, not on the tag's value.

@@ -128,6 +128,20 @@ class DX12Nova {
     // renumber the format table and every images[N] reference.
     Image moments;
     std::array<Com<ID3D12Resource>, 4> structuredBuffers;
+    // Trained end-of-frame neural stage. `neuralGlobals` is the u12 UAV the
+    // reduce and eval passes share; `neuralWeights` is the t74 SRV the eval pass
+    // reads. Both are uploaded once at init from the same blob the GL path
+    // loads, so the two backends cannot silently disagree about the weights.
+    //
+    // `neuralGlobals` is 16 + NEURAL_MAX_BLOCKS*4 bytes: the four frame means
+    // (as raw float bits) followed by one uint32 partial per workgroup block.
+    // See NeuralGlobals in the shader for why the layout matches the GLSL's SSBO
+    // byte-for-byte.
+    Com<ID3D12Resource> neuralGlobals;
+    Com<ID3D12Resource> neuralWeights;
+    bool neuralWeightsValid = false;
+    UINT neuralGlobalsUavSlot = 0;   // kUavBase + 12
+    UINT neuralWeightsSrvSlot = 0;   // kNeuralWeightsSrvSlot
     // ReSTIR reservoir ping-pong buffers. Two buffers, each 32 bytes per pixel.
     // Swap after pass 11 to expose temporal output to pass 14, then after pass 14
     // to promote spatial output as next-frame history.
@@ -160,7 +174,7 @@ class DX12Nova {
     // and logs "DX12 Nova init failed". That is exactly what happened when
     // img_HistoryBuffer moved to u11 while this stayed 11: every DX12 Nova init
     // failed. When adding a UAV, bump this AND the heap layout comment below.
-    static constexpr UINT kUavCount = 12;
+    static constexpr UINT kUavCount = 13;
     UINT cbvSrvUavDescriptorSize = 0;
 
     // Heap layout, shared by every slot so the index arithmetic has one
@@ -168,8 +182,8 @@ class DX12Nova {
     //   0        CBV (NovaConstants)
     //   4..35    scene-texture SRVs (32)
     //   36..41   sampled-snapshot SRVs (6: t48..t53)
-    //   42..51   readable-snapshot SRVs (10: t64..t73)
-    //   52..63   UAVs (kUavCount = 12)
+    //   42..52   readable-snapshot SRVs (11: t64..t74)
+    //   53..65   UAVs (kUavCount = 13)
     // Indices 1..3 are unused padding left from the original fixed layout.
     //
     // The two SRV blocks grew for the SVGF moments resource, which the shader
@@ -185,11 +199,29 @@ class DX12Nova {
     // derived here rather than left as the old literals. Every relative offset
     // inside a block is unchanged (image i is still kImageSrvBase+i, history is
     // still kUavBase+11), so only the block bases moved.
+    //
+    // NEURAL STAGE. u12 is NeuralGlobals, the RWStructuredBuffer the reduce and
+    // eval passes (17/18/19 in the GLSL) share. It was empty before: nothing in
+    // the shader claimed it, and the binding reservation
+    // (docs/NEURAL_RENDERING_BINDING_PLAN.md) assigns it to this stage. The
+    // weights are an SRV, not a UAV -- the stage only reads them -- and they sit
+    // in the readable-snapshot block at t74, the first register past that block's
+    // old t64..t73 range.
+    //
+    // Both blocks grew by one, and the UAV block had to MOVE to make room:
+    //   - readable SRVs 42..51 (10) -> 42..52 (11), so t74 is at heap index 52
+    //   - UAVs 52..63 (12) -> 53..65 (13), so kUavBase moved 52 -> 53
+    // kUavBase is referenced everywhere as a relative base (kUavBase + i,
+    // +9, +10, +11), so moving it shifts all of them consistently -- which is
+    // exactly why it is a named constant and not a literal. Grep for a bare 52
+    // or 63 in this file before trusting this layout.
     static constexpr UINT kSceneTextureBase = 4;
     static constexpr UINT kSamplerBase = 36;
     static constexpr UINT kImageSrvBase = 42;
-    static constexpr UINT kUavBase = 52;
+    static constexpr UINT kUavBase = 53;
     static constexpr UINT kDescriptorsPerHeap = kUavBase + kUavCount;
+    // t74 -- NeuralWeights, the last entry of the readable-snapshot block.
+    static constexpr UINT kNeuralWeightsSrvSlot = kImageSrvBase + 10;
 
 
     UINT width = 0, height = 0;
@@ -241,6 +273,15 @@ public:
     void Init(ID3D12Device* d, ID3D12CommandQueue* q);
     void Resize(UINT w, UINT h);
     void Clear();
+    // Fills neuralWeights from assets/neural/neural_weights.bin and promotes it to
+    // a shader-readable state. No-op once neuralWeightsValid is true.
+    //
+    // Called from Clear() rather than CreateImages(), because the copy has to be
+    // recorded on a command list and Clear() is what opens one at init time.
+    // CreateImages() runs before any submission exists.
+    void UploadNeuralWeights();
+    bool IsNeuralWeightsValid() const { return neuralWeightsValid; }
+    void DispatchNeuralStage(UINT w, UINT h);
     template<class T> void Set(const char* name, const T& value, UINT index = 0);
     void Upload(UINT slot, const void* data, UINT count, UINT stride);
     void Unbind();

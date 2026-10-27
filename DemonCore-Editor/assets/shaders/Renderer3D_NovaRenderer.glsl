@@ -46,6 +46,27 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // between them.
 shared int gs_trav_stack[64 * 32];
 
+// Block-level partial sums for the neural stage's frame-mean reduction (pass
+// 17). `shared` is global-scope only in GLSL -- a declaration inside a function
+// body is rejected -- so these live here beside gs_trav_stack. 64 entries
+// because the Nova compute program's local size is 8x8.
+//
+// Four separate arrays rather than one vec4 array: a shared vec4 array would
+// still be 16 bytes per slot under std430-style packing, and this is the hot
+// path of the reduction.
+shared uint gs_neural_r[64];
+shared uint gs_neural_g[64];
+shared uint gs_neural_b[64];
+shared uint gs_neural_l[64];
+// Pass 18's per-block gate partial. Same shape and same reason as the four
+// above: a shared-memory tree reduce is what makes the per-block sum O(1)
+// instead of a serialized SSBO atomic.
+shared uint gs_neural_gate[64];
+// The trained network's 1140 weights, staged once per block by pass 18. See the
+// note in RunNeuralEval for why this is shared memory and not per-thread SSBO
+// reads.
+shared float gs_neural_w[1140];
+
 // Binding 0. The final colour target, written by RunComposite and
 // RunUpscale. rgba32f because the tonemap runs on float values in this
 // image before anything is narrowed.
@@ -236,6 +257,82 @@ layout(std430, binding = 26) readonly buffer ReservoirReadBuffer
 layout(std430, binding = 10) buffer ReservoirWriteBuffer
 {
     LightReservoir ReservoirWrite[];
+};
+
+// Binding 4. The neural stage's per-frame state.
+//
+// The trained model is conditioned on four frame statistics -- mean r, g, b and
+// mean luma of the frame it is about to enhance. They CANNOT be a constant.
+// Measured on the six held-out frames: the real per-frame mean scores 38.8 dB,
+// the best constant vector 35.9 dB (worse than the 12-parameter affine's 36.4),
+// and all-0.5 only 29.7 dB. So they have to be reduced from the frame every
+// frame, which is what pass 17 does.
+//
+// TWO-STAGE, and the staging is the point. The first version of this pass used
+// 212k integer atomicAdds (53k blocks x 4 channels) onto four addresses, and it
+// cost 188 ms per frame -- 886 ns per atomic, because every block in the grid
+// serialises through the same four words. Replaced with a partial-sum array and
+// a second, tiny dispatch:
+//
+//   pass 17  every block writes its 4 partials to g_Partial[block] -- no atomics
+//   pass 19  one block sums the partials and writes the four MEANS to g_Mean
+//
+// Neither stage accumulates, so NEITHER needs a clear: g_Partial is overwritten
+// every frame and g_Mean is written, not added to. The per-frame
+// glClearNamedBufferData that the atomic version needed is gone with it.
+//
+// The sums are fixed-point, because GLSL 4.30 has no float atomicAdd and an
+// integer one is enough: each pixel contributes round(v * 256) into a uint, the
+// sum of 3.4M pixels at 256x is at most 8.7e8 (inside uint32), and the per-pixel
+// rounding averages out to 0.002 on the mean.
+// The partial-sum array is sized for the largest frame this engine renders. A
+// 3840x2160 target at 8x8 workgroups is 480*270 = 129600 blocks, so this has to
+// clear that. It was first set to 8192 -- enough for 1024x512 and nothing else --
+// and the result was that pass 19 summed 8192 of a 2332x1451 frame's 53144
+// blocks, under-counting by 6.5x and reporting a mean 6.5x too small. The
+// under-count is silent: no shader error, no link failure, just a wrong image.
+const int NEURAL_MAX_BLOCKS = 131072;
+
+// Declared BEFORE the block below because the block sizes its arrays with it --
+// a std430 block cannot reference a constant declared later in the file.
+layout(std430, binding = 4) buffer NeuralGlobals
+{
+    float g_Mean[4];   // pass 19 output: mean r, g, b, luma
+
+    // pass 17 output: 4 fixed-point partial sums per block.
+    //
+    // SIZED here rather than left as an unsized trailing array. The gate partial
+    // below has to sit at a known offset, and std430 only guarantees an unsized
+    // trailing array is the last member -- so `g_Partial[]` plus anything after it
+    // would be rejected outright.
+    uint  g_Partial[NEURAL_MAX_BLOCKS * 4];
+
+    // pass 19 output: mean of the per-pixel gate over the frame.
+    //
+    // This is the editor's "is the stage doing anything" signal, and it cannot be
+    // faked: the gate is a function of the features, so the only honest source is
+    // the eval pass itself. Without it a user cannot distinguish "the network
+    // decided not to enhance this frame" (gate near 0) from "the stage silently
+    // isn't running" (also no visible change) -- both look identical on screen.
+    float g_GateMean;
+
+    // pass 18 output: 1 fixed-point partial sum per block.
+    uint  g_GatePartial[NEURAL_MAX_BLOCKS];
+};
+
+// Binding 5. The trained network's weights: 1140 floats = 4560 bytes, in the
+// LAYER_SHAPES order of tools/train_neural/model.py.
+//
+// An SSBO and not a uniform array, deliberately. A 1140-component uniform array
+// on top of the ~600 components the Nova compute program already declares would
+// exceed OpenGL's guaranteed 1024 per stage, and going over it fails to LINK --
+// silently, with no shader error and no log line, exactly like a ninth image
+// uniform. An SSBO has no component limit, and std430 packs a float array at
+// four bytes, so element i is at byte 4*i here and in the HLSL twin's
+// StructuredBuffer<float>. That is the whole reason for the SSBO.
+layout(std430, binding = 5) readonly buffer NeuralWeights
+{
+    float w[];
 };
 
 // The world-space eye. Used both to build the primary ray and as the
@@ -456,6 +553,9 @@ uniform int u_StepSize;
 // subregion and the composite upscales it -- which is why the UV helpers
 // below scale by it and every UV computation has to use them.
 uniform float u_RenderScale;
+// TEMPORARY (task 3): non-zero makes pass 24 render the mask into img_Output's
+// rgb so a screenshot shows it. Removed once the mask is known-good.
+uniform int u_MaskVisualize;
 uniform int u_LightCount;
 // 32 scene textures, indexed by an instance's TextureID. Unsized in
 // practice on the OpenGL path, and the unchecked index is the hazard
@@ -505,11 +605,17 @@ vec4 wl_scene_tex_lod(int slot, vec2 uv, float lod)
     }
 }
 
-// Neural Rendering (OpenGL): tiny in-shader MLP radiance cache + texture detail.
-// u_NeuralEnabled gates both; strengths blend 0 (classic path) -> 1 (full neural).
-// Gates the neural paths. At 0 the shader is the classic PBR renderer;
-// above 0 the neural contributions blend in by the strength uniforms below,
-// so the feature is a continuous mix rather than a mode switch.
+// Neural Rendering (OpenGL): in-shader MLPs for texture detail and material
+// appearance. The GI network is gone from here -- it lived inside the shading
+// estimator and has moved to a trained end-of-frame stage
+// (docs/NEURAL_RENDERING.md).
+//
+// u_NeuralEnabled now selects between two MODES rather than a blend: 0 is the
+// classic PBR renderer with no neural term at all, 1 enables the neural
+// material and texture paths below. The strength uniforms still scale those
+// paths so they can be faded, but the toggle is a switch -- there is no
+// mid-estimator mix any more, which is what previously let "neural on" and
+// "neural off" differ only in degree.
 uniform int u_NeuralEnabled;
 uniform float u_NeuralTexStrength;
 uniform float u_NeuralLightStrength;
@@ -667,6 +773,10 @@ uniform vec4 u_ALightData2[32];
 // Temporal Super-Resolution (experimental, default-off)
 uniform int u_TSREnabled;
 uniform float u_TSRSharpenStrength;
+// WLSR sharpen gate. RCAS (pass 15) is a no-op until this is 1, so the stage can
+// be shipped inert and turned on by the A/B harness or the editor without a
+// rebuild. See the comment above RunRCAS for why a sharpen stage must default off.
+uniform int u_RCSEnabled;
 
 // A cheap bounded sigmoid, x / (1 + |x|). Used as the neural MLP's
 // activation precisely because it is smooth and saturating, where ReLU
@@ -1753,6 +1863,14 @@ bool IsOccluded(Ray r, float maxDist, int skipIdx) {
                 // mandatory rather than an optimisation: a shadow ray starts on the
                 // light-facing surface, which would occlude itself.
                 if (i == skipIdx) continue;
+                // Phase 1: LODLevel is a SHADING BUDGET, not a visibility switch.
+                // TestInstanceHit (primary + closest-hit) never reads LODLevel, so far
+                // geometry keeps its exact silhouette and nothing pops. Only shadow rays
+                // skip the far band here, which trades the shadow of a distant instance
+                // for a cheaper traversal. Never apply this to the closest-hit path: that
+                // would reproduce the 2 km distance-cull popping bug that raising
+                // TraceMaxDistance to 16 km was specifically done to fix.
+                if (Instances[i].LODLevel >= 2) continue;
                 if (TestInstanceOcclusion(r, maxDist, i)) return true;
             }
         } else {
@@ -3914,19 +4032,11 @@ void RunTraceAndDenoise()
         // other preset it is clamped to 1 regardless of what the user sets.
         int maxIndirectRays = (u_QualityLevel == 0) ? 0 :
                               ((u_QualityLevel <= 2) ? min(u_IndirectRays, 1) : u_IndirectRays);
-        // Perf tier: at reduced render scale the neural cache carries diffuse
-        // GI (it already blends 65% into the traced result) — skip the second
-        // traced bounce for non-metals and save ~40% of the trace pass.
-        // Metals keep the ray so reflections stay sharp.
-        // At reduced render scale, let the neural cache stand in for the traced
-        // bounce on non-metals.
-        // ---
-        // Metals are excluded deliberately: their indirect term is a reflection,
-        // and a smooth analytic prediction there would be visibly wrong. Roughly a
-        // 40% saving on the trace pass at that resolution.
-        if (maxIndirectRays > 0 && u_RenderScale <= 0.75f && tileHit.metal <= 0.5f &&
-            u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f)
-            maxIndirectRays = 0;
+        // The bounce is always traced now. This used to be skipped at reduced
+        // render scale on non-metals, because the neural cache stood in for the
+        // traced GI -- the skip existed only to save the trace cost the cache had
+        // replaced. With the cache removed the estimator is resolution-independent
+        // again, and the new end-of-frame neural stage owns the GI enhancement.
         // Mirror gap-fill: Low preset traces no indirect rays, so metals
         // would only get the analytic sky approx. Trace one real mirror ray
         // instead and skip the approx inside ComputeDirectLighting.
@@ -3988,19 +4098,13 @@ void RunTraceAndDenoise()
             // budget, so raising u_IndirectRays changes noise but not exposure.
             indirectLight /= float(maxIndirectRays);
             indirectLight *= tileHit.occlusion;
-            // Neural radiance cache blend: learned GI steadies the 1-ray estimate (OpenGL neural path).
-            // Weighted down on metals so the traced specular reflection dominates.
-            if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f) {
-                vec3 neuralGI = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V);
-                // The neural GI blend weight: strength x 0.65, reduced by 80% of
-                // metalness. The 0.65 cap means the traced estimate always retains at least
-                // 35% of the weight, even at full neural strength.
-                float neuralK = clamp(u_NeuralLightStrength, 0.0f, 1.0f) * 0.65f * (1.0f - tileHit.metal * 0.8f);
-                indirectLight = mix(indirectLight, neuralGI * tileHit.occlusion, neuralK);
-            }
-        } else if (u_NeuralEnabled == 1 && u_NeuralLightStrength > 0.001f) {
-            // No traced bounces at this quality level: neural cache IS the GI (e.g. Low preset)
-            indirectLight = wl_neural_indirect(tileHit.worldPos, tileHit.normal, tileHit.albedo, tileHit.rough, tileHit.metal, V) * tileHit.occlusion;
+            // The neural radiance cache blend is gone. It mixed wl_neural_indirect()
+            // into the traced estimate here at strength x 0.65, which is why the
+            // toggle was a mid-estimator blend rather than a mode switch: the traced
+            // bounce was always partially replaced, so "neural on" was never a
+            // different estimator, just a weighted average of two. The estimator is
+            // now unconditionally the traced one, and the new end-of-frame stage
+            // owns the neural enhancement instead.
         }
 
         // Sharp scene reflection for metals with no traced bounce (Low preset):
@@ -4513,6 +4617,487 @@ vec3 BilinearAccum(vec2 uv, float renderScale)
     return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 }
 
+// ============================================================================
+// Edge-detect anti-aliasing: FXAA (ReconstructionFilter 6) and SMAA S1 (7).
+// ============================================================================
+// Both were plumbed end to end and consumed by nothing. The enum had the values,
+// the editor combo exposed them, and all three NVRHI Set() calls uploaded the int
+// -- but no pass declared or read it, so the composite's ladder fell through to
+// its bilinear branch. Picking FXAA or SMAA changed the image not at all, which
+// is the worst kind of dead control: it looks wired.
+//
+// They share one body because SMAA's first stage IS FXAA's edge detection. The
+// difference is the half-texel submask lookup SMAA adds, and whether that runs is
+// decided by the filter value rather than by a second near-copy of the function
+// -- two copies of a 9-tap filter are exactly how the two entry points end up
+// disagreeing about the threshold.
+//
+// Runs INSIDE RunComposite, on the resolved image, immediately before the
+// tonemap/post chain. That placement is what makes it both correct and cheap:
+//
+//   - NO RACE. The taps read the SAME image the composite is reading
+//     (img_Accumulation, or img_Bloom_Temp at Ultra full-res) -- an image this
+//     dispatch does not write. Reading img_Output instead would be a genuine
+//     race: pass 5 (bloom vertical) and pass 6 (this pass) both write it, and a
+//     compute dispatch gives no ordering guarantee between invocations, so a
+//     neighbouring tap could observe a pixel this frame has not written yet.
+//   - NO EXTRA DISPATCH, no extra image binding. The filter is folded into a pass
+//     that was already running at full resolution.
+//   - IT WORKS AT RenderScale 1.0. A separate full-res pass could not: there the
+//     composite already reads the source directly, so a pass sampling it and
+//     writing img_Output would be blending a texel with itself.
+//
+// The edge metric runs on a TONEMAPPED luma even though the blend happens in the
+// pre-tonemap space. FXAA's threshold is only perceptually meaningful on
+// display-referred luma -- on an HDR buffer a dim-but-steep edge is invisible to
+// the metric while a bright-but-shallow one dominates it. Tonemapping each tap
+// for the metric costs a handful of divides and keeps the blend itself in the
+// space the composite is already working in, so the tonemap still runs once.
+//
+// The early-out below is not an optimisation of the edge case, it is the point.
+// On a flat region the blend of a texel with its neighbours returns something
+// marginally different from the original, so returning `c` untouched is what
+// keeps non-edge pixels identical to the no-AA path.
+// Tonemapped luma, for the edge metric only. Same curve the composite's post
+// chain applies (mapped = c / (c + 1)), so "bright" means the same thing here as
+// it does in the final image. File-scope rather than nested: GLSL has no local
+// functions, and a macro here would re-evaluate its argument.
+float EdgeMetricLuma(vec3 c)
+{
+    vec3 m = c / (c + vec3(1.0f));
+    return dot(m, vec3(0.2126f, 0.7152f, 0.0722f));
+}
+
+// Source-space tap. At RenderScale < 1 the composite upscaled from the
+// accumulation buffer, so a one-output-pixel offset is renderScale source texels;
+// at 1.0 the two coincide. Mirrors the composite's own source selection --
+// img_Bloom_Temp at Ultra full-res, img_Accumulation otherwise -- so the filter
+// smooths exactly the image the composite just resolved.
+vec3 EdgeAASrcTap(ivec2 fullPos, ivec2 fullSize, ivec2 srcSize, float renderScale)
+{
+    if ((renderScale >= 1.0f) && (u_QualityLevel >= 3))
+        return imageLoad(img_Bloom_Temp, clamp(fullPos, ivec2(0), fullSize - ivec2(1))).rgb;
+    ivec2 sp = ivec2(vec2(fullPos) * renderScale);
+    return imageLoad(img_Accumulation, clamp(sp, ivec2(0), srcSize - ivec2(1))).rgb;
+}
+
+vec3 RunEdgeDetectAA(ivec2 pos, ivec2 fullSize, ivec2 srcSize, float renderScale)
+{
+    ivec2 maxC = fullSize - ivec2(1);
+    ivec2 c = clamp(pos, ivec2(0), maxC);
+
+    vec3 rgbM = EdgeAASrcTap(c, fullSize, srcSize, renderScale);
+    float lumaM = EdgeMetricLuma(rgbM);
+
+    // The 4 diagonal neighbours, matching FXAA 3.11's NW/NE/SW/SE arrangement.
+    // The cardinal taps are fetched only if an edge survives the test below.
+    vec3 rgbNW = EdgeAASrcTap(c + ivec2(-1, -1), fullSize, srcSize, renderScale);
+    vec3 rgbNE = EdgeAASrcTap(c + ivec2( 1, -1), fullSize, srcSize, renderScale);
+    vec3 rgbSW = EdgeAASrcTap(c + ivec2(-1,  1), fullSize, srcSize, renderScale);
+    vec3 rgbSE = EdgeAASrcTap(c + ivec2( 1,  1), fullSize, srcSize, renderScale);
+
+    float lumaNW = EdgeMetricLuma(rgbNW);
+    float lumaNE = EdgeMetricLuma(rgbNE);
+    float lumaSW = EdgeMetricLuma(rgbSW);
+    float lumaSE = EdgeMetricLuma(rgbSE);
+
+    float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+    float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+
+    // NO EDGE -> unchanged. FXAA 3.11's threshold is
+    // max(EDGE_THRESHOLD_MIN, lumaMax * EDGE_THRESHOLD) with
+    // EDGE_THRESHOLD_MIN = 0.0312 and EDGE_THRESHOLD = 0.125. Relative to
+    // lumaMax, so it needs no per-preset tuning and no exposure input.
+    float lumaRange = lumaMax - lumaMin;
+    if (lumaRange < max(0.0312f, lumaMax * 0.125f))
+        return rgbM;
+
+    // The cardinal taps complete the 3x3.
+    vec3 rgbN = EdgeAASrcTap(c + ivec2(0, -1), fullSize, srcSize, renderScale);
+    vec3 rgbS = EdgeAASrcTap(c + ivec2(0,  1), fullSize, srcSize, renderScale);
+    vec3 rgbW = EdgeAASrcTap(c + ivec2(-1, 0), fullSize, srcSize, renderScale);
+    vec3 rgbE = EdgeAASrcTap(c + ivec2( 1, 0), fullSize, srcSize, renderScale);
+
+    float lumaN = EdgeMetricLuma(rgbN);
+    float lumaS = EdgeMetricLuma(rgbS);
+    float lumaW = EdgeMetricLuma(rgbW);
+    float lumaE = EdgeMetricLuma(rgbE);
+
+    // DIRECTION SELECTION, verbatim from FXAA 3.11. The two candidates measure
+    // horizontal and vertical contrast; the larger names the axis the edge runs
+    // ALONG, so the filter must blur ACROSS it.
+    float dirX = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+    float dirY =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+    float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.03125f, 1.0f / 128.0f);
+    float rcpDirMin = 1.0f / (min(abs(dirX), abs(dirY)) + dirReduce);
+    vec2 dir = clamp(vec2(dirX, dirY) * rcpDirMin, -8.0f, 8.0f);
+
+    ivec2 halfOff = ivec2(clamp(int(dir.x * 0.5f), -1, 1),
+                          clamp(int(dir.y * 0.5f), -1, 1));
+
+    // rgbA: the blend at half a texel in each direction. SMAA S1's extra step is
+    // the symmetric half-texel pair, which lets the blend cross a texel boundary
+    // FXAA's span cannot reach; the FXAA entry point uses the plain 3-tap form.
+    vec3 rgbA;
+    if (u_ReconstructionFilter == 7)
+    {
+        rgbA = (EdgeAASrcTap(c + halfOff, fullSize, srcSize, renderScale) +
+                EdgeAASrcTap(c - halfOff, fullSize, srcSize, renderScale)) * 0.5f;
+    }
+    else
+    {
+        rgbA = (rgbM +
+                EdgeAASrcTap(c + halfOff, fullSize, srcSize, renderScale) +
+                EdgeAASrcTap(c - halfOff, fullSize, srcSize, renderScale)) / 3.0f;
+    }
+
+    // rgbB: the 5-tap cross blend.
+    vec3 rgbB = (rgbN + rgbS + rgbW + rgbE) * 0.25f * 0.5f + rgbM * 0.5f;
+    float lumaB = EdgeMetricLuma(rgbB);
+
+    // If the cross blend would land outside the local luma range the edge is too
+    // sharp for it, and the half-texel blend is the better answer.
+    if (lumaB < lumaMin || lumaB > lumaMax)
+        return rgbA;
+    return rgbB;
+}
+
+// ============================================================================
+// FSR1 EASU -- Edge Adaptive Spatial Upsampling (filter 8).
+//
+// Adapted from the EASU stage of AMD FidelityFX Super Resolution 1
+// (ffx_fsr1.h, (c) 2021 Advanced Micro Devices, Inc., MIT licensed). The
+// adaptation is structural rather than a straight port: the reference gathers
+// 2x2 texel blocks with textureGather and drives the taps from four precomputed
+// constant vectors, whereas this renderer samples a storage image with
+// imageLoad, so the twelve taps are written out explicitly and the cell origin
+// is passed in directly. The filter itself -- tap offsets, gradient and length
+// shaping, the lanczos-2 approximation, the min/max deringing clamp -- is
+// unchanged.
+//
+// WHY IT EARNS A SLOT IN THE LADDER. Every other entry is separable: it applies
+// a 1D kernel along x and then along y, which is why Lanczos rings along a
+// diagonal edge and Bicubic smears across one. EASU instead measures the local
+// gradient at the sample point and stretches the kernel ALONG the edge, so a
+// diagonal is reconstructed from taps lying on it rather than across it. A
+// ray tracer produces nothing but hard geometry edges -- exactly the case a
+// separable kernel handles worst -- so this is the one entry that is not just a
+// different trade of blur against ringing.
+//
+// WHY RCAS IS A SEPARATE PASS AND IS DEFERRED. FSR1 is EASU followed by RCAS, a
+// contrast-adaptive sharpen. The earlier text here claimed RCAS would cost five
+// EASU evaluations -- that is wrong, and it was worth correcting rather than
+// leaving: RCAS samples five taps of the RECONSTRUCTED image (the centre plus the
+// four diagonals) and drives a gain from the local contrast. It does not re-run
+// EASU at those offsets. So it is ~5 taps, not 60, and it is cheap.
+//
+// It still cannot be folded into this branch: the four diagonal taps live at
+// NEIGHBOURING OUTPUT PIXELS, and this invocation only holds the centre one in
+// registers. A pass boundary is required.
+//
+// It is deferred, not omitted, and the reason is scheduling rather than cost:
+// the clean-room reconstruction plan (docs/.hermes plan
+// 2026-10-26_001250-clean-room-dlss-class-stack.md, section 1.3) already
+// allocates the dead pass-15/16 slots to RCAS and to the WLAA sharpen. Taking
+// those slots from inside this composite would collide with that work, and the
+// plan is also where the post-composite scratch-image rebind is designed.
+// EASU's own negative lobes supply most of the high-frequency response RCAS
+// would add, and the Bicubic entry covers the overshoot case for now.
+// ============================================================================
+
+// One of the twelve taps. Offsets are relative to the bilinear cell's upper-left
+// texel, which is also the cell the sample point falls in:
+//        b c
+//      e f g h
+//      i j k l
+//        n o
+vec3 EASUTap(ivec2 cell, ivec2 srcSize, ivec2 off)
+{
+    return imageLoad(img_Accumulation, clamp(cell + off, ivec2(0), srcSize - ivec2(1))).rgb;
+}
+
+// Two-channel luma, matching the reference's "luma times 2, in 2 FMA/MAD". The
+// factor of two is irrelevant (every use is a ratio) but keeping the same weights
+// means the gradient shaping is directly comparable to the original.
+float EASULuma(vec3 c)
+{
+    return c.b * 0.5f + (c.r * 0.5f + c.g);
+}
+
+// Filtering for one tap. `off` is the tap's offset from the SAMPLE POINT (not
+// from the cell), which is why every call site passes (tapOffset - pp).
+void EASUTapAccum(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len,
+                  float lob, float clp, vec3 c)
+{
+    // Rotate the offset by the gradient direction.
+    vec2 v;
+    v.x = off.x * dir.x + off.y * dir.y;
+    v.y = off.x * -dir.y + off.y * dir.x;
+    // Anisotropy.
+    v *= len;
+    // Distance^2, limited to the window -- at a corner two taps fall outside it.
+    float d2 = min(v.x * v.x + v.y * v.y, clp);
+    // lanczos-2 without sin(), rcp() or sqrt():
+    //   (25/16 * (2/5 * x^2 - 1)^2 - (25/16 - 1)) * (1/4 * x^2 - 1)^2
+    //   |_______________________|   |_______________|
+    //             base                  window
+    float wB = 2.0f / 5.0f * d2 - 1.0f;
+    float wA = lob * d2 - 1.0f;
+    wB *= wB;
+    wA *= wA;
+    wB = 25.0f / 16.0f * wB - (25.0f / 16.0f - 1.0f);
+    float w = wB * wA;
+    aC += c * w;
+    aW += w;
+}
+
+// Accumulate gradient direction and length from one bilinear weight.
+void EASUSet(inout vec2 dir, inout float len, vec2 pp,
+             bool biS, bool biT, bool biU, bool biV,
+             float lA, float lB, float lC, float lD, float lE)
+{
+    // Bilinear weight. The predicates are compile-time constants here, so the
+    // three unused branches fold away.
+    //   s t
+    //   u v
+    float w = 0.0f;
+    if (biS) w = (1.0f - pp.x) * (1.0f - pp.y);
+    if (biT) w = pp.x * (1.0f - pp.y);
+    if (biU) w = (1.0f - pp.x) * pp.y;
+    if (biV) w = pp.x * pp.y;
+
+    // Direction is the '+' diff:
+    //     a
+    //   b c d
+    //     e
+    // Length converts gradient reversal to 0 and non-reversal to 1, shaped, then
+    // adds the horizontal and vertical terms.
+    float dc = lD - lC;
+    float cb = lC - lB;
+    float lenX = max(abs(dc), abs(cb));
+    // The reference uses a bit-level reciprocal approximation here precisely
+    // because a plain divide yields +inf for a flat neighbourhood, and that inf
+    // propagates into the length term. Flooring the denominator is equivalent
+    // for every non-zero input and removes the inf.
+    lenX = 1.0f / max(lenX, 1e-20f);
+    float dirX = lD - lB;
+    dir.x += dirX * w;
+    lenX = clamp(abs(dirX) * lenX, 0.0f, 1.0f);
+    lenX *= lenX;
+    len += lenX * w;
+
+    float ec = lE - lC;
+    float ca = lC - lA;
+    float lenY = max(abs(ec), abs(ca));
+    lenY = 1.0f / max(lenY, 1e-20f);
+    float dirY = lE - lA;
+    dir.y += dirY * w;
+    lenY = clamp(abs(dirY) * lenY, 0.0f, 1.0f);
+    lenY *= lenY;
+    len += lenY * w;
+}
+
+// ============================================================================
+// RCAS -- Robust Contrast-Adaptive Sharpening (the WLSR sharpen stage).
+//
+// FIVE TAPS: the centre plus the four DIAGONALS. The diagonals are used rather
+// than the axis neighbours because the axis pair is already exercised by the
+// upscale's own kernel; the diagonals are what the upscale removed.
+//
+// THE GAIN COMES FROM THE LOCAL CONTRAST, not from a fixed slider -- that is
+// what makes it robust. On a high-contrast edge the neighbourhood's maximum is
+// large, the gain collapses toward zero, and the filter cannot ring. On a flat
+// region the gain is bounded by the minimum, so it cannot amplify noise beyond
+// the local range.
+//
+// THE REACTIVE MASK MODULATES THE GAIN, and the direction matters. Where the
+// mask says the current frame cannot be trusted (a disocclusion, fast motion, a
+// camera cut) the image is a single frame's worth of data, so sharpening it
+// amplifies noise and aliasing. The gain is therefore scaled by (1 - mask):
+// sharpening is REDUCED where the frame is untrusted, never increased.
+//
+// A PASS BOUNDARY IS REQUIRED. The four diagonal taps live at NEIGHBOURING
+// OUTPUT PIXELS, and one invocation only holds the centre in registers -- so
+// this cannot be folded into the EASU branch of RunComposite no matter how the
+// taps are arranged. That is the whole reason this is pass 15.
+//
+// The sharpen amount is CLAMPED to RCAS_MAX_SHARPEN. The clamp is the part that
+// keeps a bright-on-dark edge from producing a visible halo: without it the gain
+// term is unbounded and a single bright texel can drag its neighbours past the
+// local range.
+// ============================================================================
+const float RCAS_MAX_SHARPEN = 0.75f;
+
+// The default sharpen amount for the WLAA native-resolution AA mode. WLAA is
+// TAA (the accumulation) plus a mild sharpen, so the amount is modest -- enough
+// to restore the edge crispness the temporal filter softens, not enough to ring.
+// Overridable via the WLSR sharpen knob (u_TSRSharpenStrength); clamped either
+// way. Kept a separate constant from RCAS_MAX_SHARPEN because that one is the
+// per-channel GAIN ceiling, not the user amount.
+const float WLAA_SHARPNESS = 0.5f;
+
+// The RCAS sharpen core, image-agnostic: given the centre texel and its four
+// diagonal neighbours plus the resolved sharpness and the reactive mask, return
+// the sharpened centre. Kept free of any image type on purpose -- GLSL under
+// NVRHI's bindless transform rewrites image-typed uniforms into handle types it
+// will not implicitly convert to a function parameter, so an image-typed
+// parameter is not portable here. Pass 15 (RunRCAS below) reads img_Output and
+// the WLAA branch of RunComposite reads img_Accumulation; both load their own
+// taps and hand the five colours in, so the sharpen math lives in one place.
+vec3 RunWlsrSharpenCore(vec3 ctr, vec3 t00, vec3 t10, vec3 t01, vec3 t11, float sharpness, float mask)
+{
+    // Local range over the four diagonals. The contrast (mx - mn) is what makes
+    // the gain adaptive: a flat region has (mx - mn) near zero so it gains
+    // nothing, and an edge has it large so it gains a lot.
+    vec3 mn = min(min(t00, t10), min(t01, t11));
+    vec3 mx = max(max(t00, t10), max(t01, t11));
+    vec3 contrast = mx - mn;
+
+    // Gain = contrast x sharpness x trust. (1 - mask) is the trust term: where
+    // the mask says the frame cannot be trusted the image is a single frame's
+    // worth of data, so sharpening it amplifies noise and aliasing. Sharpening
+    // is therefore REDUCED there, never increased. The clamp is the anti-ringing
+    // guarantee: without it the gain is unbounded and a single bright texel drags
+    // its neighbours past the local range, which is the visible halo on a hard
+    // edge. Written as a two-line form to match the HLSL twin exactly.
+    vec3 gain = contrast * clamp(sharpness, 0.0f, 1.0f) * (1.0f - clamp(mask, 0.0f, 1.0f));
+    gain = clamp(gain, 0.0f, RCAS_MAX_SHARPEN);
+
+    // Unsharp mask: the centre is pushed away from the average of its diagonal
+    // neighbours. This is the symmetric, contrast-raising form. (The earlier
+    // weighted-average form `(ctr + gain*diag)/(1+4*gain)` is a weighted mean and
+    // can only move the centre toward its neighbours -- it blurs rather than
+    // sharpens, which is why it lowered p99 contrast instead of raising it.)
+    vec3 blur = (t00 + t10 + t01 + t11) * 0.25f;
+    vec3 result = ctr + gain * (ctr - blur);
+    return clamp(result, 0.0f, 1.0f);
+}
+
+// Pass 15 (WL_RCAS): the unsharp-mask sharpen over the final colour. Reads the
+// trace-resolution reactive mask at the trace coordinate -- a point sample
+// rather than a bilinear one, because the mask is a per-trace-texel decision and
+// interpolating it would blend two independent disocclusion verdicts.
+vec3 RunRCAS(ivec2 pos, ivec2 size, float sharpness)
+{
+    // Clamp the five tap positions so the filter cannot read outside the image.
+    // These are imageLoads, which have no CLAMP_TO_EDGE mode, so the clamp is
+    // explicit -- a clamped tap replicates the border texel.
+    ivec2 lo = ivec2(1);
+    ivec2 hi = max(size - ivec2(2), lo);
+    ivec2 c  = clamp(pos, lo, hi);
+
+    vec3 ctr = imageLoad(img_Output, c).rgb;
+    vec3 t00 = imageLoad(img_Output, clamp(c + ivec2(-1, -1), lo, hi)).rgb;
+    vec3 t10 = imageLoad(img_Output, clamp(c + ivec2( 1, -1), lo, hi)).rgb;
+    vec3 t01 = imageLoad(img_Output, clamp(c + ivec2(-1,  1), lo, hi)).rgb;
+    vec3 t11 = imageLoad(img_Output, clamp(c + ivec2( 1,  1), lo, hi)).rgb;
+
+    ivec2 traceSize = ivec2(vec2(size) * u_RenderScale);
+    traceSize = max(traceSize, ivec2(1));
+    ivec2 mpos = clamp(ivec2((vec2(pos) + 0.5f) * u_RenderScale), ivec2(0), traceSize - ivec2(1));
+    float mask = imageLoad(img_Bloom_Temp, mpos).a;
+
+    return RunWlsrSharpenCore(ctr, t00, t10, t01, t11, sharpness, mask);
+}
+
+vec3 RunFSR1EASU(ivec2 cell, vec2 pp, ivec2 srcSize)
+{
+    // The twelve taps, in the reference's order.
+    vec3 b = EASUTap(cell, srcSize, ivec2( 0, -1));
+    vec3 c = EASUTap(cell, srcSize, ivec2( 1, -1));
+    vec3 e = EASUTap(cell, srcSize, ivec2(-1,  0));
+    vec3 f = EASUTap(cell, srcSize, ivec2( 0,  0));
+    vec3 g = EASUTap(cell, srcSize, ivec2( 1,  0));
+    vec3 h = EASUTap(cell, srcSize, ivec2( 2,  0));
+    vec3 i = EASUTap(cell, srcSize, ivec2(-1,  1));
+    vec3 j = EASUTap(cell, srcSize, ivec2( 0,  1));
+    vec3 k = EASUTap(cell, srcSize, ivec2( 1,  1));
+    vec3 l = EASUTap(cell, srcSize, ivec2( 2,  1));
+    vec3 n = EASUTap(cell, srcSize, ivec2( 0,  2));
+    vec3 o = EASUTap(cell, srcSize, ivec2( 1,  2));
+
+    float bL = EASULuma(b);
+    float cL = EASULuma(c);
+    float eL = EASULuma(e);
+    float fL = EASULuma(f);
+    float gL = EASULuma(g);
+    float hL = EASULuma(h);
+    float iL = EASULuma(i);
+    float jL = EASULuma(j);
+    float kL = EASULuma(k);
+    float lL = EASULuma(l);
+    float nL = EASULuma(n);
+    float oL = EASULuma(o);
+
+    // Accumulate for bilinear interpolation. Each call supplies the '+' cross
+    // around one of the four cell corners, weighted by that corner's bilinear
+    // weight -- so the four calls together cover the cell exactly once.
+    vec2 dir = vec2(0.0f);
+    float len = 0.0f;
+    EASUSet(dir, len, pp, true,  false, false, false, bL, eL, fL, gL, jL);
+    EASUSet(dir, len, pp, false, true,  false, false, cL, fL, gL, hL, kL);
+    EASUSet(dir, len, pp, false, false, true,  false, fL, iL, jL, kL, nL);
+    EASUSet(dir, len, pp, false, false, false, true,  gL, jL, kL, lL, oL);
+
+    // Normalize, and clean up values close to zero.
+    vec2 dir2 = dir * dir;
+    float dirR = dir2.x + dir2.y;
+    bool zro = dirR < 1.0f / 32768.0f;
+    // max() rather than the raw value: inversesqrt(0) is +inf, and the zro
+    // override only replaces the result, not the intermediate. dirR is a sum of
+    // squares so it is never negative.
+    dirR = inversesqrt(max(dirR, 1.0f / 32768.0f));
+    dirR = zro ? 1.0f : dirR;
+    dir.x = zro ? 1.0f : dir.x;
+    dir *= dirR;
+
+    // Transform from {0 to 2} to {0 to 1} range, and shape with square.
+    len = len * 0.5f;
+    len *= len;
+
+    // Stretch kernel {1.0 vert|horz, to sqrt(2.0) on diagonal}. |dir| >= 1 after
+    // the normalization above, so the denominator cannot vanish.
+    float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
+
+    // Anisotropic length after rotation:
+    //   x := 1.0 lerp to 'stretch' on edges
+    //   y := 1.0 lerp to 2x on edges
+    vec2 len2 = vec2(1.0f + (stretch - 1.0f) * len, 1.0f - 0.5f * len);
+
+    // Based on the amount of 'edge', the window shifts from +/-sqrt(2.0) to
+    // slightly beyond 2.0.
+    float lob = 0.5f + (1.0f / 4.0f - 0.04f - 0.5f) * len;
+
+    // Distance^2 clipping point at the end of the adjustable window.
+    float clp = 1.0f / lob;
+
+    // Accumulation, mixed with the min/max of the four nearest texels. This is
+    // what removes the ringing the lanczos-2 negative lobes would otherwise
+    // produce: the result can never leave the range of the 2x2 cell it was
+    // reconstructed from.
+    vec3 min4 = min(min(min(f, g), j), k);
+    vec3 max4 = max(max(max(f, g), j), k);
+
+    vec3 aC = vec3(0.0f);
+    float aW = 0.0f;
+    EASUTapAccum(aC, aW, vec2( 0.0f, -1.0f) - pp, dir, len2, lob, clp, b);
+    EASUTapAccum(aC, aW, vec2( 1.0f, -1.0f) - pp, dir, len2, lob, clp, c);
+    EASUTapAccum(aC, aW, vec2(-1.0f,  1.0f) - pp, dir, len2, lob, clp, i);
+    EASUTapAccum(aC, aW, vec2( 0.0f,  1.0f) - pp, dir, len2, lob, clp, j);
+    EASUTapAccum(aC, aW, vec2( 0.0f,  0.0f) - pp, dir, len2, lob, clp, f);
+    EASUTapAccum(aC, aW, vec2(-1.0f,  0.0f) - pp, dir, len2, lob, clp, e);
+    EASUTapAccum(aC, aW, vec2( 1.0f,  1.0f) - pp, dir, len2, lob, clp, k);
+    EASUTapAccum(aC, aW, vec2( 2.0f,  1.0f) - pp, dir, len2, lob, clp, l);
+    EASUTapAccum(aC, aW, vec2( 2.0f,  0.0f) - pp, dir, len2, lob, clp, h);
+    EASUTapAccum(aC, aW, vec2( 1.0f,  0.0f) - pp, dir, len2, lob, clp, g);
+    EASUTapAccum(aC, aW, vec2( 1.0f,  2.0f) - pp, dir, len2, lob, clp, o);
+    EASUTapAccum(aC, aW, vec2( 0.0f,  2.0f) - pp, dir, len2, lob, clp, n);
+
+    // Normalize and dering. aW is always >= 1 because the centre tap has d2 = 0
+    // and therefore a weight of exactly 1.
+    return min(max4, max(min4, aC * (1.0f / aW)));
+}
+
 // PASS 4: the composite. Upscale the accumulation buffer, apply the
 // post-processing chain, tonemap, and write the final image.
 void RunComposite() {
@@ -4561,10 +5146,13 @@ void RunComposite() {
         // kernel and nothing else -- no change to the trace, the accumulation or
         // the denoiser.
         //
-        // Values outside the spatial range (Temporal, FSR1, TSR, SMAA, FXAA,
-        // SpatialDenoise) are separate passes, not reconstruction filters; they
-        // fall through to bilinear rather than being ignored, so picking one
-        // degrades gracefully instead of appearing to do something it cannot.
+        // Values outside the spatial range (Temporal, TSR, SMAA, FXAA,
+        // SpatialDenoise) are separate passes rather than reconstruction
+        // filters; they fall through to bilinear instead of being ignored, so
+        // picking one degrades gracefully rather than appearing to do something
+        // it cannot. FSR1 used to be in that list -- it was a dead entry, since
+        // no EASU code existed anywhere in the tree -- and is now a real branch
+        // above.
         if (u_ReconstructionFilter == 1)
         {
             // NEAREST -- 1 tap, point sampling. The cheapest possible upscale,
@@ -4628,6 +5216,43 @@ void RunComposite() {
             }
             denoised = acc / max(wsum, 1e-5f);
         }
+        else if (u_ReconstructionFilter == 8)
+        {
+            // FSR1 EASU -- 12 tap, edge-adaptive, anisotropic lanczos-2. Unlike
+            // the separable kernels above it stretches the footprint along the
+            // local gradient, so it reconstructs a diagonal edge from taps lying
+            // on it instead of smearing across it. The cell origin s0 and the
+            // fractional offset f are the SAME values bilinear derived, so this
+            // changes the kernel and nothing else -- the trace, the accumulation
+            // and the denoiser are untouched.
+            //
+            // REACTIVE MASK. Where the mask says the current frame cannot be
+            // trusted (a disocclusion, fast motion, a camera cut), the EASU
+            // result is blended back toward bilinear. The mask is the whole
+            // point of the reactive input: EASU stretches its kernel along an
+            // edge, which is exactly what must NOT happen across a
+            // disocclusion, where the "edge" is two different surfaces. The
+            // blend is toward bilinear rather than toward the raw source texel
+            // because bilinear is the fallback every other filter already uses,
+            // so a masked pixel degrades to the same image an unmasked one
+            // would have produced under a different filter selection.
+            //
+            // The mask lives in img_Bloom_Temp.a at TRACE resolution, so it is
+            // sampled at the source coordinate, not the output one.
+            vec3 easu = RunFSR1EASU(s0, f, srcSize);
+            // Bilinear from the same cell, so a masked pixel degrades to the
+            // image the default filter would have produced. Computing it here
+            // rather than falling through to the else-branch keeps the two
+            // kernels in one place and means the blend cannot drift from the
+            // filter it is replacing.
+            vec3 bl00 = imageLoad(img_Accumulation, s0).rgb;
+            vec3 bl10 = imageLoad(img_Accumulation, ivec2(s1.x, s0.y)).rgb;
+            vec3 bl01 = imageLoad(img_Accumulation, ivec2(s0.x, s1.y)).rgb;
+            vec3 bl11 = imageLoad(img_Accumulation, s1).rgb;
+            vec3 bilinear = mix(mix(bl00, bl10, f.x), mix(bl01, bl11, f.x), f.y);
+            float mask = imageLoad(img_Bloom_Temp, clamp(s0, ivec2(0), srcSize - ivec2(1))).a;
+            denoised = mix(easu, bilinear, clamp(mask, 0.0f, 1.0f));
+        }
         else
         {
             // BILINEAR (the default) and the fall-through for every filter that
@@ -4639,13 +5264,57 @@ void RunComposite() {
             denoised = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
         }
     } else {
-        // At full resolution there is no upscale to do, so the composite reads the
-        // accumulation buffer directly -- except at Ultra, where the bloom chain
-        // left its final blurred result in img_Bloom_Temp.
-        denoised = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
+        // At full resolution there is no upscale to do. The base colour is the
+        // accumulation, or the bloom base at Ultra.
+        vec3 base = (u_QualityLevel >= 3) ? imageLoad(img_Bloom_Temp, pos).rgb : imageLoad(img_Accumulation, pos).rgb;
+        if (u_ReconstructionFilter == 12)
+        {
+            // WLAA -- native-resolution anti-aliasing. The temporal accumulation
+            // (pass 2) already ran; WLAA is that result plus the RCAS sharpen,
+            // folded into the composite so the mode is one pass rather than a
+            // composite followed by a separate full-resolution sharpen stage.
+            // The sharpen reads the resolved accumulation -- exactly what a
+            // native-res AA mode reconstructs -- and the amount defaults to
+            // WLAA_SHARPNESS, overridable via the WLSR sharpen knob, clamped to
+            // the range either way.
+            float wlSharp = (u_TSRSharpenStrength > 0.001f) ? u_TSRSharpenStrength : WLAA_SHARPNESS;
+            // Load the five taps from the resolved accumulation (not img_Output,
+            // which is still the pre-composite trace colour here) and the mask
+            // from the trace-resolution reactive mask, at the trace coordinate.
+            ivec2 lo = ivec2(1);
+            ivec2 hi = max(fullSize - ivec2(2), lo);
+            ivec2 cc = clamp(pos, lo, hi);
+            vec3 ctr = imageLoad(img_Accumulation, cc).rgb;
+            vec3 t00 = imageLoad(img_Accumulation, clamp(cc + ivec2(-1, -1), lo, hi)).rgb;
+            vec3 t10 = imageLoad(img_Accumulation, clamp(cc + ivec2( 1, -1), lo, hi)).rgb;
+            vec3 t01 = imageLoad(img_Accumulation, clamp(cc + ivec2(-1,  1), lo, hi)).rgb;
+            vec3 t11 = imageLoad(img_Accumulation, clamp(cc + ivec2( 1,  1), lo, hi)).rgb;
+            ivec2 traceSize = max(ivec2(vec2(fullSize) * u_RenderScale), ivec2(1));
+            ivec2 mpos = clamp(ivec2((vec2(pos) + 0.5f) * u_RenderScale), ivec2(0), traceSize - ivec2(1));
+            float mask = imageLoad(img_Bloom_Temp, mpos).a;
+            denoised = RunWlsrSharpenCore(ctr, t00, t10, t01, t11, clamp(wlSharp, 0.0f, 1.0f), mask);
+        }
+        else
+        {
+            denoised = base;
+        }
     }
 
     vec3 combined = denoised;
+
+    // EDGE-DETECT AA (FXAA / SMAA S1). Runs on the RESOLVED image, before the
+    // tonemap/post chain, so the composite's existing post-processing still applies
+    // to the filtered result -- no duplicated grading, no second pass.
+    //
+    // Gated on the filter value so every other entry is untouched: the default
+    // path falls straight through to the post chain below, which is what keeps
+    // the no-AA output identical to before this was wired.
+    if (u_ReconstructionFilter == 6 || u_ReconstructionFilter == 7)
+    {
+        ivec2 srcSize = ivec2(vec2(fullSize) * max(u_RenderScale, 0.001f));
+        srcSize = max(srcSize, ivec2(1));
+        combined = RunEdgeDetectAA(pos, fullSize, srcSize, u_RenderScale);
+    }
 
     vec2 uv = (vec2(pos) + 0.5f) / vec2(fullSize);
     vec2 centered = uv * 2.0f - 1.0f;
@@ -4734,6 +5403,7 @@ void RunComposite() {
     }
 
     finalColor = clamp(finalColor, 0.0, 1.0);
+
     imageStore(img_Output, pos, vec4(finalColor, 1.0f));
 
     // Bloom threshold must run at ANY scale: passes 4/5 blur img_Bloom at full
@@ -5526,6 +6196,525 @@ void RunTSRCopy() {
     imageStore(img_Output, pos, vec4(color, 1.0f));
 }
 
+// Pass 17 (neural feature gather) is NOT in this file, deliberately.
+//
+// This shader is compiled for the OpenGL path only. The HLSL twin is compiled
+// for DX11, DX12 AND Vulkan (tools/compile_nova_spirv.py runs DXC over the
+// .hlsl to produce Renderer3D_NovaRenderer.spv), so pass 17 lives there at
+// register(u12) -- where 64+ UAV slots exist.
+//
+// It cannot live here: img_NeuralFeatures needs a ninth image binding, and
+// GL 4.3 guarantees only 8 image units, and the Nova compute program already
+// uses all eight: 0 output, 1 accumulation, 2 bloom, 3 material, 4 albedo,
+// 5 velocity, 6 trace G-buffer, 7 bloom temp. Measured on the RTX 3060 Ti this
+// engine targets, GL_MAX_IMAGE_UNITS = 8. A ninth image uniform fails to LINK on
+// such a driver -- silently, with no shader error and no log line -- which would
+// take down the whole GL Nova path rather than just the neural stage. The
+// verifier tools/verify_nova_glsl.py enforces this and carries a negative
+// control for the ninth uniform.
+//
+// So the neural stage claims NO image unit. It reads the anchor with imageLoad
+// from img_Output -- the same image it writes -- and each thread touches only its
+// own texel of it, so there is no read/write hazard. The frame mean arrives
+// through an SSBO (binding 4) and the weights through another (binding 5). That
+// is what makes the stage available on OpenGL at all.
+
+const int NEURAL_N_IN  = 8;
+const int NEURAL_N_HID = 32;
+
+// Weight offsets into w[], derived from LAYER_SHAPES in tools/train_neural/model.py.
+// W1 is (8,32), so W1[i][j] lives at i*32+j; every later layer follows suit.
+const int O_W1 = 0;
+const int O_B1 = O_W1 + NEURAL_N_IN * NEURAL_N_HID;   // 256
+const int O_W2 = O_B1 + NEURAL_N_HID;                 // 288
+const int O_B2 = O_W2 + NEURAL_N_HID * NEURAL_N_IN;   // 544
+const int O_W3 = O_B2 + NEURAL_N_IN;                  // 552
+const int O_B3 = O_W3 + NEURAL_N_IN * NEURAL_N_HID;   // 808
+const int O_W4 = O_B3 + NEURAL_N_HID;                 // 840
+const int O_B4 = O_W4 + NEURAL_N_HID * NEURAL_N_IN;   // 1096
+const int O_WH = O_B4 + NEURAL_N_IN;                  // 1104
+const int O_BH = O_WH + NEURAL_N_IN * 3;              // 1128
+const int O_WG = O_BH + 3;                            // 1131
+const int O_BG = O_WG + NEURAL_N_IN;                  // 1139
+
+// Total weight count, for the shared-memory staging array below.
+const int NEURAL_N_W = 1140;
+
+// Pass 17, stage one: each block reduces its own 64 pixels and writes four
+// fixed-point partials. NO atomics -- see the NeuralGlobals note above for what
+// the atomic version cost.
+void RunNeuralReduce()
+{
+    ivec2 size = imageSize(img_Output);
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    int li = int(gl_LocalInvocationIndex);
+
+    vec3 c = vec3(0.0);
+    if (pos.x < size.x && pos.y < size.y)
+        c = imageLoad(img_Output, pos).rgb;
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+
+    gs_neural_r[li] = uint(c.r * 256.0 + 0.5);
+    gs_neural_g[li] = uint(c.g * 256.0 + 0.5);
+    gs_neural_b[li] = uint(c.b * 256.0 + 0.5);
+    gs_neural_l[li] = uint(lum  * 256.0 + 0.5);
+    barrier();
+
+    for (int stride = 32; stride > 0; stride >>= 1)
+    {
+        if (li < stride)
+        {
+            gs_neural_r[li] += gs_neural_r[li + stride];
+            gs_neural_g[li] += gs_neural_g[li + stride];
+            gs_neural_b[li] += gs_neural_b[li + stride];
+            gs_neural_l[li] += gs_neural_l[li + stride];
+        }
+        barrier();
+    }
+
+    if (li == 0)
+    {
+        // One slot per block. The guard keeps a frame larger than
+        // NEURAL_MAX_BLOCKS from writing past the allocation; such a frame would
+        // under-count rather than corrupt, and no frame this engine renders
+        // reaches it (4K is 129600 blocks, which is why the constant is not
+        // simply "big enough for 4K" -- see the note above).
+        uint bid = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+        if (bid < NEURAL_MAX_BLOCKS)
+        {
+            g_Partial[bid * 4 + 0] = gs_neural_r[0];
+            g_Partial[bid * 4 + 1] = gs_neural_g[0];
+            g_Partial[bid * 4 + 2] = gs_neural_b[0];
+            g_Partial[bid * 4 + 3] = gs_neural_l[0];
+        }
+    }
+}
+
+// Pass 17, stage two: ONE block sums the partials and writes the four means.
+//
+// A single 64-thread block, each thread striding over the array. 4K produces
+// 129600 partials; 64 threads is 2025 loads each, which is a few microseconds --
+// three orders of magnitude cheaper than the 212k atomics this replaced.
+//
+// The block count is DERIVED FROM THE IMAGE SIZE, not from gl_NumWorkGroups.
+// gl_NumWorkGroups reports the CURRENT dispatch's extent, and this pass runs as
+// glDispatchCompute(1,1,1) -- reading it gave 1, so the first version summed a
+// single block's partials out of 129600 and wrote a mean of ~0. The eval pass
+// then produced exactly the output it would have produced with a zero global
+// vector, which is the same failure the constant-vector measurement predicts
+// (35.9 dB, worse than the affine).
+void RunNeuralReduceFinal()
+{
+    ivec2 size = imageSize(img_Output);
+    const uint blocksX = (uint(size.x) + 7u) / 8u;
+    const uint blocksY = (uint(size.y) + 7u) / 8u;
+    const uint numBlocks = blocksX * blocksY;
+    const uint clamped = min(numBlocks, NEURAL_MAX_BLOCKS);
+    const int li = int(gl_LocalInvocationIndex);
+
+    uint sr = 0, sg = 0, sb = 0, sl = 0, sgate = 0;
+    for (uint b = li; b < clamped; b += 64u)
+    {
+        sr    += g_Partial[b * 4 + 0];
+        sg    += g_Partial[b * 4 + 1];
+        sb    += g_Partial[b * 4 + 2];
+        sl    += g_Partial[b * 4 + 3];
+        sgate += g_GatePartial[b];
+    }
+
+    gs_neural_r[li] = sr;
+    gs_neural_g[li] = sg;
+    gs_neural_b[li] = sb;
+    gs_neural_l[li] = sl;
+    gs_neural_gate[li] = sgate;
+    barrier();
+
+    for (int stride = 32; stride > 0; stride >>= 1)
+    {
+        if (li < stride)
+        {
+            gs_neural_r[li]       += gs_neural_r[li + stride];
+            gs_neural_g[li]       += gs_neural_g[li + stride];
+            gs_neural_b[li]       += gs_neural_b[li + stride];
+            gs_neural_l[li]       += gs_neural_l[li + stride];
+            gs_neural_gate[li]    += gs_neural_gate[li + stride];
+        }
+        barrier();
+    }
+
+    if (li == 0)
+    {
+        // Fixed-point back to a mean: the sums are v * 256 accumulated over
+        // every pixel, so divide by (256 * pixelCount).
+        const float inv = 1.0 / (256.0 * float(size.x) * float(size.y));
+        g_Mean[0] = float(gs_neural_r[0]) * inv;
+        g_Mean[1] = float(gs_neural_g[0]) * inv;
+        g_Mean[2] = float(gs_neural_b[0]) * inv;
+        g_Mean[3] = float(gs_neural_l[0]) * inv;
+        g_GateMean = float(gs_neural_gate[0]) * inv;
+    }
+}
+
+// Pass 18: evaluate the network for one pixel and write the enhanced texel.
+void RunNeuralEval()
+{
+    ivec2 size = imageSize(img_Output);
+
+    // Stage the weights into shared memory ONCE per block. Every thread in the
+    // workgroup MUST run this loop and reach the barrier -- including the threads
+    // whose pixel is out of bounds.
+    //
+    // The bounds guard used to sit above this loop, so a ragged workgroup (the
+    // last row or column of a frame whose size is not a multiple of 8) had those
+    // threads return before the barrier. They then never wrote their share of
+    // gs_neural_w, and a barrier with absent threads is undefined behaviour: the
+    // survivors read uninitialised shared memory. Measured on a 2332x1451 frame
+    // (292x182 workgroups): the last 3 rows came out 79.9% wrong and the last 4
+    // columns 56.5% wrong -- matching the 40/64 and 32/64 of the weight array
+    // that the missing threads would have filled -- with R and B driven negative
+    // and clamped to zero.
+    for (int i = int(gl_LocalInvocationIndex); i < NEURAL_N_W; i += 64)
+        gs_neural_w[i] = w[i];
+    barrier();
+
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    const bool inBounds = (pos.x < size.x && pos.y < size.y);
+
+    // Declared OUTSIDE the bounds branch: the else below has to zero it so that
+    // out-of-bounds lanes contribute nothing to the gate sum, and a variable
+    // scoped to the if would not be visible there.
+    float g = 0.0;
+
+    // The bounds guard is a BRANCH, not a return. Every thread has to reach the
+    // gate barrier at the end of this function, because a barrier that
+    // out-of-bounds threads skip is undefined behaviour -- and the ragged
+    // workgroup is not hypothetical: a 2332x1451 frame has 40/64 valid threads in
+    // its last row and 32/64 in its last column. Out-of-bounds lanes contribute
+    // 0 to the gate sum, so they cannot bias it.
+    if (inBounds)
+    {
+    // The anchor is this thread's OWN texel of the image it writes. Reading it
+    // through the image binding rather than the s_Output sampler avoids a
+    // read/write hazard on one texture through two bindings.
+    vec4 px = imageLoad(img_Output, pos);
+    vec3 anchor = px.rgb;
+    float lum = dot(anchor, vec3(0.2126, 0.7152, 0.0722));
+
+    // The frame mean, written by pass 19.
+    float mr = g_Mean[0];
+    float mg = g_Mean[1];
+    float mb = g_Mean[2];
+    float ml = g_Mean[3];
+
+    // Standardise. These eight constants are part of the ABI -- measured on the
+    // 30 training pairs by tools/train_neural/dataset_stats.py. Without this
+    // affine the layer-1 pre-activation has a std of 0.0118, half the ReLU units
+    // die at init, and the network silently collapses to `out = anchor + const`.
+    float x[NEURAL_N_IN];
+    x[0] = (anchor.r - 0.1744) / 0.1331;
+    x[1] = (anchor.g - 0.1700) / 0.0835;
+    x[2] = (anchor.b - 0.2243) / 0.1145;
+    x[3] = (lum      - 0.1749) / 0.0863;
+    x[4] = (mr - 0.1742) / 0.0964;
+    x[5] = (mg - 0.1699) / 0.0688;
+    x[6] = (mb - 0.2244) / 0.0969;
+    x[7] = (ml - 0.1748) / 0.0687;
+
+    // Stage 1: 8 -> 32.
+    float h1[NEURAL_N_HID];
+    for (int j = 0; j < NEURAL_N_HID; ++j)
+    {
+        float s = gs_neural_w[O_B1 + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_W1 + i * NEURAL_N_HID + j] * x[i];
+        h1[j] = max(s, 0.0);
+    }
+
+    // Stage 2: 32 -> 8.
+    float h2[NEURAL_N_IN];
+    for (int j = 0; j < NEURAL_N_IN; ++j)
+    {
+        float s = gs_neural_w[O_B2 + j];
+        for (int i = 0; i < NEURAL_N_HID; ++i)
+            s += gs_neural_w[O_W2 + i * NEURAL_N_IN + j] * h1[i];
+        h2[j] = max(s, 0.0);
+    }
+
+    // Stage 3: 8 -> 32.
+    float h3[NEURAL_N_HID];
+    for (int j = 0; j < NEURAL_N_HID; ++j)
+    {
+        float s = gs_neural_w[O_B3 + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_W3 + i * NEURAL_N_HID + j] * h2[i];
+        h3[j] = max(s, 0.0);
+    }
+
+    // Stage 4: 32 -> 8.
+    float h4[NEURAL_N_IN];
+    for (int j = 0; j < NEURAL_N_IN; ++j)
+    {
+        float s = gs_neural_w[O_B4 + j];
+        for (int i = 0; i < NEURAL_N_HID; ++i)
+            s += gs_neural_w[O_W4 + i * NEURAL_N_IN + j] * h3[i];
+        h4[j] = max(s, 0.0);
+    }
+
+    // Head: 8 -> 3 residual.
+    float residual[3];
+    for (int j = 0; j < 3; ++j)
+    {
+        float s = gs_neural_w[O_BH + j];
+        for (int i = 0; i < NEURAL_N_IN; ++i)
+            s += gs_neural_w[O_WH + i * 3 + j] * h4[i];
+        residual[j] = s;
+    }
+
+    // Gate: 8 -> 1 sigmoid.
+    g = gs_neural_w[O_BG];
+    for (int i = 0; i < NEURAL_N_IN; ++i)
+        g += gs_neural_w[O_WG + i] * h4[i];
+    g = 1.0 / (1.0 + exp(-g));
+
+    // Residual, never a replacement: with the head zeroed at init this is
+    // exactly the identity, so the worst case is "no enhancement".
+    vec3 outc = anchor + g * vec3(residual[0], residual[1], residual[2]);
+    imageStore(img_Output, pos, vec4(clamp(outc, 0.0, 1.0), px.a));
+    }
+    else
+    {
+        // No pixel here. Contribute nothing to the gate sum, but still take the
+        // lane so the barrier below is uniform across the whole workgroup.
+        g = 0.0;
+    }
+
+    // Per-block gate partial, reduced by thread 0 and written for pass 19 to
+    // sum. Same fixed-point form as the mean partials so pass 19 can share one
+    // code path, and the same 256x scale so the two are directly comparable.
+    //
+    // This is the editor's "is the stage doing anything" readout, and it is why
+    // the bounds guard above is a branch and not a return: every thread has to
+    // reach this barrier, and the ragged workgroup is not hypothetical -- a
+    // 2332x1451 frame has 40/64 valid threads in its last row. A barrier that
+    // absent threads skip is undefined behaviour, and it would corrupt exactly
+    // the readout this code exists to produce.
+    gs_neural_gate[int(gl_LocalInvocationIndex)] = uint(g * 256.0 + 0.5);
+    barrier();
+
+    if (int(gl_LocalInvocationIndex) == 0)
+    {
+        uint sum = 0u;
+        for (int i = 0; i < 64; ++i)
+            sum += gs_neural_gate[i];
+
+        const ivec2 grid = (size + ivec2(7)) / ivec2(8);
+        const uint bid = uint(gl_WorkGroupID.y) * uint(grid.x) + uint(gl_WorkGroupID.x);
+        if (bid < uint(NEURAL_MAX_BLOCKS))
+            g_GatePartial[bid] = sum;
+    }
+}
+
+// ============================================================================
+// Pass 24: the reactive mask.
+// ============================================================================
+// One thread per output pixel. Writes a single float in [0,1] into the ALPHA
+// channel of img_Bloom_Temp. That alpha is written by pass 7 (vec4(rgb, 1.0f))
+// and read by NOTHING in this shader -- verified by tools/verify_reactive_mask_budget.py,
+// which fails if any pass other than the declared consumers reads it. A spare
+// channel rather than a new image uniform, because the GLSL may declare at most
+// 8 image uniforms (verify_nova_glsl.py:213; a ninth is rejected with C7624) and
+// all 8 are in use.
+//
+// The mask answers "how much should the reconstruction trust the current frame
+// at this pixel". Every component is something the engine already computes and
+// currently discards:
+//
+//   velocity magnitude      -- img_Velocity, written by pass 0
+//   depth discontinuity     -- s_DepthBuffer vs the reprojected depth
+//   normal discontinuity    -- img_TraceGBuffer.gba vs the reprojected normal
+//   albedo / hit change     -- img_AlbedoHit
+//   u_CameraMoved           -- a hard reset
+//
+// REPROJECTION IS IDENTICAL TO PASS 2's, ON PURPOSE. A mask computed with a
+// different reprojection than the accumulation's would disagree with the thing
+// it is masking: it would report "trust the current frame" at pixels where the
+// accumulation just decided the history was valid. The histUV clamp, the
+// u_FrameIndex > 0 guard and the 0.02 NDC depth bias below are copied from
+// RunTemporalAccumulation rather than re-derived.
+void RunReactiveMask()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 imgSize = imageSize(img_Accumulation);
+    if (pos.x >= imgSize.x || pos.y >= imgSize.y) return;
+
+    vec2 uv = (vec2(pos) + 0.5f) / vec2(imgSize);
+    vec2 velocity = imageLoad(img_Velocity, pos).xy;
+    vec2 prevUV = uv - velocity;
+
+    // Same clamp as pass 2: the accumulation buffer holds the subregion, and
+    // outside it lives stale data from a previous full-resolution frame. Both
+    // sides clamped, for the reason pass 2's comment gives -- an unclamped
+    // lower side streaks the frame edge in the direction of motion.
+    vec2 fullRes = vec2(imgSize);
+    vec2 histUV = clamp(prevUV * u_RenderScale,
+                        0.5f / fullRes,
+                        vec2(u_RenderScale) - 0.5f / fullRes);
+
+    // Start from "trust the HISTORY", then raise the mask only where the
+    // reprojection is uncertain. 1.0 means "the current frame is all there is"
+    // (a disocclusion), 0.0 means "the history is authoritative".
+    //
+    // THE INITIAL VALUE IS 0.0, NOT 1.0, and this was a real bug. The first
+    // version started at 1.0 and every term below used max(), so the mask could
+    // never fall below 1.0 -- it was 1.0 everywhere by construction. Measured:
+    // masked-EASU was bit-identical to bilinear (0 of 3,383,732 pixels) and
+    // 59.5% different from unmasked EASU, i.e. the EASU had been silently
+    // replaced by bilinear across the whole image.
+    //
+    // 0.0 is also the correct default for the accumulation's own semantics:
+    // pass 2 blends toward the current frame only where it rejects the history,
+    // so a mask of 0.0 ("trust the history") is the case that applies to almost
+    // every pixel of a converged frame.
+    float mask = 0.0f;
+
+    // Part one: is there any history to disagree with? On frame 0 there is
+    // none, so the mask must be 1.0 everywhere -- which is also what pass 2's
+    // validHistory guard concludes. With mask initialised to 0.0 this has to be
+    // set explicitly, and it is: the assignment below is what makes frame 0
+    // correct rather than leaving the mask at "trust history" for a history that
+    // does not exist.
+    bool validHistory = u_FrameIndex > 0
+        && prevUV.x >= 0.0f && prevUV.x <= 1.0f
+        && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+
+    if (!validHistory)
+    {
+        // No usable history: the current frame is all there is.
+        mask = 1.0f;
+    }
+    else
+    {
+        // DEPTH MUST COME FROM THE SAME SOURCE AS PASS 2's. Pass 2 reads
+        // `texture(s_DepthBuffer, ...)` -- a sampler over the rasterised depth
+        // texture, holding raw NDC depth. Reading img_TraceGBuffer.r instead
+        // compares two DIFFERENT encodings: that buffer stores
+        // `tndc * 0.5 + 0.5`, remapped into 0..1, so a raw NDC depth of 0.5
+        // appears there as 0.75. The difference is then ~0.25 on every pixel,
+        // which trips the 0.02 bias unconditionally and forces the mask to 1.0
+        // everywhere -- collapsing the EASU to bilinear across the whole image.
+        //
+        // That is exactly what was measured before this fix: masked-EASU was
+        // bit-identical to bilinear (0 of 3,383,732 pixels) and 59.5% different
+        // from unmasked EASU.
+        float currentDepth = texture(s_DepthBuffer, wl_buf_uv(uv)).r;
+        float prevDepth = texture(s_DepthBuffer, histUV).r;
+
+        // A depth mismatch means the reprojected point landed on a different
+        // surface, so the history is another object's colour. Same 0.02 NDC bias
+        // as pass 2 -- a mask with a different bias would flag pixels the
+        // accumulation trusts.
+        float depthErr = abs(currentDepth - prevDepth);
+        if (depthErr > 0.02f)
+        {
+            validHistory = false;
+            mask = 1.0f;
+        }
+        else
+        {
+            // Within tolerance: the history is plausible, so the mask falls with
+            // the size of the residual. The ramp is linear in NDC units and
+            // saturates at 0.10 -- past that the depth difference is real
+            // geometry, not reprojection error.
+            mask = min(depthErr / 0.10f, 1.0f) * 0.5f;
+        }
+
+        // Normal discontinuity. The G-buffer packs the normal into .yzw -- NOT
+        // .gba. The store at .glsl:3978 is
+        //   vec4(clamp(tndc*0.5+0.5), primary.normal * 0.5 + 0.5)
+        // so .r is NDC depth and .yzw is the packed normal. Reading .gba here
+        // would fetch (ny, nz, nx) -- a rotated normal, which still has a
+        // plausible length and so would produce a plausible-looking but wrong
+        // mask. The HLSL twin agrees (its store is .hlsl:2624, same layout).
+        vec3 currentNormal = imageLoad(img_TraceGBuffer, pos).yzw;
+        vec3 prevNormal = imageLoad(img_TraceGBuffer,
+            ivec2(clamp(histUV * fullRes, vec2(0.5f), fullRes - vec2(0.5f)))).yzw;
+        float normalErr = length(currentNormal - prevNormal);
+        // Two unit vectors at right angles differ by sqrt(2); 0.35 is a little
+        // under 25 degrees. Same order as the depth tolerance, so neither term
+        // dominates the other.
+        mask = max(mask, clamp(normalErr / 0.35f, 0.0f, 1.0f) * 0.75f);
+
+        // Albedo / hit change. img_AlbedoHit's alpha is the hit mask, so a
+        // hit->miss or miss->hit transition is an unambiguous disocclusion.
+        vec4 currentAlbedoHit = imageLoad(img_AlbedoHit, pos);
+        vec4 prevAlbedoHit = imageLoad(img_AlbedoHit,
+            ivec2(clamp(histUV * fullRes, vec2(0.5f), fullRes - vec2(0.5f))));
+        mask = max(mask, abs(currentAlbedoHit.a - prevAlbedoHit.a));
+        mask = max(mask, clamp(length(currentAlbedoHit.rgb - prevAlbedoHit.rgb), 0.0f, 1.0f) * 0.5f);
+    }
+
+    // Motion magnitude in PIXELS, matching pass 2's definition. Fast motion
+    // makes the reprojection less reliable, so the mask rises with it.
+    float motionMag = length(velocity * vec2(imgSize));
+    // 8 pixels is the saturation point: a pixel that moved 8 texels has almost
+    // certainly left its old neighbourhood, so the history is decorative.
+    mask = max(mask, clamp(motionMag / 8.0f, 0.0f, 1.0f) * 0.5f);
+
+    // A camera cut invalidates every reprojection in the frame.
+    //
+    // u_CameraMoved is NOT usable here, and using it was a real bug: it is
+    // computed as `CurrentViewProjection != PrevViewProjection`, and the TAA
+    // jitter is applied to the view-projection every frame, so the matrices
+    // differ on EVERY frame -- including a static converged one. Taking max()
+    // with it made the mask 1.0 everywhere, which collapsed the EASU to
+    // bilinear on the whole image. Measured: masked-EASU was bit-identical to
+    // bilinear (0 of 3,383,732 pixels different) and 59.5% different from
+    // unmasked EASU.
+    //
+    // The camera-cut case is already covered by the terms above: a cut means
+    // the reprojected UV leaves the frame (validHistory false) or the depth
+    // mismatch trips the 0.02 bias, and either path drives the mask to 1.0.
+    // So this term is deliberately absent rather than replaced with another
+    // jitter-sensitive signal.
+    // TEMPORARY (task 3): when WL_MASK_VIS is set the mask is written to the
+    // OUTPUT's rgb as well, so a screenshot shows the mask itself. This is the
+    // only way to answer "is the mask 0 everywhere, or 1 everywhere, or
+    // something in between" -- reasoning about which term saturates produced
+    // three wrong guesses in a row. Removed once the mask is known-good.
+    if (u_MaskVisualize > 0)
+    {
+        ivec2 outPos = ivec2(vec2(pos) / max(u_RenderScale, 1e-4f));
+        ivec2 outSize = imageSize(img_Output);
+        if (outPos.x < outSize.x && outPos.y < outSize.y)
+            imageStore(img_Output, outPos, vec4(mask, mask, mask, 1.0f));
+    }
+    imageStore(img_Bloom_Temp, pos, vec4(0.0f, 0.0f, 0.0f, clamp(mask, 0.0f, 1.0f)));
+}
+
+// The pass entry point. Dispatches at FULL resolution and reads/writes
+// img_Output in place -- each invocation writes exactly the texel it loaded, so
+// there is no read/write race between invocations.
+void RunRCAS() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 fullSize = imageSize(img_Output);
+    if (pos.x >= fullSize.x || pos.y >= fullSize.y) return;
+
+    // u_TSRSharpenStrength is the existing WLSR sharpen knob: it is declared but
+    // never uploaded, so it is 0 by default and RCAS is inert until something
+    // sets it. That is the right default -- a sharpen stage that runs
+    // unconditionally is a quality change nobody asked for.
+    float sharpness = u_TSRSharpenStrength;
+
+    // u_RCSEnabled is the gate. Absent it the pass is a no-op, so dispatching it
+    // costs a full-resolution read/write and changes nothing. The gate is what
+    // lets the A/B harness turn the stage on and off without a rebuild.
+    if (u_RCSEnabled < 1 || sharpness <= 0.001f) {
+        return;
+    }
+
+    imageStore(img_Output, pos, vec4(RunRCAS(pos, fullSize, sharpness), 1.0f));
+}
+
 void main()
 {
     switch(u_PassID)
@@ -5545,6 +6734,9 @@ void main()
         // img_Bloom_Temp, which is why RunUpscale below reads that image rather
         // than the accumulation buffer.
         case 7: RunBilateralBlur(); break;
+        // Pass 8: the clean-room super-resolution upscale (WLSR EASU). It
+        // replaces the former RunUpscale body, which was a plain bilinear
+        // reconstruction. The alpha it reads is the reactive mask from pass 24.
         case 8: RunUpscale(); break;
         case 9: GenerateMaterialMaps(); break;
         // Pass 10: the god rays, run after the composite so it can read the
@@ -5554,6 +6746,11 @@ void main()
         // Pass 13: the A-Trous wavelet filter. Reads the temporal moments
         // from pass 12 and applies a variance-driven edge-preserving filter.
         case 13: RunATrousFilter(); break;
+        // Pass 24: the reactive mask. Writes img_Bloom_Temp.a, which every
+        // reconstruction pass (8/15/16) reads as "how much to trust this pixel".
+        // Must run after the velocity and G-buffer are produced (passes 0/1)
+        // and before the composite consumes the bloom temp.
+        case 24: RunReactiveMask(); break;
         // Pass 3: ReSTIR DI generate (reservoir update)
         case 3: RunRestirGenerate(); break;
         // Pass 11: temporal combine writes the per-pixel reservoir only.
@@ -5561,8 +6758,18 @@ void main()
         // Pass 14: immutable-input spatial reuse and the sole ReSTIR shading write.
         case 14: RunRestirSpatial(); break;
         // Pass 15: Temporal Super-Resolution resolve (experimental).
-        case 15: RunTSRResolve(); break;
+        case 15: RunRCAS(); break;
         // Pass 16: copy TSR result to output.
         case 16: RunTSRCopy(); break;
+        // Pass 17: reduce the frame's mean colour and luma into the NeuralGlobals
+        // SSBO. Must run before pass 18 and after the last writer of img_Output
+        // (the god-ray pass above), so the mean describes the finished frame.
+        case 17: RunNeuralReduce(); break;
+        // Pass 19: second half of the reduction -- one block sums the partials
+        // and writes the four means pass 18 reads.
+        case 19: RunNeuralReduceFinal(); break;
+        // Pass 18: the trained network. Evaluates the MLP for this pixel and
+        // writes the enhanced texel back to img_Output.
+        case 18: RunNeuralEval(); break;
     }
 }

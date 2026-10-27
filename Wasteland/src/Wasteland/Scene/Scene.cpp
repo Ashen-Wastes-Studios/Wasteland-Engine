@@ -641,6 +641,11 @@ namespace Wasteland
 			}
 		}
 
+		// Set by the three script/tree passes below when they actually ticked at
+		// least one entity. See BumpTransformEpoch() in Scene.h for why this is a
+		// whole-pass signal rather than an observed transform write.
+		bool scriptPassTicked = false;
+
 		// Update scripts
 		{
 			// Instantiates and ticks every native (C++) script.
@@ -665,9 +670,13 @@ namespace Wasteland
 			// returns null from its constructor path dereferences null immediately
 			// after, and does so again on the OnUpdate below.
 			//
-			// The capture is [=] rather than [&], so `this` is copied into the lambda.
-			// Harmless but unnecessary for a pointer.
-			m_Registry.view<NativeScriptComponent>().each([=](auto entity, auto &nsc)
+			// The capture is [&] rather than [=] because this lambda WRITES
+			// `scriptPassTicked` on line 686 below. Under [=] that write lands in the
+			// lambda's own copy and is discarded when the call returns, so the flag
+			// would never be set -- and MSVC rejects the modification outright (C3491).
+			// `this` is captured by reference too; harmless, and the view's `each`
+			// outlives the call, so there is nothing to keep alive by value.
+			m_Registry.view<NativeScriptComponent>().each([&](auto entity, auto &nsc)
 														  {
 					// TODO: Move to Scene::OnScenePlay
 					if (!nsc.Instance)
@@ -677,7 +686,8 @@ namespace Wasteland
 						nsc.Instance->OnCreate();
 					}
 
-					nsc.Instance->OnUpdate(ts); });
+					nsc.Instance->OnUpdate(ts);
+					scriptPassTicked = true; });
 
 			// Ticks every entity carrying an authored Python script.
 			//
@@ -692,6 +702,7 @@ namespace Wasteland
 
 				ScriptEngine::SetActiveScene(this);
 				ScriptEngine::OnUpdateEntity(e, ts);
+				scriptPassTicked = true;
 			}
 		}
 
@@ -711,8 +722,16 @@ namespace Wasteland
 			{
 				Entity e = {entity, this};
 				BehaviorTreeSystem::OnUpdateEntity(*this, e, ts.GetSeconds());
+				scriptPassTicked = true;
 			}
 		}
+
+		// The script pass can write transforms through pybind11's reference view
+		// with no C++ setter running, so the epoch cannot be bumped at the write.
+		// Bumping for the whole pass is the conservative choice: it costs the
+		// renderer's fast path on scripted scenes and is always correct.
+		if (scriptPassTicked)
+			BumpTransformEpoch();
 
 		// Stream terrain before physics so newly selected chunk colliders exist
 		// before this frame's Box3D step.
@@ -788,7 +807,10 @@ namespace Wasteland
 			Renderer2D::EndScene();
 
 			// Render 3D
-			Renderer3D::BeginScene(mainCamera->GetProjection(), cameraTransform);
+			// Published BEFORE BeginScene: the flush inside BeginScene consults the
+		// epoch to decide whether the instance list changed.
+		Renderer3D::SetSceneTransformEpoch(m_TransformEpoch);
+		Renderer3D::BeginScene(mainCamera->GetProjection(), cameraTransform);
 			SubmitVolumetricVolumes();
 			SubmitSceneLights();
 			SubmitWaterSurfaces();
@@ -1085,9 +1107,19 @@ namespace Wasteland
 									   transform.Rotation.z);
 					continue;
 				}
-				transform.Translation.x = position.x;
-				transform.Translation.y = position.y;
-				transform.Rotation.z = body->GetAngle();
+				// Bump only when the written value actually DIFFERS -- see the note on the
+				// 3D path below for why an unconditional bump here would make the gate
+				// permanently dead on a resting body.
+				const float newAngle = body->GetAngle();
+				if (transform.Translation.x != position.x ||
+					transform.Translation.y != position.y ||
+					transform.Rotation.z != newAngle)
+				{
+					transform.Translation.x = position.x;
+					transform.Translation.y = position.y;
+					transform.Rotation.z = newAngle;
+					BumpTransformEpoch();
+				}
 			}
 		}
 
@@ -1150,10 +1182,28 @@ namespace Wasteland
 			b3Pos pos = b3Body_GetPosition(bodyId);
 			b3Quat rot = b3Body_GetRotation(bodyId);
 
-			transform.Translation.x = (float)pos.x;
-			transform.Translation.y = (float)pos.y;
-			transform.Translation.z = (float)pos.z;
-			transform.Rotation = B3QuatToEuler(rot);
+			// Bump only when the written value actually DIFFERS.
+			//
+			// The epoch is a NECESSARY signal for the memcmp it fronts: it must bump
+			// whenever the instance list changed, so the gate may skip the memcmp only when
+			// the epoch is unchanged. An unconditional bump here would mean a body resting
+			// on the floor re-bumps every step forever, so the gate would NEVER fire -- and
+			// the fast path would be dead on exactly the scene it exists for, while remaining
+			// correct. That is the failure mode hardest to notice: nothing crashes, the BVH
+			// is rebuilt every frame, and the frame time quietly stays where it was.
+			//
+			// The compare is EXACT because the memcmp it stands in for is exact too -- both
+			// read the same floats. A body that jitters by 1e-7 bumps the epoch and makes the
+			// memcmp fire, so the two stay consistent instead of the epoch claiming
+			// "unchanged" on a frame the memcmp would have rejected.
+			const glm::vec3 newPosition((float)pos.x, (float)pos.y, (float)pos.z);
+			const glm::vec3 newRotation = B3QuatToEuler(rot);
+			if (transform.Translation != newPosition || transform.Rotation != newRotation)
+			{
+				transform.Translation = newPosition;
+				transform.Rotation = newRotation;
+				BumpTransformEpoch();
+			}
 		}
 	}
 
@@ -3438,6 +3488,9 @@ namespace Wasteland
 		Renderer2D::EndScene();
 
 		// Render 3D
+		// Published BEFORE BeginScene: the flush inside BeginScene consults the
+		// epoch to decide whether the instance list changed.
+		Renderer3D::SetSceneTransformEpoch(m_TransformEpoch);
 		Renderer3D::BeginScene(camera);
 		SubmitVolumetricVolumes();
 		SubmitSceneLights();

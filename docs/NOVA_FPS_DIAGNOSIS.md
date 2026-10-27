@@ -577,6 +577,16 @@ The scaffold exists; it needs to be completed and dispatched.
 
 #### 5.5 Method D — Spatial denoise as AA
 
+> **Superseded in part by the trained neural stage.** The project now ships a
+> trained MLP that runs as an end-of-frame compute stage (passes 17/18/19) and
+> improves the rendered image on held-out frames by **+2.935 dB**, with **+0.084 dB**
+> of that coming from nothing but better input conditioning rather than more AA. It is
+> documented in `docs/NEURAL_RENDERING.md` and is **not** a vendor upscaler: it is
+> trained on this engine's own captures, runs on plain OpenGL, and uses no RTX Kit
+> component. It does not replace the AA methods below — it runs *after* them, on the
+> finished frame — but it is the reason a future reader should not assume "spatial
+> denoise as AA" is the only non-vendor option that works.
+
 27. Expose passes 12/13 (ATrous) as a selectable AA method for static or
     low-motion shots, where temporal accumulation cannot help and a 4-iteration
     edge-aware filter is the right tool. This is a dispatch change plus a
@@ -597,6 +607,12 @@ The scaffold exists; it needs to be completed and dispatched.
 - **DLSS / FSR3 / XeSS.** Vendor SDK components. The project removed the NVIDIA
   RTX SDK and reimplements clean-room; do not reintroduce a vendor binary. FSR1's
   EASU/RCAS (5.3) is reimplemented from the published spec, not vendored.
+
+  Note that the trained neural stage in `docs/NEURAL_RENDERING.md` is **not** in this
+  category and must not be rejected by this bullet. It is clean-room by construction:
+  trained on this engine's own captured frames, 1140 weights, no vendor tensor layout,
+  no vendor SDK, no RTX requirement. The clean-room claim is recorded explicitly in
+  `docs/RTX_KIT_LICENSES.md`.
 - **FXAA / SMAA.** Post-process edge detection on a raytraced image fights the
   tracer's own edges and adds a full-res pass for little gain. If a cheap
   fallback is ever needed, FXAA is a ~20-line addition to the composite, but it
@@ -1348,7 +1364,20 @@ by the pinned-camera A/B at the end of this section.
     | 3 | Box | 4 | unweighted 2x2; softer, no interpolation |
     | 4 | Bicubic | 16 | Catmull-Rom, separable, weight-normalised |
     | 5 | Lanczos | 12 | 3-lobe windowed sinc; best edges, most ringing |
-    | 6-11 | Temporal/FSR1/TSR/SMAA/FXAA/SpatialDenoise | - | separate passes, not reconstruction filters -- fall through to bilinear rather than being silently ignored |
+    | 6 | FXAA | 9 (+5) | post-process edge AA; luma edge detection, 3x3 search, run inside `RunComposite` |
+    | 7 | SMAA | 9 (+5) | same body as FXAA plus a half-texel submask; selected by the filter value, not a second copy |
+    | 8 | FSR1 (EASU) | 12 | edge-adaptive anisotropic lanczos-2; stretches the kernel along the local gradient, so it rebuilds a diagonal edge rather than smearing it. The only non-separable entry. **RCAS is deferred, not omitted:** it is ~5 taps of the reconstructed image, but its four diagonal taps are neighbouring output pixels, so it needs a pass boundary -- and the dead pass-15/16 slots it belongs to are already allocated by the clean-room reconstruction plan (§1.3) |
+    | 9 | TSR | - | **NOT WIRED.** Passes 15/16 exist in the shader but are never dispatched, and `u_TSREnabled`/`u_TSRSharpenStrength` are never uploaded. It needs a cross-frame history buffer, which the renderer has no image binding left to hold; `RunTSRResolve` currently borrows `img_Bloom_Temp`, which the bloom chain overwrites every frame. Refused in the editor rather than accepted-and-ignored |
+    | 10 | TAA | - | **Not a filter selection.** Pass 2 always runs; gated by the separate Accumulate checkbox and `u_AccumulationAlpha`. Selecting this in the dropdown is a no-op |
+    | 11 | SpatialDenoise | - | A-Trous wavelet ladder (passes 12/13), dispatched when selected |
+
+    Entries 6, 7, 8 and 11 are all **live** and all run inside `RunComposite`,
+    which is what makes them cheap: no extra dispatch, no extra image binding,
+    and the composite's existing post chain still applies to the filtered result.
+    FXAA and SMAA read the image the composite is reading (`img_Accumulation`,
+    or `img_Bloom_Temp` at Ultra full-res) and never `img_Output`, which pass 5
+    and pass 6 both write and which no compute dispatch orders between
+    invocations.
 
     The kernels are textbook forms written from the published definitions:
     Catmull-Rom is the cubic B-spline with a=-0.5, Lanczos-3 is

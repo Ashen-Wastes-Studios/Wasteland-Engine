@@ -10,6 +10,7 @@
 #include <array>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <stdexcept>
 #include <cstring>
@@ -18,6 +19,7 @@
 #include <limits>
 
 #include "Wasteland/Project/Project.h"
+#include "Wasteland/Core/Log.h"
 
 namespace Wasteland {
 // Native compute resources are deliberately independent of NVRHI's graphics
@@ -334,15 +336,28 @@ public:
     // mismatch only if the caller knows the shader's types -- which nothing
     // enforces.
     template<class T> void Set(const char* name,const T& value,UINT index=0) {
-        // An unknown name is SILENTLY IGNORED rather than reported.
+        // REPORTED, ONCE PER NAME. This used to be a silent return, and that
+        // silence is how a whole class of Nova bug reaches shipping: a name
+        // typo, or a constant removed from the shader while the call stayed,
+        // leaves the shader reading whatever stale value is in the staging
+        // buffer -- typically zero from the last resize -- with no diagnostic
+        // at all. It produces a silently wrong render rather than a failure.
         //
-        // DEFECT, and a consequential one: a typo in a constant name, or a constant
-        // removed from the .hlsl, leaves the shader reading whatever stale value is
-        // in the staging buffer -- typically zero from the last resize -- with no
-        // diagnostic at all. Throwing here, as the size check two lines down does,
-        // would have been consistent. This is the most likely way a Nova parameter
-        // misconfiguration reaches shipping unnoticed.
-        auto it=variables.find(name); if(it==variables.end())return;
+        // Warned rather than thrown. Dead uniforms are a legitimate call
+        // pattern here: u_MaxBounces and u_SamplesPerPixel are uploaded to
+        // hold cbuffer layout while the shader ignores them, and the calls
+        // must keep compiling. Throwing would turn a cosmetic no-op into a
+        // startup crash. Once per name because Set is called every frame, so
+        // an unconditional warn would flood the log at 60 lines a second.
+        auto it=variables.find(name);
+        if(it==variables.end()) {
+            static std::unordered_set<std::string> warned;
+            if(warned.insert(name).second)
+                WL_CORE_WARN("Nova constant '{0}' is not declared by the shader -- the upload is "
+                             "dropped and the shader keeps its stale value (typo, or the uniform "
+                             "was removed from the shader while the call stayed)", name);
+            return;
+        }
         // Array elements are assumed to be 16 bytes apart. That is the HLSL packing
         // rule for a float4 array and true for most Nova constants, but it is
         // hardcoded rather than derived from the reflection's array stride -- so a

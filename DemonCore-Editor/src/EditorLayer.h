@@ -246,6 +246,21 @@ namespace Wasteland
 		// reproduce a measurement.
 		bool m_CameraPinned = false;
 
+		// Screenshot capture window (see the WL_SCREENSHOT block in OnUpdate).
+		// The capture is retried across this many frames starting at
+		// WL_SCREENSHOT_FRAME rather than fired exactly once, because a shot taken
+		// before the Nova temporal history has converged reads a black or
+		// near-black target and is indistinguishable from a broken shader.
+		// Named here so the window and the retry log line cannot drift apart.
+		static constexpr int WL_SCREENSHOT_RETRY_WINDOW = 40;
+
+		// Set once a capture succeeds; m_ScreenshotLinger then counts down and
+		// closes the app, so a scripted run terminates instead of idling until
+		// the caller's timeout. 0 means "no linger requested" (interactive F12
+		// capture behaviour is unchanged).
+		bool m_ScreenshotDone = false;
+		int m_ScreenshotLinger = 0;
+
 		// Ref<> because the same texture is sampled every viewport frame and by
 		// the picking blit; recreating it per frame would churn GPU memory.
 		Ref<Texture2D> m_CheckerboardTexture;

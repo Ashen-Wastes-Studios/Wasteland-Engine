@@ -378,6 +378,9 @@
     <ClInclude Include="src\Wasteland\Renderer\MeshLoader.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\NeuralStageBlob.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCamera.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -436,6 +439,9 @@
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\SceneCamera.h">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Scene\SceneChunkStore.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\SceneSerializer.h">
@@ -2034,6 +2040,9 @@
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\SceneCamera.cpp">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Scene\SceneChunkStore.cpp">
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\SceneSerializer.cpp">

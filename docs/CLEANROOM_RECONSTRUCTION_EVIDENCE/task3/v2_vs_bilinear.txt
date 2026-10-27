@@ -1,0 +1,5 @@
+2332x1451  3383732 pixels
+tolerance      : 0 (8-bit units per channel)
+differing      : 0 (0.000000%)
+max delta      : 0
+mean delta     : 0.0000

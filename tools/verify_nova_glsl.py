@@ -127,13 +127,26 @@ def check_twin_agreement(glsl_src, hlsl_src):
     """
     checks = []
 
-    # 1. History validity must be gated on FrameIndex > 0. On frame 0 the
-    #    history buffer has never been written, so an ungated tap blends
-    #    uninitialised memory. The GLSL twin shipped without this for a long
-    #    time while HLSL had it.
+    # 1. EVERY history-validity declaration must be gated on FrameIndex > 0. On
+    #    frame 0 the history buffer has never been written, so an ungated tap
+    #    blends uninitialised memory. The GLSL twin shipped without this for a
+    #    long time while HLSL had it.
+    #
+    #    The guard must be over ALL declarations, not "at least one". Each twin
+    #    has FOUR `bool validHistory = ...;` declarations (temporal accumulation,
+    #    bilateral blur, and two more with different condition shapes), and the
+    #    old form -- re.search, first match anywhere -- passed vacuously as long
+    #    as ONE of them was gated. Mutating two of the four therefore left the
+    #    check green while shipping frame-0 history garbage in the other two.
+    #    tools/verify_nova_glsl_negative_control.py caught exactly that.
+    decl = re.compile(r"bool\s+validHistory\s*=\s*([^;]+);", re.DOTALL)
     for name, src in (("glsl", glsl_src), ("hlsl", hlsl_src)):
-        ok = bool(re.search(r"validHistory\s*=\s*u_FrameIndex\s*>\s*0", src))
-        checks.append((ok, f"{name}: validHistory gated on u_FrameIndex > 0"))
+        decls = decl.findall(src)
+        ungated = [d.strip() for d in decls
+                   if not re.search(r"u_FrameIndex\s*>\s*0", d)]
+        ok = bool(decls) and not ungated
+        detail = f" ({len(decls)} declarations, {len(ungated)} ungated)"
+        checks.append((ok, f"{name}: every validHistory gated on u_FrameIndex > 0{detail}"))
 
     # 2. The history-UV clamp must bound BOTH sides. min()-only leaves the
     #    lower side unclamped, so a fast leftward/upward camera motion samples

@@ -63,10 +63,27 @@ namespace Wasteland
         Lanczos = 5,       // windowed sinc
         FXAA = 6,          // post-process edge AA, cheap fallback for old GPUs
         SMAA = 7,          // post-process edge AA, better quality than FXAA
-        FSR1 = 8,          // EASU + RCAS spatial upscaler
-        TSR = 9,           // temporal super resolution
-        Temporal = 10,     // TAA (temporal accumulation)
-        SpatialDenoise = 11 // ATrous wavelet only, no temporal
+        FSR1 = 8,          // EASU spatial upscaler. RCAS is NOT implemented: it
+                          // would need a second full-res pass over EASU's
+                          // output, and there is no scratch image to run it in.
+        TSR = 9,           // temporal super resolution. DECLARED BUT NOT
+                          // WIRED: passes 15/16 exist in the shader, are never
+                          // dispatched, and u_TSREnabled/u_TSRSharpenStrength
+                          // are never uploaded. It needs a cross-frame history
+                          // buffer and the image binding budget is exhausted,
+                          // so the editor refuses the selection rather than
+                          // accept a filter that cannot run.
+        Temporal = 10,     // TAA. NOT consumed here -- pass 2 (RunTemporal-
+                          // Accumulation) always runs and is gated by the
+                          // separate RayTracingAccumulate flag (the editor's
+                          // "Accumulate" checkbox) and u_AccumulationAlpha.
+                          // Selecting this in the filter dropdown is a no-op.
+        SpatialDenoise = 11, // ATrous wavelet only, no temporal
+        Wlaa = 12            // WLAA: native-resolution AA = the temporal
+                             // accumulation (pass 2) plus the RCAS sharpen
+                             // folded into the composite at RenderScale 1.0. A
+                             // real branch, not a fall-through: RunComposite
+                             // reads this value and sharpens the resolved image.
     };
 
     // Entirely static: one process-wide renderer, no instance state. That is
@@ -88,6 +105,15 @@ namespace Wasteland
         // runtime branch is needed inside the renderer.
         static void BeginScene(const Camera &camera, const glm::mat4 &transform);
         static void BeginScene(const EditorCamera &camera);
+        // Publishes the scene's transform epoch for THIS frame. Must be called
+        // BEFORE BeginScene, because BeginScene's flush consults it: the gate
+        // compares the epoch sampled now against the one recorded when the
+        // previous frame's instances were accepted.
+        //
+        // The renderer cannot see the Scene (BeginScene takes a camera, not a
+        // scene), so the Scene publishes its own stamp. See Scene::BumpTransformEpoch
+        // for why the stamp is conservative rather than precise.
+        static void SetSceneTransformEpoch(uint32_t epoch);
         // Closes the frame's submission. Not the same as Flush(): EndScene ends
         // recording, Flush is what actually drains the accumulated batch to the GPU.
         static void EndScene();
@@ -155,12 +181,67 @@ namespace Wasteland
             // means nothing was small enough to drop.
             uint32_t ScreenCulledInstances = 0;
 
+            // The PREVIOUS frame's ScreenCulledInstances, snapshotted at the end of
+            // Flush. Exists because the frame-time log runs early in Flush (from
+            // UpdateDynamicResolution) while the cull that populates
+            // ScreenCulledInstances runs at the end -- so logging the live counter
+            // reported 0 on every frame, no matter how many instances were dropped.
+            // Measured: a 100k-entity scene at an 8px threshold went 24,576 -> 1,912
+            // instances while the log still said screenCulled 0. Read THIS field for
+            // reporting; read ScreenCulledInstances only from inside the cull.
+            uint32_t LastFrameScreenCulled = 0;
+
             // Instances that reached CullInstanceForTrace with MaxDistance <= 0.
             // Must be zero. A non-zero value means a submission path built its
             // instance without assigning MaxDistance: the CPU cull then drops
             // every instance from that path (`camDist >= 0.0f`), and the shader
             // would reject them too. Per-frame, reset by ResetStats().
             uint32_t ZeroMaxDistanceInstances = 0;
+
+            // Mean of the per-pixel gate over the last frame, written by the
+            // neural stage's pass 19 and read back by the renderer. 0.0 when the
+            // stage is disabled or no weights are loaded.
+            //
+            // Deliberately a MEASURED value, never a constant. The editor needs
+            // to tell "the network decided not to enhance this frame" (gate near
+            // 0, frame unchanged) from "the stage silently isn't running" (frame
+            // also unchanged) -- those are indistinguishable on screen, and only
+            // the gate separates them. An earlier draft of this panel would have
+            // printed a hardcoded 0.42 here, which is exactly the kind of
+            // invented number that makes a broken stage look healthy.
+            float NeuralGateMean = 0.0f;
+
+            // --- instance-delta accounting (Phase 2 of the million-entity plan) ---
+            // All four are CUMULATIVE, not per-frame: a per-frame counter reads 0 on
+            // a static scene and cannot distinguish "nothing changed" from "the gate
+            // was never consulted".
+            //
+            // InstancesSubmitted is the number of ray-traced instances the flush
+            // accepted on the most recent frame that submitted any -- i.e. the size
+            // of m_SceneInstances after the capacity clamp, so it is comparable
+            // against MaxRayTracingInstances.
+            uint32_t InstancesSubmitted = 0;
+            // Instances the flush had to DROP because the scene exceeded
+            // MaxRayTracingInstances. Non-zero means geometry is missing from the
+            // frame -- a correctness failure, not a budget note. Reset to 0 on any
+            // frame that fits, so it reads as "what is being lost right now".
+            uint32_t InstancesTruncated = 0;
+            // How many times the CPU BVH was rebuilt. The interesting assertion is
+            // a DELTA across a window (a static scene must not add to it), not the
+            // absolute value, because scene load and camera moves legitimately
+            // rebuild.
+            uint32_t BvhRebuilds = 0;
+            // How many times SceneInstancesChanged() returned true. Kept alongside
+            // BvhRebuilds because a flush can be skipped for a reason other than
+            // "unchanged" (FrameIndex==0 forces a rebuild).
+            uint32_t InstanceInvalidations = 0;
+            // How many times the transform-epoch gate alone proved the scene
+            // unchanged and short-circuited the memcmp. This is the counter that
+            // says whether the fast path is earning its keep: zero means every
+            // frame is still paying the memcmp.
+            uint32_t EpochShortCircuits = 0;
+            // The epoch sampled from the Scene on the most recent frame.
+            uint32_t SceneTransformEpoch = 0;
         };
         static void ResetStats();
         static Statistics GetStats();
@@ -345,6 +426,20 @@ namespace Wasteland
         // either resets temporal accumulation so history is not mixed across modes.
         static bool IsSVGFEnabled();
         static void SetSVGFEnabled(bool enabled);
+        // Clean-room reconstruction stack (WLSR / WLAA / WLRR / WLFG) master
+        // switch. Off by default; see Renderer3D.cpp's ReconstructionEnabled.
+        static bool IsReconstructionEnabled();
+        static void SetReconstructionEnabled(bool enabled);
+        // WLSR sharpen stage (RCAS, pass 15). Off by default, like the mask: a
+        // sharpen stage that runs unconditionally is a quality change nobody asked
+        // for, and it must be addable without disturbing the existing pipeline.
+        static bool IsRCASEnabled();
+        static void SetRCASEnabled(bool enabled);
+        // The sharpen strength handed to the shader. The plan's "proportional to
+        // the reactive mask" is implemented in the shader, which scales this by
+        // (1 - mask); this is the ceiling the shader can reach.
+        static void SetRCASharpness(float strength);
+        static float GetRCASharpness();
         static bool IsReSTIREnabled();
         static void SetReSTIREnabled(bool enabled);
 
@@ -439,6 +534,18 @@ namespace Wasteland
         static float GetNeuralMaterialStrength();
         static void SetNeuralMaterialStrength(float strength);
 
+        // Trained end-of-frame neural stage (docs/NEURAL_RENDERING.md).
+        // Distinct from the toggle above: that one is the in-estimator MLP that
+        // shapes shading, this one is the CPU-trained MLP that runs as compute
+        // passes 17/18/19 at the end of the frame. Off by default, because it is
+        // a change to the final image. WL_NEURAL_STAGE overrides this at runtime
+        // for verification.
+        static bool IsNeuralStageEnabled();
+        static void SetNeuralStageEnabled(bool enabled);
+        // False when assets/neural/neural_weights.bin is missing or failed
+        // validation, in which case the stage is skipped whatever the toggle says.
+        static bool IsNeuralStageAvailable();
+
         // Halton low-discrepancy sequence, the classic TAA jitter source:
         // stratified sample positions that are far more even than random ones.
         // index is the sequence number, base the radical base (2 or 3 typically).
@@ -450,6 +557,23 @@ namespace Wasteland
         // the renderer rather than a loader because it needs the backend's
         // texture creation path to make the results usable immediately.
         static void GenerateMaterialMaps(const std::string &texturePath, float normalStrength, float roughBias);
+
+        /// Runs the offline material bake and reads back what it actually wrote into
+        /// GeneratedTextureID, so "the maps were baked" can be told apart from "the bake
+        /// silently wrote nothing".
+        ///
+        /// This exists because the GL bake had three independent defects, all silent:
+        /// u_PassID was never set (so it ran an arbitrary pass), it bound image unit 8
+        /// which does not exist (GL_MAX_IMAGE_UNITS is 8, so valid units are 0..7), and
+        /// the dispatch used truncating division. With the unit-8 bug the bake wrote
+        /// nothing at all -- and neither the renderer, the shader compiler, the link
+        /// step nor any log line said so. Only reading the texture back can.
+        ///
+        /// Returns false when the GL path is unavailable. outNonZero is the fraction of
+        /// texels with any of .xy/.z set (.xy is the packed normal, .z the packed AO).
+        static bool ProbeMaterialBake(const std::string &texturePath, float normalStrength,
+                                     float roughBias, float *outMean, float *outMax,
+                                     float *outNonZero);
 
     private:
         // Private: the flush+clear pair the frame loop uses, kept out of the public

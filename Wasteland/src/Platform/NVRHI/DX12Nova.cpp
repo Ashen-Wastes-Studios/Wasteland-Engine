@@ -9,6 +9,7 @@
 #include "DX12Nova.h"
 #include "Wasteland/Core/Log.h"
 #include "Wasteland/Project/Project.h"
+#include "Wasteland/Renderer/NeuralStageBlob.h"
 
 // glm is used for the typed Set() instantiations at the bottom of this
 // file -- the CPU-side constant values are glm types so they match the
@@ -284,22 +285,24 @@ void DX12Nova::CreateRootSignature()
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 48);
     rootParams[5].InitAsDescriptorTable(1, &ranges[1]);
 
-    // Ten, not eight: t73 is read_img_Moments (the IMG_LOAD twin of the moments
-    // UAV), which pass 13 reads. Contiguity from a base of 64 forces the range to
-    // 10 to reach t73; t72 is never declared in the shader and its slot is
-    // padding. Same reason as the sampled block above.
-    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 10, 64);
+    // Eleven, not ten: t74 is NeuralWeights, the StructuredBuffer<float> the
+    // neural eval pass reads. Contiguity from a base of 64 forces the range to
+    // 11 to reach t74. Same reason as the sampled block above, and the reason
+    // the readable block ends at heap index 52 -- which is why the UAV block
+    // below had to move to 53.
+    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 11, 64);
     rootParams[6].InitAsDescriptorTable(1, &ranges[2]);
 
-    // UAV count is 12, not 8. The shader declares u0..u7, u9, u10 and u11 -- u8
-    // is a hole nothing declares. The history image is the u11 one (its own
-    // descriptor so Clear() can clear it without aliasing an image the compute
-    // passes write), the moments image is u9, and the ReSTIR reservoir write is
-    // u10. Getting this wrong silently writes a clear into a pass output.
-    // UAV descriptor table: kUavCount entries, covering u0..u11. The range is
-    // contiguous, so the hole at u8 still costs a slot. Sizing this from anything
-    // other than the shader's highest UAV register is what produced the
-    // E_INVALIDARG on CreateComputePipelineState.
+    // UAV count is 13, not 12. The shader declares u0..u7, u9, u10, u11 and --
+    // since the neural stage -- u12 (NeuralGlobals, an RWStructuredBuffer). u8
+    // is still a hole nothing declares. The history image is the u11 one (its
+    // own descriptor so Clear() can clear it without aliasing an image the
+    // compute passes write), the moments image is u9, and the ReSTIR reservoir
+    // write is u10. Getting this wrong silently writes a clear into a pass
+    // output. UAV descriptor table: kUavCount entries, covering u0..u12. The
+    // range is contiguous, so the hole at u8 still costs a slot. Sizing this
+    // from anything other than the shader's highest UAV register is what
+    // produced the E_INVALIDARG on CreateComputePipelineState.
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kUavCount, 0);
     rootParams[7].InitAsDescriptorTable(1, &ranges[3]);
 
@@ -598,6 +601,60 @@ void DX12Nova::CreateImages(UINT w, UINT h)
         moments.uavCpu[s] = uavHandle;
     }
 
+    // ==========================================================================
+    // Trained end-of-frame neural stage (docs/NEURAL_RENDERING.md)
+    // ==========================================================================
+    // Two resources, uploaded once here and then read-only:
+    //
+    //   neuralGlobals -- the u12 UAV. A raw uint buffer: the four frame means as
+    //   raw float bits in elements 0..3, then one uint32 fixed-point partial per
+    //   workgroup block. This is byte-for-byte the GLSL's NeuralGlobals SSBO
+    //   (float g_Mean[4]; uint g_Partial[]), which is what lets the same shader
+    //   source describe both backends. The GLSL's std430 SSBO and HLSL's
+    //   StructuredBuffer<uint> both lay out elements at 4-byte strides from
+    //   offset 0, so element i of the HLSL buffer is byte 4i of the SSBO -- and
+    //   g_Partial[i] sits at byte 16+4i, which is element 4+i. Same thing.
+    //
+    //   neuralWeights -- the t74 SRV. The 1140 fp32 weights in the exporter's
+    //   LAYER_SHAPES order, exactly the blob the GL path loads.
+    //
+    // Neither is per-frame: both are created once and their descriptors written
+    // into every slot's heap, which is why this loop runs outside the per-slot
+    // loop below.
+    neuralGlobalsUavSlot = kUavBase + 12;
+    neuralWeightsSrvSlot = kNeuralWeightsSrvSlot;
+    {
+        // Same byte count as the GL SSBO, from the shared constant rather than a
+        // literal, so the two backends cannot disagree about the buffer size.
+        D3D12_RESOURCE_DESC gdesc = CD3DX12_RESOURCE_DESC::Buffer(Neural::kGlobalsBytes);
+        gdesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &gdesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&neuralGlobals));
+        Check(hr);
+
+        // The weights buffer is created here but FILLED in UploadNeuralWeights().
+        // A resource cannot be memcpy'd into from a DEFAULT heap, so the upload
+        // has to stage through an UPLOAD buffer and issue a CopyResource -- and
+        // CopyResource is a command-list operation, which means it can only be
+        // recorded from inside a submission. Resize() calls CreateImages() and
+        // then Clear(), and Clear() opens the only command list that exists at
+        // init time, so the upload is recorded there.
+        //
+        // Sized from the blob rather than a round number: a network that grows
+        // past a guessed size would silently truncate, and the descriptor below
+        // is built from the same number.
+        Neural::WeightBlob blob;
+        const bool haveBlob = Neural::LoadWeightBlob("assets/neural/neural_weights.bin", blob);
+        const UINT64 weightsBytes = haveBlob ? (UINT64)blob.payload.size() : 0;
+        if (haveBlob)
+        {
+            hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(weightsBytes),
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&neuralWeights));
+            Check(hr);
+        }
+    }
+
     // ReSTIR reservoir UAV shape: one 32-byte structured element per pixel.
     D3D12_UNORDERED_ACCESS_VIEW_DESC resUavDesc = {};
     resUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
@@ -714,6 +771,12 @@ void DX12Nova::Clear()
     Unbind();
 
     BeginSubmit();
+    // Recorded here, inside the submission this function already opens: the
+    // weight upload is a CopyResource plus a state transition, and both are
+    // command-list operations. Doing it in CreateImages() would record into a
+    // command list that does not exist yet (Resize calls CreateImages before any
+    // submission), which is a null-pointer call rather than a subtle bug.
+    UploadNeuralWeights();
     FrameContext &slot = frames[currentFrame];
 
     // ClearUnorderedAccessViewFloat needs the GPU descriptor in a shader-visible
@@ -838,6 +901,111 @@ void DX12Nova::Clear()
     // through GPU execution. This reset path already requires completion before
     // later passes consume the freshly initialized image and reservoir data.
     WaitForGpuIdle();
+}
+
+// Uploads the trained weights once. Called from Clear(), which is the first
+// thing that opens a command list, because the copy itself is a command-list
+// operation.
+//
+// The buffer was created in CreateImages() in COPY_DEST state; here it is filled
+// from a staging upload buffer and promoted to NON_PIXEL_SHADER_RESOURCE, which
+// is the state an SRV read requires. Leaving it in COPY_DEST is not a warning --
+// it is a real hazard that only shows up as a debug-layer error or a wrong image
+// on a driver that enforces it.
+void DX12Nova::UploadNeuralWeights()
+{
+    if (neuralWeightsValid)
+        return;
+    if (!neuralWeights)
+    {
+        // No blob was present when CreateImages ran. Nothing to upload, and the
+        // stage stays disabled -- the safe default. This is not retried per
+        // frame; the blob's presence is a property of the run directory.
+        WL_CORE_WARN("Neural stage (DX12): assets/neural/neural_weights.bin missing or "
+                     "invalid -- the stage is disabled");
+        return;
+    }
+
+    Neural::WeightBlob blob;
+    if (!Neural::LoadWeightBlob("assets/neural/neural_weights.bin", blob))
+        return;
+
+    const UINT64 bytes = blob.payload.size();
+    if (!bytes || bytes != neuralWeights->GetDesc().Width)
+    {
+        WL_CORE_ERROR("Neural stage (DX12): blob is {} bytes but the buffer is {} -- "
+                      "the stage is disabled rather than truncated",
+                      bytes, (UINT)neuralWeights->GetDesc().Width);
+        neuralWeights.Reset();
+        return;
+    }
+
+    // A DEFAULT-heap buffer cannot be memcpy'd into, so stage through an UPLOAD
+    // buffer. The staging resource is a local Com<>, released at the end of this
+    // function -- which is safe because FlushCommandList() and WaitForGpuIdle()
+    // in Clear() retire the submission before the function's stack unwinds.
+    Com<ID3D12Resource> staging;
+    D3D12_HEAP_PROPERTIES uploadProps = {};
+    uploadProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    HRESULT hr = device->CreateCommittedResource(&uploadProps, D3D12_HEAP_FLAG_NONE,
+        &CD3DX12_RESOURCE_DESC::Buffer(bytes),
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&staging));
+    Check(hr);
+
+    void *mapped = nullptr;
+    staging->Map(0, nullptr, &mapped);
+    if (mapped)
+    {
+        memcpy(mapped, blob.payload.data(), blob.payload.size());
+        staging->Unmap(0, nullptr);
+    }
+
+    commandList->CopyResource(neuralWeights.Get(), staging.Get());
+    D3D12_RESOURCE_BARRIER promote = CD3DX12_RESOURCE_BARRIER::Transition(
+        neuralWeights.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    commandList->ResourceBarrier(1, &promote);
+
+    neuralWeightsValid = true;
+    WL_CORE_INFO("Neural stage (DX12): loaded {} weights ({} bytes)",
+                 blob.nWeights, blob.payload.size());
+}
+
+// Dispatches the trained end-of-frame neural stage: pass 17 reduces the frame
+// into per-block partials, pass 19 folds them into the four frame means, pass 18
+// evaluates the MLP. The same three passes the GL path runs, in the same order,
+// from the same shader source.
+//
+// Pass 19 is dispatched with w = h = 8 rather than the frame size: the shader
+// declares [numthreads(8,8,1)] and Dispatch derives its group count as
+// ((w+7)/8, (h+7)/8), so (8,8) yields exactly one block -- which is what
+// RunNeuralReduceFinal is written for. It derives its own block count from
+// g_dims, so it does not care how many blocks the dispatch used; the dispatch
+// size only has to be one. This mirrors the GL path's glDispatchCompute(1,1,1),
+// and matters because the first version of the reduction read gl_NumWorkGroups
+// here and summed one block's partials out of 129600.
+//
+// Each pass is its own submission (Dispatch calls BeginSubmit), so the ordering
+// between 17, 19 and 18 is guaranteed by submission order rather than by a
+// barrier inside one list. A UAV barrier is still recorded before each, because
+// D3D12 does not order writes to the same UAV across dispatches without one.
+void DX12Nova::DispatchNeuralStage(UINT w, UINT h)
+{
+    if (!neuralWeightsValid || !neuralGlobals)
+        return;
+
+    for (int pass = 17; pass <= 19; ++pass)
+    {
+        UavBarrier(neuralGlobals.Get());
+        // Pass 19 is the single-block fold; 17 and 18 are per-pixel. BOTH
+        // dimensions have to be 8, because Dispatch derives the group count as
+        // ((w+7)/8, (h+7)/8) from each independently -- setting only w would give
+        // 1 x (h+7)/8 blocks, which still computes the right answer (every block
+        // would fold the same partials) but wastes the whole frame's worth of
+        // threads to do it.
+        const bool singleBlock = (pass == 19);
+        Dispatch(pass, singleBlock ? 8u : w, singleBlock ? 8u : h, {});
+    }
 }
 
 // A full-pipeline drain, used before destroying GPU resources. Safe to
@@ -1019,12 +1187,29 @@ template<class T>
 // usable from Renderer3D.cpp.
 void DX12Nova::Set(const char* name, const T& value, UINT index)
 {
-    // A name lookup in the reflection map. A name the shader does not
-    // declare returns end() and the write is SILENTLY DROPPED -- which is
-    // why the "dead uniform" comments in the caller exist: an unused uniform
-    // was removed from the shader and the call stayed.
+    // A name lookup in the reflection map. A name the shader does not declare
+    // used to be SILENTLY DROPPED, which is how a whole class of Nova bug
+    // reaches shipping: a name typo, or a constant removed from the shader
+    // while the call stayed, leaves the shader reading whatever stale value is
+    // in the staging buffer -- typically zero from the last resize -- with no
+    // diagnostic at all. It produces a silently wrong render rather than a
+    // failure.
+    //
+    // Warned rather than thrown. Dead uniforms are a legitimate call pattern
+    // here: u_MaxBounces and u_SamplesPerPixel are uploaded to hold cbuffer
+    // layout while the shader ignores them, and the calls must keep compiling.
+    // Throwing would turn a cosmetic no-op into a startup crash. Once per name
+    // because Set is called every frame, so an unconditional warn would flood
+    // the log at 60 lines a second.
     auto it = variables.find(name);
-    if (it == variables.end()) return;
+    if (it == variables.end()) {
+        static std::unordered_set<std::string> warned;
+        if (warned.insert(name).second)
+            WL_CORE_WARN("Nova constant '{0}' is not declared by the shader -- the upload is "
+                         "dropped and the shader keeps its stale value (typo, or the uniform "
+                         "was removed from the shader while the call stayed)", name);
+        return;
+    }
     // Arrays are addressed by `index * 16`: a hardcoded 16-byte stride,
     // which is D3D12's cbuffer array element alignment. A caller writing
     // an array element must pass the element index, and the stride is not
@@ -1385,6 +1570,47 @@ void DX12Nova::Dispatch(int pass, UINT w, UINT h, const std::vector<ID3D12Resour
         D3D12_CPU_DESCRIPTOR_HANDLE dest = cpuHandle;
         dest.ptr += (kImageSrvBase + 9) * cbvSrvUavDescriptorSize;
         device->CreateShaderResourceView(moments.snapshot.Get(), &srvDesc, dest);
+    }
+
+    // ==========================================================================
+    // Neural stage descriptors
+    // ==========================================================================
+    // u12 is NeuralGlobals. The slot at kUavBase + 12 is the last entry of the
+    // UAV table, which is why kUavCount is 13: the table is contiguous from u0,
+    // so u12 cannot be addressed without sizing the range to cover it.
+    //
+    // A buffer UAV needs a StructuredBuffer-style view: Format UNKNOWN plus a
+    // StructureByteStride. A typed view here would be a format/stride mismatch
+    // and the debug layer would reject it.
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ngUavDesc = {};
+        ngUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ngUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        // g_Mean[4] + g_Partial[MAX*4] + g_GateMean + g_GatePartial[MAX], in
+        // uints -- the same element count the GL SSBO is sized with
+        // (Neural::kGlobalsBytes). A UAV view that is smaller than the buffer
+        // would let the shader write past the view's end, which the D3D12 debug
+        // layer flags as UAV-0 and which silently corrupts the gate partials on
+        // a release build.
+        ngUavDesc.Buffer.NumElements = Neural::kGlobalsUints;
+        ngUavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+        D3D12_CPU_DESCRIPTOR_HANDLE dest = cpuHandle;
+        dest.ptr += neuralGlobalsUavSlot * cbvSrvUavDescriptorSize;
+        device->CreateUnorderedAccessView(neuralGlobals.Get(), nullptr, &ngUavDesc, dest);
+    }
+
+    // t74 is NeuralWeights, the last entry of the readable-snapshot block. Same
+    // StructuredBuffer shape as above, as an SRV.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC nwSrvDesc = {};
+        nwSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nwSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        nwSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nwSrvDesc.Buffer.NumElements = Neural::kWeightCount;
+        nwSrvDesc.Buffer.StructureByteStride = sizeof(float);
+        D3D12_CPU_DESCRIPTOR_HANDLE dest = cpuHandle;
+        dest.ptr += neuralWeightsSrvSlot * cbvSrvUavDescriptorSize;
+        device->CreateShaderResourceView(neuralWeights.Get(), &nwSrvDesc, dest);
     }
 
     // These root-signature ranges use static descriptors. Finish all writes to

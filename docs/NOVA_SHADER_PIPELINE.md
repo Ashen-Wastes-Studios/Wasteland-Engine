@@ -8,15 +8,91 @@ failure mode is instructive, not because the idea is wrong in principle.
 
 | File | Lines | Role |
 |---|---|---|
-| `Renderer3D_NovaRenderer.glsl` | 4443 | OpenGL path |
-| `Renderer3D_NovaRenderer.hlsl` | 2760 | DX11 + DX12, and HLSL→SPIR-V for Vulkan |
+| `Renderer3D_NovaRenderer.glsl` | 5984 | OpenGL path |
+| `Renderer3D_NovaRenderer.hlsl` | 4344 | DX11 + DX12, and HLSL→SPIR-V for Vulkan |
 
 Both compile; `tools/verify_nova_glsl.py` cross-checks that they agree on the
 temporal/jitter/mip behaviours, and `tools/verify_nova_glsl_negative_control.py`
-proves those guards fail when the defects are reintroduced.
+proves those guards fail when the defects are reintroduced. The neural stage has
+its own, stronger check: `tools/verify_neural_stage_parity.py` asserts
+statement-level parity for passes 17/18/19 specifically, because those three are
+the ones whose constants are part of a wire ABI (see below).
 
 The GLSL is larger because it carries the in-progress POM/parallax rewrite, which
 the HLSL does not yet mirror. **That asymmetry is intentional and temporary.**
+
+## Pass inventory
+
+`u_PassID` selects one function per dispatch. Both twins carry the same cases.
+
+| pass | function | GL dispatch |
+|---|---|---|
+| 0 | `RunVisibilityAndVelocity` | yes |
+| 1 | `RunTraceAndDenoise` | yes |
+| 2 | `RunTemporalAccumulation` | yes |
+| 3 | `RunRestirGenerate` | yes |
+| 4 | `RunBloomBlurHorizontal` | yes |
+| 5 | `RunBloomBlurVertical` | yes |
+| 6 | `RunComposite` | yes |
+| 7 | `RunBilateralBlur` | yes |
+| 8 | `RunUpscale` | **never dispatched** |
+| 9 | `GenerateMaterialMaps` | yes, but **broken** — see below |
+| 10 | `RunGodRays` | yes |
+| 11 | `RunRestirCombine` | yes |
+| 12 | `RunTemporalMoments` | yes |
+| 13 | `RunATrousFilter` | yes |
+| 14 | `RunRestirSpatial` | yes |
+| 15 | `RunTSRResolve` | **never dispatched** |
+| 16 | `RunTSRCopy` | **never dispatched** |
+| 17 | `RunNeuralReduce` | yes, when the neural stage is enabled |
+| 18 | `RunNeuralEval` | yes, when the neural stage is enabled |
+| 19 | `RunNeuralReduceFinal` | yes, when the neural stage is enabled |
+
+### Written but never dispatched: 8, 15, 16
+
+These three exist in both twins and are reachable only by setting `u_PassID`
+directly. Nothing in `Renderer3D.cpp` dispatches them, so they are dead code on
+every backend — including Vulkan, where "written but never dispatched" is the
+normal state for anything not yet wired.
+
+The risk is not the dead code itself; it is that a future reader can see `case 15`
+in the shader, assume TSR is live, and tune the wrong thing. Passes 15 and 16 are
+the Temporal Super-Resolution resolve and copy; they were written ahead of the
+feature that would dispatch them.
+
+### Pass 9 is dispatched and broken
+
+`GenerateMaterialMaps` is the offline normal/roughness bake. It is reachable from
+script (`Renderer3D_GenerateMaterialMaps`) and from the editor, so unlike 8/15/16
+it *does* run — and it is wrong in two independent ways:
+
+1. **`u_PassID` is never set.** The function binds the program, pushes
+   `u_NormalStrength` and `u_RoughnessBias`, and dispatches. `u_PassID` still holds
+   whatever the previous dispatch left in it, so the bake runs an arbitrary pass.
+   There is no `glUniform1i(..., 9)` anywhere on the path.
+2. **It binds image unit 8, which does not exist.** `GL_MAX_IMAGE_UNITS` is **8** on
+   the target GPU, so valid units are 0..7 and the bind is silently a no-op. The
+   GLSL declares `img_MaterialPacked` at `binding = 3`, not 8, so the shader writes
+   to a unit that is not the one the CPU bound.
+
+There is a third defect already documented in place: the dispatch uses truncating
+`width / 8` instead of `(width + 7) / 8`, dropping up to 7 rows or columns.
+
+None of this is fixed here; it is recorded so the pass table is not read as "pass 9
+works".
+
+### The neural stage is an ABI, not just a shader
+
+Passes 17/18/19 carry the trained model's constants. The eight standardisation
+values in `model.py` are duplicated into **both** twins, and the frame mean, the
+weight blob layout, and the `NeuralGlobals` element offsets are shared by the GL
+SSBO, the HLSL `RWStructuredBuffer<uint>` and the DX12 UAV descriptor.
+
+That is why `tools/verify_neural_stage_parity.py` exists separately from
+`verify_nova_glsl.py`: a mismatch in a temporal-jitter constant produces a slightly
+different image, while a mismatch in a neural constant produces a **confident,
+plausible, wrong** image. The parity tool is the guard; the constants are the thing
+it guards.
 
 ## Why there is no shared source today
 

@@ -79,6 +79,10 @@ namespace Wasteland
 		// frames so a caller running at 10fps still advances real time.
 		float m_PhysicsAccumulator = 0.0f;
 
+		// See BumpTransformEpoch(). 0 is a valid epoch, so the renderer's "no epoch
+		// recorded yet" sentinel is 0xFFFFFFFF rather than 0.
+		uint32_t m_TransformEpoch = 0;
+
 		// Build the Box3D body and collider shapes for one entity.
 		//
 		// Idempotent: an entity that already has a RuntimeBody is skipped.
@@ -140,6 +144,27 @@ namespace Wasteland
 
 		void OnUpdateEditor(Timestep ts, EditorCamera &camera);
 		void OnUpdateRuntime(Timestep ts);
+
+		// --- transform change epoch (Phase 2 of the million-entity plan) ---
+		//
+		// Bumped whenever the runtime path writes a TransformComponent. The renderer
+		// publishes the current value each frame via Renderer3D::SetSceneTransformEpoch
+		// and compares it against the value recorded when the previous frame's
+		// instances were accepted; equal means nothing moved, so the whole-scene
+		// instance memcmp can be skipped.
+		//
+		// The stamp is CONSERVATIVE BY DESIGN, and that is the load-bearing part. It
+		// must never miss a write, because the renderer trusts an unchanged epoch to
+		// skip the BVH rebuild and the SSBO re-upload -- a missed bump leaves a stale
+		// acceleration structure, which is the pop-in this exists to prevent. It is
+		// therefore bumped for the WHOLE script pass rather than for an observed
+		// transform write: a Python write goes through pybind11's
+		// reference_internal view of the member and no C++ setter ever runs, so
+		// there is no way to observe it. Over-bumping costs the fast path; the
+		// memcmp remains the second gate and recovers from anything the epoch
+		// misses, so correctness does not depend on the stamp being precise.
+		void BumpTransformEpoch() { ++m_TransformEpoch; }
+		uint32_t GetTransformEpoch() const { return m_TransformEpoch; }
 		void OnViewportResize(uint32_t width, uint32_t height);
 
 		void DuplicateEntity(Entity entity);
@@ -179,6 +204,22 @@ namespace Wasteland
 		}
 		const Terrain::TerrainRuntime& GetTerrainRuntime() const noexcept { return m_TerrainRuntime; }
 		const std::string& GetTerrainAssetReference() const noexcept { return m_TerrainAssetReference; }
+
+		// ---------------------------------------------------------------
+		// Trained neural stage (Task 7)
+		//
+		// A plain bool, deliberately NOT a Renderer3D reference: the Scene layer
+		// does not include the renderer and must not start. The editor owns the
+		// coupling -- on load it reads this and calls SetNeuralStageEnabled, and on
+		// save the serializer reads it and writes the YAML key. Pulling
+		// Renderer3D.h into SceneSerializer to save the renderer's live value
+		// would invert that dependency for no gain.
+		//
+		// Default TRUE. The stage is a no-op unless a weights blob is loaded, so
+		// enabling it in a scene that never got one costs nothing and a scene that
+		// does get one behaves the way it was saved.
+		bool IsNeuralStageEnabled() const noexcept { return m_NeuralStageEnabled; }
+		void SetNeuralStageEnabled(bool enabled) noexcept { m_NeuralStageEnabled = enabled; }
 		bool SaveTerrainWorldState(const std::filesystem::path& projectRoot,
 			std::string* error = nullptr)
 		{
@@ -486,9 +527,15 @@ namespace Wasteland
 		std::unique_ptr<Navigation::NavMesh> m_NavMesh;
 		Terrain::TerrainRuntime m_TerrainRuntime;
 		std::string m_TerrainAssetReference;
+		bool m_NeuralStageEnabled = true;
 
 		friend class Entity;
 		friend class SceneSerializer;
+		// The binary sidecar walks the registry to snapshot entities and repopulates it on
+		// load. See SceneChunkStore.h for the safety rules that keep it from ever dropping
+		// data; it deliberately reaches the registry directly rather than through a public
+		// accessor, because nothing else in the engine should be bulk-writing entities.
+		friend class SceneChunkStore;
 		// SaveGame resolves saved UUIDs against the live registry to restore
 		// state onto the level's own entities rather than cloning it, so it
 		// needs the same registry access SceneSerializer has.

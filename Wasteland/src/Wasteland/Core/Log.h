@@ -153,3 +153,35 @@ namespace Wasteland
 #define WL_WARN(...) ::Wasteland::Log::GetClientLogger()->warn(__VA_ARGS__)
 #define WL_ERROR(...) ::Wasteland::Log::GetClientLogger()->error(__VA_ARGS__)
 #define WL_CRITICAL(...) ::Wasteland::Log::GetClientLogger()->critical(__VA_ARGS__)
+
+// One-shot log macros
+//
+// Emit a message the FIRST time the tag is seen, then never again for the
+// lifetime of the process. For diagnostics that sit on a per-frame call site --
+// a UI panel's draw function, a render pass's setup -- where the useful thing
+// is the fact that it happened at all, and repeating it would bury the log.
+//
+// Not an spdlog feature: spdlog has no "log once", and adding the guard
+// outside the macro would mean either an if-statement per call site (which
+// the macro's own braces would then silently attach to) or a per-file static
+// bool.
+//
+// The tag is arbitrary and never printed; it only needs to be unique per
+// distinct message. It is pasted into a variable name, so it must be a valid
+// identifier and must not contain parentheses or commas.
+//
+// The guard is a function-local static, so the SAME tag used at two call sites
+// inside one function shares one flag and the second message never fires. Use a
+// distinct tag per message.
+//
+// Args are evaluated only when the message is actually emitted, so an
+// expensive argument is cheap on the frames that skip.
+#define WL_LOG_ONCE(tag, ...) \
+    do { \
+        static bool s_WlLoggedOnce_##tag = false; \
+        if (!s_WlLoggedOnce_##tag) \
+        { \
+            s_WlLoggedOnce_##tag = true; \
+            WL_INFO(__VA_ARGS__); \
+        } \
+    } while (0)

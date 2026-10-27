@@ -243,6 +243,7 @@
     <ClInclude Include="src\Wasteland\Renderer\Framebuffer.h" />
     <ClInclude Include="src\Wasteland\Renderer\GraphicsContext.h" />
     <ClInclude Include="src\Wasteland\Renderer\MeshLoader.h" />
+    <ClInclude Include="src\Wasteland\Renderer\NeuralStageBlob.h" />
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCamera.h" />
     <ClInclude Include="src\Wasteland\Renderer\OrthographicCameraController.h" />
     <ClInclude Include="src\Wasteland\Renderer\ProceduralMeshes.h" />
@@ -263,6 +264,7 @@
     <ClInclude Include="src\Wasteland\Scene\SaveGame.h" />
     <ClInclude Include="src\Wasteland\Scene\Scene.h" />
     <ClInclude Include="src\Wasteland\Scene\SceneCamera.h" />
+    <ClInclude Include="src\Wasteland\Scene\SceneChunkStore.h" />
     <ClInclude Include="src\Wasteland\Scene\SceneSerializer.h" />
     <ClInclude Include="src\Wasteland\Scene\ScriptableEntity.h" />
     <ClInclude Include="src\Wasteland\Scripting\BindingsAge.h" />
@@ -797,6 +799,7 @@
     <ClCompile Include="src\Wasteland\Scene\SaveGame.cpp" />
     <ClCompile Include="src\Wasteland\Scene\Scene.cpp" />
     <ClCompile Include="src\Wasteland\Scene\SceneCamera.cpp" />
+    <ClCompile Include="src\Wasteland\Scene\SceneChunkStore.cpp" />
     <ClCompile Include="src\Wasteland\Scene\SceneSerializer.cpp" />
     <ClCompile Include="src\Wasteland\Scripting\Bindings.cpp" />
     <ClCompile Include="src\Wasteland\Scripting\BindingsAge.cpp" />

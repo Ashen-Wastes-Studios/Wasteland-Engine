@@ -52,6 +52,28 @@ namespace Wasteland {
 			NVRHI_DX12 = 3,
 			NVRHI_Vulkan = 4
 		};
+
+		// Human-readable backend name for the editor's readouts. Returns a stable
+		// literal and never null, so ImGui can print it directly and a caller cannot
+		// dereference a missing case.
+		//
+		// The NVRHI entries name the API the editor SELECTED, which is not always
+		// the device actually in use -- the log line "NVRHI Renderer API initialized:
+		// DirectX 12" reports the NVRHI device, while RendererAPI::s_API is what the
+		// editor asked for. On this machine s_API is OpenGL even when NVRHI reports
+		// DX12, which is why the panel reads this enum and not the device string.
+		static const char *APIName(API api)
+		{
+			switch (api)
+			{
+				case API::OpenGL:       return "OpenGL";
+				case API::NVRHI_DX11:   return "DirectX 11";
+				case API::NVRHI_DX12:   return "DirectX 12";
+				case API::NVRHI_Vulkan: return "Vulkan";
+				case API::None:         break;
+			}
+			return "unknown";
+		}
 	// A second `public:` immediately after the enum. Redundant, and it is the only
 	// such artifact in this header -- cosmetic, no effect on access.
 	public:

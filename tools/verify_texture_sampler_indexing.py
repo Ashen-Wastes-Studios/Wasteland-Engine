@@ -78,8 +78,25 @@ def main() -> int:
 
     nova_glsl = SHADERS[1].read_text(encoding="utf-8")
     image_count, errors = check_gl_image_bindings("Renderer3D_NovaRenderer.glsl", nova_glsl)
-    if image_count != 9:
-        errors.append(f"Renderer3D_NovaRenderer.glsl: expected 9 image declarations, found {image_count}")
+
+    # Exactly the eight units GL guarantees, and the eight the Nova program uses.
+    #
+    # This read `!= 9` while the shader carried a ninth declaration (the reverted
+    # pass-17 img_NeuralFeatures). GL_MAX_IMAGE_UNITS is 8 on the target GPU, so
+    # the correct count is 8. A ninth image uniform is not merely out of range --
+    # it fails the program LINK SILENTLY and kills the whole GL Nova path, with no
+    # shader error and no log line. Measured: 9 image uniforms produced a mean luma
+    # of 0.00 where 8 produced 56.49.
+    #
+    # The bare count was only a proxy for that. Checking the actual binding set is
+    # strictly stronger: it rejects a ninth unit, a missing one, and a duplicate
+    # occupying a slot another declaration already claims.
+    nova_bindings = sorted(int(match[1]) for match in GL_IMAGE.finditer(nova_glsl))
+    if nova_bindings != list(range(8)):
+        errors.append(
+            "Renderer3D_NovaRenderer.glsl: expected image bindings 0..7 "
+            f"(GL_MAX_IMAGE_UNITS = 8), found {nova_bindings}"
+        )
     failures.extend(errors)
     failures.extend(check_dx12_texture_resource())
 
@@ -93,6 +110,20 @@ def main() -> int:
     if not errors:
         failures.append("negative control did not reject an out-of-range GL image unit")
 
+    # The defect this guard exists to catch is a NINTH image unit, not merely a
+    # high one -- so prove the binding-set assertion rejects the real shape, and
+    # prove it is not vacuous by also accepting the real one.
+    nine = "".join(
+        f"layout(rgba32f, binding = {i}) uniform image2D img_{i};" for i in range(9)
+    )
+    _, errors = check_gl_image_bindings("negative-control", nine)
+    if not errors:
+        failures.append("negative control did not reject a ninth GL image unit")
+    # The fixture must itself be a genuine ninth unit (bindings 0..8), or the
+    # assertion above would be testing an empty set and passing vacuously.
+    if sorted(int(m[1]) for m in GL_IMAGE.finditer(nine)) != list(range(9)):
+        failures.append("negative control's ninth-unit fixture is malformed")
+
     if failures:
         print("TEXTURE SAMPLER INDEXING: FAIL")
         print("\n".join(f"- {failure}" for failure in failures))
@@ -103,7 +134,8 @@ def main() -> int:
         count, _ = check_source(path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8"))
         print(f"{path.relative_to(ROOT)}: {count} literal-index fetches")
     print("negative control: dynamic index rejected")
-    print("GL image units: within 0..7; out-of-range negative control rejected")
+    print("GL image units: exactly bindings 0..7 (GL_MAX_IMAGE_UNITS = 8)")
+    print("negative control: dynamic index, out-of-range unit, and ninth unit all rejected")
     print("DX12 texture array: native ID3D12Resource accessor wired")
     return 0
 

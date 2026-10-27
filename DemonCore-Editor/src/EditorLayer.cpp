@@ -1,5 +1,9 @@
 #include "EditorLayer.h"
 
+// For the tier readout in the neural-stage section: RendererAPI.h alone gives
+// the API enum but not the capabilities struct or TierName.
+#include "Wasteland/Renderer/RenderCapabilities.h"
+
 #include <imgui/imgui.h>
 #include <cstdlib>
 #include <cstdio>   // std::sscanf, for the WASTELAND_PIN_CAMERA harness hook
@@ -564,6 +568,123 @@ static bool HasGLExtension(const char *name)
 		// m_ActiveScene, so every panel must already hold a context.
 		m_SceneHierarchyPanel.SetContext(m_ActiveScene);
 		OnProjectChanged();
+
+		// Capture-harness hooks. Same purpose and same shape as
+		// WASTELAND_PIN_CAMERA above: make a headless run reproduce a known
+		// renderer state so two runs can be compared pixel-for-pixel. Every one
+		// of them is inert unless its env var is present, so a normal editor
+		// session is unaffected.
+		//
+		//   WL_CAPTURE_SCENE=<path>   scene to load, absolute or project-relative
+		//   WL_CAPTURE_PRESET=<0..3>  QualityPreset (0 Low, 1 Medium, 2 High, 3 Ultra)
+		//   WL_CAPTURE_SCALE=<f>     RenderScale, clamped 0.25..1.0
+		//   WL_CAPTURE_NEURAL=0|1     NeuralRenderingEnabled
+		//   WL_CAPTURE_ACCUM=0|1      RayTracingAccumulate (temporal blend)
+		//   WL_CAPTURE_STAGE=0|1      trained end-of-frame neural stage
+		//
+		// Applied AFTER OnProjectChanged(), not before: that call loads the start
+		// scene and re-applies the project's own preset, so an override placed
+		// above it would be undone before the first frame. The dataset exporter
+		// (tools/train_neural/export_dataset.py) drives these to produce matched
+		// full-res / reduced-res pairs from one scene and one camera.
+		//
+		// The scene hook is first among them for the same reason: it replaces
+		// m_ActiveScene, and OpenScene resolves entity texture paths against the
+		// asset root, so the renderer overrides below must see the scene they
+		// are meant to apply to.
+		if (const char *sceneEnv = std::getenv("WL_CAPTURE_SCENE"))
+		{
+			const std::filesystem::path scenePath =
+				Project::Get().GetAssetPath(sceneEnv);
+			if (std::filesystem::is_regular_file(scenePath))
+			{
+				OpenScene(scenePath);
+				WL_CORE_INFO("WL_CAPTURE_SCENE={} -> loaded {}", sceneEnv, scenePath.string());
+			}
+			else
+			{
+				// Not fatal: the project's own start scene is already loaded, and
+				// failing the whole run over one bad path would hide the rest of
+				// the export. The exporter records what it asked for, so a
+				// manifest entry pointing at the wrong scene is still detectable.
+				WL_CORE_WARN("WL_CAPTURE_SCENE ignored: '{}' not found (resolved to {})",
+				             sceneEnv, scenePath.string());
+			}
+		}
+		// WL_BAKE_PROBE=<image path> : run the offline normal/roughness bake on the
+		// given image and log what it wrote into GeneratedTextureID.
+		//
+		// Worth having because the GL bake was broken in three independent ways, all
+		// silent: u_PassID was never set, it bound image unit 8 (which does not exist),
+		// and the dispatch truncated. Nothing in the renderer, the shader compiler or
+		// the link step reported any of it, so the only way to know whether the maps
+		// were actually produced is to read the texture back.
+		if (const char *bakeEnv = std::getenv("WL_BAKE_PROBE"))
+		{
+			float mean = 0.0f, maxv = 0.0f, nonZero = 0.0f;
+			if (Renderer3D::ProbeMaterialBake(bakeEnv, 1.0f, 0.0f, &mean, &maxv, &nonZero))
+			{
+				WL_CORE_INFO("WL_BAKE_PROBE={} -> mean {:.4f}  max {:.4f}  non-zero {:.1f}%",
+				             bakeEnv, mean, maxv, nonZero * 100.0f);
+				if (nonZero <= 0.0f)
+					WL_CORE_ERROR("bake wrote NOTHING -- the maps are empty");
+			}
+			else
+			{
+				WL_CORE_ERROR("WL_BAKE_PROBE={} could not run (no GL backend?)", bakeEnv);
+			}
+		}
+		if (const char *presetEnv = std::getenv("WL_CAPTURE_PRESET"))
+		{
+			const int v = std::atoi(presetEnv);
+			if (v >= 0 && v <= 3)
+			{
+				Renderer3D::SetQualityPreset((QualityPreset)v);
+				WL_CORE_INFO("WL_CAPTURE_PRESET={} -> quality preset {}", v, v);
+			}
+			else
+			{
+				WL_CORE_WARN("WL_CAPTURE_PRESET ignored: expected 0..3, got '{}'", presetEnv);
+			}
+		}
+		if (const char *scaleEnv = std::getenv("WL_CAPTURE_SCALE"))
+		{
+			const float v = std::atof(scaleEnv);
+			if (v > 0.0f)
+			{
+				Renderer3D::SetRenderScale(v);
+				WL_CORE_INFO("WL_CAPTURE_SCALE={} -> render scale {}", v, Renderer3D::GetRenderScale());
+			}
+			else
+			{
+				WL_CORE_WARN("WL_CAPTURE_SCALE ignored: expected a positive float, got '{}'", scaleEnv);
+			}
+		}
+		if (const char *neuralEnv = std::getenv("WL_CAPTURE_NEURAL"))
+		{
+			const bool on = std::atoi(neuralEnv) != 0;
+			Renderer3D::SetNeuralRenderingEnabled(on);
+			WL_CORE_INFO("WL_CAPTURE_NEURAL={} -> neural rendering {}", on ? 1 : 0, on ? "ON" : "OFF");
+		}
+		if (const char *accumEnv = std::getenv("WL_CAPTURE_ACCUM"))
+		{
+			const bool on = std::atoi(accumEnv) != 0;
+			Renderer3D::SetRayTracingAccumulate(on);
+			WL_CORE_INFO("WL_CAPTURE_ACCUM={} -> temporal accumulation {}", on ? 1 : 0, on ? "ON" : "OFF");
+		}
+		// WL_CAPTURE_STAGE drives the trained end-of-frame stage, which is off by
+		// default. Separate from WL_NEURAL_STAGE (Renderer3D.cpp), which is a
+		// bitmask override used to attribute the stage's cost to one pass; this one
+		// is the plain on/off the exporter and the editor checkbox share.
+		if (const char *stageEnv = std::getenv("WL_CAPTURE_STAGE"))
+		{
+			const bool on = std::atoi(stageEnv) != 0;
+			Renderer3D::SetNeuralStageEnabled(on);
+			WL_CORE_INFO("WL_CAPTURE_STAGE={} -> trained neural stage {} ({})", on ? 1 : 0,
+			             on ? "ON" : "OFF",
+			             Renderer3D::IsNeuralStageAvailable() ? "weights loaded"
+			                                                   : "NO WEIGHTS -- passes will be skipped");
+		}
 	}
 
 	void EditorLayer::OnDetach()
@@ -600,21 +721,30 @@ static bool HasGLExtension(const char *name)
 		if (m_FramebufferAPI == RendererAPI::API::None)
 			return false;
 
-		// DX12 NVRHI. Handled FIRST and before the glReadPixels path below, for a
-		// reason that is about ordering rather than preference: the Nova path tracer
-		// renders into its own UAV image and never touches the default framebuffer,
-		// so there is nothing for a GL readback to read on this backend. Worse, the
-		// GL viewport query below would measure a context this backend never set,
-		// yielding a plausible-looking width/height for an image that does not
-		// exist. Reporting failure is what made this backend look broken rather
-		// than unsupported.
+		// Handled FIRST and before the glReadPixels path below, for a reason that is
+		// about ordering rather than preference: the Nova path tracer renders into
+		// its own UAV image and never touches the default framebuffer, so there is
+		// nothing for a GL readback to read on this backend. Worse, the GL viewport
+		// query below would measure a context this backend never set, yielding a
+		// plausible-looking width/height for an image that does not exist. Reporting
+		// failure is what made this backend look broken rather than unsupported.
 		//
 		// The readback goes through Renderer3D rather than reaching for the DX12
 		// device here: Renderer3D owns the Nova instance and knows which backend is
 		// active, and the copy has to be recorded on the same command queue and
 		// fenced against the same frame ring as the rendering that produced the
 		// image. Doing the copy here would mean duplicating all of that.
-		if (m_FramebufferAPI == RendererAPI::API::NVRHI_DX12)
+		//
+		// THE GUARD IS THE RENDERER'S, NOT THE EDITOR'S. m_FramebufferAPI tracks the
+		// window/editor backend -- OpenGL in this configuration -- while Nova runs
+		// on DX12. Those are two different things (RendererAPI::API has a separate
+		// enumerator per NVRHI backend precisely because the editor offers them
+		// separately), so guarding this on `m_FramebufferAPI == NVRHI_DX12` made the
+		// Nova readback UNREACHABLE: the condition could never be true at the same
+		// time as s_Nova12 being live, so every capture fell through to the GL
+		// window grab. Asking the renderer instead keeps the branch live on every
+		// backend that has a Nova instance.
+		if (Renderer3D::IsRayTracingEnabled())
 		{
 			std::vector<unsigned char> rgba;
 			uint32_t rtWidth = 0, rtHeight = 0;
@@ -623,6 +753,12 @@ static bool HasGLExtension(const char *name)
 				// Distinct from the "unsupported API" warning further down: the API IS
 				// supported, so this means there was nothing rendered to read (ray
 				// tracing off, or a frame captured before the first Nova flush).
+				//
+				// Deliberately NOT falling through to the GL window capture here.
+				// Under ray tracing the viewport is drawn by ImGui from the Nova
+				// output, so a window grab records the editor chrome around a
+				// viewport that may itself be blank -- an image that looks like a
+				// rendering defect and is not one.
 				WL_CORE_WARN("EditorLayer: DX12 screenshot found no Nova output to read; "
 							 "ray tracing may be disabled or nothing has rendered yet");
 				return false;
@@ -711,25 +847,68 @@ static bool HasGLExtension(const char *name)
 		//
 		// F12 captures. WL_SCREENSHOT=<path> plus WL_SCREENSHOT_FRAME=<n> makes
 		// it hands-free, which is the only form usable from a script or CI.
-		// The file is written on the NEXT present, so the capture contains the
-		// frame as displayed.
+		//
+		// WL_SCREENSHOT_LINGER=<n> keeps the process alive n frames after the
+		// capture. Without it the window closes the instant the shot lands, which
+		// is fine interactively but fatal for a scripted capture: the OS tears the
+		// device down while the readback is still draining, and the PNG is written
+		// from a half-resolved buffer. Default 0 (unchanged interactive behaviour).
+		//
+		// The capture is retried rather than fired once. A single-shot capture at
+		// frame N reads whatever the target held at that instant -- and the Nova
+		// temporal history needs a number of frames to converge, so an early shot
+		// is a black or near-black image that looks like a broken shader. Retrying
+		// makes the same frame index deterministic (the camera is pinned) while
+		// giving the tracer time to settle.
 		++m_FrameCounter;
 		{
 			const char *shotPath = std::getenv("WL_SCREENSHOT");
 			int shotFrame = 0;
 			if (const char *f = std::getenv("WL_SCREENSHOT_FRAME"))
 				shotFrame = std::atoi(f);
-			bool wantShot = (shotPath && shotFrame > 0 && m_FrameCounter == shotFrame);
-			if (!shotPath && Input::IsKeyPressed(WL_KEY_F12))
+			int linger = 0;
+			if (const char *l = std::getenv("WL_SCREENSHOT_LINGER"))
+				linger = std::atoi(l);
+
+			// Scripted capture is ONE shot per run, retried only while it keeps
+			// failing. Retrying on failure is the whole point -- an early frame
+			// can hold an unconverged target -- but the window used to stay
+			// open for forty frames and re-capture on every one of them, so a
+			// successful shot wrote the same PNG forty times and the last write
+			// raced the linger close.
+			const bool scripted = (shotPath && shotFrame > 0);
+			bool wantShot = false;
+			if (scripted)
+				wantShot = !m_ScreenshotDone
+				           && m_FrameCounter >= shotFrame
+				           && m_FrameCounter < shotFrame + WL_SCREENSHOT_RETRY_WINDOW;
+			else if (!shotPath && Input::IsKeyPressed(WL_KEY_F12))
 				wantShot = true;
 
 			if (wantShot)
 			{
 				std::string outPath = shotPath ? shotPath : "wasteland_screenshot.png";
 				if (CaptureFramebufferPNG(outPath))
-					WL_CORE_INFO("EditorLayer: screenshot written to {0}", outPath);
+				{
+					WL_CORE_INFO("EditorLayer: screenshot written to {0} (frame {1})",
+					             outPath, m_FrameCounter);
+					if (scripted)
+					{
+						m_ScreenshotDone = true;
+						m_ScreenshotLinger = linger;
+					}
+				}
 				else
-					WL_CORE_ERROR("EditorLayer: screenshot FAILED ({0})", outPath);
+				{
+					WL_CORE_WARN("EditorLayer: screenshot retry {0} failed; the target "
+					             "may not have rendered yet", m_FrameCounter - shotFrame + 1);
+				}
+			}
+
+			if (m_ScreenshotDone && --m_ScreenshotLinger <= 0)
+			{
+				WL_CORE_INFO("EditorLayer: capture linger elapsed; requesting close");
+				Wasteland::Application::Get().Close();
 			}
 		}
 
@@ -1593,14 +1772,71 @@ static bool HasGLExtension(const char *name)
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Where the per-sample sub-pixel offset comes from.\nSent through the existing u_Jitter uniform, so no extra pass is needed.\nBlue Noise is the current default; Centre is no jitter at all.");
 
-			static const char *filterItems[] = {"None (raw)", "Nearest", "Bilinear", "Box", "Bicubic", "Lanczos", "FXAA", "SMAA", "FSR1 (EASU+RCAS)", "TSR", "TAA (temporal)", "ATrous denoise"};
+			// Index-aligned with Renderer3D::ReconstructionFilter, so an entry
+			// cannot be renamed or reordered without also changing the enum --
+			// the two are coupled by position, not by name.
+			//
+			// The labels carry their status because three of these used to be
+			// silent no-ops and the panel had no way to say so.
+			static const char *filterItems[] = {"None (raw)", "Nearest", "Bilinear", "Box", "Bicubic", "Lanczos", "FXAA", "SMAA", "FSR1 (EASU)", "TSR (unavailable)", "TAA (use Accumulate)", "ATrous denoise"};
 			int currentFilter = (int)Wasteland::Renderer3D::GetReconstructionFilter();
 			if (ImGui::Combo("Reconstruction Filter", &currentFilter, filterItems, IM_ARRAYSIZE(filterItems)))
 			{
-				Wasteland::Renderer3D::SetReconstructionFilter((Wasteland::ReconstructionFilter)currentFilter);
+				// TSR is refused rather than accepted and ignored. The shader has
+				// passes 15/16 for it, but they are never dispatched and their two
+				// uniforms are never uploaded, so accepting the selection would
+				// leave the dropdown showing a filter that is not running -- the
+				// same "stored, transported, never consumed" defect the rest of
+				// this panel has been fixing.
+				//
+				// It needs a cross-frame history buffer, and the image binding
+				// budget is exhausted, so there is nowhere to put one.
+				if ((Wasteland::ReconstructionFilter)currentFilter == Wasteland::ReconstructionFilter::TSR)
+				{
+					currentFilter = (int)Wasteland::Renderer3D::GetReconstructionFilter();
+					WL_CORE_WARN("TSR selected but unavailable: no cross-frame history buffer exists "
+					             "(image binding budget is exhausted). Keeping the current filter.");
+				}
+				else
+				{
+					Wasteland::Renderer3D::SetReconstructionFilter((Wasteland::ReconstructionFilter)currentFilter);
+				}
 			}
 			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("How the path tracer's samples are combined into the final image:\nspatial filters (Nearest..Lanczos) upscale from the current\nresolution scale, FSR1/TSR/TAA are the temporal/super-res options.\nBilinear is the current implicit default. FXAA/SMAA are post-process\nedge-AA fallbacks for old GPUs and are NOT the right default at Ultra.\n\nNOT YET WIRED TO THE SHADER: RunComposite still upscales with\nbilinear, so only that one is in effect today. The rest land with\nthe Phase 5 filter bank -- see docs/NOVA_FPS_DIAGNOSIS.md.");
+				// A list rather than a paragraph because each entry's status IS
+				// the point. This replaces text that said none of the filters
+				// below were wired; that was true when written and false
+				// afterwards, and it had become the last dead control here.
+				//
+				// "Live" means the shader has a branch that consumes
+				// u_ReconstructionFilter at that value AND something dispatches
+				// it. Both halves are required; the entry used to have neither.
+			 ImGui::SetTooltip(
+				"How the path tracer's samples are combined into the final image.\n"
+				"\n"
+				"Spatial upscale (active when Resolution Scale < 1.0):\n"
+				"  Nearest / Bilinear / Box / Bicubic / Lanczos -- all live.\n"
+				"  FSR1 (EASU) -- live. 12-tap edge-adaptive lanczos-2: it\n"
+				"    stretches the kernel along the local gradient, so it is the\n"
+				"    one entry that rebuilds a diagonal edge rather than\n"
+				"    RCAS is deferred, not omitted: it needs a pass boundary\n"
+				"    (its four diagonal taps are neighbouring output pixels),\n"
+				"    and the pass-15/16 slots it belongs to are already\n"
+				"    allocated by the reconstruction plan.\n"
+				"\n"
+				"Edge AA (runs inside the composite, on the resolved image):\n"
+				"  FXAA / SMAA -- live. SMAA is FXAA plus a half-texel submask.\n"
+				"\n"
+				"Denoise:\n"
+				"  ATrous denoise -- live; dispatches the A-Trous ladder.\n"
+				"\n"
+				"NOT a filter selection:\n"
+				"  TAA is always running as pass 2. Use the Accumulate checkbox.\n"
+				"  TSR is unavailable and is refused on selection: it needs a\n"
+				"    history buffer that survives the frame, and the image\n"
+				"    binding budget is exhausted, so none exists to hold one.\n"
+				"\n"
+				"  None (raw) is the diagnostic baseline: no upscale, no AA.\n");
 
 			float renderScale = Wasteland::Renderer3D::GetRenderScale();
 			if (ImGui::SliderFloat("Resolution Scale", &renderScale, 0.25f, 1.0f))
@@ -1669,10 +1905,27 @@ static bool HasGLExtension(const char *name)
 			}
 
 			ImGui::Separator();
-			ImGui::Text("Neural Rendering (OpenGL)");
-
+			// The section is branded WLNR -- Wasteland Neural Renderer. The
+			// abbreviation is what the renderer's own identifiers read as
+			// (NeuralStage, NeuralGlobals), and a full "Neural Rendering"
+			// heading pushes the controls it contains off the panel.
+			//
+			// The expansion is NOT a tooltip: this text sits in the world
+			// panel, and ImGui::IsItemHovered() does not fire for items that
+			// are not inside a child window. The log is the only channel here,
+			// so it carries the expansion -- once, because this call site runs
+			// every frame. See WL_LOG_ONCE in Core/Log.h.
+			WL_LOG_ONCE(WLNR, "WLNR = Wasteland Neural Renderer");
+			ImGui::Text("WLNR (Wasteland Neural Renderer)");
+			// The toggle now selects between two modes, not a blend: the GI network
+			// that used to sit inside the shading estimator has moved to a trained
+			// end-of-frame stage (docs/NEURAL_RENDERING.md), so what remains here is
+			// material and texture appearance. The label used to say "Textures +
+			// Lighting" and the "Neural Light Strength" slider below used to feed
+			// the in-estimator GI blend -- both are gone, and a slider that writes
+			// to an unread uniform is worse than no slider.
 			bool neuralEnabled = Wasteland::Renderer3D::IsNeuralRenderingEnabled();
-			if (ImGui::Checkbox("Neural Textures + Lighting", &neuralEnabled))
+			if (ImGui::Checkbox("Neural Textures + Material", &neuralEnabled))
 			{
 				Wasteland::Renderer3D::SetNeuralRenderingEnabled(neuralEnabled);
 			}
@@ -1683,17 +1936,71 @@ static bool HasGLExtension(const char *name)
 				Wasteland::Renderer3D::SetNeuralTextureStrength(neuralTexStrength);
 			}
 
-			float neuralLightStrength = Wasteland::Renderer3D::GetNeuralLightStrength();
-			if (ImGui::SliderFloat("Neural Light Strength", &neuralLightStrength, 0.0f, 1.0f))
-			{
-				Wasteland::Renderer3D::SetNeuralLightStrength(neuralLightStrength);
-			}
-
 			float neuralMatStrength = Wasteland::Renderer3D::GetNeuralMaterialStrength();
 			if (ImGui::SliderFloat("Neural Material Strength", &neuralMatStrength, 0.0f, 1.0f))
 			{
 				Wasteland::Renderer3D::SetNeuralMaterialStrength(neuralMatStrength);
 			}
+
+			// The trained end-of-frame stage. Separate from the toggle above on
+			// purpose: that one shapes shading inside the trace, this one is the
+			// CPU-trained MLP that runs as compute passes at the end of the frame.
+			// It is off by default because it changes the final image.
+			//
+			// The tooltip matters more than the checkbox: without a valid
+			// assets/neural/neural_weights.bin the passes are skipped whatever this
+			// says, and a checkbox that appears to do nothing is worse than one
+			// that says why.
+			const bool stageAvailable = Wasteland::Renderer3D::IsNeuralStageAvailable();
+			bool neuralStage = Wasteland::Renderer3D::IsNeuralStageEnabled();
+			if (ImGui::Checkbox("Neural Stage (trained MLP)", &neuralStage))
+			{
+				Wasteland::Renderer3D::SetNeuralStageEnabled(neuralStage);
+			}
+			if (!stageAvailable && ImGui::IsItemHovered())
+				ImGui::SetTooltip("No usable assets/neural/neural_weights.bin -- the passes "
+								   "are skipped. Re-export the dataset and retrain; see "
+								   "tools/train_neural/README.md.");
+
+			// Which backend is actually running, and what tier it classifies as.
+			//
+			// Read off the live capabilities, never hardcoded: this panel is the one
+			// place a user can see that the engine is on OpenGL (where the neural
+			// stage works) versus a backend where it is compile-verified only. The
+			// stage's availability is a property of the LOADED WEIGHTS, not of the
+			// tier, so the two are shown side by side rather than combined.
+			// Three DIFFERENT scopes, and getting any of them wrong fails to
+			// COMPILE rather than degrading: GetRenderCapabilities is a FREE
+			// function in namespace Wasteland; FeatureTier lives in namespace
+			// Wasteland, not nested in the RenderCapabilities struct; TierName is
+			// a static member of that struct; APIName is a static member of
+			// class RendererAPI.
+			const auto caps = Wasteland::GetRenderCapabilities();
+			ImGui::TextDisabled("backend %s  |  tier %s  |  %s",
+							   Wasteland::RendererAPI::APIName(caps.api),
+						   Wasteland::RenderCapabilities::TierName(
+								   caps.TierFor(Wasteland::FeatureTier::DenoiseCompute)),
+						   stageAvailable ? "weights loaded" : "NO WEIGHTS");
+
+			// The gate mean, measured by pass 19 and read back by the renderer.
+			//
+			// This is the number that answers "is the stage actually doing
+			// anything", and it is a MEASUREMENT. An earlier version of this panel
+			// would have printed a hardcoded 0.42 -- a plausible-looking constant
+			// that makes a broken or disabled stage look healthy. The two failure
+			// modes it distinguishes are otherwise identical on screen:
+			//   gate ~0.4  the network is choosing to enhance this frame
+			//   gate  0.0  the stage is not running (disabled, or no weights)
+			// and both produce an unchanged-looking image.
+			const auto stats = Wasteland::Renderer3D::GetStats();
+			ImGui::TextDisabled("gate mean %.3f%s",
+							   stats.NeuralGateMean,
+						   stageAvailable && !neuralStage ? "  (stage disabled)" : "");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Mean of the per-pixel gate over the last frame, measured "
+								   "by the stage itself (pass 19). A trained frame reads ~0.38-0.46. "
+								   "0.000 with the stage enabled means the passes are not running -- "
+								   "check the checkbox above and that a weights blob is loaded.");
 
 			ImGui::Separator();
 			ImGui::Text("Sky Settings");
@@ -2679,6 +2986,18 @@ static bool HasGLExtension(const char *name)
 
 			m_ActiveScene = m_EditorScene;
 			m_EditorScenePath = path;
+
+			// The scene carries its own neural-stage flag and the renderer is what
+			// it controls, so this is the one place the two are joined.
+			//
+			// The coupling lives HERE, in the editor, on purpose: SceneSerializer
+			// stores a neutral bool because the Scene layer does not include
+			// Renderer3D, and making it read the renderer's live value would invert
+			// that dependency to save three lines.
+			//
+			// Applied on every load, not just the first: a project's start scene and
+			// any scene opened later each carry their own flag.
+			Renderer3D::SetNeuralStageEnabled(m_EditorScene->IsNeuralStageEnabled());
 		}
 	}
 
@@ -3077,6 +3396,13 @@ static bool HasGLExtension(const char *name)
 
 	bool EditorLayer::SerializeScene(Ref<Scene> scene, const std::filesystem::path &path)
 	{
+		// The checkbox in the world panel writes to the renderer, and the scene is
+		// what gets serialized -- so the renderer's live value is copied onto the
+		// scene immediately before the write. Without this the file would record
+		// whatever the scene happened to hold, which is stale for every scene that
+		// was loaded before the checkbox was touched.
+		scene->SetNeuralStageEnabled(Renderer3D::IsNeuralStageEnabled());
+
 		SceneSerializer serializer(scene);
 		std::string error;
 		if (!serializer.SerializeChecked(path.string(), &error))

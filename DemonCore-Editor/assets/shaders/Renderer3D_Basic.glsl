@@ -545,14 +545,19 @@ uniform int u_VolFast;
 // Analytic component lights (Renderer3D uploads; -1 locations skipped).
 // d1 = (type 0=dir 1=point 2=spot 3=area, intensity, range 0=inf, falloff)
 // d2 = (spot innerCos, spot outerCos, areaSize, areaDoubleSided)
-// Up to 8 analytic lights. The loop below is bounded by the literal 8 to
-// match the array sizes.
+// Up to MaxRenderedLights (32) analytic lights -- the SAME named constant the
+// C++ upload uses, so the array size, the upload count and the loop bound cannot
+// disagree. These were [8] while Renderer3D uploaded up to 32 on the GL path
+// (glUniform3fv with count = RenderedLights.size(), capped only by
+// MaxRenderedLights), which wrote past the end of every one of these arrays and
+// then had the loop read u_ALightCount entries out of an 8-element array. The
+// scene has 363 point lights, so in practice the upload was 32 into 8.
 uniform int u_ALightCount;
-uniform vec3 u_ALightPos[8];
-uniform vec3 u_ALightDir[8];
-uniform vec3 u_ALightColor[8];
-uniform vec4 u_ALightData[8];
-uniform vec4 u_ALightData2[8];
+uniform vec3 u_ALightPos[32];
+uniform vec3 u_ALightDir[32];
+uniform vec3 u_ALightColor[32];
+uniform vec4 u_ALightData[32];
+uniform vec4 u_ALightData2[32];
 
 // The activation function, byte-identical to the vertex stage's wl_vsoftsign
 // above and duplicated for the merged-program reason given there.
@@ -1178,8 +1183,8 @@ vec3 wl_analytic_lights(vec3 albedo, float metallic, float roughness, vec3 N, ve
     vec3 F0 = mix(vec3(0.04), albedo, clamp(metallic, 0.0, 1.0));
     float rough = clamp(roughness, 0.04, 1.0);
     vec3 acc = vec3(0.0);
-    // The 8-light loop, bounded by the constant matching the uniform array size.
-    for (int a = 0; a < 8; a++)
+    // The light loop, bounded by the constant matching the uniform array size.
+    for (int a = 0; a < 32; a++)
     {
         // Dynamic exit, so an unused slot costs nothing beyond the branch.
         if (a >= u_ALightCount) break;

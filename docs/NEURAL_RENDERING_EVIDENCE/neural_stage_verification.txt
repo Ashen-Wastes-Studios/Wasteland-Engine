@@ -1,0 +1,40 @@
+neural stage verification -- measured, not asserted
+============================================================
+
+frame                  2332x1451  (Example3D, cam 0,0,0 / 13.3 / -30)
+
+SHADER vs PYTHON MODEL  (the stage against its own definition)
+  mean|d|               0.000026
+  max|d|                0.000262
+  pixels off > 1/255    0.000%
+
+STAGE EFFECT  (what the passes actually changed)
+  mean|on - off|        0.015160
+  max |on - off|        0.057712
+  pixels changed        99.99%
+
+MODEL EFFECT  (what the Python model predicts)
+  mean|pred - anchor|   0.015173
+  max |pred - anchor|   0.057706
+  frame mean            [0.239850, 0.235262, 0.115608, 0.227598]
+  gate mean             0.3119
+
+The three 'effect' lines agree to ~1e-5: the GPU is doing what the model says.
+
+CONTROLS
+  zero-weight identity  mean|d| 0.000000  (stage reproduces the anchor exactly)
+  stage-off repeat      max|d|  0.00000000  (two identical captures, bit-identical)
+
+TRAINING  (held-out, 6 frames, dataset_noisy)
+  raw input             38.612 dB
+  enhanced              41.547 dB   (+2.935 dB)
+  identity              33.578 dB
+  12-param affine       36.440 dB
+  per-scene affine oracle 38.257 dB
+
+SHADER PARITY
+  verify_nova_glsl                 PASS
+  verify_neural_stage_parity       PASS
+  verify_nova_shader_parity        PASS
+  verify_nova_binding_budget       PASS
+  verify_nova_constant_names       PASS

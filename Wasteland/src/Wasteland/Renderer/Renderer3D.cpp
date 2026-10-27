@@ -20,6 +20,7 @@
 #include "TerrainNovaMesh.h"
 #include "Wasteland/Renderer/RenderCapabilities.h"
 #include "Wasteland/Renderer/BlueNoise.h"
+#include "Wasteland/Renderer/NeuralStageBlob.h"
 
 #include "VertexArray.h"
 #include "Shader.h"
@@ -48,6 +49,12 @@
 // The one byte-level primitive in this file -- SceneInstancesChanged memcmps
 // raw instance memory to decide whether the BVH needs rebuilding.
 #include <cstring>
+// fopen/fread, for reading the trained network's weight blob from
+// assets/neural/neural_weights.bin. The blob is a fixed-layout binary, so a
+// stream reader would be a slower way to do what fread does directly.
+#include <cstdio>
+// getenv/atoi, for the WL_NEURAL_STAGE verification override.
+#include <cstdlib>
 #include <stdexcept>
 // numeric_limits<float>::infinity(), the "no victim found yet" sentinel in the
 // analytic-light admission scan. It reaches this TU transitively through glm, but
@@ -99,7 +106,14 @@ namespace Wasteland
     // because they each assigned the field. The default makes the omission
     // harmless, and deriving MaxDrawDistance from this constant makes the two
     // drift-proof rather than merely equal today.
-    static constexpr float TraceMaxDistance = 10000.0f;
+    // 16 km, not 10. MaxDrawDistance is derived from this, so it moved with it.
+    // A 10 km cap was fine for the 2.6 km city it was written for, but the Ash
+    // District is 7.2 km across -- a 10.2 km diagonal -- so standing in one
+    // corner and looking at the other silently culled the far districts, and
+    // which ones survived changed as the camera moved. That is the "buildings
+    // popping in and out after the scale-up" the scene showed: the geometry was
+    // in the frustum and its AABB was fine, it was dropped by this distance test.
+    static constexpr float TraceMaxDistance = 16000.0f;
 
     // The per-instance record uploaded to the ray-tracing SSBO. alignas(16) is not
     // decoration: std430 mandates 16-byte alignment for the mat4 members, and a
@@ -314,6 +328,13 @@ namespace Wasteland
         // static init. So the epoch is the first volume upload, not program start --
         // startup time before the first frame is excluded.
         static auto s_Start = std::chrono::steady_clock::now();
+        // WL_FREEZE_TIME pins the clock to a constant. Without it the volumetrics
+        // drift with wall time, so two captures of the same camera are never
+        // pixel-identical and any A/B comparison measures the animation instead of
+        // the change under test. Setting it to the same value in both runs makes
+        // the only difference the thing being compared.
+        if (const char *frozen = getenv("WL_FREEZE_TIME"))
+            return (float)atof(frozen);
         auto now = std::chrono::steady_clock::now();
         return std::chrono::duration<float>(now - s_Start).count();
     }
@@ -545,6 +566,12 @@ namespace Wasteland
         return nodeIdx;
     }
 
+    // BuildAndFlattenBVH sits ABOVE s_Data (defined at the bottom of this file), so
+    // it cannot touch Stats directly. This forwarder keeps the increment in one place
+    // instead of duplicating it at the call sites -- which is the whole point of the
+    // counter being here rather than there. Defined after s_Data.
+    static void NoteBvhRebuild();
+
     // Build and flatten in one pass. The output layout differs from the build tree
     // because the GPU consumes a flat array while the recursion needs a heap
     // vector that reallocates as it grows.
@@ -552,6 +579,12 @@ namespace Wasteland
                                    std::vector<BVHNodeGPU> &outNodes,
                                    std::vector<int> &outPrimOrder)
     {
+        // Counted here rather than at the four call sites: this is the one function
+        // every backend's rebuild path funnels through, so the counter cannot drift
+        // from a path that forgot to increment. An empty submission is not a
+        // rebuild -- the early return below is the "nothing to build" case.
+        if (!instances.empty())
+            NoteBvhRebuild();
         outNodes.clear();
         outPrimOrder.clear();
 
@@ -699,6 +732,18 @@ namespace Wasteland
         // the app-time signal alone -- surfaced so that is visible rather than
         // silent. See the error check at the query's open site.
         uint32_t DRSBeginFailures = 0;
+        // Lifecycle counters, printed in the frame-time report. A begin without a
+        // matching end leaves the query open forever, which is exactly how the
+        // read-back starves -- so these two numbers are the first thing to compare.
+        uint32_t DRSBegins = 0;
+        uint32_t DRSEnds = 0;
+        // Reached the end SITE at all, before the DRSTimerActive check. Distinguishes
+        // "the end block is never reached" from "it is reached but the flag is false".
+        uint32_t DRSEndSiteHits = 0;
+
+        // The GL error code that caused the last failed begin, for the DEGRADED line.
+        // 1282 is GL_INVALID_OPERATION, the code this path was written against.
+        GLenum DRSLastBeginError = 0;
         // Paces the periodic frame-time report. A MEMBER, not a file-scope static,
         // because the report lives inside UpdateDynamicResolution and must keep
         // firing when the DRS is disabled -- a file-scope static worked while the
@@ -814,13 +859,35 @@ namespace Wasteland
         // 0.4 rather than 0.5: for large open worlds the scaler needs more room
         // to drop resolution to hold 30 FPS. At 0.5 the floor was too high for
         // dense city scenes.
-        float DynamicMinScale = 0.4f;
+        float DynamicMinScale = 0.25f;   // was 0.4f. The trace is 88% of the frame and pixel-bound,
+                            // so the floor is what decides whether the scaler can reach
+                            // its target at all. 0.25 is the clamp floor the resize path
+                            // already enforces; measured cost is recorded in the plan.
         float DynamicMaxScale = 1.0f;
         // An exponential moving average, not an instantaneous reading. One frame's GPU
         // time is dominated by a shader recompile or a driver hiccup, and reacting to a
         // single sample directly makes the resolution visibly oscillate.
         double GPUFrameTimeEMA = 0.0;
         double CPUFlushTimeEMA = 0.0;
+        // Phase breakdown of the GL tracer block, milliseconds, EMA. Diagnostic
+        // only. CPUFlushTimeEMA above says the tracer block costs ~100 ms and
+        // cannot say WHERE, which is the one question this table answers.
+        // The boundaries are the ones the block already has: prep (the
+        // SceneInstancesChanged memcmp and the capacity clamp), bvh (build,
+        // reorder, the three SSBO uploads, and the m_PrevSceneInstances copy),
+        // bind (texture units, neural buffers, reservoir buffers), uniforms,
+        // dispatch (the compute chain), remainder (everything else).
+        // prep alone read 115.8 ms of a 115.9 ms block, so the region was split
+        // into the three things that are actually in it: the DRS timer poll, the
+        // camera-movement test, and the capacity clamp + Stats writes.
+        double PhasePollEMA = 0.0;
+        double PhaseCameraEMA = 0.0;
+        double PhaseClampEMA = 0.0;
+        double PhaseBVHEMA = 0.0;
+        double PhaseBindEMA = 0.0;
+        double PhaseUniformsEMA = 0.0;
+        double PhaseDispatchEMA = 0.0;
+        double PhaseRemainderEMA = 0.0;
         double AppFrameTimeEMA = 0.0;
         float CurrentFPS = 0.0f;
         uint32_t DRSFramesSinceAdjust = 0;
@@ -828,7 +895,22 @@ namespace Wasteland
         // A rotating pool, not three simultaneous samples: the driver has no result
         // available while a query is still in flight, so concurrent queries per pass
         // would need explicit fences.
-        GLuint DRSTimerQueries[3] = {0, 0, 0};
+        // Pool depth. THREE IS TOO SHALLOW for a GPU-bound renderer: the queue runs
+        // deeper than one frame, so a 3-slot pool read one frame back misses almost
+        // every poll -- measured at 3 samples against 299 misses over 300 frames.
+        // Eight slots give the poll up to six frames of slack while costing 8 x 4 B.
+        static constexpr uint32_t kDRSTimerPool = 8;
+        GLuint DRSTimerQueries[kDRSTimerPool] = {0};
+        // Second timer, for the passes the main query does NOT cover: composite,
+        // bloom, god-ray and neural all run AFTER the main query closes, so the
+        // trace-only reading under-reports the frame by exactly that group.
+        GLuint DRSPostQuery = 0;
+        bool DRSPostQueryActive = false;
+        double PostQueryEMA = 0.0;
+        // glFinish-bounded truth: real GPU cost of the frame, no query involved.
+        double FinishEMA = 0.0;
+        uint32_t FinishSamples = 0;
+        uint32_t PostQuerySamples = 0;
         uint32_t DRSTimerIndex = 0;
         bool DRSTimerActive = false;
         // Per-segment GPU profiling, enabled by WASTELAND_NOVA_PROFILE=1. Splits the
@@ -909,6 +991,19 @@ namespace Wasteland
         // wired the dispatch would read an unbound UAV, so this must stay false
         // until every target backend binds the resource.
         bool SvfgEnabled = false;
+        // Clean-room reconstruction stack (WLSR / WLAA / WLRR / WLFG) master
+        // switch. Off by default: every pass it gates is a change to the final
+        // image, and the plan's rule is that a wrong model must cost nothing.
+        //
+        // WL_RECONSTRUCTION overrides it, read once per frame in
+        // RunNovaPassSchedule's caller so the editor toggle, the Python binding
+        // and the env override can never disagree about whether the stack is on.
+        bool ReconstructionEnabled = false;
+        // WLSR sharpen stage (RCAS, pass 15). Both default off/zero so the stage
+        // is inert until asked for, and the shader's own gate is a second line of
+        // defence in case a caller forgets to set the strength.
+        bool RCASEnabled = false;
+        float RCASharpness = 0.0f;
         int  SvfgPasses = 4;
         // ReSTIR DI: four diffuse-emissive point-light candidates, temporal reuse,
         // and experimental spatial reuse. Correlation alone is not a bias proof,
@@ -1002,6 +1097,28 @@ namespace Wasteland
         size_t ReservoirBytes = 0;
         uint32_t ReservoirWidth = 0;
         uint32_t ReservoirHeight = 0;
+        // The trained end-of-frame neural stage's two SSBOs.
+        //
+        // NeuralGlobalsBufferID is the four-uint accumulator the frame-mean
+        // reduction (pass 17) atomically adds into; it must be zeroed before
+        // every pass 17 or the mean is summed over every frame so far.
+        // NeuralWeightsBufferID holds the 1140 trained floats (4560 bytes) the
+        // eval pass reads. It is uploaded once, from
+        // assets/neural/neural_weights.bin, and never changes at runtime.
+        uint32_t NeuralGlobalsBufferID = 0;
+        uint32_t NeuralWeightsBufferID = 0;
+        // False until the weight blob has been read and validated. The stage is
+        // skipped entirely while this is false, so a missing or corrupt blob
+        // degrades to "no enhancement" rather than to garbage.
+        bool NeuralWeightsValid = false;
+        // Master switch for the end-of-frame neural stage. Off by default: the
+        // stage is a change to the final image, so it is opt-in.
+        bool NeuralStageEnabled = false;
+
+        // The gate mean published to the editor, and the frame counter that
+        // throttles its readback (see the readback in the GL dispatch above).
+        float   NeuralGateMean = 0.0f;
+        uint32_t NeuralGateReadbackCounter = 0;
         // CPU-side scratch, kept across frames so a static scene rebuilds nothing.
         // Cleared only by Shutdown.
         std::vector<BVHNodeGPU> m_BVHNodes;
@@ -1051,6 +1168,14 @@ namespace Wasteland
         // yields -1, and glUniform with -1 is a documented no-op.
         int Loc_SamplePattern;
         int Loc_ReconstructionFilter;
+        // WLSR sharpen stage (RCAS, pass 15). Both default to -1 and both upload
+        // sites are guarded, so a shader that predates them simply never runs the
+        // stage instead of reading an unbound location.
+        int Loc_RCSEnabled;
+        int Loc_TSRSharpenStrength;
+        // TEMPORARY (task 3): u_MaskVisualize location. See Loc_MaskVisualize's
+        // comment in the setter block above. Removed once the mask is known-good.
+        int Loc_MaskVisualize = -1;
         int Loc_StepSize;
         // The PREVIOUS frame's view-projection, needed to reproject the history buffer
         // and to derive motion vectors. Uploaded before pass 0 for that reason.
@@ -1157,6 +1282,17 @@ namespace Wasteland
         // Doubles peak instance memory, which is the cost of making a static scene skip
         // both the BVH rebuild and the SSBO upload.
         std::vector<RayTracingInstance> m_PrevSceneInstances;
+        // The scene's transform epoch as published by the most recent
+        // SetSceneTransformEpoch, and the value that was in force when the
+        // previous frame's instances were ACCEPTED. Equal => no transform was
+        // written by any path the stamp covers, so the memcmp below can be
+        // skipped. See SceneInstancesChanged().
+        //
+        // m_LastSceneTransformEpoch starts at kEpochUninitialised rather than 0,
+        // so the first frame cannot compare equal to an unstamped 0 and skip a
+        // build the scene actually needs.
+        uint32_t m_SceneTransformEpoch = 0;
+        uint32_t m_LastSceneTransformEpoch = 0xFFFFFFFFu;
         std::vector<TerrainNovaVertex> m_TerrainVertices;
         std::vector<TerrainNovaVertex> m_PrevTerrainVertices;
         std::vector<RayTracingInstance> m_TerrainInstances;
@@ -1221,7 +1357,29 @@ namespace Wasteland
         // Capacity of the ray-tracing instance SSBO and of the BVH node buffer (twice
         // this many nodes). Init sizes both allocations from this, and the frame's
         // instance list is clamped to it before upload, so the two can never disagree.
-        static constexpr uint32_t MaxRayTracingInstances = 10000;
+        // 24576, not 10000. This is the visible-instance budget, and the scene
+        // now exceeds the old value: the Ash District carries 13.2k entities
+        // (5.5k at the 2.6 km scale), so any frame whose frustum sees more than
+        // 10000 of them had the excess RESIZED OFF THE END of the list -- after
+        // a one-shot warning that fires once and is easy to miss. Because the
+        // surviving set is "the first N in traversal order", the buildings that
+        // got dropped were the ones that changed as the camera moved, which is
+        // exactly what a distance-independent pop looks like from the editor.
+        // Sized for 2x the current scene so the next scale-up does not rediscover
+        // this. The instance SSBO is 288 B/instance (RayTracingInstance is
+        // static_asserted to that ABI size), so 24576 is ~7 MB, plus the 2-node-
+        // per-instance BVH buffer and the light index list on top.
+        // NOT constexpr any more: overridable at Init from WL_MAX_INSTANCES so the
+        // truncation cost curve can be measured without a rebuild per point. The
+        // default is unchanged, so behaviour is identical unless the env var is set.
+        uint32_t MaxRayTracingInstances = 24576;
+        // Last truncated-instance count that was reported, so the warning fires on
+        // change rather than every frame or (as before) once per process.
+        uint32_t LastReportedInstancesTruncated = 0;
+    // Sentinel for "no epoch recorded yet". Deliberately not 0: a real epoch is
+    // whatever Scene::m_TransformEpoch currently is, including 0, so 0 cannot
+    // also mean "unknown".
+    static constexpr uint32_t kEpochUninitialised = 0xFFFFFFFFu;
         // Instanced rendering: batch key is (material_hash, mesh_type) pair
         // Buildings with same material and mesh type are batched together
         struct BatchKey {
@@ -1635,6 +1793,13 @@ namespace Wasteland
 
     static Renderer3DData s_Data;
 
+    // See the forward declaration above BuildAndFlattenBVH: the BVH builder runs before
+    // s_Data exists, so it reports through this.
+    static void NoteBvhRebuild()
+    {
+        s_Data.Stats.BvhRebuilds++;
+    }
+
     // Shared CPU-side cull for EVERY instance submission path. Returns false when
     // the instance must not enter the BVH; when it returns true it has also set
     // instance.LODLevel.
@@ -1642,12 +1807,23 @@ namespace Wasteland
     // WHY THIS IS SHARED. The frustum / distance-LOD / MaxDrawDistance cull
     // originally lived only inside DrawProceduralPrimitive, whose own comment
     // calls frustum culling "the single most impactful optimization -- a 2500x2500m
-    // city may have 1000+ buildings but only ~50 are visible". But DrawCube and
+    // city may have 1000+ buildings but only ~50 are visible". DrawCube and
     // DrawSphere -- 1024 + 678 of DemoGame's 1729 entities, 97% of the scene --
-    // submitted unconditionally: no frustum test, no distance LOD, no
-    // MaxDrawDistance cull. The shader's per-ray MaxDistance check still rejects
-    // them eventually, but it does so inside the BVH traversal for every ray,
-    // which is exactly the work a CPU cull exists to avoid.
+    // used to submit unconditionally: no frustum test, no distance LOD, no
+    // MaxDrawDistance cull. The shader's per-ray MaxDistance check still rejected
+    // them eventually, but only inside the BVH traversal for every ray, which is
+    // exactly the work a CPU cull exists to avoid.
+    //
+    // That is now fixed, and this comment used to say the opposite -- it was left
+    // describing the bug after the bug was repaired, which is worse than no
+    // comment. All five instance-append sites in Flush() call this first, so there
+    // is no unculled submission path.
+    //
+    // To re-verify after adding a draw path: count the append sites in Flush()
+    // against the calls to this function. They must be equal; a surplus append
+    // site is the bug. (Deliberately not spelling out either expression here --
+    // writing them into this comment made the counts read 6-vs-5 and 23-vs-6,
+    // which is exactly the kind of false signal a future reader would chase.)
     //
     // Defined here, after s_Data, rather than beside the other geometry helpers:
     // it reads s_Data, which is declared at namespace scope at the line above, so
@@ -1770,6 +1946,14 @@ namespace Wasteland
     static void DetectGPUTier();
     static void UpdateDynamicResolution();
     static bool SceneInstancesChanged();
+    // DEFINED AS A MEMBER, not a namespace-scope helper like its neighbours above.
+    // The header declares this on Renderer3D (Renderer3D.h:99) and Bindings.cpp binds
+    // it as Renderer3D_SetSceneTransformEpoch, so the definition must be
+    // Renderer3D::SetSceneTransformEpoch. Written as a namespace-scope `static` with
+    // the same name it would define a DIFFERENT symbol (Wasteland::SetSceneTransformEpoch,
+    // internal linkage) and leave the class member unresolved at link time -- which is
+    // the LNK2019 this corrects.
+    void Renderer3D::SetSceneTransformEpoch(uint32_t epoch) { s_Data.m_SceneTransformEpoch = epoch; }
     static bool Renderer3DGLAvailable();
     static bool Renderer3DNVRHIAvailable();
     // Defined next to PushAnalyticLight, far below, but CALLED from both BeginScene
@@ -1938,6 +2122,108 @@ namespace Wasteland
         }
         s_Data.ReservoirParity = 0;
         BindReservoirBuffers();
+    }
+
+    // ---- the trained end-of-frame neural stage ------------------------------
+    //
+    // Two SSBOs and NO image unit. GL guarantees only eight image units and the
+    // Nova compute program already uses all of them (0 output, 1 accumulation,
+    // 2 bloom, 3 material, 4 albedo, 5 velocity, 6 trace G-buffer, 7 bloom
+    // temp), so the stage reads its anchor with imageLoad from img_Output --
+    // each thread touches only its own texel -- and takes everything else
+    // through buffers:
+    //
+    //   binding 4  NeuralGlobals   four uints, the frame-mean accumulator
+    //   binding 5  NeuralWeights   the 1140 trained floats, 4560 bytes
+    //
+    // The weights are read once from assets/neural/neural_weights.bin, the blob
+    // tools/train_neural/export_weights.py writes, and validated against the
+    // same ABI the trainer uses: magic, version, shape header, weight count and
+    // a CRC32 of the payload. A stale or corrupt blob is refused rather than
+    // silently misread -- a refusal leaves NeuralWeightsValid false and the
+    // stage is skipped, because "no enhancement" is a safe default and garbage
+    // is not.
+
+    // The blob loader and its CRC32 live in NeuralStageBlob.h, shared with the
+    // DX11/DX12 path so both backends accept exactly the same files. The weights
+    // are read once from assets/neural/neural_weights.bin, the blob
+    // tools/train_neural/export_weights.py writes, and validated against the same
+    // ABI the trainer uses: magic, version, shape header, weight count and a CRC32
+    // of the payload. A stale or corrupt blob is refused rather than silently
+    // misread -- a refusal leaves NeuralWeightsValid false and the stage is
+    // skipped, because "no enhancement" is a safe default and garbage is not.
+
+    // Must match NEURAL_MAX_BLOCKS in the GLSL twin. The partial-sum array holds
+    // four fixed-point sums per workgroup, so it has to cover the largest frame
+    // this engine renders: 3840x2160 at 8x8 workgroups is 480*270 = 129600
+    // blocks. 8192 was tried first and silently under-counted a 2332x1451 frame
+    // by 6.5x. 131072 is the next power of two above 129600.
+    static const uint32_t NEURAL_PARTIAL_BLOCKS = Neural::kPartialBlocks;
+
+    // Creates the neural SSBOs and uploads the weights. Idempotent: a second
+    // call with valid weights already resident does nothing.
+    static void SetupNeuralStage()
+    {
+        if (!Renderer3DGLAvailable())
+            return;
+        if (s_Data.NeuralWeightsValid)
+            return;
+
+        Neural::WeightBlob blob;
+        if (!Neural::LoadWeightBlob("assets/neural/neural_weights.bin", blob))
+            return;
+
+        std::vector<float> weights(blob.payload.size() / sizeof(float));
+        memcpy(weights.data(), blob.payload.data(), blob.payload.size());
+
+        // Order the barrier so any prior shader write to these bindings is
+        // visible before the storage is replaced.
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+
+        if (!s_Data.NeuralGlobalsBufferID)
+            glCreateBuffers(1, &s_Data.NeuralGlobalsBufferID);
+        // Sized from the ONE shared definition (NeuralStageBlob.h) so the GL
+        // buffer, the HLSL's RWStructuredBuffer<uint> and the DX12 UAV descriptor
+        // cannot disagree about how big this thing is. g_Mean[4] + g_Partial[] +
+        // g_GateMean + g_GatePartial[].
+        //
+        // The shader clamps its block index, so an oversized frame under-counts
+        // rather than corrupts -- but under-counting the gate partials would make
+        // the gate readout read HIGH (fewer, fully-populated blocks), which is the
+        // more dangerous direction for a "is it working" signal.
+        glNamedBufferData(s_Data.NeuralGlobalsBufferID,
+                          (GLsizeiptr)Neural::kGlobalsBytes,
+                          nullptr, GL_DYNAMIC_DRAW);
+        // g_Partial and g_GatePartial are fully overwritten every frame and
+        // g_Mean/g_GateMean are written (not accumulated), so unlike the atomic
+        // version this needs no per-frame clear. Zeroing once here keeps the first
+        // frame's pass 18 from reading uninitialised memory before pass 19 runs.
+        const uint32_t zero = 0;
+        glClearNamedBufferData(s_Data.NeuralGlobalsBufferID, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &zero);
+
+        if (!s_Data.NeuralWeightsBufferID)
+            glCreateBuffers(1, &s_Data.NeuralWeightsBufferID);
+        glNamedBufferData(s_Data.NeuralWeightsBufferID, (GLsizeiptr)(weights.size() * sizeof(float)),
+                          weights.data(), GL_STATIC_DRAW);
+
+        // Fixed binding points, matching the GLSL's layout(binding = 4) and (5).
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s_Data.NeuralGlobalsBufferID);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s_Data.NeuralWeightsBufferID);
+
+        s_Data.NeuralWeightsValid = true;
+        WL_CORE_INFO("Neural stage: loaded {} weights ({} bytes) from assets/neural/neural_weights.bin",
+                     weights.size(), weights.size() * (size_t)sizeof(float));
+    }
+
+    // Binds the neural SSBOs. Cheap enough to call every frame: glBindBufferBase
+    // on an already-bound pair is a no-op in practice, and it keeps the bindings
+    // correct after any other subsystem has rebound index 4 or 5.
+    static void BindNeuralBuffers()
+    {
+        if (!s_Data.NeuralGlobalsBufferID || !s_Data.NeuralWeightsBufferID)
+            return;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s_Data.NeuralGlobalsBufferID);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s_Data.NeuralWeightsBufferID);
     }
 
     static void ClearAccumulationBuffers()
@@ -2347,6 +2633,24 @@ namespace Wasteland
         // intact. This also avoids zero-length memcmp calls on empty frames.
         if (s_Data.m_SceneInstances.empty() && s_Data.m_TerrainVertices.empty())
             return false;
+        // The transform epoch, before the memcmp: on any frame where nothing moved,
+        // the whole-scene memcmp becomes one integer compare.
+        //
+        // CORRECTNESS IS ONE-DIRECTIONAL. This gate may only answer "unchanged" when
+        // that is PROVABLY true, so the stamp it reads is deliberately CONSERVATIVE.
+        // Scene::BumpTransformEpoch fires for the whole script pass rather than for an
+        // observed transform write, because a Python write goes through pybind11's
+        // reference_internal view and no C++ setter ever runs. Over-bumping costs the
+        // fast path; under-bumping would keep a stale BVH and a stale instance SSBO --
+        // the pop-in this gate exists to prevent. The memcmp below stays as the second
+        // gate regardless, and it is what makes a missed bump recoverable.
+        if (s_Data.m_SceneTransformEpoch != Renderer3DData::kEpochUninitialised &&
+            s_Data.m_SceneTransformEpoch == s_Data.m_LastSceneTransformEpoch)
+        {
+            s_Data.Stats.EpochShortCircuits++;
+            return false;
+        }
+        s_Data.Stats.InstanceInvalidations++;
         // memcmp over raw struct bytes, padding included. Instance metadata and
         // TerrainNovaVertex are value-initialized by their producers, so unchanged
         // submissions are byte-stable and changes to either stream invalidate Nova.
@@ -2635,6 +2939,15 @@ namespace Wasteland
         // the shader predates them, and the upload site below is a no-op in that case.
         s_Data.Loc_SamplePattern = glGetUniformLocation(rtProg, "u_SamplePattern");
         s_Data.Loc_ReconstructionFilter = glGetUniformLocation(rtProg, "u_ReconstructionFilter");
+        // WLSR sharpen stage (RCAS, pass 15). -1 when the shader predates them,
+        // and the upload site is a no-op in that case -- so an older shader simply
+        // never gets the stage, rather than reading an unbound location.
+        s_Data.Loc_RCSEnabled = glGetUniformLocation(rtProg, "u_RCSEnabled");
+        s_Data.Loc_TSRSharpenStrength = glGetUniformLocation(rtProg, "u_TSRSharpenStrength");
+        // TEMPORARY (task 3): drives u_MaskVisualize, which renders the reactive
+        // mask into the output so it can be inspected in a screenshot. Removed
+        // once the mask is known-good.
+        s_Data.Loc_MaskVisualize = glGetUniformLocation(rtProg, "u_MaskVisualize");
         // The ray-march step length for the volumetrics. Uploaded per frame by the
         // volumetric helper above, not by the pass-0 batch.
         s_Data.Loc_StepSize = glGetUniformLocation(rtProg, "u_StepSize");
@@ -2805,6 +3118,18 @@ namespace Wasteland
             glTextureParameteri(s_Data.AccumulationTextures[i], GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
 
+        // Override before anything is sized from it. The instance SSBO, the BVH buffer
+        // and the light index list are all allocated from this value, so it must be
+        // resolved here and nowhere later.
+        if (const char *maxEnv = std::getenv("WL_MAX_INSTANCES"))
+        {
+            long v = std::atol(maxEnv);
+            if (v >= 1024 && v <= 1048576)
+            {
+                s_Data.MaxRayTracingInstances = (uint32_t)v;
+                WL_CORE_INFO("Renderer3D: MaxRayTracingInstances overridden to {0} (WL_MAX_INSTANCES)", (uint32_t)v);
+            }
+        }
         uint32_t maxInstances = s_Data.MaxRayTracingInstances;
         uint32_t maxBVHNodes = maxInstances * 2;
         glCreateBuffers(1, &s_Data.SceneInstanceBufferID);
@@ -2866,7 +3191,8 @@ namespace Wasteland
         // The three GL timer queries the dynamic-resolution scaler uses. Created HERE,
         // at the very end of the OpenGL path -- which is why the NVRHI path never has
         // them, and why UpdateDynamicResolution gets no GPU samples on DX11/DX12.
-        glGenQueries(3, s_Data.DRSTimerQueries);
+        glGenQueries(Renderer3DData::kDRSTimerPool, s_Data.DRSTimerQueries);
+        glGenQueries(1, &s_Data.DRSPostQuery);
 
         // Per-segment profiling queries. Generated unconditionally rather than only
         // when the env var is set: WASTELAND_NOVA_PROFILE is read once at startup,
@@ -2923,6 +3249,42 @@ namespace Wasteland
             s_Data.DynamicResolutionEnabled = false;
             WL_CORE_INFO("Dynamic resolution: DISABLED by WL_DRS_OFF -- RenderScale is now fixed");
         }
+        // Reactive-reconstruction stack override: WL_RECONSTRUCTION=<0|1>.
+        //
+        // THIS LIVES HERE, NOT IN RunNovaPassSchedule, and that placement was a
+        // real bug. It used to sit inside RunNovaPassSchedule -- which is only
+        // called by the DX11/DX12/Vulkan Nova paths. The OpenGL path tracer is a
+        // separate schedule inline in Renderer3D::Flush(), so on OpenGL the flag
+        // was never read from the environment at all and stayed at its default
+        // false: pass 24 never dispatched, img_Bloom_Temp.a kept the alpha pass 7
+        // wrote (1.0), and the composite's mask read returned 1.0 everywhere --
+        // silently replacing the EASU with bilinear. Measured: masked-EASU was
+        // bit-identical to bilinear (0 of 3,383,732 pixels) while a forced 0.5
+        // blend moved 37.2% of pixels.
+        //
+        // Read here every frame, beside the WL_AA_FILTER override, so every
+        // backend sees the same value and a headless run can flip it without a
+        // rebuild.
+        if (const char *reconEnv = getenv("WL_RECONSTRUCTION"))
+        {
+            if (*reconEnv) s_Data.ReconstructionEnabled = atoi(reconEnv) != 0;
+        }
+        // WLSR sharpen stage override: WL_RCAS=<0|1> and WL_RCAS_STRENGTH=<f>.
+        // Both are read here, beside the overrides above, for the same reason:
+        // every backend must see the same value and a headless run must be able to
+        // flip them without a rebuild.
+        if (const char *rcasEnv = getenv("WL_RCAS"))
+        {
+            if (*rcasEnv) s_Data.RCASEnabled = atoi(rcasEnv) != 0;
+        }
+        if (const char *strEnv = getenv("WL_RCAS_STRENGTH"))
+        {
+            if (*strEnv)
+            {
+                float v = (float)atof(strEnv);
+                s_Data.RCASharpness = glm::clamp(v, 0.0f, 1.0f);
+            }
+        }
         // Reconstruction-filter override, for A/B testing the ladder without
         // clicking through the editor UI: WL_AA_FILTER=<n> where n is the
         // Renderer3D::ReconstructionFilter value (1 Nearest, 2 Bilinear, 3 Box,
@@ -2932,12 +3294,25 @@ namespace Wasteland
         if (aaEnv != nullptr)
         {
             int v = std::atoi(aaEnv);
-            if (v >= (int)ReconstructionFilter::None && v <= (int)ReconstructionFilter::SpatialDenoise)
+            if (v >= (int)ReconstructionFilter::None && v <= (int)ReconstructionFilter::Wlaa)
             {
                 s_Data.CurrentReconstructionFilter = (ReconstructionFilter)v;
-                WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v,
-                             v == 1 ? "Nearest" : v == 3 ? "Box" : v == 4 ? "Bicubic"
-                                     : v == 5 ? "Lanczos" : v == 0 ? "None" : "Bilinear (default/fall-through)");
+                // Names every value, including the ones that are not really
+                // filters. The old form listed only 0, 1, 3, 4 and 5 and labelled
+                // everything else "Bilinear (default/fall-through)" -- so asking
+                // for FSR1 printed Bilinear and the log read as though the
+                // override had been ignored. WL_AA_FILTER=8 is how the EASU path
+                // gets A/B tested, so it has to be identifiable here.
+                const char *filterName =
+                    v == 0 ? "None"  : v == 1 ? "Nearest" : v == 2 ? "Bilinear" :
+                    v == 3 ? "Box"   : v == 4 ? "Bicubic" : v == 5 ? "Lanczos" :
+                    v == 6 ? "FXAA"  : v == 7 ? "SMAA"    : v == 8 ? "FSR1 (EASU)" :
+                    v == 9 ? "TSR (NOT WIRED -- will not run)" :
+                    v == 10 ? "TAA (not a filter; pass 2 is always on)" :
+                    v == 11 ? "ATrous denoise" :
+                    v == 12 ? "WLAA (native-res AA: accumulate + RCAS sharpen)" :
+                    "ATrous denoise";
+                WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v, filterName);
             }
         }
         if (s_Data.ScreenCullPixels > 0.0f)
@@ -2999,8 +3374,9 @@ namespace Wasteland
         // three are zeroed together afterwards, so a second Shutdown is a no-op.
         if (s_Data.DRSTimerQueries[0] != 0)
         {
-            glDeleteQueries(3, s_Data.DRSTimerQueries);
-            s_Data.DRSTimerQueries[0] = s_Data.DRSTimerQueries[1] = s_Data.DRSTimerQueries[2] = 0;
+            glDeleteQueries(Renderer3DData::kDRSTimerPool, s_Data.DRSTimerQueries);
+            glDeleteQueries(1, &s_Data.DRSPostQuery);
+            for (uint32_t qi = 0; qi < Renderer3DData::kDRSTimerPool; ++qi) s_Data.DRSTimerQueries[qi] = 0;
         }
         // Same zero-then-check discipline as the DRS queries above.
         if (s_Data.NovaProfileQueries[0] != 0)
@@ -3329,6 +3705,19 @@ namespace Wasteland
             n.SwapReservoir();
         }
         pass(2);n.CommitHistory();
+        // Pass 24: the reactive mask, written into img_Bloom_Temp.a. Runs after
+        // the velocity (pass 0) and G-buffer (pass 1) are produced and before
+        // the composite consumes the bloom temp, and before the reconstruction
+        // passes (8/15/16) that read it. One thread per accumulation texel.
+        //
+        // The mask is stored in a channel of an existing image rather than a new
+        // image uniform: the GLSL may declare at most 8 image uniforms
+        // (verify_nova_glsl.py:213, C7624 on a ninth) and all 8 are in use.
+        // tools/verify_reactive_mask_budget.py fails if any pass other than the
+        // declared consumers reads that channel.
+        //
+        // WL_RECONSTRUCTION is read in SceneInstancesChanged(), not here: this
+        // function only runs on the DX11/DX12/Vulkan Nova paths.
         // SVGF denoiser: temporal moments (pass 12) then a fixed 4-step A-Trous
         // ladder (pass 13). OFF by default -- see s_Data.SvfgEnabled for why.
         //
@@ -3344,7 +3733,17 @@ namespace Wasteland
         //
         // Pass 12 must follow pass 1 (it reads img_Bloom, which only the trace
         // writes) and pass 13 must follow pass 2 (it reads img_Accumulation).
-        if(s_Data.SvfgEnabled){
+        //
+        // Two independent ways to reach this ladder, both genuine:
+        //   - s_Data.SvfgEnabled, the explicit denoiser toggle.
+        //   - ReconstructionFilter::SpatialDenoise, the "ATrous denoise" entry in
+        //     the editor's AA combo. That entry was plumbed (enum, combo, all
+        //     three Set() calls) and consumed by nothing -- the ladder below it
+        //     exists and was never reachable from the filter, so picking it
+        //     changed the image not at all. Wiring it here is the whole fix; the
+        //     passes themselves already work, they are just gated on a flag the
+        //     filter never set.
+        if(s_Data.SvfgEnabled || s_Data.CurrentReconstructionFilter==ReconstructionFilter::SpatialDenoise){
             pass(12);
             for(int i=0;i<glm::min(s_Data.SvfgPasses,4);++i){n.Set("u_StepSize",1<<i);pass(13);n.CommitDenoise();}
         }
@@ -3352,7 +3751,39 @@ namespace Wasteland
         // The denoiser ping-pongs: each of up to 4 passes widens the step by a factor
         // of two (1<<i) and commits, so a 4-pass blur reaches 8 texels either side.
         if(s_Data.BilateralBlurEnabled)for(int i=0;i<glm::min(s_Data.BilateralBlurPasses,4);++i){n.Set("u_StepSize",1<<i);pass(7);n.CommitDenoise();}
-        pass(6,true);if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
+        // Pass 24 lives HERE: after pass 7 (the last writer of img_Bloom_Temp)
+        // and before pass 6 (the composite, the first reader of the mask).
+        // See the comment below for why both halves of that window matter.
+        if (const char *reconEnv = getenv("WL_RECONSTRUCTION"))
+        {
+            if (*reconEnv) s_Data.ReconstructionEnabled = atoi(reconEnv) != 0;
+        }
+        // WL_RECONSTRUCTION is read in SceneInstancesChanged() beside the
+        // WL_AA_FILTER override, so EVERY backend sees it. See the comment there
+        // for why it must not live in this function.
+        if(s_Data.ReconstructionEnabled)pass(24);
+        // TEMPORARY (task 3): WL_MASK_VIS=1 makes pass 24 render the reactive
+        // mask into img_Output, so a screenshot shows the mask itself. Removed
+        // once the mask is known-good.
+        if (const char *mv = getenv("WL_MASK_VIS"))
+        {
+            glUniform1i(s_Data.Loc_MaskVisualize, atoi(mv) != 0 ? 1 : 0);
+        }
+        pass(6,true);
+        // Pass 15: RCAS, the WLSR sharpen stage, BEFORE the bloom. The reactive
+        // mask lives in img_Bloom_Temp, which the bloom blur (pass 4/5) overwrites,
+        // so RCAS must read it before the bloom runs -- otherwise it reads bloom
+        // data's alpha, not the mask, and the trust term is a silent no-op.
+        // Sharpening before bloom is also the correct order: bloom is additive
+        // light, and sharpening it would halo around bright sources. The bloom is
+        // then computed from the sharpened scene and added on top.
+        //
+        // Dispatched only when the stage is on. The shader has its own
+        // u_RCSEnabled gate as well, so this is belt-and-braces rather than the
+        // only guard: if the two ever disagree, the stage is inert and the frame
+        // is unchanged -- it can never sharpen when it was told not to.
+        if(s_Data.RCASEnabled)pass(15,true);
+        if(s_Data.BloomEnabled){pass(4,true);pass(5,true);}
         // God rays last, and only when the sun is genuinely on screen. Gated on
         // GodSunValid because shafts from a sun behind the camera smear rather than
         // radiating.
@@ -3388,6 +3819,7 @@ namespace Wasteland
             n.Upload(1,s_Data.m_BVHNodes.data(),(UINT)s_Data.m_BVHNodes.size(),sizeof(BVHNodeGPU));
             n.Upload(2,s_Data.m_LightIndices.data(),(UINT)s_Data.m_LightIndices.size(),sizeof(int));
             s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
+            s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
             s_Data.FrameIndex=0;
         }
         // The live count is the REORDERED count, which is why this reads
@@ -3541,12 +3973,13 @@ namespace Wasteland
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
         }
-        // DEFECT: the analytic-light cap is the literal 8 here and on the DX11 path,
-        // not Renderer3D::MaxAnalyticLights. It happens to match the header today, so
-        // the GL path and both Nova paths agree -- but the constants are independent,
-        // and changing the header would change only one of the three.
-        int lc=(int)glm::min(s_Data.AnalyticLights.size(),size_t(8));n.Set("u_ALightCount",lc);
-        for(int i=0;i<lc;++i) {const auto& v=s_Data.AnalyticLights[i];
+        // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
+        // (the distance-selected set) rather than AnalyticLights (submission order).
+        // The literal 8 silently dropped 355 of this scene's 363 point lights, and
+        // because the selection is by camera distance the surviving eight changed as
+        // the camera moved -- which is what made lit buildings appear to pop.
+        int lc=(int)glm::min(s_Data.RenderedLights.size(),(size_t)Renderer3D::MaxRenderedLights);n.Set("u_ALightCount",lc);
+        for(int i=0;i<lc;++i) {const auto& v=s_Data.RenderedLights[i];
             n.Set("u_ALightPos",v.Position,i);n.Set("u_ALightDir",v.Direction,i);n.Set("u_ALightColor",v.Color,i);
             n.Set("u_ALightData",glm::vec4(v.Type,v.Intensity,v.Range,v.Falloff),i);
             n.Set("u_ALightData2",glm::vec4(v.InnerCos,v.OuterCos,v.AreaSize,v.DoubleSided),i);
@@ -3636,6 +4069,7 @@ namespace Wasteland
             // FrameIndex is reset, and it copies the submission-order list, not the
             // reordered one.
             s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
+            s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
             s_Data.m_PrevTerrainVertices=s_Data.m_TerrainVertices;
             s_Data.FrameIndex=0;
         }
@@ -3797,11 +4231,13 @@ namespace Wasteland
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
         }
-        // DEFECT: the literal 8, not MaxAnalyticLights. This is the cap that actually
-        // bounds visible lights -- PushAnalyticLight admits MaxAnalyticLights entries, so
-        // any value above 8 is silently dropped here rather than at submission.
-        int lc=(int)glm::min(s_Data.AnalyticLights.size(),size_t(8));n.Set("u_ALightCount",lc);
-        for(int i=0;i<lc;++i) {const auto& v=s_Data.AnalyticLights[i];
+        // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
+        // (the distance-selected set) rather than AnalyticLights (submission order).
+        // The literal 8 silently dropped 355 of this scene's 363 point lights, and
+        // because the selection is by camera distance the surviving eight changed as
+        // the camera moved -- which is what made lit buildings appear to pop.
+        int lc=(int)glm::min(s_Data.RenderedLights.size(),(size_t)Renderer3D::MaxRenderedLights);n.Set("u_ALightCount",lc);
+        for(int i=0;i<lc;++i) {const auto& v=s_Data.RenderedLights[i];
             n.Set("u_ALightPos",v.Position,i);n.Set("u_ALightDir",v.Direction,i);n.Set("u_ALightColor",v.Color,i);
             n.Set("u_ALightData",glm::vec4(v.Type,v.Intensity,v.Range,v.Falloff),i);
             n.Set("u_ALightData2",glm::vec4(v.InnerCos,v.OuterCos,v.AreaSize,v.DoubleSided),i);
@@ -3875,6 +4311,7 @@ namespace Wasteland
             // FrameIndex is reset, and it copies the submission-order list, not the
             // reordered one.
             s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
+            s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
             s_Data.FrameIndex=0;
         }
         n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
@@ -4026,11 +4463,13 @@ namespace Wasteland
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
         }
-        // DEFECT: the literal 8, not MaxAnalyticLights. This is the cap that actually
-        // bounds visible lights -- PushAnalyticLight admits MaxAnalyticLights entries, so
-        // any value above 8 is silently dropped here rather than at submission.
-        int lc=(int)glm::min(s_Data.AnalyticLights.size(),size_t(8));n.Set("u_ALightCount",lc);
-        for(int i=0;i<lc;++i) {const auto& v=s_Data.AnalyticLights[i];
+        // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
+        // (the distance-selected set) rather than AnalyticLights (submission order).
+        // The literal 8 silently dropped 355 of this scene's 363 point lights, and
+        // because the selection is by camera distance the surviving eight changed as
+        // the camera moved -- which is what made lit buildings appear to pop.
+        int lc=(int)glm::min(s_Data.RenderedLights.size(),(size_t)Renderer3D::MaxRenderedLights);n.Set("u_ALightCount",lc);
+        for(int i=0;i<lc;++i) {const auto& v=s_Data.RenderedLights[i];
             n.Set("u_ALightPos",v.Position,i);n.Set("u_ALightDir",v.Direction,i);n.Set("u_ALightColor",v.Color,i);
             n.Set("u_ALightData",glm::vec4(v.Type,v.Intensity,v.Range,v.Falloff),i);
             n.Set("u_ALightData2",glm::vec4(v.InnerCos,v.OuterCos,v.AreaSize,v.DoubleSided),i);
@@ -4192,13 +4631,60 @@ void Renderer3D::Flush()
             // Wall-clock start for the CPU-side timing used by the dynamic-resolution
             // fallback. Taken before any GPU work so it measures submission cost.
             auto drsFlushStart = std::chrono::steady_clock::now();
+            // Phase timing. Each drsPhase() folds the elapsed time since the
+            // previous call into its slot's EMA and re-anchors, so the phases sum
+            // to the block's total and the last slot is a measured remainder
+            // rather than an unmeasured gap. A lambda rather than six copies of
+            // the arithmetic: the blend factor is identical for every slot and
+            // has to stay that way, and six hand-copied blocks drift.
+            auto drsPhaseStart = drsFlushStart;
+            auto drsPhase = [&](double &slot)
+            {
+                double ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - drsPhaseStart).count();
+                slot = (slot <= 0.0) ? ms : slot * 0.9 + ms * 0.1;
+                drsPhaseStart = std::chrono::steady_clock::now();
+            };
             // Poll the timer query from two frames ago (non-blocking; a miss
             // just skips this frame's sample — the EMA tolerates gaps).
+            // Read back the PREVIOUS frame's post-query (composite/bloom/neural).
+            // One frame of latency is enough here: this group is not on the scaler's
+            // control path, it is a diagnostic.
+            if (s_Data.DRSPostQuery != 0)
+            {
+                GLint postAvail = 0;
+                glGetQueryObjectiv(s_Data.DRSPostQuery, GL_QUERY_RESULT_AVAILABLE, &postAvail);
+                if (postAvail)
+                {
+                    GLuint64 postNs = 0;
+                    glGetQueryObjectui64v(s_Data.DRSPostQuery, GL_QUERY_RESULT, &postNs);
+                    double postMs = (double)postNs / 1000000.0;
+                    if (postMs > 0.0 && postMs < 2000.0)
+                    {
+                        s_Data.PostQueryEMA = (s_Data.PostQuerySamples == 0)
+                                              ? postMs
+                                              : s_Data.PostQueryEMA * 0.9 + postMs * 0.1;
+                        s_Data.PostQuerySamples++;
+                    }
+                }
+            }
             if (s_Data.DRSTimerQueries[0] != 0)
             {
-                // Two frames back in the rotating pool of three. Reading the most recent query
+                // TWO frames back in the rotating pool of three. Reading the most recent query
                 // would always miss, because its result cannot exist until the frame finishes.
-                GLuint readQ = s_Data.DRSTimerQueries[(s_Data.DRSTimerIndex + 2) % 3];
+                //
+                // THE INDEX IS (index + 1) % 3, NOT (index + 2) % 3. With three slots written
+                // 0,1,2,0,1,2..., the slot written LAST frame is (index + 2) % 3 and the slot
+                // written the frame before that is (index + 1) % 3. This read used to use
+                // (index + 2) % 3 -- one frame back -- while the comment above claimed two, and
+                // the GPU queue on this renderer runs deeper than one frame, so the query was
+                // never complete when polled. Measured with WL_DRS_DEBUG=1:
+                //   DRS poll miss: readQ idx 2 avail 0 | pool avail [1 1 0]
+                // i.e. the slot being read was not ready while the slot two frames back was.
+                // The poll then missed every frame, DRSGpuSamples stayed at 0, and `gpu` read
+                // 0.0 for the whole session -- the same symptom as the begin starvation, with a
+                // completely different cause.
+                GLuint readQ = s_Data.DRSTimerQueries[(s_Data.DRSTimerIndex + Renderer3DData::kDRSTimerPool - 2) % Renderer3DData::kDRSTimerPool];
                 GLint available = 0;
                 glGetQueryObjectiv(readQ, GL_QUERY_RESULT_AVAILABLE, &available);
                 // Non-blocking poll. A miss simply skips this frame's sample; the EMA below is
@@ -4211,19 +4697,28 @@ void Renderer3D::Flush()
                     // the comment above claims. If the GPU is ever more than a frame behind,
                     // that query cannot be complete. Logging all three entries separates
                     // "the pool is too shallow" from "the query is never ending".
-                    GLint av0 = 0, av1 = 0, av2 = 0;
-                    glGetQueryObjectiv(s_Data.DRSTimerQueries[0], GL_QUERY_RESULT_AVAILABLE, &av0);
-                    glGetQueryObjectiv(s_Data.DRSTimerQueries[1], GL_QUERY_RESULT_AVAILABLE, &av1);
-                    glGetQueryObjectiv(s_Data.DRSTimerQueries[2], GL_QUERY_RESULT_AVAILABLE, &av2);
-                    WL_CORE_INFO("DRS poll miss: readQ idx {0} avail {1} | pool avail [{2} {3} {4}] | glError {5}",
-                                 (s_Data.DRSTimerIndex + 2) % 3, available, av0, av1, av2,
-                                 (int)glGetError());
+                    // Per-slot readiness across the whole pool, not just three entries.
+                    int av[Renderer3DData::kDRSTimerPool] = {0};
+                    for (uint32_t qi = 0; qi < Renderer3DData::kDRSTimerPool; ++qi)
+                        glGetQueryObjectiv(s_Data.DRSTimerQueries[qi], GL_QUERY_RESULT_AVAILABLE, &av[qi]);
+                    int avReady = 0;
+                    for (uint32_t qi = 0; qi < Renderer3DData::kDRSTimerPool; ++qi)
+                        avReady += (av[qi] ? 1 : 0);
+                    WL_CORE_INFO("DRS poll miss: readQ idx {0} avail {1} | pool ready {2}/{3} | glError {4}",
+                                 (s_Data.DRSTimerIndex + Renderer3DData::kDRSTimerPool - 2) % Renderer3DData::kDRSTimerPool,
+                                 available, avReady, (int)Renderer3DData::kDRSTimerPool, (int)glGetError());
                 }
                 if (available)
                 {
                     GLuint64 elapsedNs = 0;
                     glGetQueryObjectui64v(readQ, GL_QUERY_RESULT, &elapsedNs);
                     double ms = (double)elapsedNs / 1000000.0;
+                    // DIAGNOSTIC (WL_DRS_DEBUG=1): log the RAW reading on every poll so a
+                    // discarded sample is visible. `available` was always true while `gpu`
+                    // stayed 0.0, so the discard is happening in the sanity gate below and
+                    // the raw value is the only way to tell a zero reading from a too-large one.
+                    if (s_Data.DRSDebug)
+                        WL_CORE_INFO("DRS sample: raw {0:.3f} ms  samples {1}", ms, s_Data.DRSGpuSamples);
                     // Sanity gate. A zero would poison the EMA, and a huge value means the query was
                     // measured across a GPU reset or a context loss -- either way the sample is
                     // discarded rather than believed.
@@ -4254,6 +4749,7 @@ void Renderer3D::Flush()
                     }
                 }
             }
+            drsPhase(s_Data.PhasePollEMA);
 
             bool moved = false;
             // The translation threshold squared, because the test below uses length2() and
@@ -4294,6 +4790,7 @@ void Renderer3D::Flush()
             // Latched for next frame's transition test above, and read by the
             // accumulationAlpha branch further down.
             s_Data.CameraMoved = moved;
+            drsPhase(s_Data.PhaseCameraEMA);
 
             // The instance SSBO and the BVH node buffer are fixed allocations sized from
             // MaxRayTracingInstances (see Init). Both uploads below write
@@ -4303,22 +4800,44 @@ void Renderer3D::Flush()
             // Clamp BEFORE the comparison below, so the change test, the snapshot, the
             // build, the upload and u_InstanceCount all see the same list. A partially
             // traced frame is recoverable; a silent SSBO overrun is not.
+            // Truncation is a CORRECTNESS failure, not a budget note: the instances past the
+            // cap are simply not drawn. It used to warn once per PROCESS behind a function-
+            // static, so a scene that lost half its geometry every frame said so exactly once,
+            // at startup, and never again -- which is how a 100k scene came to render 44% of
+            // its instances unnoticed. Now it reports on CHANGE of the truncated count, so a
+            // steady-state truncation logs once per distinct amount rather than once per frame,
+            // and the amount is published in Stats for the editor to display.
             if (s_Data.m_SceneInstances.size() > s_Data.MaxRayTracingInstances)
             {
-                static bool warnedInstanceOverflow = false;
-                if (!warnedInstanceOverflow)
+                const uint32_t wanted = (uint32_t)s_Data.m_SceneInstances.size();
+                const uint32_t truncated = wanted - s_Data.MaxRayTracingInstances;
+                s_Data.Stats.InstancesTruncated = truncated;
+                if (truncated != s_Data.LastReportedInstancesTruncated)
                 {
-                    warnedInstanceOverflow = true;
-                    WL_CORE_WARN("Renderer3D: {0} ray-traced instances this frame, but the instance SSBO and BVH buffer are sized for {1}. Tracing the first {1}; raise MaxRayTracingInstances to cover the scene.",
-                                 s_Data.m_SceneInstances.size(), s_Data.MaxRayTracingInstances);
+                    s_Data.LastReportedInstancesTruncated = truncated;
+                    WL_CORE_WARN("Renderer3D: {0} ray-traced instances this frame, but the instance SSBO and BVH buffer are sized for {1}. Dropping the last {2} ({3:.0f}% of the scene is NOT RENDERED); raise MaxRayTracingInstances or set WL_MAX_INSTANCES to cover the scene.",
+                                 wanted, s_Data.MaxRayTracingInstances, truncated,
+                                 100.0f * (float)truncated / (float)wanted);
                 }
                 s_Data.m_SceneInstances.resize(s_Data.MaxRayTracingInstances);
             }
+            else
+            {
+                s_Data.Stats.InstancesTruncated = 0;
+                s_Data.LastReportedInstancesTruncated = 0;
+            }
+            // Published AFTER the clamp, so this is the number the GPU will actually
+            // see -- the same quantity MaxRayTracingInstances caps. Written straight
+            // into Stats rather than copied in GetStats(): it is a readout of the
+            // most recent submission, and ResetStats does not clear it.
+            s_Data.Stats.InstancesSubmitted = (uint32_t)s_Data.m_SceneInstances.size();
+            s_Data.Stats.SceneTransformEpoch = s_Data.m_SceneTransformEpoch;
 
             // DEFECT (harmless today): m_SceneDirty is set true unconditionally by every
             // Draw* call, so the first operand is always true and does no filtering. The
             // real skip comes from SceneInstancesChanged. Should the Draw* path ever start
             // setting it accurately, this would become a genuine second gate.
+            drsPhase(s_Data.PhaseClampEMA);
             if (s_Data.m_SceneDirty && SceneInstancesChanged())
             {
                 // Build BVH for acceleration
@@ -4368,10 +4887,12 @@ void Renderer3D::Flush()
                 // and saves two driver round trips.
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
                 s_Data.m_PrevSceneInstances = s_Data.m_SceneInstances;
+                s_Data.m_LastSceneTransformEpoch = s_Data.m_SceneTransformEpoch;
                 // Cleared here, outside the BuildAndFlattenBVH call, so it is reset even when
                 // the rebuild itself was skipped.
                 s_Data.m_SceneDirty = false;
             }
+            drsPhase(s_Data.PhaseBVHEMA);
 
             uint32_t width = s_Data.RayTracingWidth;
             uint32_t height = s_Data.RayTracingHeight;
@@ -4479,6 +5000,30 @@ void Renderer3D::Flush()
 
             s_Data.RayTracingShader->Bind();
 
+            // The trained end-of-frame neural stage. Setup is idempotent and
+            // reads the weight blob once; BindNeuralBuffers re-establishes the
+            // two SSBO bindings every frame because other subsystems share the
+            // GL_SHADER_STORAGE_BUFFER binding points.
+            SetupNeuralStage();
+            BindNeuralBuffers();
+            // Opt-in override for verification: WL_NEURAL_STAGE enables the
+            // stage without the editor checkbox, so a screenshot can prove the
+            // stage end to end. The checkbox remains the user-facing control.
+            //
+            // A BITMASK, not a mode number -- the two passes are independent and
+            // the cost attribution has to be able to isolate either one:
+            //   0  off
+            //   1  reduce only (passes 17 + 19: the frame mean)
+            //   2  eval only   (pass 18: needs pass 19's mean from a prior frame)
+            //   3  both, the normal configuration
+            // An earlier version of this comment called 1 "both passes" and 3
+            // "eval only", which is the opposite of what the code does -- the
+            // kind of comment that makes a later reader set 3 expecting one pass
+            // and get two.
+            int neuralMode = s_Data.NeuralStageEnabled ? 1 : 0;
+            if (const char *neuralEnv = getenv("WL_NEURAL_STAGE"))
+                neuralMode = atoi(neuralEnv);
+
             // Upload all per-frame uniforms using pre-cached locations (no string lookups)
             // DEFECT: uploads m_SceneInstances.size(), but the shader indexes the SSBO that
             // holds m_ReorderedInstances. The two are the same length today, so it is
@@ -4491,6 +5036,14 @@ void Renderer3D::Flush()
             // are `uniform int` and the shader branches on the value.
             glUniform1i(s_Data.Loc_SamplePattern, (int)s_Data.CurrentSamplePattern);
             glUniform1i(s_Data.Loc_ReconstructionFilter, (int)s_Data.CurrentReconstructionFilter);
+            // WLSR sharpen stage (RCAS, pass 15). Guarded on the location being
+            // valid: a shader that predates these uniforms gets -1 and the upload
+            // is skipped, so the stage simply never runs rather than reading an
+            // unbound location. Both are ints because both shader uniforms are int.
+            if (s_Data.Loc_RCSEnabled >= 0)
+                glUniform1i(s_Data.Loc_RCSEnabled, (int)s_Data.RCASEnabled);
+            if (s_Data.Loc_TSRSharpenStrength >= 0)
+                glUniform1f(s_Data.Loc_TSRSharpenStrength, s_Data.RCASharpness);
             glUniform1i(s_Data.Loc_MaxBounces, s_Data.MaxBounces); // D3: dead uniform
             glUniform1i(s_Data.Loc_MaxLights, s_Data.MaxLights);
             glUniform1i(s_Data.Loc_IndirectRays, s_Data.IndirectRays);
@@ -4527,6 +5080,7 @@ void Renderer3D::Flush()
                 glUniform1f(s_Data.Loc_NeuralMatStrength, s_Data.NeuralMaterialStrength);
             // Row 0 -- the Nova compute program, which is bound above. The same helper
             // serves row 1 (the Basic raster program) from BeginScene.
+            drsPhase(s_Data.PhaseBindEMA);
             UploadVolumetricUniforms(0);
             UploadAnalyticLights(0);
 
@@ -4628,8 +5182,13 @@ void Renderer3D::Flush()
             // repeated Begin, which GL treats as an error rather than a no-op.
             // Suppressed while NovaProfile is on: a second active TIME_ELAPSED query
             // is INVALID_OPERATION, so the per-segment queries take over instead.
+            drsPhase(s_Data.PhaseUniformsEMA);
             if (s_Data.DRSTimerQueries[0] != 0 && !s_Data.DRSTimerActive && !s_Data.NovaProfile)
             {
+                // No drain needed here: GL_INVALID_OPERATION from a begin does not imply a
+                // queued error from an earlier call, and measuring DRSStaleErrors across a
+                // full session showed it stays 0. The real cause is below.
+
                 glBeginQuery(GL_TIME_ELAPSED, s_Data.DRSTimerQueries[s_Data.DRSTimerIndex]);
                 // ERROR CHECK, and the reason this exists: the begin was failing
                 // silently with GL_INVALID_OPERATION (1282) on this driver, measured
@@ -4639,28 +5198,33 @@ void Renderer3D::Flush()
                 // starved: the poll succeeded 1 time in 200 frames, DRSTimerIndex
                 // stopped advancing (it rotated 2,1,2,0,1,2 instead of 0,1,2), and
                 // the GPU signal was never used by the scaler at all.
-                //
-                // The guard below DRSTimerActive is supposed to prevent a nested
-                // begin, but a FAILED begin leaves it set with no query running --
-                // the guard then suppresses every future begin for the rest of the
-                // session. Checking the error and unwinding both the flag and the
-                // index makes the next frame retry instead.
-                if (glGetError() != GL_NO_ERROR)
+                GLenum beginError = glGetError();
+                if (beginError != GL_NO_ERROR)
                 {
+                    // FORCE-CLOSE ANY ACTIVE TIME_ELAPSED QUERY. GL rejects a second
+                    // active TIME_ELAPSED query and leaves the FIRST one running; the
+                    // begin's failure does not close it. The old unwind assumed the slot
+                    // "was claimed but never started" and did not close anything, so one
+                    // orphaned query starved every later begin for the rest of the session
+                    // -- measured as 1 failure, then +100 per report interval forever.
+                    // Closing here breaks that loop whatever left the query open.
+                    glEndQuery(GL_TIME_ELAPSED);
                     // Roll the index back: the slot was claimed but never started, so
                     // leaving it advanced would skip a slot and desynchronise the
                     // read index (which is computed as (index + 2) % 3).
-                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 2) % 3;
+                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + Renderer3DData::kDRSTimerPool - 2) % Renderer3DData::kDRSTimerPool;
                     s_Data.DRSTimerActive = false;
                     s_Data.DRSBeginFailures++;
+                    s_Data.DRSLastBeginError = beginError;
                 }
                 else
                 {
                     // Advanced when the query OPENS, not when it closes. The poll two frames later
                     // therefore reads a query issued two frames ago -- the oldest one that can have
                     // completed.
-                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 1) % 3;
+                    s_Data.DRSTimerIndex = (s_Data.DRSTimerIndex + 1) % Renderer3DData::kDRSTimerPool;
                     s_Data.DRSTimerActive = true;
+                    s_Data.DRSBegins++;
                 }
             }
             // Per-segment profiling. Two tiny lambdas rather than five copies of the
@@ -4806,6 +5370,27 @@ void Renderer3D::Flush()
                 glBindImageTexture(6, s_Data.TraceGBufferTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
             }
 
+            // Pass 24: the reactive mask, written into img_Bloom_Temp.a.
+            //
+            // THIS DISPATCH IS LOAD-BEARING AND WAS MISSING. The OpenGL path
+            // tracer below is a hand-maintained schedule that predates pass 24,
+            // so it never ran RunReactiveMask: img_Bloom_Temp.a kept the alpha
+            // pass 7 wrote (1.0), and the composite's mask read therefore
+            // returned 1.0 everywhere -- which silently replaces the EASU with
+            // bilinear. Measured: masked-EASU was bit-identical to bilinear
+            // (0 of 3,383,732 pixels) with this dispatch absent, and 37.2%
+            // different once the blend was forced to 0.5.
+            //
+            // Position mirrors the Nova path: after every writer of
+            // img_Bloom_Temp (pass 7 above, and pass 4/5 which run later but
+            // after the consumer) and before pass 6, the consumer.
+            if (s_Data.ReconstructionEnabled)
+            {
+                glUniform1i(s_Data.Loc_PassID, 24);
+                glDispatchCompute(workGroupsX, workGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
+
 
             // Pass 6: Composite — always dispatches at FULL resolution
             // When RenderScale < 1.0, the composite upscales inline from the reduced-res accumulation buffer
@@ -4818,6 +5403,29 @@ void Renderer3D::Flush()
                 uint32_t compositeGroupsY = (s_Data.RayTracingHeight + 7) / 8;
                 glUniform1i(s_Data.Loc_PassID, 6);
                 glDispatchCompute(compositeGroupsX, compositeGroupsY, 1);
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            }
+
+            // Pass 15: RCAS, the WLSR sharpen stage, BEFORE the bloom. The
+            // reactive mask lives in img_Bloom_Temp, which the bloom blur (pass
+            // 4/5) overwrites, so RCAS must read it before the bloom runs --
+            // otherwise it reads bloom data's alpha, not the mask, and the trust
+            // term is a silent no-op. Sharpening before bloom is also the correct
+            // order: bloom is additive light, and sharpening it would halo around
+            // bright sources. The bloom is then computed from the sharpened scene
+            // and added on top.
+            //
+            // Load-bearing: the OpenGL path tracer is a hand-maintained schedule
+            // that predates pass 15, so the stage was missing here entirely.
+            // The workgroup counts are recomputed rather than reusing the bloom
+            // block's: they are scoped to that `if`, and RCAS must also run when
+            // bloom is off.
+            if (s_Data.RCASEnabled)
+            {
+                uint32_t rcasGroupsX = (s_Data.RayTracingWidth + 7) / 8;
+                uint32_t rcasGroupsY = (s_Data.RayTracingHeight + 7) / 8;
+                glUniform1i(s_Data.Loc_PassID, 15);
+                glDispatchCompute(rcasGroupsX, rcasGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
 
@@ -4835,6 +5443,8 @@ void Renderer3D::Flush()
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
 
+            drsPhase(s_Data.PhaseDispatchEMA);
+            s_Data.DRSEndSiteHits++;
             if (s_Data.DRSTimerActive)
             {
                 // DEFECT: closed HERE, before the god-ray pass below. So the GPU timing excludes
@@ -4843,6 +5453,15 @@ void Renderer3D::Flush()
                 // will never lower the scale to pay for them.
                 glEndQuery(GL_TIME_ELAPSED);
                 s_Data.DRSTimerActive = false;
+                s_Data.DRSEnds++;
+            }
+            // Open the SECOND timer here. The main query is closed above, so GL
+            // accepts a new TIME_ELAPSED query; this one brackets composite ->
+            // bloom -> god-ray -> neural, which the trace-only reading omits.
+            if (s_Data.DRSPostQuery != 0 && !s_Data.NovaProfile)
+            {
+                glBeginQuery(GL_TIME_ELAPSED, s_Data.DRSPostQuery);
+                s_Data.DRSPostQueryActive = true;
             }
             // Close the last profiling segment and hand this frame's mask to the
             // read-back at the top of the next frame. Placed AFTER the DRS block
@@ -4850,6 +5469,7 @@ void Renderer3D::Flush()
             // opened, so the segment has to be closed on its own path.
             novaSegEnd();
             s_Data.NovaSegmentMaskPrev = s_Data.NovaSegmentMask;
+            drsPhase(s_Data.PhaseRemainderEMA);
             double drsCpuMs = std::chrono::duration<double, std::milli>(
                                   std::chrono::steady_clock::now() - drsFlushStart)
                                   .count();
@@ -4878,6 +5498,95 @@ void Renderer3D::Flush()
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
             }
 
+            // Passes 17-18: the trained end-of-frame neural stage.
+            //
+            // Runs last, at the full ray-tracing resolution, after the last writer
+            // of img_Output (the god-ray pass above) so the frame mean describes
+            // the finished frame rather than an intermediate.
+            //
+            // The weights are read from assets/neural/neural_weights.bin by
+            // SetupNeuralStage; if that blob is missing or fails validation the
+            // stage is skipped and the image is untouched. Off by default -- it is
+            // a change to the final image, so it is opt-in.
+            //
+            // neuralMode is a bitmask: bit 0 (1) runs the reduce passes 17+19,
+            // bit 1 (2) runs the eval pass 18. So 0 off, 1 reduce only,
+            // 2 eval only, 3 both. Eval needs the reduce's means, so mode 2
+            // alone reads whatever g_Mean held -- which is the zero vector
+            // until something writes it. That is deliberate: it is what makes
+            // "eval with no global" a testable case.
+            const bool doReduce = (neuralMode & 1) != 0;
+            const bool doEval   = (neuralMode & 2) != 0;
+            if (doReduce || doEval)
+            {
+                const uint32_t nwX = (s_Data.RayTracingWidth + 7) / 8;
+                const uint32_t nwY = (s_Data.RayTracingHeight + 7) / 8;
+
+                // Pass 17 first: every block writes its partials, then ONE block
+                // (pass 19) sums them into the means pass 18 reads. No atomics
+                // and no per-frame clear -- see the NeuralGlobals note in the
+                // shader for what the atomic version cost.
+                if (doReduce)
+                {
+                    glUniform1i(s_Data.Loc_PassID, 17);
+                    glDispatchCompute(nwX, nwY, 1);
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
+
+                    glUniform1i(s_Data.Loc_PassID, 19);
+                    glDispatchCompute(1, 1, 1);
+                    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+                }
+
+                if (doEval)
+                {
+                    glUniform1i(s_Data.Loc_PassID, 18);
+                    glDispatchCompute(nwX, nwY, 1);
+                    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+                    // Read g_GateMean back for the editor's readout. Throttled to
+                    // every 30 frames: glGetBufferSubData forces a pipeline
+                    // flush, so reading it every frame would put a sync in the
+                    // hot path to produce a number the editor only draws a few
+                    // times a second.
+                    //
+                    // The float is read out of a uint buffer, so the 4 bytes are
+                    // copied through an integer and reinterpreted -- the same
+                    // asfloat/asuint round trip the HLSL twin does.
+                    if ((++s_Data.NeuralGateReadbackCounter % 30u) == 0u)
+                    {
+                        // glGetNamedBufferSubData, NOT glNamedBufferSubData.
+                        //
+                        // The two differ by one character and have identical
+                        // signatures, so this compiles either way and fails only
+                        // at runtime -- silently. glNamedBufferSubData WRITES the
+                        // four bytes at &gateBits (which is 0 at this point) into
+                        // the gate slot and leaves the variable untouched, so the
+                        // readout reports 0.000 forever while the stage runs
+                        // perfectly. That is exactly what the first screenshot of
+                        // this panel showed: "gate mean 0.000" with the stage
+                        // enabled, the weights loaded, and the passes running.
+                        //
+                        // glGetNamedBufferSubData is core in GL 4.5 and the vendored
+                        // glad exports it; the engine is already on 4.5+ (SSBOs,
+                        // glBindImageTexture, compute).
+                        uint32_t gateBits = 0;
+                        glGetNamedBufferSubData(s_Data.NeuralGlobalsBufferID,
+                                                (GLintptr)(Neural::kGateMeanUint * sizeof(uint32_t)),
+                                                sizeof(uint32_t), &gateBits);
+                        static_assert(sizeof(float) == sizeof(uint32_t),
+                                      "the gate readback reinterprets 4 bytes as a float");
+                        float gate = 0.0f;
+                        std::memcpy(&gate, &gateBits, sizeof(float));
+                        s_Data.NeuralGateMean = gate;
+                    }
+                }
+            }
+
+            if (s_Data.DRSPostQueryActive)
+            {
+                glEndQuery(GL_TIME_ELAPSED);
+                s_Data.DRSPostQueryActive = false;
+            }
             s_Data.RayTracingShader->Unbind();
 
             // The last barrier in the GL chain, and the only one that covers the
@@ -4895,6 +5604,23 @@ void Renderer3D::Flush()
             // The token is generated by this vendored glad (glad.h:1113), so no
             // numeric literal and no version guard are needed.
             glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+
+            // GL_FINISH PROBE. Every in-engine GPU timer on this path reports ~1 ms against a
+            // 146 ms frame, so none of them can be trusted to attribute cost. glFinish cannot
+            // lie: it returns only when the driver has drained every command above, so the
+            // elapsed time here is the REAL cost of this frame's GPU work, timers or no
+            // timers. It serialises CPU and GPU, which is unacceptable in shipping code --
+            // that is why it is behind WL_GL_FINISH and off by default.
+            if (std::getenv("WL_GL_FINISH") != nullptr)
+            {
+                glFinish();
+                double finishMs = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() - drsFlushStart).count();
+                s_Data.FinishEMA = (s_Data.FinishSamples == 0)
+                                       ? finishMs
+                                       : s_Data.FinishEMA * 0.9 + finishMs * 0.1;
+                s_Data.FinishSamples++;
+            }
 
             // Wrap guard. The counter is unsigned and increments every frame; without this
             // it would wrap to 0 on its own, but resetting here also clears the history so
@@ -5001,7 +5727,17 @@ void Renderer3D::Flush()
     }
     // Returned BY VALUE. Statistics is a small POD, so a copy is cheaper than
     // exposing a reference into the singleton.
-    Renderer3D::Statistics Renderer3D::GetStats() { return s_Data.Stats; }
+    //
+    // The gate mean is copied in from s_Data at read time rather than stored in
+    // Stats: it is a per-frame measurement of the LAST frame, and ResetStats is
+    // called every frame, so a field here would be zeroed before the editor ever
+    // saw it.
+    Renderer3D::Statistics Renderer3D::GetStats()
+    {
+        s_Data.Stats.NeuralGateMean = s_Data.NeuralGateMean;
+        s_Data.Stats.SceneTransformEpoch = s_Data.m_SceneTransformEpoch;
+        return s_Data.Stats;
+    }
     // Cumulative mid-frame batch-overflow total. Deliberately NOT reset by
     // ResetStats(): it is a scene-capacity signal, so the running total is the
     // useful form (a rising value means the tessellation batch is too small).
@@ -5081,6 +5817,11 @@ void Renderer3D::Flush()
             // shading work. This is the dominant cost lever in the preset, more than any of
             // the ray counts above it.
             s_Data.RenderScale = 0.5f;
+            // DRS floor for this preset: how much resolution it will surrender
+            // before it stops trying. Performance presets go all the way down;
+            // quality presets refuse to, and accept a missed frame target instead
+            // of a soft image.
+            s_Data.DynamicMinScale = 0.25f;
             break;
         case QualityPreset::Medium:
             // Traces at 2/3 res (upscaled in composite).
@@ -5091,6 +5832,11 @@ void Renderer3D::Flush()
             s_Data.BloomEnabled = false;
             s_Data.BilateralBlurEnabled = false;
             s_Data.RenderScale = 0.66f;
+            // DRS floor for this preset: how much resolution it will surrender
+            // before it stops trying. Performance presets go all the way down;
+            // quality presets refuse to, and accept a missed frame target instead
+            // of a soft image.
+            s_Data.DynamicMinScale = 0.25f;
             break;
         case QualityPreset::High:
             // Traces at 0.8 res (upscaled in composite).
@@ -5105,6 +5851,11 @@ void Renderer3D::Flush()
             // entirely while the Nova path still commits a history.
             s_Data.BilateralBlurPasses = 0;
             s_Data.RenderScale = 0.8f;
+            // DRS floor for this preset: how much resolution it will surrender
+            // before it stops trying. Performance presets go all the way down;
+            // quality presets refuse to, and accept a missed frame target instead
+            // of a soft image.
+            s_Data.DynamicMinScale = 0.40f;
             break;
         case QualityPreset::Ultra:
             // Traces at 0.75 res (upscaled in composite). Perf: 1 ray/px + 2 rotating shadow rays
@@ -5120,6 +5871,11 @@ void Renderer3D::Flush()
             s_Data.BilateralBlurEnabled = true;
             s_Data.BilateralBlurPasses = 1;
             s_Data.RenderScale = 0.75f;
+            // DRS floor for this preset: how much resolution it will surrender
+            // before it stops trying. Performance presets go all the way down;
+            // quality presets refuse to, and accept a missed frame target instead
+            // of a soft image.
+            s_Data.DynamicMinScale = 0.50f;
             break;
         }
 
@@ -5177,7 +5933,7 @@ void Renderer3D::Flush()
         if (s_Data.FrameTimeLogCount++ % 100 == 0)
         {
             const glm::vec3 &camPos = s_Data.CurrentCameraPosition;
-            WL_CORE_INFO("Frame time: app {0:.1f}ms ({1:.1f} fps)  gpu {2:.1f}ms  cpuSubmit {3:.1f}ms  scale {4:.2f}  preset {5}  instances {6}  screenCulled {7}  cam ({8:.1f},{9:.1f},{10:.1f})",
+            WL_CORE_INFO("Frame time: app {0:.1f}ms ({1:.1f} fps)  gpu {2:.1f}ms  cpuSubmit {3:.1f}ms  scale {4:.2f}  preset {5}  instances {6}  screenCulled {7}  begins {8} ends {9} endSite {10} bvhRebuilds {11} epochShort {12} post {13:.1f}ms finish {14:.1f}ms  cam ({15:.1f},{16:.1f},{17:.1f})",
                          s_Data.AppFrameTimeEMA,
                          s_Data.AppFrameTimeEMA > 0.0 ? 1000.0 / s_Data.AppFrameTimeEMA : 0.0,
                          s_Data.GPUFrameTimeEMA,
@@ -5185,7 +5941,11 @@ void Renderer3D::Flush()
                          s_Data.RenderScale,
                          (int)s_Data.CurrentQualityPreset,
                          (uint32_t)s_Data.m_SceneInstances.size(),
-                         s_Data.Stats.ScreenCulledInstances,
+                         s_Data.Stats.LastFrameScreenCulled,
+                         s_Data.DRSBegins, s_Data.DRSEnds, s_Data.DRSEndSiteHits,
+                         s_Data.Stats.BvhRebuilds, s_Data.Stats.EpochShortCircuits,
+                         s_Data.PostQueryEMA,
+                         s_Data.FinishEMA,
                          camPos.x, camPos.y, camPos.z);
             // Same reason as the GPU TIMER DEGRADED line below: a second call keeps
             // the healthy-session line byte-identical. Non-zero here means a
@@ -5200,8 +5960,26 @@ void Renderer3D::Flush()
             // working and `gpu` is a real measurement; non-zero means the scaler is
             // running on the app-time signal alone and `gpu` is stale or absent.
             if (s_Data.DRSBeginFailures > 0)
-                WL_CORE_WARN("GPU TIMER DEGRADED: {0} glBeginQuery failures -- the gpu field is unreliable and the DRS is on the app-time signal",
-                             s_Data.DRSBeginFailures);
+                WL_CORE_WARN("GPU TIMER DEGRADED: {0} glBeginQuery failures (last GL error {1}) -- the gpu field is unreliable and the DRS is on the app-time signal",
+                             s_Data.DRSBeginFailures, static_cast<int>(s_Data.DRSLastBeginError));
+            // Phase breakdown, on its own line and only under DRSDebug: the
+            // healthy-session line above stays byte-identical, and this one
+            // exists only to answer "where does the ~100 ms go". The six phases
+            // sum to cpuSubmit, so a phase reading 0 is a real zero and not a
+            // gap -- which is what makes the largest slot the answer.
+            if (s_Data.DRSDebug)
+            {
+                WL_CORE_INFO("FLUSH PHASES ms: poll {0:.2f} camera {1:.2f} clamp {2:.2f} bvh {3:.2f} bind {4:.2f} uniforms {5:.2f} dispatch {6:.2f} other {7:.2f}  (sum {8:.2f} vs cpuSubmit {9:.2f})",
+                             s_Data.PhasePollEMA, s_Data.PhaseCameraEMA, s_Data.PhaseClampEMA,
+                             s_Data.PhaseBVHEMA, s_Data.PhaseBindEMA,
+                             s_Data.PhaseUniformsEMA, s_Data.PhaseDispatchEMA,
+                             s_Data.PhaseRemainderEMA,
+                             s_Data.PhasePollEMA + s_Data.PhaseCameraEMA + s_Data.PhaseClampEMA +
+                                 s_Data.PhaseBVHEMA + s_Data.PhaseBindEMA +
+                                 s_Data.PhaseUniformsEMA + s_Data.PhaseDispatchEMA +
+                                 s_Data.PhaseRemainderEMA,
+                             s_Data.CPUFlushTimeEMA);
+            }
         }
 
         if (!s_Data.DynamicResolutionEnabled)
@@ -5251,7 +6029,7 @@ void Renderer3D::Flush()
         double targetMs = 1000.0 / (double)glm::clamp(s_Data.TargetFPS, 20.0f, 240.0f);
         float maxScale = glm::clamp(s_Data.DynamicMaxScale, 0.25f, 1.0f);
         float minScale = glm::clamp(s_Data.DynamicMinScale, 0.25f, 1.0f);
-        // DynamicMinScale defaults to 0.5, above the Low preset's 0.5 ceiling after a
+        // DynamicMinScale defaults to 0.25, above the Low preset's 0.5 ceiling after a
         // user lowers DynamicMinScale past the preset scale. Collapsing the range to a
         // single point is what stops the two clamps below from fighting.
         if (minScale > maxScale)
@@ -5477,16 +6255,96 @@ void Renderer3D::Flush()
         // toggle clears the flag, it does not reset the instance), so without
         // this the call would read back a stale image from a renderer that is no
         // longer drawing anything.
-        if (!s_Nova12 || !s_Data.RayTracingEnabled) return false;
-        UINT w = 0, h = 0;
-        // Output() defaults to image 0 and so does this. Index 0 is the
-        // R32G32B32A32_FLOAT pass image the composite writes and the one
-        // GetRayTraceTargetNativeSRV hands to ImGui, so this is the same picture
-        // the viewport is showing -- not some other image from the same schedule.
-        if (!s_Nova12->Readback(0, rgba, w, h)) return false;
-        width = w;
-        height = h;
-        return true;
+        if (s_Nova12 && s_Data.RayTracingEnabled)
+        {
+            UINT w = 0, h = 0;
+            // Output() defaults to image 0 and so does this. Index 0 is the
+            // R32G32B32A32_FLOAT pass image the composite writes and the one
+            // GetRayTraceTargetNativeSRV hands to ImGui, so this is the same picture
+            // the viewport is showing -- not some other image from the same schedule.
+            if (s_Nova12->Readback(0, rgba, w, h))
+            {
+                width = w;
+                height = h;
+                return true;
+            }
+        }
+
+        // GL path. There is no GL Nova object to read back through: on OpenGL the
+        // traced image IS s_Data.RayTracingOutput, so it is read directly. This
+        // branch is what makes the editor's capture work on the default backend --
+        // before it existed the readback returned false unconditionally and the
+        // capture silently fell through to a glReadPixels of the editor window,
+        // which is not the render under test.
+        //
+        // glGetTexImage, NOT glReadPixels: the output texture is not bound to the
+        // default framebuffer (it is bound as a compute image while tracing), so
+        // glReadPixels would return whatever the window holds.
+        if (Renderer3DGLAvailable() && s_Data.RayTracingOutput && s_Data.RayTracingEnabled)
+        {
+            const uint32_t name = s_Data.RayTracingOutput->GetRendererID();
+            if (!name) return false;
+            width = s_Data.RayTracingWidth;
+            height = s_Data.RayTracingHeight;
+            if (width == 0 || height == 0) return false;
+
+            // RGBA32F storage: four float channels per texel. Resize() is what
+            // makes the storage float -- Create() hardcodes GL_RGBA8, which is why
+            // the tracer's imageStore calls would otherwise be dropped.
+            std::vector<float> hdr((size_t)width * (size_t)height * 4);
+            glBindTexture(GL_TEXTURE_2D, name);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, hdr.data());
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            // Clamp to [0,1] rather than scale: the composite writes HDR radiance
+            // and the PNG is 8-bit. Clamping preserves the linear ramp the
+            // training pairs need; a tone-map belongs in the dataset exporter, not
+            // in a capture helper.
+            rgba.resize(hdr.size());
+            for (size_t i = 0; i < hdr.size(); ++i)
+            {
+                const float v = hdr[i];
+                const float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+                rgba[i] = (unsigned char)(c * 255.0f + 0.5f);
+            }
+
+            // WL_CAPTURE_FLOAT=<path> writes the UNQUANTIZED RGBA32F texels beside
+            // the PNG. The PNG is 8-bit, so a shader-vs-model comparison made
+            // through it is floored at the 8-bit quantization of the ANCHOR --
+            // the shader reads this float texture, the comparison reads the PNG,
+            // and the two anchors differ by up to 1/510 per channel. That
+            // difference is enough to look like a defect in the stage (a ~0.001
+            // mean / ~0.009 max residual, 1.1% of pixels off by more than one
+            // 8-bit step) when the stage itself is exact. Dumping the float
+            // image removes the ambiguity: same anchor, same precision.
+            if (const char *fp = getenv("WL_CAPTURE_FLOAT"))
+            {
+                FILE *f = fopen(fp, "wb");
+                if (f)
+                {
+                    const uint32_t hdr32[2] = { width, height };
+                    fwrite(hdr32, sizeof(hdr32), 1, f);
+                    fwrite(hdr.data(), sizeof(float), hdr.size(), f);
+                    fclose(f);
+                    WL_CORE_INFO("Renderer3D: float readback written to {0} "
+                                 "({1}x{2}, {3} floats)", fp, width, height, hdr.size());
+                }
+                else
+                {
+                    WL_CORE_WARN("Renderer3D: could not open float readback {0}", fp);
+                }
+            }
+            return true;
+        }
+
+        // Logged rather than silent: "no readback possible" and "the render is
+        // blank" are different bugs with the same symptom in the caller, and the
+        // only way to tell them apart is which of these four facts is false.
+        WL_CORE_WARN("Renderer3D: no ray-trace readback for the active backend "
+                     "(glAvailable={0} outputTexture={1} rtEnabled={2} api={3})",
+                     (int)Renderer3DGLAvailable(), (bool)s_Data.RayTracingOutput,
+                     (int)s_Data.RayTracingEnabled, (int)RendererAPI::GetAPI());
+        return false;
     }
     // Indented a level shallower than its neighbours. Left exactly as written --
     // this file is insertion-only.
@@ -6018,6 +6876,38 @@ void Renderer3D::Flush()
             s_Data.FrameIndex = 0;
         }
     }
+    bool Renderer3D::IsReconstructionEnabled() { return s_Data.ReconstructionEnabled; }
+    bool Renderer3D::IsRCASEnabled() { return s_Data.RCASEnabled; }
+    void Renderer3D::SetRCASEnabled(bool enabled)
+    {
+        s_Data.RCASEnabled = enabled;
+        // No invalidation needed: the stage is a pure spatial filter over the
+        // current frame's image, so the first frame after the toggle is correct
+        // by construction. That is in contrast to the temporal passes, which
+        // depend on per-frame history state.
+    }
+    void Renderer3D::SetRCASharpness(float strength)
+    {
+        // Clamped to [0, 1] because the shader treats this as a gain ceiling and
+        // multiplies it by the mask term; an out-of-range value would let the
+        // shader's own clamp do the bounding, which is less predictable.
+        s_Data.RCASharpness = glm::clamp(strength, 0.0f, 1.0f);
+    }
+    float Renderer3D::GetRCASharpness() { return s_Data.RCASharpness; }
+    void Renderer3D::SetReconstructionEnabled(bool enabled)
+    {
+        if (s_Data.ReconstructionEnabled != enabled)
+        {
+            s_Data.ReconstructionEnabled = enabled;
+            // The reactive mask is derived from the velocity buffer and the
+            // G-buffer, and the history it reasons about is per-frame state. A
+            // cut means the first frame after the toggle has no valid history,
+            // which pass 24 already reports as mask=1.0 -- but resetting
+            // FrameIndex keeps the accumulation's own validity guard and the
+            // mask from disagreeing about which frame is which.
+            s_Data.FrameIndex = 0;
+        }
+    }
     bool Renderer3D::IsReSTIREnabled() { return s_Data.RestirEnabled; }
     void Renderer3D::SetReSTIREnabled(bool enabled)
     {
@@ -6492,6 +7382,18 @@ void Renderer3D::Flush()
         s_Data.FrameIndex = 0;
     }
 
+    // Trained end-of-frame neural stage. This is a MODE, not a blend: the passes
+    // either run or they do not, and FrameIndex is NOT reset here. The stage
+    // reads the finished frame and writes the same texels, so a reset would only
+    // discard a converged accumulation for no benefit -- unlike the setters
+    // above, which change the traced image itself.
+    bool Renderer3D::IsNeuralStageEnabled() { return s_Data.NeuralStageEnabled; }
+    void Renderer3D::SetNeuralStageEnabled(bool enabled)
+    {
+        s_Data.NeuralStageEnabled = enabled;
+    }
+    bool Renderer3D::IsNeuralStageAvailable() { return s_Data.NeuralWeightsValid; }
+
     // The classic radical-inverse construction. STBN is the default (see
     // GetCurrentJitter), but Halton is still the backing for the SamplePattern::Halton
     // option, so this is live code on that path rather than a leftover.
@@ -6622,22 +7524,129 @@ void Renderer3D::Flush()
         s_Data.RayTracingShader->SetFloat("u_NormalStrength", normalStrength);
         s_Data.RayTracingShader->SetFloat("u_RoughnessBias", roughBias);
 
+        // u_PassID was never set on this path. The DX11 and DX12 branches above pass 9
+        // explicitly to Dispatch(); the GL branch dispatched with whatever the previous
+        // dispatch had left in u_PassID, so this bake ran an ARBITRARY pass. There is no
+        // glUniform1i for it anywhere in the function -- the omission is silent, because
+        // a stale pass id is a perfectly valid value for the switch below.
+        if (s_Data.Loc_PassID >= 0)
+            glUniform1i(s_Data.Loc_PassID, 9);
+
         Ref<Texture2D> inputTexture = Texture2D::Create(texturePath);
-        glActiveTexture(GL_TEXTURE0 + 11);
-        inputTexture->Bind();
+        // Bind(11), NOT Bind() after glActiveTexture(GL_TEXTURE0 + 11).
+        //
+        // Texture2D::Bind takes an explicit slot and defaults to 0 -- it ignores the
+        // active texture unit entirely. So the old two-line form bound the input to
+        // unit 0 while the shader samples s_InputAlbedo at binding = 11, and the bake
+        // read an empty texture. Fifth silent defect in this one function.
+        inputTexture->Bind(11);
 
-        // Image unit 8, WRITE_ONLY. This is the only writer of GeneratedTextureID and
-        // the only reader is whatever samples the generated maps afterwards, so no read
-        // binding is needed here.
-        glBindImageTexture(8, s_Data.GeneratedTextureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        // The output texture must EXIST before the dispatch. The shader sizes itself
+        // from imageSize(img_MaterialPacked), so an uncreated target is a 0x0 bake that
+        // writes nothing at all.
+        //
+        // GeneratedTextureID was declared at Renderer3D.cpp:1680 and never assigned
+        // anywhere in the file -- a fourth silent defect, alongside the missing
+        // u_PassID, the nonexistent image unit 8, and the truncating division. The
+        // WL_BAKE_PROBE readback is what surfaced it: "GeneratedTextureID has no size
+        // (0x0)".
+        //
+        // It is sized from the INPUT, not from the tracer target: the shader derives
+        // its UVs from imageSize(img_MaterialPacked) and samples the input at those
+        // UVs, so the two must match or the bake stretches or crops.
+        // Named queries, on the texture's own ID. glGetTexLevelParameteriv with a
+        // target queries the ACTIVE unit, which is not the unit this texture is on.
+        const GLuint inID = inputTexture->GetRendererID();
+        GLint inW = 0, inH = 0;
+        glGetTextureLevelParameteriv(inID, 0, GL_TEXTURE_WIDTH, &inW);
+        glGetTextureLevelParameteriv(inID, 0, GL_TEXTURE_HEIGHT, &inH);
 
-        // DEFECT: TRUNCATING division, unlike every other dispatch in this file which
-        // uses (w + 7) / 8. A dimension that is not a multiple of 8 therefore drops its
-        // last partial workgroup, leaving up to 7 rows or columns of the generated maps
-        // unwritten.
-        glDispatchCompute(s_Data.RayTracingWidth / 8, s_Data.RayTracingHeight / 8, 1);
+        GLint curW = 0, curH = 0;
+        if (s_Data.GeneratedTextureID)
+        {
+            glGetTextureLevelParameteriv(s_Data.GeneratedTextureID, 0, GL_TEXTURE_WIDTH, &curW);
+            glGetTextureLevelParameteriv(s_Data.GeneratedTextureID, 0, GL_TEXTURE_HEIGHT, &curH);
+        }
+        if (!s_Data.GeneratedTextureID || curW != inW || curH != inH)
+        {
+            if (s_Data.GeneratedTextureID)
+                glDeleteTextures(1, &s_Data.GeneratedTextureID);
+            glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.GeneratedTextureID);
+            glTextureStorage2D(s_Data.GeneratedTextureID, 1, GL_RGBA8, inW, inH);
+            glTextureParameteri(s_Data.GeneratedTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTextureParameteri(s_Data.GeneratedTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
+
+        // Image unit 3, WRITE_ONLY -- NOT 8.
+        //
+        // GL_MAX_IMAGE_UNITS is 8 on the target GPU, so the valid units are 0..7 and
+        // unit 8 DOES NOT EXIST. glBindImageTexture(8, ...) is silently a no-op, so
+        // this bake wrote nothing at all -- and it is the only writer of
+        // GeneratedTextureID, so every normal/roughness map baked from the editor or
+        // from Renderer3D_GenerateMaterialMaps was empty.
+        //
+        // 3 is not a guess: the GLSL declares img_MaterialPacked at binding = 3 and the
+        // HLSL at register(u3), so both twins already agree on it. Only the CPU was
+        // wrong. This is the same unit-8 bug that makes a ninth image uniform kill the
+        // whole GL Nova path silently, seen from the other side.
+        //
+        // The only reader of GeneratedTextureID is whatever samples the generated maps
+        // afterwards, so no read binding is needed here.
+        glBindImageTexture(3, s_Data.GeneratedTextureID, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+
+        // (w + 7) / 8, like every other dispatch in this file. The truncating form
+        // dropped the last partial workgroup of a dimension that is not a multiple of
+        // 8, leaving up to 7 rows or columns of the generated maps unwritten -- which
+        // with the unit-8 bug above meant the maps were unwritten everywhere anyway.
+        glDispatchCompute((s_Data.RayTracingWidth + 7) / 8,
+                          (s_Data.RayTracingHeight + 7) / 8, 1);
 
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    bool Renderer3D::ProbeMaterialBake(const std::string &texturePath, float normalStrength,
+                                       float roughBias, float *outMean, float *outMax,
+                                       float *outNonZero)
+    {
+        if (!Renderer3DGLAvailable())
+            return false;
+
+        GenerateMaterialMaps(texturePath, normalStrength, roughBias);
+
+        // GeneratedTextureID is RGBA8 -- that is the format the bake binds it as.
+        GLint w = 0, h = 0;
+        glGetTextureLevelParameteriv(s_Data.GeneratedTextureID, 0, GL_TEXTURE_WIDTH, &w);
+        glGetTextureLevelParameteriv(s_Data.GeneratedTextureID, 0, GL_TEXTURE_HEIGHT, &h);
+        if (w <= 0 || h <= 0)
+        {
+            WL_CORE_WARN("bake probe: GeneratedTextureID has no size ({}x{})", w, h);
+            return false;
+        }
+
+        std::vector<uint8_t> px(static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+        glGetTextureImage(s_Data.GeneratedTextureID, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                          static_cast<GLsizei>(px.size()), px.data());
+
+        double sum = 0.0, mx = 0.0;
+        size_t nonZero = 0;
+        for (size_t i = 0; i + 3 < px.size(); i += 4)
+        {
+            // .xy is the packed normal, .z the packed AO. .w is unused by the bake.
+            for (int c = 0; c < 3; ++c)
+            {
+                const double v = px[i + c] / 255.0;
+                sum += v;
+                mx = std::max(mx, v);
+            }
+            if (px[i] || px[i + 1] || px[i + 2])
+                ++nonZero;
+        }
+
+        const size_t n = static_cast<size_t>(w) * static_cast<size_t>(h);
+        if (outMean)    *outMean = n ? static_cast<float>(sum / (n * 3)) : 0.0f;
+        if (outMax)     *outMax = static_cast<float>(mx);
+        if (outNonZero) *outNonZero = n ? static_cast<float>(nonZero) / static_cast<float>(n) : 0.0f;
+        return true;
     }
 
     // Called after every Flush, and after a mid-frame overflow inside Draw*. It
@@ -7553,5 +8562,10 @@ void Renderer3D::Flush()
             s_Data.m_TerrainInstances.push_back(instance);
         }
         s_Data.m_SceneDirty = true;
+
+        // Snapshot the cull counters now that every submission path has run. The
+        // frame-time log reads these on the NEXT frame; reading the live counters
+        // there reported 0 every time, because that log runs before the cull.
+        s_Data.Stats.LastFrameScreenCulled = s_Data.Stats.ScreenCulledInstances;
     }
 }

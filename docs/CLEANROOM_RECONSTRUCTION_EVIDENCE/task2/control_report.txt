@@ -1,0 +1,6 @@
+2332x1451  3383732 pixels
+tolerance      : 0 (8-bit units per channel)
+differing      : 3382243 (99.955995%)
+max delta      : 108
+mean delta     : 14.1500
+bbox           : x 0..2331, y 0..1450
