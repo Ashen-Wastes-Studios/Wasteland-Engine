@@ -8,6 +8,7 @@ import { ExtensionsPanel } from "./components/ExtensionsPanel";
 import { PasswordsPanel } from "./components/PasswordsPanel";
 import { TabGroupsPanel } from "./components/TabGroupsPanel";
 import { FindBar } from "./components/FindBar";
+import { IndexPanel } from "./components/IndexPanel";
 import { useSearch } from "./hooks/useSearch";
 import { useSettings } from "./hooks/useSettings";
 import { useDownloads } from "./hooks/useDownloads";
@@ -403,7 +404,7 @@ export default function App() {
                   </div>
                 ))}
                 <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Indexed Pages</div>
-                <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+                <IndexPanel />
               </>
             )}
           </aside>
