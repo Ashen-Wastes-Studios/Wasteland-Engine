@@ -411,6 +411,17 @@ export default function App() {
             <button onClick={goForward} title="Forward" style={navStyle}>→</button>
             <button onClick={refresh} title="Refresh" style={navStyle}>↻</button>
             <button onClick={goHome} title="Home" style={navStyle}>🏠</button>
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--muted-foreground)",
+                minWidth: 24,
+                textAlign: "center",
+              }}
+              title={settings.searchEngine}
+            >
+              {settings.searchEngine === "searxng" ? "🔍" : settings.searchEngine === "google" ? "G" : settings.searchEngine === "duckduckgo" ? "🦆" : "B"}
+            </div>
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
