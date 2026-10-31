@@ -309,6 +309,7 @@ export default function App() {
                 extensions={extensions}
                 onToggle={toggleExtension}
                 onRemove={removeExtension}
+                onInstall={addExtension}
               />
             ) : tabGroupsOpen ? (
               <TabGroupsPanel

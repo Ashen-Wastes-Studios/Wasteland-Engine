@@ -1,13 +1,16 @@
 import type { Extension } from "../extensions";
+import { ExtensionInstaller } from "./ExtensionInstaller";
 
 export function ExtensionsPanel({
   extensions,
   onToggle,
   onRemove,
+  onInstall,
 }: {
   extensions: Extension[];
   onToggle: (id: string) => void;
   onRemove: (id: string) => void;
+  onInstall: (ext: Extension) => void;
 }) {
   return (
     <div style={{ padding: 12 }}>
@@ -60,6 +63,7 @@ export function ExtensionsPanel({
           </div>
         </div>
       ))}
+      <ExtensionInstaller onInstall={onInstall} />
     </div>
   );
 }
