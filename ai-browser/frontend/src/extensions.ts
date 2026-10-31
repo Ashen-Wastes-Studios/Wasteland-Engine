@@ -4,6 +4,14 @@ export interface Extension {
   description: string;
   enabled: boolean;
   version: string;
+  contentScripts: ContentScript[];
+}
+
+export interface ContentScript {
+  id: string;
+  matches: string[];
+  js: string[];
+  css: string[];
 }
 
 export interface TabGroup {

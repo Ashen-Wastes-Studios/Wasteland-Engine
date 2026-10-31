@@ -13,8 +13,29 @@ import { useSettings } from "./hooks/useSettings";
 import { useDownloads } from "./hooks/useDownloads";
 import { useExtensions } from "./hooks/useExtensions";
 import { usePasswords } from "./hooks/usePasswords";
+import type { Extension } from "./extensions";
 import type { TabGroup } from "./extensions";
 import type { Theme, SearchEngine } from "./types";
+
+const SAMPLE_EXTENSIONS: Extension[] = [
+  {
+    id: "sample-highlighter",
+    name: "Page Highlighter",
+    description: "Highlights all links on a page.",
+    enabled: true,
+    version: "1.0.0",
+    contentScripts: [
+      {
+        id: "highlight-links",
+        matches: ["<all_urls>"],
+        js: [
+          `document.querySelectorAll('a').forEach(a => a.style.color = 'var(--accent)');`,
+        ],
+        css: [],
+      },
+    ],
+  },
+];
 
 type Tab = { id: string; title: string; url: string; history: string[]; historyIndex: number; groupId?: string };
 type HistoryEntry = { url: string; title: string; timestamp: number };
@@ -66,9 +87,15 @@ export default function App() {
   const [tabGroups, setTabGroups] = useState<TabGroup[]>([]);
   const { settings, update: updateSettings } = useSettings();
   const { downloads, clearCompleted } = useDownloads();
-  const { extensions, toggleExtension, removeExtension } = useExtensions();
+  const { extensions, toggleExtension, removeExtension, addExtension } = useExtensions();
   const { passwords, removePassword } = usePasswords();
-  const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
+  const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch(settings.searchEngine);
+
+  useEffect(() => {
+    if (extensions.length === 0) {
+      SAMPLE_EXTENSIONS.forEach((ext) => addExtension(ext));
+    }
+  }, [extensions.length, addExtension]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -637,10 +664,10 @@ export default function App() {
                     ))}
                   </div>
                 }
-                right={<WebView url={activeTab.url} />}
+                right={<WebView url={activeTab.url} extensions={extensions} />}
               />
             ) : (
-              <WebView url={activeTab.url} />
+              <WebView url={activeTab.url} extensions={extensions} />
             )}
           </div>
         </main>

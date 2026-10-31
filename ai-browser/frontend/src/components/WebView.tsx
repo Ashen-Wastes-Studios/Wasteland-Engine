@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useExtensionInjector } from "../hooks/useExtensionInjector";
+import { useEnabledContentScripts } from "../hooks/useEnabledContentScripts";
+import type { Extension } from "../extensions";
 
-export function WebView({ url }: { url: string }) {
+export function WebView({ url, extensions }: { url: string; extensions: Extension[] }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const scripts = useEnabledContentScripts(extensions, url);
 
-  useExtensionInjector(iframeRef, [], url);
+  useExtensionInjector(iframeRef, scripts, url);
 
   useEffect(() => {
     if (!url || url === "about:blank") {

@@ -30,6 +30,9 @@ export function ExtensionsPanel({
           <div>
             <div style={{ fontWeight: 600 }}>{ext.name}</div>
             <div style={{ color: "var(--muted-foreground)" }}>{ext.description}</div>
+            <div style={{ color: "var(--muted-foreground)", fontSize: 11 }}>
+              {ext.contentScripts.length} content script{ext.contentScripts.length === 1 ? "" : "s"}
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
