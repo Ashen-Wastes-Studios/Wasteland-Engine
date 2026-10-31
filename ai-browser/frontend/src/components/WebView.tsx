@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { useExtensionInjector } from "../hooks/useExtensionInjector";
 import { useEnabledContentScripts } from "../hooks/useEnabledContentScripts";
 import { ContextMenu, ContextMenuItem } from "./ContextMenu";
+import { NewTabPage } from "./NewTabPage";
 import type { Extension } from "../extensions";
+import type { Bookmark } from "../shared-types";
 
 export function WebView({
   url,
   extensions,
+  bookmarks,
   onBack,
   onForward,
   onRefresh,
@@ -14,6 +17,7 @@ export function WebView({
 }: {
   url: string;
   extensions: Extension[];
+  bookmarks?: Bookmark[];
   onBack?: () => void;
   onForward?: () => void;
   onRefresh?: () => void;
@@ -84,8 +88,7 @@ export function WebView({
   if (url === "about:blank") {
     return (
       <div style={{ padding: 24, opacity: 0.7 }} onContextMenu={handleContextMenu}>
-        <h2>AI Browser Shell</h2>
-        <p>Start by searching or entering a URL.</p>
+        <NewTabPage bookmarks={bookmarks || []} onNavigate={onOpenExternal || (() => {})} />
       </div>
     );
   }
