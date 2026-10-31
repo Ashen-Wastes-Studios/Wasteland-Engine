@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: AI Browser Backend
+  version: 0.1.0
+paths:
+  /search:
+    get:
+      operationId: searchWeb
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: ai_overview
+          in: query
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Search results with optional AI overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+  /index/crawl:
+    post:
+      operationId: crawlUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CrawlRequest"
+      responses:
+        "200":
+          description: Crawl accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrawlResponse"
+components:
+  schemas:
+    SearchResponse:
+      type: object
+      properties:
+        query: { type: string }
+        ai_overview: { type: string, nullable: true }
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+    SearchResult:
+      type: object
+      properties:
+        title: { type: string }
+        url: { type: string }
+        snippet: { type: string }
+    CrawlRequest:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string }
+        depth: { type: integer, default: 1 }
+    CrawlResponse:
+      type: object
+      properties:
+        job_id: { type: string }
+        status: { type: string }
