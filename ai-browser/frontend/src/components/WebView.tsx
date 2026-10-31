@@ -45,6 +45,15 @@ export function WebView({ url }: { url: string }) {
     };
   }, [url]);
 
+  const openNative = async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_webview", { url });
+    } catch {
+      window.open(url, "_blank");
+    }
+  };
+
   if (url === "about:blank") {
     return (
       <div style={{ padding: 24, opacity: 0.7 }}>
@@ -92,8 +101,26 @@ export function WebView({ url }: { url: string }) {
           <div>
             <div style={{ marginBottom: 8, fontWeight: 600 }}>Webview load failed</div>
             <div>{loadError}</div>
-            <div style={{ marginTop: 8 }}>
-              <a href={url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+            <div style={{ marginTop: 8, display: "flex", gap: 12, justifyContent: "center" }}>
+              <button
+                onClick={openNative}
+                style={{
+                  padding: "6px 12px",
+                  background: "var(--accent)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                }}
+              >
+                Open in native webview
+              </button>
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: "var(--accent)" }}
+              >
                 Open in external browser
               </a>
             </div>
@@ -109,4 +136,5 @@ export function WebView({ url }: { url: string }) {
     </div>
   );
 }
+
 

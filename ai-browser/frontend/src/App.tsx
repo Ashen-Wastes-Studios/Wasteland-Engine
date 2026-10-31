@@ -4,11 +4,18 @@ import { TabBar } from "./components/TabBar";
 import { CommandPalette } from "./components/CommandPalette";
 import { WebView } from "./components/WebView";
 import { DownloadsPanel } from "./components/DownloadsPanel";
+import { ExtensionsPanel } from "./components/ExtensionsPanel";
+import { PasswordsPanel } from "./components/PasswordsPanel";
+import { TabGroupsPanel } from "./components/TabGroupsPanel";
 import { useSearch } from "./hooks/useSearch";
 import { useSettings } from "./hooks/useSettings";
 import { useDownloads } from "./hooks/useDownloads";
+import { useExtensions } from "./hooks/useExtensions";
+import { usePasswords } from "./hooks/usePasswords";
+import type { TabGroup } from "./extensions";
+import type { Theme, SearchEngine } from "./types";
 
-type Tab = { id: string; title: string; url: string };
+type Tab = { id: string; title: string; url: string; groupId?: string };
 type HistoryEntry = { url: string; title: string; timestamp: number };
 type Bookmark = { url: string; title: string };
 
@@ -38,9 +45,20 @@ export default function App() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadStorage(STORAGE_KEYS.bookmarks, []));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [extensionsOpen, setExtensionsOpen] = useState(false);
+  const [tabGroupsOpen, setTabGroupsOpen] = useState(false);
+  const [passwordsOpen, setPasswordsOpen] = useState(false);
+  const [tabGroups, setTabGroups] = useState<TabGroup[]>([]);
   const { settings, update: updateSettings } = useSettings();
   const { downloads, clearCompleted } = useDownloads();
+  const { extensions, toggleExtension, removeExtension } = useExtensions();
+  const { passwords, removePassword } = usePasswords();
   const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.setAttribute("data-theme", settings.theme);
+  }, [settings.theme]);
 
   const addTab = useCallback(() => {
     const id = crypto.randomUUID();
@@ -82,6 +100,9 @@ export default function App() {
       if (cmd === "sidebar.toggle") setSidebarOpen((o) => !o);
       if (cmd === "settings.open") setSettingsOpen((o) => !o);
       if (cmd === "downloads.open") setDownloadsOpen((o) => !o);
+      if (cmd === "extensions.open") setExtensionsOpen((o) => !o);
+      if (cmd === "tabgroups.open") setTabGroupsOpen((o) => !o);
+      if (cmd === "passwords.open") setPasswordsOpen((o) => !o);
       if (cmd === "bookmark.add") {
         const current = tabs.find((t) => t.id === active);
         if (current && current.url !== "about:blank") {
@@ -159,6 +180,28 @@ export default function App() {
           >
             {downloadsOpen ? (
               <DownloadsPanel downloads={downloads} onClear={clearCompleted} />
+            ) : extensionsOpen ? (
+              <ExtensionsPanel
+                extensions={extensions}
+                onToggle={toggleExtension}
+                onRemove={removeExtension}
+              />
+            ) : tabGroupsOpen ? (
+              <TabGroupsPanel
+                groups={tabGroups}
+                onSelect={(id) => {
+                  setTabGroups((g) => g.filter((group) => group.id !== id));
+                  setTabGroupsOpen(false);
+                }}
+                onAdd={() => {
+                  const colors = ["#dc143c", "#ff7f50", "#00ced1", "#32cd32", "#ffd700"];
+                  const color = colors[tabGroups.length % colors.length];
+                  const name = `Group ${tabGroups.length + 1}`;
+                  setTabGroups((prev) => [...prev, { id: crypto.randomUUID(), name, color }]);
+                }}
+              />
+            ) : passwordsOpen ? (
+              <PasswordsPanel passwords={passwords} onRemove={removePassword} />
             ) : (
               <>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
@@ -292,6 +335,48 @@ export default function App() {
             >
               ↓
             </button>
+            <button
+              onClick={() => setExtensionsOpen((o) => !o)}
+              title="Extensions"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              🧩
+            </button>
+            <button
+              onClick={() => setTabGroupsOpen((o) => !o)}
+              title="Tab Groups"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              📑
+            </button>
+            <button
+              onClick={() => setPasswordsOpen((o) => !o)}
+              title="Passwords"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              🔒
+            </button>
           </div>
           {settingsOpen && (
             <div
@@ -327,6 +412,30 @@ export default function App() {
                   onChange={(e) => updateSettings({ llmModel: e.target.value })}
                   style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
                 />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Theme:
+                <select
+                  value={settings.theme}
+                  onChange={(e) => updateSettings({ theme: e.target.value as Theme })}
+                  style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
+                >
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                </select>
+              </label>
+              <label style={{ fontSize: 12 }}>
+                Search engine:
+                <select
+                  value={settings.searchEngine}
+                  onChange={(e) => updateSettings({ searchEngine: e.target.value as SearchEngine })}
+                  style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
+                >
+                  <option value="searxng">SearXNG</option>
+                  <option value="google">Google</option>
+                  <option value="duckduckgo">DuckDuckGo</option>
+                  <option value="bing">Bing</option>
+                </select>
               </label>
             </div>
           )}

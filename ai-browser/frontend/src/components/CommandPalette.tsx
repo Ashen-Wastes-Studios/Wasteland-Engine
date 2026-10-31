@@ -25,6 +25,9 @@ export function CommandPalette({
     { label: "Toggle Sidebar", action: "sidebar.toggle" },
     { label: "Toggle Settings", action: "settings.open" },
     { label: "Toggle Downloads", action: "downloads.open" },
+    { label: "Toggle Extensions", action: "extensions.open" },
+    { label: "Toggle Tab Groups", action: "tabgroups.open" },
+    { label: "Toggle Passwords", action: "passwords.open" },
     { label: "Bookmark Current Page", action: "bookmark.add" },
     { label: "Toggle AI Overview", action: "ai.toggle" },
   ];

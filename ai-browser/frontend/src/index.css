@@ -7,6 +7,14 @@
   font-family: Inter, system-ui, -apple-system, sans-serif;
 }
 
+:root[data-theme="light"] {
+  --foreground: #1a1a1a;
+  --muted-foreground: #555555;
+  --accent: #dc143c;
+  --border: #d0d0d0;
+  --card: #ffffff;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
