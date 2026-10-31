@@ -1,11 +1,13 @@
 import os
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from typing import List, Dict
 
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:8888")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CX = os.getenv("GOOGLE_CX")
 
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4), retry=retry_if_exception_type(httpx.HTTPError))
 async def search_searxng(query: str, limit: int = 10) -> List[Dict]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -26,6 +28,7 @@ async def search_searxng(query: str, limit: int = 10) -> List[Dict]:
             for r in results.get("results", [])[:limit]
         ]
 
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4), retry=retry_if_exception_type(httpx.HTTPError))
 async def search_google_cse(query: str, limit: int = 10) -> List[Dict]:
     if not GOOGLE_API_KEY or not GOOGLE_CX:
         return []

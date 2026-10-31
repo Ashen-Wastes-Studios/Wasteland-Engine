@@ -14,7 +14,8 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"web" | "search">("web");
-  const { search, loading, overview, results } = useSearch();
+  const [error, setError] = useState<string | null>(null);
+  const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
 
   const addTab = useCallback(() => {
     const id = crypto.randomUUID();
@@ -37,6 +38,8 @@ export default function App() {
   const navigate = useCallback((u: string) => {
     setUrl(u);
     setMode("web");
+    setError(null);
+    setSearchError(null);
     setTabs((t) =>
       t.map((tab) =>
         tab.id === active
@@ -44,7 +47,7 @@ export default function App() {
           : tab,
       ),
     );
-  }, [active]);
+  }, [active, setSearchError]);
 
   const handleCommand = useCallback(
     (cmd: string) => {
@@ -71,6 +74,8 @@ export default function App() {
   const handleSubmit = () => {
     const trimmed = url.trim();
     if (!trimmed) return;
+    setError(null);
+    setSearchError(null);
     if (/^(https?:\/\/)/.test(trimmed) || (trimmed.includes(".") && !trimmed.includes(" "))) {
       navigate(trimmed);
     } else {
@@ -151,6 +156,11 @@ export default function App() {
             </button>
           </div>
           <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+            {(searchError || error) && (
+              <div style={{ padding: 12, background: "#3a0f0f", color: "#ffb3b3", borderBottom: "1px solid var(--border)" }}>
+                {searchError || error}
+              </div>
+            )}
             {mode === "search" ? (
               <SplitPane
                 direction="vertical"
@@ -158,14 +168,33 @@ export default function App() {
                 left={
                   <div style={{ padding: 12, overflow: "auto" }}>
                     <h3 style={{ marginBottom: 8 }}>AI Overview</h3>
-                    {overview ? (
+                    {loading ? (
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {[0, 1, 2].map((i) => (
+                          <div
+                            key={i}
+                            style={{
+                              height: 10,
+                              flex: 1,
+                              background: "var(--border)",
+                              borderRadius: 4,
+                              animation: "pulse 1.5s infinite ease-in-out",
+                              animationDelay: `${i * 150}ms`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                    ) : overview ? (
                       <p style={{ fontSize: 13, lineHeight: 1.5 }}>{overview}</p>
                     ) : (
                       <p style={{ fontSize: 13, color: "var(--muted-foreground)" }}>
-                        {loading ? "Generating overview..." : "No overview available."}
+                        No overview available.
                       </p>
                     )}
                     <h3 style={{ margin: "16px 0 8px" }}>Results</h3>
+                    {results.length === 0 && !loading && (
+                      <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>No results.</p>
+                    )}
                     {results.map((r, i) => (
                       <div key={i} style={{ marginBottom: 12 }}>
                         <a

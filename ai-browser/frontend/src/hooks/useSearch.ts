@@ -8,9 +8,11 @@ export function useSearch() {
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const search = useCallback(async (query: string) => {
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({ q: query, ai_overview: "true" });
       const resp = await fetch(`${API_BASE}/search?${params}`);
@@ -22,10 +24,11 @@ export function useSearch() {
       console.error("Search failed:", err);
       setOverview(null);
       setResults([]);
+      setError(err instanceof Error ? err.message : "Search failed");
     } finally {
       setLoading(false);
     }
   }, []);
 
-  return { search, loading, overview, results };
+  return { search, loading, overview, results, error, setError };
 }

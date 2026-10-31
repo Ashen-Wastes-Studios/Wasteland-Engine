@@ -15,5 +15,8 @@ async def search_web_endpoint(q: str = Query(...), ai_overview: bool = Query(Tru
     data = await search_web(q, ai_overview=ai_overview)
     overview = None
     if ai_overview and data["results"]:
-        overview = await generate_overview(q, data["results"])
+        try:
+            overview = await generate_overview(q, data["results"])
+        except Exception:
+            overview = None
     return SearchResponse(query=data["query"], ai_overview=overview, results=data["results"])
