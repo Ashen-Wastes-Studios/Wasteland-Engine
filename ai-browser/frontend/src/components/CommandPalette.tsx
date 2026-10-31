@@ -24,6 +24,7 @@ export function CommandPalette({
     { label: "Go to URL", action: "url.focus" },
     { label: "Toggle Sidebar", action: "sidebar.toggle" },
     { label: "Toggle Settings", action: "settings.open" },
+    { label: "Toggle Downloads", action: "downloads.open" },
     { label: "Bookmark Current Page", action: "bookmark.add" },
     { label: "Toggle AI Overview", action: "ai.toggle" },
   ];

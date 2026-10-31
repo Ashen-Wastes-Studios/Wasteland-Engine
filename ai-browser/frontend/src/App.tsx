@@ -3,8 +3,10 @@ import { SplitPane } from "./components/SplitPane";
 import { TabBar } from "./components/TabBar";
 import { CommandPalette } from "./components/CommandPalette";
 import { WebView } from "./components/WebView";
+import { DownloadsPanel } from "./components/DownloadsPanel";
 import { useSearch } from "./hooks/useSearch";
 import { useSettings } from "./hooks/useSettings";
+import { useDownloads } from "./hooks/useDownloads";
 
 type Tab = { id: string; title: string; url: string };
 type HistoryEntry = { url: string; title: string; timestamp: number };
@@ -35,7 +37,9 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadStorage(STORAGE_KEYS.history, []));
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadStorage(STORAGE_KEYS.bookmarks, []));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
   const { settings, update: updateSettings } = useSettings();
+  const { downloads, clearCompleted } = useDownloads();
   const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
 
   const addTab = useCallback(() => {
@@ -77,6 +81,7 @@ export default function App() {
       if (cmd === "tab.new") addTab();
       if (cmd === "sidebar.toggle") setSidebarOpen((o) => !o);
       if (cmd === "settings.open") setSettingsOpen((o) => !o);
+      if (cmd === "downloads.open") setDownloadsOpen((o) => !o);
       if (cmd === "bookmark.add") {
         const current = tabs.find((t) => t.id === active);
         if (current && current.url !== "about:blank") {
@@ -152,52 +157,58 @@ export default function App() {
               overflow: "auto",
             }}
           >
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
-            {history.length === 0 && (
-              <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+            {downloadsOpen ? (
+              <DownloadsPanel downloads={downloads} onClear={clearCompleted} />
+            ) : (
+              <>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
+                {history.length === 0 && (
+                  <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+                )}
+                {history.map((entry, i) => (
+                  <div
+                    key={`${entry.url}-${entry.timestamp}-${i}`}
+                    onClick={() => navigate(entry.url)}
+                    style={{
+                      fontSize: 12,
+                      padding: "4px 6px",
+                      cursor: "pointer",
+                      borderRadius: 4,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={entry.url}
+                  >
+                    {entry.title || entry.url}
+                  </div>
+                ))}
+                <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Bookmarks</div>
+                {bookmarks.length === 0 && (
+                  <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+                )}
+                {bookmarks.map((bookmark, i) => (
+                  <div
+                    key={`${bookmark.url}-${i}`}
+                    onClick={() => navigate(bookmark.url)}
+                    style={{
+                      fontSize: 12,
+                      padding: "4px 6px",
+                      cursor: "pointer",
+                      borderRadius: 4,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={bookmark.url}
+                  >
+                    {bookmark.title || bookmark.url}
+                  </div>
+                ))}
+                <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Indexed Pages</div>
+                <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+              </>
             )}
-            {history.map((entry, i) => (
-              <div
-                key={`${entry.url}-${entry.timestamp}-${i}`}
-                onClick={() => navigate(entry.url)}
-                style={{
-                  fontSize: 12,
-                  padding: "4px 6px",
-                  cursor: "pointer",
-                  borderRadius: 4,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-                title={entry.url}
-              >
-                {entry.title || entry.url}
-              </div>
-            ))}
-            <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Bookmarks</div>
-            {bookmarks.length === 0 && (
-              <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
-            )}
-            {bookmarks.map((bookmark, i) => (
-              <div
-                key={`${bookmark.url}-${i}`}
-                onClick={() => navigate(bookmark.url)}
-                style={{
-                  fontSize: 12,
-                  padding: "4px 6px",
-                  cursor: "pointer",
-                  borderRadius: 4,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-                title={bookmark.url}
-              >
-                {bookmark.title || bookmark.url}
-              </div>
-            ))}
-            <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Indexed Pages</div>
-            <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
           </aside>
         )}
         <main style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -266,6 +277,20 @@ export default function App() {
               }}
             >
               ⚙
+            </button>
+            <button
+              onClick={() => setDownloadsOpen((o) => !o)}
+              title="Downloads"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              ↓
             </button>
           </div>
           {settingsOpen && (
