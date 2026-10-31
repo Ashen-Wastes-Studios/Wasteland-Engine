@@ -7,6 +7,7 @@ import { DownloadsPanel } from "./components/DownloadsPanel";
 import { ExtensionsPanel } from "./components/ExtensionsPanel";
 import { PasswordsPanel } from "./components/PasswordsPanel";
 import { TabGroupsPanel } from "./components/TabGroupsPanel";
+import { FindBar } from "./components/FindBar";
 import { useSearch } from "./hooks/useSearch";
 import { useSettings } from "./hooks/useSettings";
 import { useDownloads } from "./hooks/useDownloads";
@@ -60,6 +61,8 @@ export default function App() {
   const [tabGroupsOpen, setTabGroupsOpen] = useState(false);
   const [passwordsOpen, setPasswordsOpen] = useState(false);
   const [incognito, setIncognito] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
+  const [zoom, setZoom] = useState(100);
   const [tabGroups, setTabGroups] = useState<TabGroup[]>([]);
   const { settings, update: updateSettings } = useSettings();
   const { downloads, clearCompleted } = useDownloads();
@@ -143,6 +146,18 @@ export default function App() {
   const goHome = useCallback(() => {
     navigate("about:blank");
   }, [navigate]);
+
+  const zoomIn = useCallback(() => {
+    setZoom((z) => Math.min(200, z + 10));
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setZoom((z) => Math.max(25, z - 10));
+  }, []);
+
+  const zoomReset = useCallback(() => {
+    setZoom(100);
+  }, []);
 
   const handleCommand = useCallback(
     (cmd: string) => {
@@ -457,7 +472,21 @@ export default function App() {
             >
               {incognito ? "🕶" : "Incognito"}
             </button>
+            <button
+              onClick={() => setFindOpen((o) => !o)}
+              title="Find in page (Ctrl+F)"
+              style={navStyle}
+            >
+              🔍
+            </button>
+            <button onClick={zoomOut} title="Zoom out" style={navStyle}>-</button>
+            <span style={{ fontSize: 12, minWidth: 40, textAlign: "center" }}>{zoom}%</span>
+            <button onClick={zoomIn} title="Zoom in" style={navStyle}>+</button>
+            <button onClick={zoomReset} title="Reset zoom" style={navStyle}>⟲</button>
           </div>
+          {findOpen && (
+            <FindBar onClose={() => setFindOpen(false)} />
+          )}
           {bookmarks.length > 0 && !incognito && (
             <div
               style={{
