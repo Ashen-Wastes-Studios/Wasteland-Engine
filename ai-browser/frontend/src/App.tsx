@@ -4,6 +4,7 @@ import { TabBar } from "./components/TabBar";
 import { CommandPalette } from "./components/CommandPalette";
 import { WebView } from "./components/WebView";
 import { useSearch } from "./hooks/useSearch";
+import { useSettings } from "./hooks/useSettings";
 
 type Tab = { id: string; title: string; url: string };
 type HistoryEntry = { url: string; title: string; timestamp: number };
@@ -34,11 +35,7 @@ export default function App() {
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadStorage(STORAGE_KEYS.history, []));
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadStorage(STORAGE_KEYS.bookmarks, []));
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settings, setSettings] = useState(() => loadStorage<{ searxngUrl: string; llmUrl: string; llmModel: string }>(STORAGE_KEYS.settings, {
-    searxngUrl: "http://localhost:8888",
-    llmUrl: "http://localhost:11434",
-    llmModel: "qwen2.5:3b",
-  }));
+  const { settings, update: updateSettings } = useSettings();
   const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
 
   const addTab = useCallback(() => {
@@ -119,10 +116,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(bookmarks));
   }, [bookmarks]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
-  }, [settings]);
 
   const handleSubmit = () => {
     const trimmed = url.trim();
@@ -290,7 +283,7 @@ export default function App() {
                 SearXNG URL:
                 <input
                   value={settings.searxngUrl}
-                  onChange={(e) => setSettings((s) => ({ ...s, searxngUrl: e.target.value }))}
+                  onChange={(e) => updateSettings({ searxngUrl: e.target.value })}
                   style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
                 />
               </label>
@@ -298,7 +291,7 @@ export default function App() {
                 LLM URL:
                 <input
                   value={settings.llmUrl}
-                  onChange={(e) => setSettings((s) => ({ ...s, llmUrl: e.target.value }))}
+                  onChange={(e) => updateSettings({ llmUrl: e.target.value })}
                   style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
                 />
               </label>
@@ -306,7 +299,7 @@ export default function App() {
                 LLM Model:
                 <input
                   value={settings.llmModel}
-                  onChange={(e) => setSettings((s) => ({ ...s, llmModel: e.target.value }))}
+                  onChange={(e) => updateSettings({ llmModel: e.target.value })}
                   style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
                 />
               </label>
