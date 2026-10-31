@@ -40,6 +40,26 @@ export function DownloadsPanel({
         >
           <div style={{ fontWeight: 600 }}>{item.filename}</div>
           <div style={{ color: "var(--muted-foreground)", marginTop: 2 }}>{item.status}</div>
+          {item.status === "downloading" && (
+            <div
+              style={{
+                height: 4,
+                background: "var(--border)",
+                borderRadius: 2,
+                marginTop: 4,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: `${item.progress}%`,
+                  background: "var(--accent)",
+                  borderRadius: 2,
+                }}
+              />
+            </div>
+          )}
           {item.size !== null && (
             <div style={{ color: "var(--muted-foreground)" }}>
               {(item.size / 1024).toFixed(1)} KB

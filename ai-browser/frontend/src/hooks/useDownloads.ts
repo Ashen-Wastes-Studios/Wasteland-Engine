@@ -69,5 +69,23 @@ export function useDownloads() {
     });
   }, [persist]);
 
-  return { downloads, addDownload, updateDownload, removeDownload, clearCompleted };
+  const simulateDownload = useCallback(
+    (url: string, filename?: string) => {
+      const item = addDownload(url, filename);
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += Math.random() * 20 + 5;
+        if (progress >= 100) {
+          progress = 100;
+          clearInterval(interval);
+          updateDownload(item.id, { progress: 100, status: "completed", size: Math.floor(Math.random() * 1000000) });
+        } else {
+          updateDownload(item.id, { progress: Math.floor(progress), status: "downloading" });
+        }
+      }, 500);
+    },
+    [addDownload, updateDownload],
+  );
+
+  return { downloads, addDownload, updateDownload, removeDownload, clearCompleted, simulateDownload };
 }
