@@ -648,15 +648,16 @@ export default function App() {
                       <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>No results.</p>
                     )}
                     {results.map((r, i) => (
-                      <div key={i} style={{ marginBottom: 12 }}>
-                        <a
-                          href={r.url}
-                          target="_blank"
-                          rel="noreferrer"
+                      <div
+                        key={i}
+                        style={{ marginBottom: 12, cursor: "pointer" }}
+                        onClick={() => navigate(r.url)}
+                      >
+                        <div
                           style={{ color: "var(--accent)", fontSize: 13, textDecoration: "none" }}
                         >
                           {r.title}
-                        </a>
+                        </div>
                         <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>
                           {r.snippet}
                         </p>
@@ -673,6 +674,23 @@ export default function App() {
         </main>
       </div>
       <CommandPalette open={cmdOpen} onClose={() => setCmdOpen(false)} onSelect={handleCommand} />
+      <div
+        style={{
+          padding: "2px 8px",
+          borderTop: "1px solid var(--border)",
+          fontSize: 11,
+          color: "var(--muted-foreground)",
+          display: "flex",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          {incognito ? "Incognito mode" : activeTab.url}
+        </div>
+        <div>
+          {zoom !== 100 ? `${zoom}%` : ""}
+        </div>
+      </div>
     </div>
   );
 }
