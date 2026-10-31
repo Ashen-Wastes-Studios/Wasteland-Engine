@@ -74,6 +74,7 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"web" | "search">("web");
+  const [historyQuery, setHistoryQuery] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadStorage(STORAGE_KEYS.history, []));
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadStorage(STORAGE_KEYS.bookmarks, []));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -327,11 +328,29 @@ export default function App() {
               <PasswordsPanel passwords={passwords} onRemove={removePassword} />
             ) : (
               <>
+                <input
+                  value={historyQuery}
+                  onChange={(e) => setHistoryQuery(e.target.value)}
+                  placeholder="Search history..."
+                  style={{
+                    width: "100%",
+                    padding: "4px 6px",
+                    marginBottom: 8,
+                    background: "var(--border)",
+                    color: "var(--foreground)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 4,
+                    outline: "none",
+                    fontSize: 12,
+                  }}
+                />
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
                 {history.length === 0 && (
                   <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
                 )}
-                {history.map((entry, i) => (
+                {history
+                  .filter((entry) => !historyQuery || entry.url.toLowerCase().includes(historyQuery.toLowerCase()))
+                  .map((entry, i) => (
                   <div
                     key={`${entry.url}-${entry.timestamp}-${i}`}
                     onClick={() => navigate(entry.url)}
