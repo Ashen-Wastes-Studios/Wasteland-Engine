@@ -14,7 +14,26 @@ export function NewTabPage({ bookmarks, onNavigate }: { bookmarks: Bookmark[]; o
       }}
     >
       <h1 style={{ fontSize: 48, fontWeight: 300, color: "var(--accent)" }}>AI Browser</h1>
-      <p style={{ color: "var(--muted-foreground)", fontSize: 14 }}>Search or enter a URL to begin.</p>
+      <input
+        id="new-tab-search"
+        placeholder="Search the web..."
+        style={{
+          width: "100%",
+          maxWidth: 480,
+          padding: "10px 16px",
+          background: "var(--border)",
+          color: "var(--foreground)",
+          border: "1px solid var(--border)",
+          borderRadius: 24,
+          outline: "none",
+          fontSize: 14,
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && e.currentTarget.value.trim()) {
+            onNavigate(e.currentTarget.value.trim());
+          }
+        }}
+      />
       {bookmarks.length > 0 && (
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
           {bookmarks.slice(0, 12).map((bookmark, i) => (
