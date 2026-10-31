@@ -14,6 +14,7 @@ export function WebView({
   onForward,
   onRefresh,
   onOpenExternal,
+  onSavePage,
 }: {
   url: string;
   extensions: Extension[];
@@ -22,6 +23,7 @@ export function WebView({
   onForward?: () => void;
   onRefresh?: () => void;
   onOpenExternal?: () => void;
+  onSavePage?: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
@@ -169,6 +171,7 @@ export function WebView({
           <ContextMenuItem onClick={() => { onForward?.(); setMenu(null); }}>Forward</ContextMenuItem>
           <ContextMenuItem onClick={() => { onRefresh?.(); setMenu(null); }}>Reload</ContextMenuItem>
           <ContextMenuItem onClick={() => { onOpenExternal?.(); setMenu(null); }}>Open in external browser</ContextMenuItem>
+          <ContextMenuItem onClick={() => { onSavePage?.(); setMenu(null); }}>Save page as...</ContextMenuItem>
         </ContextMenu>
       )}
     </div>

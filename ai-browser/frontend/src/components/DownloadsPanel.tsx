@@ -11,20 +11,22 @@ export function DownloadsPanel({
     <div style={{ padding: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <h3 style={{ margin: 0 }}>Downloads</h3>
-        <button
-          onClick={onClear}
-          style={{
-            padding: "4px 8px",
-            background: "transparent",
-            border: "1px solid var(--border)",
-            color: "var(--foreground)",
-            cursor: "pointer",
-            borderRadius: 4,
-            fontSize: 12,
-          }}
-        >
-          Clear completed
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => onClear()}
+            style={{
+              padding: "4px 8px",
+              background: "transparent",
+              border: "1px solid var(--border)",
+              color: "var(--foreground)",
+              cursor: "pointer",
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            Clear completed
+          </button>
+        </div>
       </div>
       {downloads.length === 0 && (
         <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>No downloads yet.</p>

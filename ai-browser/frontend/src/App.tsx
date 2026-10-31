@@ -175,6 +175,17 @@ export default function App() {
     navigate("about:blank");
   }, [navigate]);
 
+  const savePage = useCallback(async () => {
+    const current = tabs.find((t) => t.id === active);
+    if (!current || current.url === "about:blank") return;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("save_page", { url: current.url });
+    } catch (err) {
+      console.error("Save page failed:", err);
+    }
+  }, [active, tabs]);
+
   const zoomIn = useCallback(() => {
     setZoom((z) => Math.min(200, z + 10));
   }, []);
@@ -495,6 +506,20 @@ export default function App() {
               ↓
             </button>
             <button
+              onClick={savePage}
+              title="Save page as..."
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              💾
+            </button>
+            <button
               onClick={() => setExtensionsOpen((o) => !o)}
               title="Extensions"
               style={{
@@ -716,10 +741,10 @@ export default function App() {
                     ))}
                   </div>
                 }
-                right={<WebView url={activeTab.url} extensions={extensions} bookmarks={bookmarks} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} />}
+                right={<WebView url={activeTab.url} extensions={extensions} bookmarks={bookmarks} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} onSavePage={savePage} />}
               />
             ) : (
-              <WebView url={activeTab.url} extensions={extensions} bookmarks={bookmarks} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} />
+              <WebView url={activeTab.url} extensions={extensions} bookmarks={bookmarks} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} onSavePage={savePage} />
             )}
           </div>
         </main>
