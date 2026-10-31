@@ -1,12 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { useExtensionInjector } from "../hooks/useExtensionInjector";
 import { useEnabledContentScripts } from "../hooks/useEnabledContentScripts";
+import { ContextMenu, ContextMenuItem } from "./ContextMenu";
 import type { Extension } from "../extensions";
 
-export function WebView({ url, extensions }: { url: string; extensions: Extension[] }) {
+export function WebView({
+  url,
+  extensions,
+  onBack,
+  onForward,
+  onRefresh,
+  onOpenExternal,
+}: {
+  url: string;
+  extensions: Extension[];
+  onBack?: () => void;
+  onForward?: () => void;
+  onRefresh?: () => void;
+  onOpenExternal?: () => void;
+}) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const scripts = useEnabledContentScripts(extensions, url);
 
   useExtensionInjector(iframeRef, scripts, url);
@@ -60,9 +76,14 @@ export function WebView({ url, extensions }: { url: string; extensions: Extensio
     }
   };
 
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+
   if (url === "about:blank") {
     return (
-      <div style={{ padding: 24, opacity: 0.7 }}>
+      <div style={{ padding: 24, opacity: 0.7 }} onContextMenu={handleContextMenu}>
         <h2>AI Browser Shell</h2>
         <p>Start by searching or entering a URL.</p>
       </div>
@@ -70,7 +91,7 @@ export function WebView({ url, extensions }: { url: string; extensions: Extensio
   }
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+    <div style={{ position: "relative", width: "100%", height: "100%" }} onContextMenu={handleContextMenu}>
       {loading && (
         <div
           style={{
@@ -139,6 +160,14 @@ export function WebView({ url, extensions }: { url: string; extensions: Extensio
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         style={{ width: "100%", height: "100%", border: "none" }}
       />
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          <ContextMenuItem onClick={() => { onBack?.(); setMenu(null); }}>Back</ContextMenuItem>
+          <ContextMenuItem onClick={() => { onForward?.(); setMenu(null); }}>Forward</ContextMenuItem>
+          <ContextMenuItem onClick={() => { onRefresh?.(); setMenu(null); }}>Reload</ContextMenuItem>
+          <ContextMenuItem onClick={() => { onOpenExternal?.(); setMenu(null); }}>Open in external browser</ContextMenuItem>
+        </ContextMenu>
+      )}
     </div>
   );
 }

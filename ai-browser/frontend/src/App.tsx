@@ -665,10 +665,10 @@ export default function App() {
                     ))}
                   </div>
                 }
-                right={<WebView url={activeTab.url} extensions={extensions} />}
+                right={<WebView url={activeTab.url} extensions={extensions} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} />}
               />
             ) : (
-              <WebView url={activeTab.url} extensions={extensions} />
+              <WebView url={activeTab.url} extensions={extensions} onBack={goBack} onForward={goForward} onRefresh={refresh} onOpenExternal={() => window.open(activeTab.url, "_blank")} />
             )}
           </div>
         </main>
