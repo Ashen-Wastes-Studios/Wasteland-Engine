@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { Extension } from "../extensions";
+import type { Extension, ContentScript } from "../extensions";
 
 const EXTENSIONS_KEY = "ai-browser-extensions";
 
@@ -52,5 +52,20 @@ export function useExtensions() {
     [persist],
   );
 
-  return { extensions, toggleExtension, addExtension, removeExtension };
+  const addContentScript = useCallback(
+    (extensionId: string, script: ContentScript) => {
+      setExtensions((prev) => {
+        const next = prev.map((ext) =>
+          ext.id === extensionId
+            ? { ...ext, contentScripts: [...ext.contentScripts, script] }
+            : ext,
+        );
+        persist(next);
+        return next;
+      });
+    },
+    [persist],
+  );
+
+  return { extensions, toggleExtension, addExtension, removeExtension, addContentScript };
 }
