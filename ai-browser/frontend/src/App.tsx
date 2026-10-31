@@ -15,7 +15,7 @@ import { usePasswords } from "./hooks/usePasswords";
 import type { TabGroup } from "./extensions";
 import type { Theme, SearchEngine } from "./types";
 
-type Tab = { id: string; title: string; url: string; groupId?: string };
+type Tab = { id: string; title: string; url: string; history: string[]; historyIndex: number; groupId?: string };
 type HistoryEntry = { url: string; title: string; timestamp: number };
 type Bookmark = { url: string; title: string };
 
@@ -24,6 +24,17 @@ const STORAGE_KEYS = {
   bookmarks: "ai-browser-bookmarks",
   settings: "ai-browser-settings",
 } as const;
+
+const navStyle: Record<string, string | number> = {
+  padding: "4px 8px",
+  background: "transparent",
+  border: "1px solid var(--border)",
+  color: "var(--foreground)",
+  cursor: "pointer",
+  borderRadius: 4,
+  fontSize: 14,
+  lineHeight: 1,
+};
 
 function loadStorage<T>(key: string, fallback: T): T {
   try {
@@ -35,7 +46,7 @@ function loadStorage<T>(key: string, fallback: T): T {
 }
 
 export default function App() {
-  const [tabs, setTabs] = useState<Tab[]>([{ id: "1", title: "New Tab", url: "about:blank" }]);
+  const [tabs, setTabs] = useState<Tab[]>([{ id: "1", title: "New Tab", url: "about:blank", history: [], historyIndex: -1 }]);
   const [active, setActive] = useState("1");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -48,6 +59,7 @@ export default function App() {
   const [extensionsOpen, setExtensionsOpen] = useState(false);
   const [tabGroupsOpen, setTabGroupsOpen] = useState(false);
   const [passwordsOpen, setPasswordsOpen] = useState(false);
+  const [incognito, setIncognito] = useState(false);
   const [tabGroups, setTabGroups] = useState<TabGroup[]>([]);
   const { settings, update: updateSettings } = useSettings();
   const { downloads, clearCompleted } = useDownloads();
@@ -62,7 +74,7 @@ export default function App() {
 
   const addTab = useCallback(() => {
     const id = crypto.randomUUID();
-    setTabs((t) => [...t, { id, title: "New Tab", url: "about:blank" }]);
+    setTabs((t) => [...t, { id, title: "New Tab", url: "about:blank", history: [], historyIndex: -1 }]);
     setActive(id);
   }, []);
 
@@ -70,7 +82,7 @@ export default function App() {
     (id: string) => {
       setTabs((t) => {
         const next = t.filter((tab) => tab.id !== id);
-        if (next.length === 0) return [{ id: "1", title: "New Tab", url: "about:blank" }];
+        if (next.length === 0) return [{ id: "1", title: "New Tab", url: "about:blank", history: [], historyIndex: -1 }];
         if (active === id) setActive(next[0].id);
         return next;
       });
@@ -84,15 +96,53 @@ export default function App() {
     setSearchError(null);
     const title = u.replace(/^https?:\/\//, "").split("/")[0] || u;
     setTabs((t) =>
-      t.map((tab) =>
-        tab.id === active ? { ...tab, url: u, title } : tab,
-      ),
+      t.map((tab) => {
+        if (tab.id !== active) return tab;
+        const history = tab.history.slice(0, tab.historyIndex + 1);
+        return {
+          ...tab,
+          url: u,
+          title,
+          history: [...history, u],
+          historyIndex: history.length,
+        };
+      }),
     );
     setHistory((h) => {
       const filtered = h.filter((entry) => entry.url !== u);
       return [{ url: u, title, timestamp: Date.now() }, ...filtered].slice(0, 200);
     });
   }, [active, setSearchError]);
+
+  const goBack = useCallback(() => {
+    setTabs((t) =>
+      t.map((tab) => {
+        if (tab.id !== active || tab.historyIndex <= 0) return tab;
+        const newIndex = tab.historyIndex - 1;
+        const url = tab.history[newIndex];
+        return { ...tab, url, historyIndex: newIndex };
+      }),
+    );
+  }, [active]);
+
+  const goForward = useCallback(() => {
+    setTabs((t) =>
+      t.map((tab) => {
+        if (tab.id !== active || tab.historyIndex >= tab.history.length - 1) return tab;
+        const newIndex = tab.historyIndex + 1;
+        const url = tab.history[newIndex];
+        return { ...tab, url, historyIndex: newIndex };
+      }),
+    );
+  }, [active]);
+
+  const refresh = useCallback(() => {
+    setTabs((t) => t.map((tab) => (tab.id === active ? { ...tab } : tab)));
+  }, [active]);
+
+  const goHome = useCallback(() => {
+    navigate("about:blank");
+  }, [navigate]);
 
   const handleCommand = useCallback(
     (cmd: string) => {
@@ -130,10 +180,21 @@ export default function App() {
         e.preventDefault();
         handleCommand("bookmark.add");
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        setIncognito((o) => !o);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [handleCommand]);
+
+  useEffect(() => {
+    const current = tabs.find((t) => t.id === active);
+    if (current && current.url !== url) {
+      setUrl(current.url);
+    }
+  }, [active, tabs, url]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history.slice(0, 200)));
@@ -258,18 +319,23 @@ export default function App() {
           <div
             style={{
               display: "flex",
-              gap: 8,
+              gap: 4,
               padding: 8,
               borderBottom: "1px solid var(--border)",
+              alignItems: "center",
             }}
           >
+            <button onClick={goBack} title="Back" style={navStyle}>←</button>
+            <button onClick={goForward} title="Forward" style={navStyle}>→</button>
+            <button onClick={refresh} title="Refresh" style={navStyle}>↻</button>
+            <button onClick={goHome} title="Home" style={navStyle}>🏠</button>
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleSubmit();
               }}
-              placeholder="Search or enter URL"
+              placeholder={incognito ? "Incognito - Search or enter URL" : "Search or enter URL"}
               style={{
                 flex: 1,
                 padding: "6px 10px",
@@ -377,7 +443,53 @@ export default function App() {
             >
               🔒
             </button>
+            <button
+              onClick={() => setIncognito((o) => !o)}
+              title={incognito ? "Exit Incognito" : "Incognito Mode"}
+              style={{
+                padding: "6px 10px",
+                background: incognito ? "var(--accent)" : "transparent",
+                border: "1px solid var(--border)",
+                color: "#fff",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              {incognito ? "🕶" : "Incognito"}
+            </button>
           </div>
+          {bookmarks.length > 0 && !incognito && (
+            <div
+              style={{
+                display: "flex",
+                gap: 6,
+                padding: "4px 8px",
+                borderBottom: "1px solid var(--border)",
+                overflowX: "auto",
+                alignItems: "center",
+              }}
+            >
+              {bookmarks.map((bookmark, i) => (
+                <button
+                  key={`${bookmark.url}-${i}`}
+                  onClick={() => navigate(bookmark.url)}
+                  title={bookmark.url}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--foreground)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    padding: "2px 4px",
+                    borderRadius: 4,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {bookmark.title || bookmark.url}
+                </button>
+              ))}
+            </div>
+          )}
           {settingsOpen && (
             <div
               style={{

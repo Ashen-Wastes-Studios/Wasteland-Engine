@@ -4,7 +4,7 @@ const API_BASE = "http://127.0.0.1:8000/api/v1";
 
 type SearchResult = { title: string; url: string; snippet: string };
 
-export function useSearch() {
+export function useSearch(engine?: string) {
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -15,6 +15,9 @@ export function useSearch() {
     setError(null);
     try {
       const params = new URLSearchParams({ q: query, ai_overview: "true" });
+      if (engine) {
+        params.set("engine", engine);
+      }
       const resp = await fetch(`${API_BASE}/search?${params}`);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
@@ -28,7 +31,7 @@ export function useSearch() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [engine]);
 
   return { search, loading, overview, results, error, setError };
 }

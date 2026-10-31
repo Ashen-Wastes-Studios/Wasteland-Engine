@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { useExtensionInjector } from "../hooks/useExtensionInjector";
 
 export function WebView({ url }: { url: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  useExtensionInjector(iframeRef, [], url);
 
   useEffect(() => {
     if (!url || url === "about:blank") {

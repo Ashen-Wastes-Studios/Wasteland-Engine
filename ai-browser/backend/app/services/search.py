@@ -8,12 +8,15 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CX = os.getenv("GOOGLE_CX")
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=4), retry=retry_if_exception_type(httpx.HTTPError))
-async def search_searxng(query: str, limit: int = 10) -> List[Dict]:
+async def search_searxng(query: str, limit: int = 10, engines: str | None = None) -> List[Dict]:
+    params: Dict[str, str] = {"q": query, "format": "json"}
+    if engines:
+        params["engines"] = engines
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
                 f"{SEARXNG_URL}/search",
-                params={"q": query, "format": "json", "engines": "google,bing,duckduckgo"},
+                params=params,
             )
             resp.raise_for_status()
         except httpx.HTTPError:
@@ -51,8 +54,16 @@ async def search_google_cse(query: str, limit: int = 10) -> List[Dict]:
             for i in items
         ]
 
-async def search_web(query: str, ai_overview: bool = True) -> Dict:
-    results = await search_searxng(query)
-    if not results:
+async def search_web(query: str, ai_overview: bool = True, engine: str | None = None) -> Dict:
+    results: List[Dict] = []
+    if engine == "google":
         results = await search_google_cse(query)
+    elif engine == "duckduckgo":
+        results = await search_searxng(query, engines="duckduckgo")
+    elif engine == "bing":
+        results = await search_searxng(query, engines="bing")
+    else:
+        results = await search_searxng(query)
+        if not results:
+            results = await search_google_cse(query)
     return {"query": query, "results": results}

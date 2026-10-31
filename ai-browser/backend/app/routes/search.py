@@ -11,8 +11,8 @@ class SearchResponse(BaseModel):
     results: list[dict]
 
 @router.get("/search", response_model=SearchResponse)
-async def search_web_endpoint(q: str = Query(...), ai_overview: bool = Query(True)):
-    data = await search_web(q, ai_overview=ai_overview)
+async def search_web_endpoint(q: str = Query(...), ai_overview: bool = Query(True), engine: str | None = Query(None)):
+    data = await search_web(q, ai_overview=ai_overview, engine=engine)
     overview = None
     if ai_overview and data["results"]:
         try:
