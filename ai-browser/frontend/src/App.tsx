@@ -6,6 +6,23 @@ import { WebView } from "./components/WebView";
 import { useSearch } from "./hooks/useSearch";
 
 type Tab = { id: string; title: string; url: string };
+type HistoryEntry = { url: string; title: string; timestamp: number };
+type Bookmark = { url: string; title: string };
+
+const STORAGE_KEYS = {
+  history: "ai-browser-history",
+  bookmarks: "ai-browser-bookmarks",
+  settings: "ai-browser-settings",
+} as const;
+
+function loadStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export default function App() {
   const [tabs, setTabs] = useState<Tab[]>([{ id: "1", title: "New Tab", url: "about:blank" }]);
@@ -14,7 +31,14 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"web" | "search">("web");
-  const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadStorage(STORAGE_KEYS.history, []));
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => loadStorage(STORAGE_KEYS.bookmarks, []));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState(() => loadStorage<{ searxngUrl: string; llmUrl: string; llmModel: string }>(STORAGE_KEYS.settings, {
+    searxngUrl: "http://localhost:8888",
+    llmUrl: "http://localhost:11434",
+    llmModel: "qwen2.5:3b",
+  }));
   const { search, loading, overview, results, error: searchError, setError: setSearchError } = useSearch();
 
   const addTab = useCallback(() => {
@@ -38,26 +62,39 @@ export default function App() {
   const navigate = useCallback((u: string) => {
     setUrl(u);
     setMode("web");
-    setError(null);
     setSearchError(null);
+    const title = u.replace(/^https?:\/\//, "").split("/")[0] || u;
     setTabs((t) =>
       t.map((tab) =>
-        tab.id === active
-          ? { ...tab, url: u, title: u.replace(/^https?:\/\//, "").split("/")[0] || u }
-          : tab,
+        tab.id === active ? { ...tab, url: u, title } : tab,
       ),
     );
+    setHistory((h) => {
+      const filtered = h.filter((entry) => entry.url !== u);
+      return [{ url: u, title, timestamp: Date.now() }, ...filtered].slice(0, 200);
+    });
   }, [active, setSearchError]);
 
   const handleCommand = useCallback(
     (cmd: string) => {
       if (cmd === "tab.new") addTab();
       if (cmd === "sidebar.toggle") setSidebarOpen((o) => !o);
+      if (cmd === "settings.open") setSettingsOpen((o) => !o);
+      if (cmd === "bookmark.add") {
+        const current = tabs.find((t) => t.id === active);
+        if (current && current.url !== "about:blank") {
+          setBookmarks((b) => {
+            const exists = b.some((item) => item.url === current.url);
+            if (exists) return b.filter((item) => item.url !== current.url);
+            return [...b, { url: current.url, title: current.title }];
+          });
+        }
+      }
       if (cmd === "ai.toggle") {
         // TODO: toggle AI overview panel
       }
     },
-    [addTab],
+    [addTab, active, tabs],
   );
 
   useEffect(() => {
@@ -66,15 +103,30 @@ export default function App() {
         e.preventDefault();
         setCmdOpen((o) => !o);
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === "d") {
+        e.preventDefault();
+        handleCommand("bookmark.add");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [handleCommand]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history.slice(0, 200)));
+  }, [history]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(bookmarks));
+  }, [bookmarks]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+  }, [settings]);
 
   const handleSubmit = () => {
     const trimmed = url.trim();
     if (!trimmed) return;
-    setError(null);
     setSearchError(null);
     if (/^(https?:\/\/)/.test(trimmed) || (trimmed.includes(".") && !trimmed.includes(" "))) {
       navigate(trimmed);
@@ -108,9 +160,49 @@ export default function App() {
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 8 }}>History</div>
-            <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+            {history.length === 0 && (
+              <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+            )}
+            {history.map((entry, i) => (
+              <div
+                key={`${entry.url}-${entry.timestamp}-${i}`}
+                onClick={() => navigate(entry.url)}
+                style={{
+                  fontSize: 12,
+                  padding: "4px 6px",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={entry.url}
+              >
+                {entry.title || entry.url}
+              </div>
+            ))}
             <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Bookmarks</div>
-            <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+            {bookmarks.length === 0 && (
+              <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
+            )}
+            {bookmarks.map((bookmark, i) => (
+              <div
+                key={`${bookmark.url}-${i}`}
+                onClick={() => navigate(bookmark.url)}
+                style={{
+                  fontSize: 12,
+                  padding: "4px 6px",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={bookmark.url}
+              >
+                {bookmark.title || bookmark.url}
+              </div>
+            ))}
             <div style={{ fontWeight: 600, margin: "16px 0 8px" }}>Indexed Pages</div>
             <div style={{ fontSize: 12, color: "var(--muted-foreground)" }}>Empty</div>
           </aside>
@@ -154,11 +246,76 @@ export default function App() {
             >
               Go
             </button>
+            <button
+              onClick={() => handleCommand("bookmark.add")}
+              title="Bookmark (Ctrl+D)"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              ★
+            </button>
+            <button
+              onClick={() => setSettingsOpen((o) => !o)}
+              title="Settings"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--foreground)",
+                cursor: "pointer",
+                borderRadius: 4,
+              }}
+            >
+              ⚙
+            </button>
           </div>
+          {settingsOpen && (
+            <div
+              style={{
+                padding: 12,
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                gap: 12,
+                flexWrap: "wrap",
+                alignItems: "center",
+              }}
+            >
+              <label style={{ fontSize: 12 }}>
+                SearXNG URL:
+                <input
+                  value={settings.searxngUrl}
+                  onChange={(e) => setSettings((s) => ({ ...s, searxngUrl: e.target.value }))}
+                  style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
+                />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                LLM URL:
+                <input
+                  value={settings.llmUrl}
+                  onChange={(e) => setSettings((s) => ({ ...s, llmUrl: e.target.value }))}
+                  style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
+                />
+              </label>
+              <label style={{ fontSize: 12 }}>
+                LLM Model:
+                <input
+                  value={settings.llmModel}
+                  onChange={(e) => setSettings((s) => ({ ...s, llmModel: e.target.value }))}
+                  style={{ marginLeft: 8, padding: "4px 6px", background: "var(--border)", color: "var(--foreground)", border: "1px solid var(--border)", borderRadius: 4 }}
+                />
+              </label>
+            </div>
+          )}
           <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-            {(searchError || error) && (
+            {searchError && (
               <div style={{ padding: 12, background: "#3a0f0f", color: "#ffb3b3", borderBottom: "1px solid var(--border)" }}>
-                {searchError || error}
+                {searchError}
               </div>
             )}
             {mode === "search" ? (
