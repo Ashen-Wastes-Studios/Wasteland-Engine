@@ -71,6 +71,34 @@ register(b1)`** (b-shift 7). `u9` -> binding 9 is also occupied.
 `tools/verify_nova_binding_budget.py --strict` is the gate. It reports `HAZARD`
 for u8/u9 and exits 1 under --strict. Do not hand-edit a binding without it.
 
+## The clean-room stack's bindings (WLSR / WLAA / WLRR / WLFG)
+
+The reconstruction stack adds four resources, all in the SRV region, and none of
+them is a new UAV:
+
+| register | resource | binding (offset 16) | target |
+|---|---|---|---|
+| `t72` | `s_WlfgHistory` (previous present) | 88 | all |
+| `t75` | `WlfgWeights` (StructuredBuffer<float>) | 91 | all |
+| `t76` | `WlrrWeights` (StructuredBuffer<float>) | 92 | **SPIR-V only** |
+| `t77` | `read_img_WlrrInput` | 93 | **SPIR-V only** |
+| `u15` | `img_WlrrInput` (RWTexture2D<float4>) | 15 (UAV) | **SPIR-V only** |
+
+The WLRR resources are guarded `#if !defined(WASTELAND_DXIL) &&
+!defined(WASTELAND_GLSL)`, so the DXIL target compiles with no reference to them
+and `kUavCount` stays 15. Adding `u15` without covering it in DX12's root
+signature is the documented `E_INVALIDARG` trap.
+
+**Every `t`/`u` register added to the shared `.slang` must be covered by every
+target's root signature, or compiled out of the targets that cannot provide it.**
+The readable-snapshot SRV block has grown three times for exactly this reason
+(`t73` moments, `t74` neural weights, `t75` WLFG weights), each time moving
+`kUavBase` and each time firing the trap when the range was missed.
+
+`tools/verify_render_capabilities.py` cross-checks the tier table against the
+dispatched pass IDs, and `tools/verify_vulkan_nova_contract.py` guards the slot
+tables themselves.
+
 ## MEASURED on this machine — DX11 is NOT capped at 8
 
 `tools/probe_dx_uav_slots.cpp` (build+run it; the subagent that wrote it left the

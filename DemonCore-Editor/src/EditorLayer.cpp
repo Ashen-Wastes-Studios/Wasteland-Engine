@@ -25,10 +25,19 @@
 
 #include <Wasteland/Scene/Entity.h>
 
+// WL_PROFILE_FUNCTION is used throughout this file but is defined here, not in
+// the engine umbrella header: the editor compiles with PrecompiledHeader=NotUsing,
+// so wlpch.h is never force-included and the macro has to be pulled in explicitly.
+#include "Wasteland/Debug/Instrumentor.h"
+
 #include "Wasteland/Scene/SceneSerializer.h"
 
 #include "Wasteland/Utils/PlatformUtils.h"
 #include "Platform/NVRHI/NVRHIFramebuffer.h"
+// DX12Nova's full definition is needed to call ReadbackVisibility from the
+// visibility capture. The header pulls in d3d12.h, which is why this sits after
+// the Windows.h include above rather than with the other Wasteland headers.
+#include "Platform/NVRHI/DX12Nova.h"
 
 #include "Panels/ApiKeyStore.h"
 #include "Panels/ToolServer.h"
@@ -150,9 +159,19 @@ namespace Wasteland
 // Simple system stats helpers (cross-platform)
 // Core-profile-safe GL extension check: glGetString(GL_EXTENSIONS) returns
 // NULL on GL >= 3.0 core contexts (this engine runs 4.5 core), so enumerate
-// with glGetStringi instead. Safe with no current context (returns false).
+// with glGetStringi instead. Only meaningful with a live GL context -- see the
+// backend guard in the body.
 static bool HasGLExtension(const char *name)
 {
+	// No GL context means the glad entry points were never loaded, so the calls
+	// below are calls through a NULL function pointer -- an access violation at
+	// address 0, not a false return. The D3D and Vulkan backends create the window
+	// NO_API precisely so no GL context exists, and the first throttled stats
+	// update used to take the editor down on both of them. Guard on the live
+	// backend before touching GL.
+	if (RendererAPI::GetAPI() != RendererAPI::API::OpenGL)
+		return false;
+
 	GLint count = 0;
 	glGetIntegerv(GL_NUM_EXTENSIONS, &count);
 	if (count > 0)
@@ -545,6 +564,7 @@ static bool HasGLExtension(const char *name)
 				m_EditorCamera.SetPitch(pitch);
 				m_EditorCamera.SetYaw(yaw);
 				m_CameraPinned = true;
+				m_PinnedYaw0 = yaw;
 				WL_CORE_INFO("Pinned editor camera: focal ({},{},{}) distance {} pitch {} yaw {}",
 				             fx, fy, fz, dist, pitch, yaw);
 			}
@@ -552,6 +572,36 @@ static bool HasGLExtension(const char *name)
 			{
 				WL_CORE_WARN("WASTELAND_PIN_CAMERA ignored: expected <fx,fy,fz>,<distance>,<pitch>,<yaw>, got '{}'",
 				             pinEnv);
+			}
+		}
+
+		// Pinned-orbit harness hook.
+		//
+		//   WASTELAND_PIN_CAMERA_ORBIT=<deg/frame>
+		//
+		// Advances the pinned yaw by a fixed number of degrees every frame, so the
+		// camera has genuinely moved between two captures and the renderer writes a
+		// real velocity field with real disocclusions. A static pin gives every
+		// frame the same view: velocity comes back all-zero and the reactive mask
+		// has nothing to mark, which is useless as frame-synthesis training data no
+		// matter how clean the images look. The step is per FRAME, not per second,
+		// so a slow machine still produces the same sequence of views.
+		//
+		// Inert unless WASTELAND_PIN_CAMERA actually pinned the camera: orbiting
+		// an unpinned camera would move it out from under EditorCamera::OnUpdate
+		// and break the reproducibility the pin exists for.
+		if (const char *orbitEnv = std::getenv("WASTELAND_PIN_CAMERA_ORBIT"))
+		{
+			float rate = 0.0f;
+			if (m_CameraPinned && std::sscanf(orbitEnv, "%f", &rate) == 1 && rate != 0.0f)
+			{
+				m_OrbitRate = rate;
+				WL_CORE_INFO("Pinned camera orbit: {} deg/frame from yaw {}", rate, m_PinnedYaw0);
+			}
+			else
+			{
+				WL_CORE_WARN("WASTELAND_PIN_CAMERA_ORBIT ignored (pinned={}, value='{}')",
+				             m_CameraPinned, orbitEnv);
 			}
 		}
 
@@ -835,6 +885,225 @@ static bool HasGLExtension(const char *name)
 		return WritePNG(path, width, height, pixels);
 	}
 
+	// Writes a float32 array as a NumPy .npy v1.0 file in C order.
+	//
+	// A .npy rather than a raw dump because the dataset loader accepts only .npy
+	// for reprojection state (dataset.py raises on anything else): the whole point
+	// of this path is that the values survive to the trainer unquantized, and a
+	// format the loader cannot read would defeat it.
+	static bool WriteNpyFloat32(const std::string &path, const std::vector<float> &data,
+	                            uint32_t height, uint32_t width, uint32_t channels)
+	{
+		std::ofstream f(path, std::ios::binary | std::ios::trunc);
+		if (!f)
+			return false;
+
+		std::string shape = "(" + std::to_string(height) + ", " + std::to_string(width);
+		if (channels > 1)
+			shape += ", " + std::to_string(channels);
+		shape += ")";
+		std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': " + shape + ", }";
+
+		// magic(6) + version(2) + header-length(2) + header must be a multiple of
+		// 64, so the header is space-padded and then newline-terminated. numpy
+		// rejects the file if either is wrong.
+		const size_t pad = (64 - ((10 + header.size() + 1) % 64)) % 64;
+		header.append(pad, ' ');
+		header.push_back('\n');
+
+		const char magic[6] = { '\x93', 'N', 'U', 'M', 'P', 'Y' };
+		f.write(magic, sizeof(magic));
+		const unsigned char version[2] = { 1, 0 };
+		f.write((const char *)version, sizeof(version));
+		const uint16_t headerLen = (uint16_t)header.size();
+		f.write((const char *)&headerLen, sizeof(headerLen));
+		f.write(header.data(), (std::streamsize)header.size());
+		f.write((const char *)data.data(), (std::streamsize)(data.size() * sizeof(float)));
+		return (bool)f;
+	}
+
+	// Captures the Nova image set one WLFG training pair needs, from a SINGLE
+	// frame: <prefix>_u0.png (output/target), _u1.png (accumulation/warped),
+	// _u4.png (albedo), _u5.png (velocity), _u6.png (g-buffer, depth in R) and
+	// _u14.png (reactive mask). Driven by WL_NOVA_CAPTURE_SET=<prefix>.
+	//
+	// One frame, not six runs: the pair is only aligned if every image comes from
+	// the same present, and six separate runs would each advance the clock.
+	bool EditorLayer::CaptureNovaImageSetPNG(const std::string &prefix)
+	{
+		// The shader UAV name (what the dataset names the file after) and the
+		// backend image slot Renderer3D reads are different numbers -- u14 lives at
+		// image slot 9 -- so both are carried rather than derived from one another.
+		struct NovaImageSlot { uint32_t index; const char *slot; };
+		const NovaImageSlot images[] = {
+			{ 0, "u0" },  // img_Output       -- composite / frame-synthesis target
+			{ 1, "u1" },  // img_Accumulation -- temporal accumulation / warped input
+			{ 4, "u4" },  // img_AlbedoHit    -- guide
+			{ 5, "u5" },  // img_Velocity     -- motion vectors
+			{ 6, "u6" },  // img_TraceGBuffer -- depth in R
+			{ 9, "u14" }, // img_Mask         -- reactive / disocclusion mask
+		};
+
+		const std::filesystem::path dir(prefix);
+		if (!dir.parent_path().empty())
+			std::filesystem::create_directories(dir.parent_path());
+
+		bool ok = true;
+		for (const NovaImageSlot &img : images)
+		{
+			std::vector<unsigned char> rgba;
+			uint32_t w = 0, h = 0;
+			if (!Renderer3D::ReadbackRayTraceTarget(rgba, w, h, img.index) || w == 0 || h == 0)
+			{
+				WL_CORE_WARN("CaptureNovaImageSetPNG: readback failed for {0}", img.slot);
+				ok = false;
+				continue;
+			}
+
+			// Stride is taken from the returned size rather than assumed to be 4:
+			// the backends hand back a converted RGBA for the packed formats, but a
+			// tighter layout must not silently shear the rows.
+			const uint32_t stride = (uint32_t)(rgba.size() / ((size_t)w * h));
+			if (stride < 3)
+			{
+				WL_CORE_WARN("CaptureNovaImageSetPNG: {0} read back {1} bytes/px", img.slot, stride);
+				ok = false;
+				continue;
+			}
+
+			// RGBA -> RGB, matching CaptureFramebufferPNG: the PNG writer emits
+			// colour type 2 (truecolour RGB).
+			std::vector<unsigned char> rgb((size_t)w * (size_t)h * 3);
+			for (uint32_t y = 0; y < h; ++y)
+			{
+				const unsigned char *src = rgba.data() + (size_t)y * w * stride;
+				unsigned char *dst = rgb.data() + (size_t)y * w * 3;
+				for (uint32_t x = 0; x < w; ++x)
+				{
+					dst[x * 3 + 0] = src[x * stride + 0];
+					dst[x * 3 + 1] = src[x * stride + 1];
+					dst[x * 3 + 2] = src[x * stride + 2];
+				}
+			}
+
+			const std::string out = prefix + "_" + img.slot + ".png";
+			if (!WritePNG(out, (int)w, (int)h, rgb))
+			{
+				WL_CORE_WARN("CaptureNovaImageSetPNG: write failed for {0}", out);
+				ok = false;
+			}
+		}
+		return ok;
+	}
+
+	// Phase 1 Tasks 1.2/1.2b: read the visibility G-buffer back and write one PNG
+	// per target. Driven by WL_CAPTURE_VISIBILITY=<prefix>.
+	bool EditorLayer::CaptureVisibilityPNG(const std::string &prefix)
+	{
+		auto *nova = Renderer3D::GetNovaDX12();
+		if (!nova)
+		{
+			WL_CORE_WARN("CaptureVisibilityPNG: no DX12 Nova instance");
+			return false;
+		}
+
+		static const char *names[3] = { "meshid", "albedo", "normal" };
+		bool ok = true;
+		for (UINT i = 0; i < 3; i++)
+		{
+			std::vector<unsigned char> rgba;
+			UINT w = 0, h = 0;
+			if (!nova->ReadbackVisibility(i, rgba, w, h))
+			{
+				WL_CORE_WARN("CaptureVisibilityPNG: readback failed for {0}", names[i]);
+				ok = false;
+				continue;
+			}
+
+			// RGBA -> RGB, matching CaptureNovaImageSetPNG: the PNG writer emits
+			// colour type 2 (truecolour RGB).
+			std::vector<unsigned char> rgb((size_t)w * (size_t)h * 3);
+			for (size_t p = 0; p < (size_t)w * (size_t)h; p++)
+			{
+				rgb[p * 3 + 0] = rgba[p * 4 + 0];
+				rgb[p * 3 + 1] = rgba[p * 4 + 1];
+				rgb[p * 3 + 2] = rgba[p * 4 + 2];
+			}
+
+			const std::string out = prefix + "_" + names[i] + ".png";
+			if (!WritePNG(out, (int)w, (int)h, rgb))
+			{
+				WL_CORE_WARN("CaptureVisibilityPNG: write failed for {0}", out);
+				ok = false;
+			}
+			else
+			{
+				WL_CORE_INFO("CaptureVisibilityPNG: wrote {0} ({1}x{2})", out, w, h);
+			}
+		}
+		return ok;
+	}
+
+	// Same readback as CaptureNovaImageSetPNG, but writes the two buffers the
+	// reprojection head actually consumes -- velocity (u5) and depth (u6) -- as
+	// lossless float32 .npy, so the head trains on linear signed values instead of
+	// the 8-bit PNG quantization. Driven by WL_NOVA_CAPTURE_SET_FLOAT=<prefix>.
+	bool EditorLayer::CaptureNovaImageSetFloat(const std::string &prefix)
+	{
+		const std::filesystem::path dir(prefix);
+		if (!dir.parent_path().empty())
+			std::filesystem::create_directories(dir.parent_path());
+
+		bool ok = true;
+
+		// u5: velocity, X then Y, signed. RG32_FLOAT is two floats per texel, which
+		// is exactly the (H, W, 2) layout the loader's state check expects.
+		{
+			std::vector<float> texels;
+			uint32_t w = 0, h = 0;
+			if (Renderer3D::ReadbackRayTraceTargetFloat(texels, w, h, 5) && w && h)
+			{
+				const uint32_t stride = (uint32_t)(texels.size() / ((size_t)w * h));
+				std::vector<float> packed((size_t)w * h * 2, 0.0f);
+				for (size_t i = 0; i < (size_t)w * h; ++i)
+				{
+					packed[i * 2 + 0] = texels[i * stride + 0];
+					if (stride > 1)
+						packed[i * 2 + 1] = texels[i * stride + 1];
+				}
+				if (!WriteNpyFloat32(prefix + "_u5.npy", packed, h, w, 2))
+					ok = false;
+			}
+			else
+			{
+				WL_CORE_WARN("CaptureNovaImageSetFloat: velocity (u5) readback failed");
+				ok = false;
+			}
+		}
+
+		// u6: g-buffer. Depth is the R channel; the loader wants (H, W, 1).
+		{
+			std::vector<float> texels;
+			uint32_t w = 0, h = 0;
+			if (Renderer3D::ReadbackRayTraceTargetFloat(texels, w, h, 6) && w && h)
+			{
+				const uint32_t stride = (uint32_t)(texels.size() / ((size_t)w * h));
+				std::vector<float> packed((size_t)w * h, 0.0f);
+				for (size_t i = 0; i < (size_t)w * h; ++i)
+					packed[i] = texels[i * stride];
+				if (!WriteNpyFloat32(prefix + "_u6.npy", packed, h, w, 1))
+					ok = false;
+			}
+			else
+			{
+				WL_CORE_WARN("CaptureNovaImageSetFloat: depth (u6) readback failed");
+				ok = false;
+			}
+		}
+
+		return ok;
+	}
+
 	void EditorLayer::OnUpdate(Timestep ts)
 	{
 		WL_PROFILE_FUNCTION();
@@ -903,6 +1172,19 @@ static bool HasGLExtension(const char *name)
 					WL_CORE_WARN("EditorLayer: screenshot retry {0} failed; the target "
 					             "may not have rendered yet", m_FrameCounter - shotFrame + 1);
 				}
+
+				// WLFG dataset capture. Deliberately inside the same wantShot
+				// branch as the screenshot rather than on its own schedule: the
+				// training pair is only aligned if the whole Nova image set is
+				// read from the SAME present the target came from.
+				if (const char *setPrefix = std::getenv("WL_NOVA_CAPTURE_SET"))
+					CaptureNovaImageSetPNG(setPrefix);
+
+				// Phase 1 Tasks 1.2/1.2b: visibility G-buffer capture.
+				if (const char *visPrefix = std::getenv("WL_CAPTURE_VISIBILITY"))
+					CaptureVisibilityPNG(visPrefix);
+				if (const char *setFloat = std::getenv("WL_NOVA_CAPTURE_SET_FLOAT"))
+					CaptureNovaImageSetFloat(setFloat);
 			}
 
 			if (m_ScreenshotDone && --m_ScreenshotLinger <= 0)
@@ -982,6 +1264,15 @@ static bool HasGLExtension(const char *name)
 			// same binary, which is the whole point of pinning.
 			if (!m_CameraPinned)
 				m_EditorCamera.OnUpdate(ts);
+			else if (m_OrbitRate != 0.0f)
+			{
+				// Deterministic motion for the dataset exporter. The yaw is a pure
+				// function of the frame index rather than an accumulator, so frame N
+				// is the same view on every run regardless of frame timing or how
+				// many frames were dropped -- an accumulator would drift and quietly
+				// desynchronise two captures that are supposed to be comparable.
+				m_EditorCamera.SetYaw(m_PinnedYaw0 + m_OrbitRate * static_cast<float>(m_FrameCounter));
+			}
 
 			m_ActiveScene->OnUpdateEditor(ts, m_EditorCamera);
 			break;
@@ -1189,7 +1480,10 @@ static bool HasGLExtension(const char *name)
 		// primary panel. Both regions are therefore always occupied -- an
 		// empty dock region reads like a broken layout.
 		ImGuiID hierarchy = left;
-		ImGuiID properties = left;
+			ImGuiID properties = left;
+			// Settings gets its own node in the same rail. It is declared here with
+			// the others so the dock call below can reference it unconditionally.
+			ImGuiID settingsNode = left;
 		if (left != 0)
 		{
 			// Hierarchy on top, Properties below.
@@ -1201,12 +1495,24 @@ static bool HasGLExtension(const char *name)
 			// bottom half and orphaned the top -- leaving Scene Hierarchy and
 			// Properties as tabs in a single region instead of the stacked pair
 			// the comment above them describes.
-			hierarchy = 0;
-			properties = 0;
+			hierarchy = left;
+			properties = left;
+			settingsNode = left;
+			// Three stacked nodes, not two. Settings used to be listed in
+			// kPanels below but never passed to dock(), so ImGui treated it as a
+			// free-floating window and restored it to whatever position the last
+			// 3840-wide session saved -- off the right edge of the framebuffer the
+			// editor actually renders into. A window that is not docked cannot be
+			// reached, which for a panel of render settings is the same as not
+			// existing.
 			(void)ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.5f, &properties, &hierarchy);
-		}
-		dock("Scene Hierarchy", hierarchy);
-		dock("Properties", properties);
+			if (properties != 0)
+				(void)ImGui::DockBuilderSplitNode(properties, ImGuiDir_Down, 0.5f,
+					&settingsNode, &properties);
+			}
+			dock("Scene Hierarchy", hierarchy);
+			dock("Properties", properties);
+			dock("Settings", settingsNode);
 		dock("Content Browser", bottom);
 
 		// Audio's regions, declared here because the generic loop further down
@@ -1522,6 +1828,7 @@ static bool HasGLExtension(const char *name)
 						m_TerrainAssetPanel.SetVisible(terrain);
 					ImGui::MenuItem("Stats", nullptr, &m_ShowStats);
 					ImGui::MenuItem("Settings", nullptr, &m_ShowSettings);
+ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
 					bool chatVisible = m_AIChatPanel.IsVisible();
 					if (ImGui::MenuItem("AI Chatbot", nullptr, &chatVisible))
 						m_AIChatPanel.SetVisible(chatVisible);
@@ -1719,9 +2026,97 @@ static bool HasGLExtension(const char *name)
 			ImGui::End();
 			}
 
+			// Clean-room reconstruction stack (WLSR / WLAA / WLRR / WLFG).
+			// Every checkbox maps to a REAL branch in the schedule -- see the
+			// accessor comments in Renderer3D.h. The tier and the two head
+			// readouts are read-only: without them a user cannot tell "no
+			// enhancement" from "the head never loaded".
+			//
+			// Its own window, positioned explicitly. As a section of Settings it
+			// was unreachable: Settings is listed in the dock panel array but is
+			// never passed to dock(), so ImGui restored it to a 3840-wide saved
+			// position that lands outside the framebuffer the editor renders
+			// into. A panel of render settings the user cannot reach is the same
+			// as one that does not exist.
+			if (m_ShowReconstruction)
+			{
+				// y=800, not 20: the OpenGL screenshot reads GL_VIEWPORT rows from the
+// BOTTOM of the framebuffer, so a window near the top of a 2130-tall
+// window lands above the 1451 rows the capture actually covers.
+ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
+				ImGui::Begin("Clean-Room Reconstruction");
+				const char *tier = Wasteland::Renderer3D::GetReconstructionTierName();
+				const bool tierOk = tier && strcmp(tier, "unavailable") != 0;
+				if (tierOk)
+					ImGui::Text("  Tier: %s", tier);
+				else
+					ImGui::TextDisabled("  Tier: %s", tier ? tier : "unavailable");
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("The reconstruction level this backend resolves to. A property of the API, not a setting.");
+
+			bool wlsrEnabled = Wasteland::Renderer3D::IsWlsrEnabled();
+			if (ImGui::Checkbox("WLSR (EASU + RCAS)", &wlsrEnabled))
+				Wasteland::Renderer3D::SetWlsrEnabled(wlsrEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Spatial reconstruction: EASU edge-adaptive upscale plus the RCAS sharpen stage (pass 15).");
+
+			bool wlaaEnabled = Wasteland::Renderer3D::IsWlaaEnabled();
+			if (ImGui::Checkbox("WLAA (native-res AA)", &wlaaEnabled))
+				Wasteland::Renderer3D::SetWlaaEnabled(wlaaEnabled);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Temporal accumulation with the sharpen folded into the composite at RenderScale 1.0.");
+
+			bool wlrrEnabled = Wasteland::Renderer3D::IsWlrrEnabled();
+			if (ImGui::Checkbox("WLRR (residual denoiser)", &wlrrEnabled))
+				Wasteland::Renderer3D::SetWlrrEnabled(wlrrEnabled);
+			const bool wlrrAvailable = Wasteland::Renderer3D::IsWlrrAvailable();
+			ImGui::SameLine();
+			if (wlrrAvailable)
+				ImGui::TextDisabled("(head loaded)");
+			else
+				ImGui::TextDisabled("(no head: identity)");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Passes 20/21. Without a validated wlrr.bin the pass is the exact identity, which is indistinguishable from off without this readout.");
+
+			bool wlfgEnabled = Wasteland::Renderer3D::IsWlfgEnabled();
+			if (ImGui::Checkbox("WLFG (frame generation)", &wlfgEnabled))
+				Wasteland::Renderer3D::SetWlfgEnabled(wlfgEnabled);
+			const bool wlfgAvailable = Wasteland::Renderer3D::IsWlfgAvailable();
+			ImGui::SameLine();
+			if (wlfgAvailable)
+				ImGui::TextDisabled("(head loaded)");
+			else
+				ImGui::TextDisabled("(no head: identity)");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Passes 22/23. Without a validated blob the pass is the exact identity.");
+
+			int wlfgFactor = Wasteland::Renderer3D::GetWlfgFactor();
+			const int wlfgMax = Wasteland::Renderer3D::GetWlfgMaxFactor();
+			if (wlfgMax < 1)
+			{
+				ImGui::BeginDisabled(true);
+				ImGui::SliderInt("  Factor", &wlfgFactor, 1, 1);
+				ImGui::EndDisabled();
+				ImGui::TextDisabled("  Frame generation unavailable: the accumulation state does not permit it.");
+			}
+			else
+			{
+				if (ImGui::SliderInt("  Factor", &wlfgFactor, 1, wlfgMax))
+					Wasteland::Renderer3D::SetWlfgFactor(wlfgFactor);
+				if (ImGui::IsItemHovered())
+				 ImGui::SetTooltip("0 = off, 1 = warp+head only, N>1 = generate N-1 of every N presents. The ceiling follows the accumulation state.");
+				}
+				
+				ImGui::End();
+			}
+
 			if (m_ShowSettings)
 			{
 				ImGui::Begin("Settings");
+
+
+
+			ImGui::Separator();
 
 			ImGui::Checkbox("Show physics colliders", &m_ShowPhysicsColliders);
 
@@ -2154,8 +2549,9 @@ static bool HasGLExtension(const char *name)
 				}
 			}
 
-			ImGui::Separator();
-			ImGui::Text("Experimental Nova Reconstruction");
+
+				ImGui::Separator();
+				ImGui::Text("Experimental Nova Reconstruction");
 			bool svfgEnabled = Wasteland::Renderer3D::IsSVGFEnabled();
 			if (ImGui::Checkbox("SVGF Denoiser", &svfgEnabled))
 				Wasteland::Renderer3D::SetSVGFEnabled(svfgEnabled);
@@ -2278,6 +2674,25 @@ static bool HasGLExtension(const char *name)
 
 			ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
 			m_ViewportSize = {viewportPanelSize.x, viewportPanelSize.y};
+
+			// Harness override: force the viewport, and with it the Nova render target
+			// and the editor framebuffer, to a fixed size. Without this the measured
+			// resolution is whatever the docked panel happens to be -- 1280x720 in the
+			// default bench layout -- so the plan's 4K target cannot be measured at all.
+			// Applied AFTER the ImGui-derived assignment because that runs every frame,
+			// and would otherwise overwrite the override on the next one.
+			if (const char *vp = std::getenv("WL_CAPTURE_VIEWPORT"))
+			{
+				float w = 0.0f, h = 0.0f;
+				if (std::sscanf(vp, "%fx%f", &w, &h) == 2 && w > 0.0f && h > 0.0f)
+				{
+					if ((int)w != (int)m_ViewportSize.x || (int)h != (int)m_ViewportSize.y)
+						WL_CORE_INFO("WL_CAPTURE_VIEWPORT={0} -> viewport {1}x{2}", vp, (int)w, (int)h);
+					m_ViewportSize = {w, h};
+				}
+				else
+					WL_CORE_WARN("WL_CAPTURE_VIEWPORT ignored: expected <w>x<h>, got '{0}'", vp);
+			}
 
 			ImVec2 maxBound = {minBound.x + m_ViewportSize.x, minBound.y + m_ViewportSize.y};
 			m_ViewportBounds[0] = {minBound.x, minBound.y};
@@ -3116,7 +3531,21 @@ static bool HasGLExtension(const char *name)
 	// and lazy on some backends (DX12Nova construction can land minutes later),
 	// which is exactly why an accidental switch would be so damaging -- hence
 	// both guards.
-	if (settings.RendererAPI >= 0)
+	if (const char *force = std::getenv("WASTELAND_FORCE_API"))
+	{
+		// Test hook: force a backend regardless of the project pin. The Phase 1
+		// visibility pass is DX12-only for now and the project pins Vulkan, so
+		// without an override the DX12 path cannot be exercised at all.
+		const auto requested = static_cast<Wasteland::RendererAPI::API>(std::atoi(force));
+		const auto current = Wasteland::RendererAPI::GetAPI();
+		if (requested != current && requested != Wasteland::RendererAPI::API::None)
+		{
+			WL_CORE_INFO("EditorLayer: WASTELAND_FORCE_API={0} overrides the project pin (was {1})",
+			             (int)requested, (int)current);
+			Wasteland::Application::Get().GetWindow().SwitchRendererAPI(requested);
+		}
+	}
+	else if (settings.RendererAPI >= 0)
 	{
 		const auto requested = static_cast<Wasteland::RendererAPI::API>(settings.RendererAPI);
 		const auto current = Wasteland::RendererAPI::GetAPI();
@@ -3176,6 +3605,16 @@ static bool HasGLExtension(const char *name)
 		Renderer3D::SetFilmGrainEnabled(r.FilmGrainEnabled);
 		Renderer3D::SetFilmGrainIntensity(r.FilmGrainIntensity);
 
+		// Clean-room reconstruction stack. The factor is applied AFTER the
+		// enabled flag because a factor >= 1 implies the warp; applying it first
+		// would leave a disabled warp carrying a non-zero factor.
+		Renderer3D::SetWlsrEnabled(r.WlsrEnabled);
+		Renderer3D::SetWlaaEnabled(r.WlaaEnabled);
+		Renderer3D::SetWlrrEnabled(r.WlrrEnabled);
+		Renderer3D::SetWlfgEnabled(r.WlfgEnabled);
+		if (r.WlfgFactor > 0)
+			Renderer3D::SetWlfgFactor(r.WlfgFactor);
+
 		// Last: it forces a resize, so it happens after the rest.
 		if (r.HasRayTracingValue)
 			Renderer3D::SetRayTracingEnabled(r.RayTracingEnabled);
@@ -3210,6 +3649,12 @@ static bool HasGLExtension(const char *name)
 
 		r.FilmGrainEnabled = Renderer3D::GetFilmGrainEnabled();
 		r.FilmGrainIntensity = Renderer3D::GetFilmGrainIntensity();
+
+		r.WlsrEnabled = Renderer3D::IsWlsrEnabled();
+		r.WlaaEnabled = Renderer3D::IsWlaaEnabled();
+		r.WlrrEnabled = Renderer3D::IsWlrrEnabled();
+		r.WlfgEnabled = Renderer3D::IsWlfgEnabled();
+		r.WlfgFactor = Renderer3D::GetWlfgFactor();
 
 		// Captured ONLY when the project already pinned a backend. Writing the
 		// current API unconditionally would turn an unset (-1) field into a real id

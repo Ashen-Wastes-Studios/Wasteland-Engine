@@ -2267,6 +2267,16 @@ py::class_<Wasteland::Window, std::shared_ptr<Wasteland::Window> >(m, "Window")
         .def("GetWindow", &Wasteland::Application::GetWindow,
              py::return_value_policy::reference)
         .def("Close", &Wasteland::Application::Close)
+        // WLFG (Task 6): the sim clock and the synthetic frame cap. Script can
+        // scale game time (SetSimTimescale) and pace the present (SetFrameInterval);
+        // the ceiling function tells a script the legal factor for the current
+        // accumulation state before it asks for one.
+        .def("SetSimTimescale", &Wasteland::Application::SetSimTimescale)
+        .def("GetSimTimescale", &Wasteland::Application::GetSimTimescale)
+        .def("SetFrameInterval", &Wasteland::Application::SetFrameInterval)
+        .def("GetFrameInterval", &Wasteland::Application::GetFrameInterval)
+        .def("SetWlfgStats", &Wasteland::Application::SetWlfgStats)
+        .def("WlfgMaxFactor", &Wasteland::Application::WlfgMaxFactor)
         .def("GetImGuiLayer", &Wasteland::Application::GetImGuiLayer);
 
 // ----------------------------------------------------------- Core: Layer --
@@ -2815,7 +2825,8 @@ py::class_<Wasteland::Framebuffer, Wasteland::Ref<Wasteland::Framebuffer> >(m, "
     // width is a driver-level hint and is commonly ignored by the backend,
     // so a script setting it to 3 may see no change.
     m.def("RenderCommand_DrawIndexed", &Wasteland::RenderCommand::DrawIndexed,
-         py::arg("vertexArray"), py::arg("indexCount") = 0);
+         py::arg("vertexArray"), py::arg("indexCount") = 0,
+         py::arg("instanceCount") = 1, py::arg("firstInstance") = 0);
     m.def("RenderCommand_DrawLines", &Wasteland::RenderCommand::DrawLines,
          py::arg("vertexArray"), py::arg("vertexCount"));
     m.def("RenderCommand_SetLineWidth", &Wasteland::RenderCommand::SetLineWidth,
@@ -3698,6 +3709,61 @@ m.def("Renderer3D_SetSceneTransformEpoch",
          py::arg("enabled"));
     m.def("Renderer3D_IsNeuralStageAvailable",
          &Wasteland::Renderer3D::IsNeuralStageAvailable);
+
+    // --- The four clean-room reconstruction features ----------------------
+    // Each maps to a REAL branch in the Nova schedule; see the accessor
+    // comments in Renderer3D.h. The availability accessors matter as much as
+    // the enabled ones: WLRR and WLFG are the exact identity when no validated
+    // blob reached the GPU, and without Is*Available a script cannot tell
+    // "the feature is off" from "the head never loaded".
+    //
+    // WLSR is a PAIR of controls (EASU upscale + RCAS sharpen), so it has one
+    // flag rather than two: setting it off must restore bilinear, not leave a
+    // sharpen stage running over an upscaled image nobody asked for.
+    m.def("Renderer3D_IsWlsrEnabled", &Wasteland::Renderer3D::IsWlsrEnabled);
+    m.def("Renderer3D_SetWlsrEnabled",
+         &Wasteland::Renderer3D::SetWlsrEnabled, py::arg("enabled"));
+    m.def("Renderer3D_IsWlaaEnabled", &Wasteland::Renderer3D::IsWlaaEnabled);
+    m.def("Renderer3D_SetWlaaEnabled",
+         &Wasteland::Renderer3D::SetWlaaEnabled, py::arg("enabled"));
+    m.def("Renderer3D_IsWlrrEnabled", &Wasteland::Renderer3D::IsWlrrEnabled);
+    m.def("Renderer3D_SetWlrrEnabled",
+         &Wasteland::Renderer3D::SetWlrrEnabled, py::arg("enabled"));
+    m.def("Renderer3D_IsWlrrAvailable", &Wasteland::Renderer3D::IsWlrrAvailable);
+    m.def("Renderer3D_IsWlfgEnabled", &Wasteland::Renderer3D::IsWlfgEnabled);
+    m.def("Renderer3D_SetWlfgEnabled",
+         &Wasteland::Renderer3D::SetWlfgEnabled, py::arg("enabled"));
+    m.def("Renderer3D_GetWlfgFactor", &Wasteland::Renderer3D::GetWlfgFactor);
+    m.def("Renderer3D_SetWlfgFactor",
+         &Wasteland::Renderer3D::SetWlfgFactor, py::arg("factor"));
+    m.def("Renderer3D_GetWlfgMaxFactor", &Wasteland::Renderer3D::GetWlfgMaxFactor);
+    m.def("Renderer3D_IsWlfgAvailable", &Wasteland::Renderer3D::IsWlfgAvailable);
+    // The resolved tier name for the active backend, e.g.
+    // "Reconstruct: full (+ WLFG head)". A script can assert the tier rather
+    // than assuming a feature is present because it was enabled.
+    m.def("Renderer3D_GetReconstructionTierName",
+         &Wasteland::Renderer3D::GetReconstructionTierName);
+
+    // The upscale kernel and the RCAS sharpen flag, exposed so a script can
+    // verify WLSR's two halves independently. The filter is an int enum on
+    // purpose: the Python side should not have to mirror the C++ enum.
+    m.def("Renderer3D_GetReconstructionFilter",
+         []()
+         {
+             // int, not the C++ enum: ReconstructionFilter is not registered
+             // with pybind, and a script should not have to mirror the enum.
+             return (int)Wasteland::Renderer3D::GetReconstructionFilter();
+         });
+    m.def("Renderer3D_SetReconstructionFilter",
+         [](int filter)
+         {
+             // int, not the C++ enum: ReconstructionFilter is not registered
+             // with pybind, and a script should not have to mirror the enum.
+             Wasteland::Renderer3D::SetReconstructionFilter(
+                 (Wasteland::ReconstructionFilter)filter);
+         },
+         py::arg("filter"));
+    m.def("Renderer3D_IsRCASEnabled", &Wasteland::Renderer3D::IsRCASEnabled);
 
     // The gate mean, read back from the stage's own pass 19 and surfaced through
     // Statistics. This is the only way for a script to tell "the network decided

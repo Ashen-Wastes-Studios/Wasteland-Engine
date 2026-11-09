@@ -103,6 +103,16 @@ namespace Wasteland
 
 				bool FilmGrainEnabled = false;
 				float FilmGrainIntensity = 0.0f;
+
+				// Clean-room reconstruction stack. Each maps to a REAL branch in
+				// the Nova schedule -- see Renderer3D's accessor comments. A
+				// missing key means default-off, so a project written before the
+				// stack existed loads unchanged.
+				bool WlsrEnabled = false;   // EASU upscale + RCAS sharpen (pass 15)
+				bool WlaaEnabled = false;   // native-res AA: accumulate + sharpen
+				bool WlrrEnabled = false;   // residual denoiser (passes 20/21)
+				bool WlfgEnabled = false;   // frame-generation warp (passes 22/23)
+				int  WlfgFactor = 0;        // 0 = off, 1..6 = generate N-1 of N
 			};
 
 			RenderSettings Render;

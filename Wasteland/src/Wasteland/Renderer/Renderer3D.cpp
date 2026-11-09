@@ -793,6 +793,13 @@ namespace Wasteland
         // Texture object identity -> slot index, independent of backend-native handle
         // types and pointer width.
         std::unordered_map<uintptr_t, int> TextureSlotMap;
+        // Equal-size, full-UV layers for the GLSL material sampler. Framebuffer
+        // blits resample mixed-size RGB/RGBA sources before mip generation.
+        GLuint SceneArrayTexture = 0;
+        GLuint SceneArrayReadFramebuffer = 0;
+        GLuint SceneArrayDrawFramebuffer = 0;
+        uint32_t SceneArrayWidth  = 0;
+        uint32_t SceneArrayHeight = 0;
 
         // Ray tracing ON by default: Nova is the engine's primary renderer and
         // this is the mode it was built for. EditorLayer::OnUpdate skips the
@@ -991,6 +998,12 @@ namespace Wasteland
         // wired the dispatch would read an unbound UAV, so this must stay false
         // until every target backend binds the resource.
         bool SvfgEnabled = false;
+        // WLRR -- the residual-correcting denoiser (passes 20/21). Off by default,
+        // and it only ever runs INSIDE the SVGF branch above, so with SVGF off it
+        // is inert. WL_WLRR overrides it; the head's own claim (beating the blend
+        // AND both arms on a held-out scene) is measured in
+        // docs/CLEANROOM_RECONSTRUCTION_EVIDENCE/task10/README.md.
+        bool WlrrEnabled = false;
         // Clean-room reconstruction stack (WLSR / WLAA / WLRR / WLFG) master
         // switch. Off by default: every pass it gates is a change to the final
         // image, and the plan's rule is that a wrong model must cost nothing.
@@ -1003,6 +1016,35 @@ namespace Wasteland
         // is inert until asked for, and the shader's own gate is a second line of
         // defence in case a caller forgets to set the strength.
         bool RCASEnabled = false;
+        // WLFG reprojection warp (pass 22). Default off: the warp overwrites
+        // img_Accumulation, so it changes the final image and stays a no-op until
+        // WL_WLFG asks for it.
+        bool WlfgWarpEnabled = false;
+        // The REQUESTED WLFG factor: 0 = off, 1..6 = generate (N-1) of every N
+        // presents. This is the plan's factor axis (Task 8 Step 6), not a boolean.
+        //
+        // WL_WLFG=1 deliberately keeps the pre-Step-6 behaviour -- warp and head run
+        // but nothing is generated -- so every capture, A/B and acceptance already
+        // recorded stays valid, and 0 stays off. Only N>1 engages the schedule.
+        int WlfgFactor = 0;
+        // The factor actually IN FORCE this frame, after the accumulation-state
+        // ceiling (Application::WlfgMaxFactor). 0 = no frame generation.
+        //
+        // Requested and effective are kept apart on purpose: the plan's precondition
+        // is that the factor is a FUNCTION of the accumulation state, so a request
+        // of 6 on a moved camera must resolve to 0 rather than being honoured. One
+        // field would hide that clamp.
+        int WlfgEffectiveFactor = 0;
+        // Present counter for the schedule. Deliberately NOT FrameIndex:
+        // BeginScene() zeroes FrameIndex on every view-projection change, so it
+        // counts scene resets, not presents -- a modulo against it would re-phase
+        // the schedule at every camera cut.
+        std::uint64_t WlfgPresentIndex = 0;
+        // Presents that ran the trace, and presents that were generated. These are
+        // what the plan's "measured present rate >= 6x the render rate" is computed
+        // from, so they are counted here rather than inferred from wall time.
+        std::uint64_t WlfgRealFrames = 0;
+        std::uint64_t WlfgWarps = 0;
         float RCASharpness = 0.0f;
         int  SvfgPasses = 4;
         // ReSTIR DI: four diffuse-emissive point-light candidates, temporal reuse,
@@ -1780,6 +1822,10 @@ namespace Wasteland
         // every use is guarded on SvfgEnabled, which is off by default.
         uint32_t MomentsTextureID = 0;
 
+        // Separate sampler object for the Slang GLSL (texture2D + sampler split).
+        // Replaces combined sampler2D from the old GLSL twin — created in Init.
+        uint32_t PointSamplerObject = 0;
+
         uint32_t GeneratedTextureID = 0;
 
         // Six planes in the fixed Left/Right/Bottom/Top/Near/Far order established by
@@ -1901,12 +1947,14 @@ namespace Wasteland
     // file static only remembers what was last logged, so a scene that overflows
     // every frame logs once instead of once per frame.
     static uint32_t s_LastReportedMidFrameFlushCount = 0;
-    static std::unique_ptr<DX11Nova> s_Nova;
-    static std::unique_ptr<DX12Nova> s_Nova12;
-    static std::unique_ptr<VulkanNova> s_NovaVk;
 
-    // Returns whether any backend-specific Nova instance is active.
-    static bool HasNova() { return s_Nova != nullptr || s_Nova12 != nullptr || s_NovaVk != nullptr; }
+    // NOTE: there used to be three namespace-scope `static std::unique_ptr<...>`
+    // decoys here (s_Nova, s_Nova12, s_NovaVk) shadowing Renderer3D's class
+    // statics, plus a free HasNova() reading them. Init() assigns the CLASS
+    // statics, so every free function in this file saw null and DX12 Nova
+    // dispatched into a null instance. Use Renderer3D::GetNovaDX11/DX12/Vulkan
+    // and Renderer3D::HasNova instead -- they read the real objects.
+
     // True when a mid-frame batch overflow must NOT dispatch Flush(). Consulted by every
     // Draw* helper, which are members and can therefore reach the PRIVATE FlushAndReset
     // -- a namespace-scope helper cannot, which is why the reset itself stays at the
@@ -1935,8 +1983,9 @@ namespace Wasteland
     // coincide with a backend that has no tracer -- which is the case that would
     // make skipping the upload drop geometry.
     static bool OverflowFlushWouldRetrace() { return s_Data.RayTracingEnabled; }
-    static DX11Nova* GetNovaDX11() { return s_Nova.get(); }
-    static DX12Nova* GetNovaDX12() { return s_Nova12.get(); }
+    // Deliberately absent: the namespace-scope GetNovaDX11/GetNovaDX12 pair that
+    // used to sit here read the decoy statics and always returned null. The real
+    // accessors are the Renderer3D class members defined near the top of this file.
     // Counts scaler adjustments for the periodic frame-time report.
     // NOTE: s_FrameTimeLogCount was removed. The frame-time report moved into
     // UpdateDynamicResolution and now uses s_Data.FrameTimeLogCount, so the
@@ -1954,7 +2003,20 @@ namespace Wasteland
     // internal linkage) and leave the class member unresolved at link time -- which is
     // the LNK2019 this corrects.
     void Renderer3D::SetSceneTransformEpoch(uint32_t epoch) { s_Data.m_SceneTransformEpoch = epoch; }
-    static bool Renderer3DGLAvailable();
+    DX12Nova* Renderer3D::GetNovaDX12() { return s_Nova12.get(); }
+    DX11Nova* Renderer3D::GetNovaDX11() { return s_Nova.get(); }
+    VulkanNova* Renderer3D::GetNovaVulkan() { return s_NovaVk.get(); }
+    // True when any backend-specific Nova instance exists.
+    //
+    // This is the CLASS's HasNova. The namespace-scope twin that used to sit at
+    // the top of this file ("static bool HasNova() { return s_Nova != nullptr
+    // ... }") was reading a set of namespace-scope `static std::unique_ptr`
+    // DECOYS declared next to it, not the class statics the renderer actually
+    // assigns in Init(). Every free function that consulted those decoys saw
+    // null forever -- which is how DX12 Nova ended up calling ResizeSEH on a
+    // null `this` (observed: NOVASEH enter this=0000000000000000) while the
+    // member-side branch guard in Flush() was satisfied by the real instance.
+    bool Renderer3D::HasNova() { return s_Nova != nullptr || s_Nova12 != nullptr || s_NovaVk != nullptr; }
     static bool Renderer3DNVRHIAvailable();
     // Defined next to PushAnalyticLight, far below, but CALLED from both BeginScene
     // overloads above it -- hence this forward declaration rather than hoisting the
@@ -2064,8 +2126,8 @@ namespace Wasteland
     {
         if (!s_Data.ReservoirBufferID[0] || !s_Data.ReservoirBufferID[1])
             return;
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 26, s_Data.ReservoirBufferID[s_Data.ReservoirParity]);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, s_Data.ReservoirBufferID[1u - s_Data.ReservoirParity]);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, s_Data.ReservoirBufferID[s_Data.ReservoirParity]);   // ReservoirRead (t9)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, s_Data.ReservoirBufferID[1u - s_Data.ReservoirParity]); // ReservoirWrite (u10)
     }
 
     static bool EnsureReservoirBuffers(uint32_t width, uint32_t height)
@@ -2206,9 +2268,10 @@ namespace Wasteland
         glNamedBufferData(s_Data.NeuralWeightsBufferID, (GLsizeiptr)(weights.size() * sizeof(float)),
                           weights.data(), GL_STATIC_DRAW);
 
-        // Fixed binding points, matching the GLSL's layout(binding = 4) and (5).
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s_Data.NeuralGlobalsBufferID);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s_Data.NeuralWeightsBufferID);
+        // Fixed binding points for the Slang GLSL (zero shifts):
+        // NeuralGlobals = u12 → 12, NeuralWeights = u13 → 13
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, s_Data.NeuralGlobalsBufferID);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, s_Data.NeuralWeightsBufferID);
 
         s_Data.NeuralWeightsValid = true;
         WL_CORE_INFO("Neural stage: loaded {} weights ({} bytes) from assets/neural/neural_weights.bin",
@@ -2217,22 +2280,25 @@ namespace Wasteland
 
     // Binds the neural SSBOs. Cheap enough to call every frame: glBindBufferBase
     // on an already-bound pair is a no-op in practice, and it keeps the bindings
-    // correct after any other subsystem has rebound index 4 or 5.
+    // correct after any other subsystem has rebound indices 4 or 5.
     static void BindNeuralBuffers()
     {
         if (!s_Data.NeuralGlobalsBufferID || !s_Data.NeuralWeightsBufferID)
             return;
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s_Data.NeuralGlobalsBufferID);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s_Data.NeuralWeightsBufferID);
+        // Slang GLSL (zero shifts): NeuralGlobals = u12 → 12, NeuralWeights = u13 → 13
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 12, s_Data.NeuralGlobalsBufferID);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 13, s_Data.NeuralWeightsBufferID);
     }
 
     static void ClearAccumulationBuffers()
     {
-        if(s_Nova) s_Nova->Clear();
+        // Read the class instances, not file-scope copies: the file-scope set was
+        // a decoy pair that Init() never assigned, so these clears were no-ops.
+        if(DX11Nova* n11 = Renderer3D::GetNovaDX11()) n11->Clear();
         // Each Nova backend clears its own history alongside the GL targets below.
         // The active instance receives the clear before the GL-only resources are checked.
-        if(s_Nova12) s_Nova12->Clear();
-        if(s_NovaVk) s_NovaVk->Clear();
+        if(DX12Nova* n12 = Renderer3D::GetNovaDX12()) n12->Clear();
+        if(VulkanNova* nvk = Renderer3D::GetNovaVulkan()) nvk->Clear();
         // The GL half is a no-op on NVRHI: every texture below is unallocated there,
         // so clearing them would be clearing names that were never created.
         if (!Renderer3DGLAvailable())
@@ -2663,14 +2729,214 @@ namespace Wasteland
                    s_Data.m_TerrainVertices.size() * sizeof(TerrainNovaVertex)) != 0;
     }
 
+    // Harness/environment overrides for the renderer stack.
+    //
+    // Called from BOTH paths of Init(). This block used to sit inline in the
+    // GL-only tail below Init's `if (Renderer3DNVRHIAvailable())` early return, so
+    // every override in it was DEAD on DX11/DX12/Vulkan: WL_WLFG, WL_DRS_OFF,
+    // WL_RECONSTRUCTION, WL_RCAS, WL_RCAS_STRENGTH, WL_AA_FILTER, the cull knobs and
+    // the volumetric caps all silently did nothing on the backends that matter. The
+    // symptom that exposed it: a capture with WL_WLFG=0 and one with WL_WLFG=1 came
+    // out byte-identical, because pass 22 never dispatched and img_Accumulation held
+    // the plain temporal blend in both arms -- there was no warp in the "warped"
+    // input at all.
+    //
+    // Ordering matters: call this AFTER ApplyQualityPreset(), or the preset
+    // overwrites the value the environment just asked for.
+    static void ApplyHarnessEnvOverrides()
+    {
+        if (const char *profileEnv = std::getenv("WASTELAND_NOVA_PROFILE"))
+            s_Data.NovaProfile = (std::atoi(profileEnv) != 0);
+        if (const char *cullEnv = std::getenv("WASTELAND_SCREEN_CULL"))
+            s_Data.ScreenCullPixels = (float)std::atof(cullEnv);
+        if (const char *cpuCullEnv = std::getenv("WASTELAND_CPU_CULL"))
+            s_Data.CpuCullEnabled = (std::atoi(cpuCullEnv) != 0);
+        if (const char *volStepsEnv = std::getenv("WASTELAND_VOL_STEPS"))
+        {
+            int cap = std::atoi(volStepsEnv);
+            if (cap > 0)
+                s_Data.VolStepCap = cap;
+        }
+        if (const char *volLightsEnv = std::getenv("WASTELAND_VOL_LIGHTS"))
+        {
+            int cap = std::atoi(volLightsEnv);
+            if (cap > 0)
+                s_Data.VolLightCap = cap;
+        }
+        if (std::getenv("WASTELAND_VOL_NOCULL") != nullptr)
+            s_Data.VolRangeCull = false;
+        if (std::getenv("WL_DRS_DEBUG") != nullptr)
+            s_Data.DRSDebug = true;
+        // DRS OFF switch, for cost-attribution measurements. WITHOUT THIS the DRS
+        // is a confound: it adapts to the very thing being measured, so a faster
+        // arm is handed a higher RenderScale and can end up SLOWER than the arm it
+        // beat. Measured directly: with the fog volume disabled the frame went
+        // 20.6 -> 26.6 ms and the scale went 0.45 -> 0.57 -- the saving was more
+        // than eaten by the extra pixels the scaler bought with it.
+        if (std::getenv("WL_DRS_OFF") != nullptr)
+        {
+            s_Data.DynamicResolutionEnabled = false;
+            WL_CORE_INFO("Dynamic resolution: DISABLED by WL_DRS_OFF -- RenderScale is now fixed");
+        }
+        // Reactive-reconstruction stack override: WL_RECONSTRUCTION=<0|1>.
+        // Read here rather than in RunNovaPassSchedule so every backend sees the
+        // same value and a headless run can flip it without a rebuild.
+        if (const char *reconEnv = getenv("WL_RECONSTRUCTION"))
+        {
+            if (*reconEnv) s_Data.ReconstructionEnabled = atoi(reconEnv) != 0;
+        }
+        if (const char *rcasEnv = getenv("WL_RCAS"))
+        {
+            if (*rcasEnv) s_Data.RCASEnabled = atoi(rcasEnv) != 0;
+        }
+        // WLRR override: WL_WLRR=<0|1>. Off by default. It only ever dispatches
+        // inside the SVGF branch, so with SVFG off it is inert either way.
+        if (const char *wlrrEnv = getenv("WL_WLRR"))
+        {
+            if (*wlrrEnv) s_Data.WlrrEnabled = atoi(wlrrEnv) != 0;
+        }
+        if (const char *strEnv = getenv("WL_RCAS_STRENGTH"))
+        {
+            if (*strEnv)
+            {
+                float v = (float)atof(strEnv);
+                s_Data.RCASharpness = glm::clamp(v, 0.0f, 1.0f);
+            }
+        }
+        // WLFG override: WL_WLFG=<0..6>. 0 = off. 1 = the reprojection warp and the
+        // head run, but nothing is generated (the pre-Step-6 behaviour, kept so the
+        // existing captures and A/Bs stay valid). N>1 = the factor-gated schedule
+        // renders 1 of every N presents and generates the rest.
+        //
+        // Clamped to 6: the plan's accumulation-state table tops out at 6x, and a
+        // larger request would only amplify a stale accumulation. The clamp is on
+        // the REQUEST; WlfgMaxFactor() still applies the state ceiling per frame.
+        if (const char *wlfgEnv = getenv("WL_WLFG"))
+        {
+            if (*wlfgEnv)
+            {
+                s_Data.WlfgFactor = glm::clamp(atoi(wlfgEnv), 0, 6);
+                s_Data.WlfgWarpEnabled = s_Data.WlfgFactor >= 1;
+                WL_CORE_INFO("WLFG override: WL_WLFG={} -> WlfgFactor={} WlfgWarpEnabled={}",
+                             wlfgEnv, s_Data.WlfgFactor, s_Data.WlfgWarpEnabled);
+            }
+        }
+        // Sample-pattern override: WL_SAMPLE_PATTERN=<0..5> where the value is the
+        // Renderer3D::SamplePattern enumerator (0 BlueNoise, 1 Halton, 2 RotatedGrid,
+        // 3 Quincunx, 4 OrderedGrid, 5 Centre).
+        //
+        // 5 (Centre) uploads a ZERO jitter vector, which is what makes the WLFG
+        // Step 6 PSNR measurement resolvable at all. The default STBN pattern
+        // jitters every frame, so two consecutive frames of a converged STATIC
+        // camera differ by ~49.7 dB -- not because anything is wrong, but because
+        // each frame blends 2% of a differently-jittered sample. That floor is
+        // larger than the effect being measured, so a PSNR taken against a
+        // jittered reference cannot resolve it. With the jitter pinned to zero the
+        // accumulation reaches a fixed point, consecutive frames are identical, and
+        // the floor drops to 0 dB.
+        //
+        // This does NOT weaken the test: it removes a measurement artifact from the
+        // REFERENCE, not from the thing under test. The generated frame is still
+        // produced by the real factor-6 schedule with the real jitter setting for
+        // that run.
+        if (const char *patEnv = std::getenv("WL_SAMPLE_PATTERN"))
+        {
+            int v = std::atoi(patEnv);
+            if (v >= (int)SamplePattern::BlueNoise && v <= (int)SamplePattern::Centre)
+            {
+                s_Data.CurrentSamplePattern = (SamplePattern)v;
+                WL_CORE_INFO("Sample pattern override: WL_SAMPLE_PATTERN={} -> {}",
+                             patEnv, (int)s_Data.CurrentSamplePattern);
+            }
+            else
+            {
+                WL_CORE_WARN("Sample pattern override: WL_SAMPLE_PATTERN={} out of range "
+                             "0..5 -- ignored", patEnv);
+            }
+        }
+        // Reconstruction-filter override, for A/B testing the ladder without
+        // clicking through the editor UI: WL_AA_FILTER=<n> where n is the
+        // Renderer3D::ReconstructionFilter value (1 Nearest, 2 Bilinear, 3 Box,
+        // 4 Bicubic, 5 Lanczos). Absent means "use whatever the project/UI set".
+        const char *aaEnv = std::getenv("WL_AA_FILTER");
+        if (aaEnv != nullptr)
+        {
+            int v = std::atoi(aaEnv);
+            if (v >= (int)ReconstructionFilter::None && v <= (int)ReconstructionFilter::Wlaa)
+            {
+                s_Data.CurrentReconstructionFilter = (ReconstructionFilter)v;
+                // Names every value, including the ones that are not really
+                // filters, so an override that names a path is identifiable in the
+                // log rather than printing as Bilinear.
+                const char *filterName =
+                    v == 0 ? "None"  : v == 1 ? "Nearest" : v == 2 ? "Bilinear" :
+                    v == 3 ? "Box"   : v == 4 ? "Bicubic" : v == 5 ? "Lanczos" :
+                    v == 6 ? "FXAA"  : v == 7 ? "SMAA"    : v == 8 ? "FSR1 (EASU)" :
+                    v == 9 ? "TSR (NOT WIRED -- will not run)" :
+                    v == 10 ? "TAA (not a filter; pass 2 is always on)" :
+                    v == 11 ? "ATrous denoise" :
+                    v == 12 ? "WLAA (native-res AA: accumulate + RCAS sharpen)" :
+                    "ATrous denoise";
+                WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v, filterName);
+            }
+        }
+        if (s_Data.ScreenCullPixels > 0.0f)
+            WL_CORE_INFO("Screen-space instance cull enabled: {} trace px", s_Data.ScreenCullPixels);
+        WL_CORE_INFO("CPU instance cull: {}", s_Data.CpuCullEnabled ? "on" : "OFF (WASTELAND_CPU_CULL=0)");
+    }
+
+    // Device-feature probe, merged into the capability map by
+    // RefreshRenderCapabilities() just before the map is published.
+    //
+    // Defined HERE rather than in RenderCapabilities.cpp because it needs the
+    // NVRHI platform headers (d3d11.h/d3d12.h/vulkan.h) that
+    // NVRHIContext.h pulls in. RenderCapabilities.cpp is compiled into every
+    // target, including the headless tests that have no graphics include paths,
+    // so it only carries the declaration.
+    //
+    // This reports what the DEVICE advertises, not what Wasteland has wired.
+    // meshShaders == true means the device answered Feature::Meshlets; a
+    // Wasteland mesh path still has to be dispatched before any feature may
+    // read it and act. Keep that distinction -- a capability that claims a
+    // feature before a path exists is the phantom-support failure
+    // tools/verify_render_capabilities.py was written to catch.
+    void MergeDeviceFeatureCapabilities(RenderCapabilities &caps)
+    {
+        // DX11 and OpenGL have no mesh stage at all; the API itself rules it out,
+        // so there is nothing to query and no context to reach for.
+        if (caps.api != RendererAPI::API::NVRHI_DX12 &&
+            caps.api != RendererAPI::API::NVRHI_Vulkan)
+            return;
+
+        auto *ctx = NVRHIRendererAPI::GetCurrentContext();
+        if (!ctx || !ctx->GetDevice())
+        {
+            // A null context means the probe did not run, so the capability stays
+            // false. That is the same rule every other field here follows: an
+            // unprobed capability is reported as absent, never assumed present.
+            WL_CORE_WARN("Device feature probe: no NVRHI context -- meshShaders reported as false");
+            return;
+        }
+
+        const bool meshlets = ctx->GetDevice()->queryFeatureSupport(nvrhi::Feature::Meshlets);
+        caps.meshShaders = meshlets;
+        // NVRHI allows the amplification (task) stage to be null, so the device
+        // feature and the stage that uses it are reported separately. Today they
+        // share a source; if a backend ever gates them differently, this is the
+        // line that splits.
+        caps.amplificationShaders = meshlets;
+
+        WL_CORE_INFO("Device feature probe: meshShaders={0} amplification={1}",
+                     meshlets ? "yes" : "no", meshlets ? "yes" : "no");
+    }
+
     // Indented oddly: the brace sits one level out from the declaration. Left
     // exactly as the user wrote it -- this file is insertion-only.
     void Renderer3D::Init()
         {
-            // Scoped to this function only, so it measures one submission rather than the
-            // batched draw calls. The batching paths are instrumented elsewhere.
             WL_PROFILE_FUNCTION();
-
+            WL_CORE_INFO("Renderer3D::Init START");
+            
             // Probe the active backend before anything else so every feature below
             // can ask GetRenderCapabilities() instead of branching on the API enum.
             // RecreateResources() funnels through Init(), so an API switch re-probes.
@@ -2782,6 +3048,7 @@ namespace Wasteland
         // silent: the shader reader logs and returns an empty string, producing a
         // program with no stages, so Flush() drew nothing at all on every backend.
         s_Data.BasicShader = Shader::Create(Project::Get().GetAssetPath("shaders/Renderer3D_Basic.glsl").string());
+		WL_CORE_INFO("DEBUG INIT: Shader::Create done");
 
         // Native NVRHI path: Basic.hlsl is a complete raster 3D path. Do not
         // touch any OpenGL objects/uniform APIs when running DX11/DX12/Vulkan.
@@ -2793,7 +3060,8 @@ namespace Wasteland
             // populated even on NVRHI, because untextured draws index it.
             uint32_t whiteTextureData = 0xffffffff;
             Ref<Texture2D> whiteTexture = Texture2D::Create(1, 1);
-            whiteTexture->SetData(&whiteTextureData, sizeof(uint32_t));
+			WL_CORE_INFO("DEBUG INIT: Texture2D::Create(1,1) done");
+			whiteTexture->SetData(&whiteTextureData, sizeof(uint32_t));
             s_Data.TextureSlots[0] = whiteTexture;
             // The API test is repeated even though Renderer3DNVRHIAvailable() already
             // established the backend is NVRHI; the enum must still be narrowed to pick
@@ -2832,7 +3100,9 @@ namespace Wasteland
                             auto ctx=NVRHIRendererAPI::GetCurrentContext();
                             try {
                                 s_Nova12=std::make_unique<DX12Nova>();
+                                WL_CORE_INFO("DEBUG INIT: before DX12Nova::Init");
                                 s_Nova12->Init((ID3D12Device*)ctx->GetD3D12Device(), (ID3D12CommandQueue*)ctx->GetD3D12CommandQueue());
+                                WL_CORE_INFO("DEBUG INIT: after DX12Nova::Init");
                                 s_Nova12->Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
                                 // One INFO line, because this path is otherwise entirely
                                 // silent: a fallback to raster is indistinguishable from a
@@ -2885,6 +3155,12 @@ namespace Wasteland
             s_Data.CubeVertexBufferPtr = s_Data.CubeVertexBufferBase;
             s_Data.SphereVertexBufferPtr = s_Data.SphereVertexBufferBase;
             s_Data.SphereIndexBufferPtr = s_Data.SphereIndexBufferBase;
+            // Every backend needs the harness overrides, not just OpenGL. This
+            // returned before reaching them, which is why WL_WLFG, WL_DRS_OFF,
+            // WL_RECONSTRUCTION, WL_AA_FILTER, WL_RCAS* and the cull/volumetric
+            // knobs were all silent no-ops on DX11/DX12/Vulkan. ApplyQualityPreset
+            // has already run in each arm above, so the environment wins here.
+            ApplyHarnessEnvOverrides();
             return;
         }
 
@@ -2905,7 +3181,7 @@ namespace Wasteland
         // above: a CWD-relative literal silently yields a stage-less program once
         // Project::Open stopped changing directory, and the GL path tracer would
         // then dispatch with no program bound.
-        s_Data.RayTracingShader = Shader::Create(Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.glsl").string());
+        s_Data.RayTracingShader = Shader::Create(Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.slang.glsl").string());
 
         GLuint rtProg = s_Data.RayTracingShader->GetRendererID();
         // Cached once. glGetUniformLocation is a string lookup into the program's
@@ -2914,60 +3190,85 @@ namespace Wasteland
         // once here because glGetUniformLocation is a driver string lookup and these
         // uniforms are uploaded every single frame. A -1 result means the uniform is
         // absent or dead, and each use site guards on >= 0.
-        s_Data.InstanceCountLocation = glGetUniformLocation(rtProg, "u_InstanceCount");
-        s_Data.FrameIndexLocation = glGetUniformLocation(rtProg, "u_FrameIndex");
-        s_Data.Loc_PassID = glGetUniformLocation(rtProg, "u_PassID");
+        s_Data.InstanceCountLocation = glGetUniformLocation(rtProg, "NovaConstants_0.u_InstanceCount_0");
+        s_Data.FrameIndexLocation = glGetUniformLocation(rtProg, "NovaConstants_0.u_FrameIndex_0");
+        s_Data.Loc_PassID = glGetUniformLocation(rtProg, "NovaConstants_0.u_PassID_0");
         // Looked up even though no pass reads it -- the uniform is kept in the CBV
         // layout, so the name must resolve for the layout to stay valid.
-        s_Data.Loc_SamplesPerPixel = glGetUniformLocation(rtProg, "u_SamplesPerPixel");
+        s_Data.Loc_SamplesPerPixel = glGetUniformLocation(rtProg, "NovaConstants_0.u_SamplesPerPixel_0");
         // Every lookup in this block targets rtProg alone. The Basic raster program's
         // locations come from the two caching lambdas instead, because it declares only a
         // subset of these uniforms.
-        s_Data.Loc_QualityLevel = glGetUniformLocation(rtProg, "u_QualityLevel");
-        s_Data.Loc_MaxBounces = glGetUniformLocation(rtProg, "u_MaxBounces");
-        s_Data.Loc_MaxLights = glGetUniformLocation(rtProg, "u_MaxLights");
-        s_Data.Loc_IndirectRays = glGetUniformLocation(rtProg, "u_IndirectRays");
-        s_Data.Loc_CameraMoved = glGetUniformLocation(rtProg, "u_CameraMoved");
-        s_Data.Loc_SkyBottomColor = glGetUniformLocation(rtProg, "u_SkyBottomColor");
-        s_Data.Loc_SkyTopColor = glGetUniformLocation(rtProg, "u_SkyTopColor");
-        s_Data.Loc_Jitter = glGetUniformLocation(rtProg, "u_Jitter");
+        s_Data.Loc_QualityLevel = glGetUniformLocation(rtProg, "NovaConstants_0.u_QualityLevel_0");
+        s_Data.Loc_MaxBounces = glGetUniformLocation(rtProg, "NovaConstants_0.u_MaxBounces_0");
+        s_Data.Loc_MaxLights = glGetUniformLocation(rtProg, "NovaConstants_0.u_MaxLights_0");
+        s_Data.Loc_IndirectRays = glGetUniformLocation(rtProg, "NovaConstants_0.u_IndirectRays_0");
+        s_Data.Loc_CameraMoved = glGetUniformLocation(rtProg, "NovaConstants_0.u_CameraMoved_0");
+        s_Data.Loc_SkyBottomColor = glGetUniformLocation(rtProg, "NovaConstants_0.u_SkyBottomColor_0");
+        s_Data.Loc_SkyTopColor = glGetUniformLocation(rtProg, "NovaConstants_0.u_SkyTopColor_0");
+        s_Data.Loc_Jitter = glGetUniformLocation(rtProg, "NovaConstants_0.u_Jitter_0");
         // A SAMPLER, not a value: the location identifies a texture unit index that pass 0
         // writes and the later passes read. Uploaded as an int like every other uniform.
-        s_Data.Loc_DepthBuffer = glGetUniformLocation(rtProg, "u_DepthBuffer");
-        s_Data.Loc_AccumulationAlpha = glGetUniformLocation(rtProg, "u_AccumulationAlpha");
+        s_Data.Loc_DepthBuffer = glGetUniformLocation(rtProg, "NovaConstants_0.u_DepthBuffer_0");
+        s_Data.Loc_AccumulationAlpha = glGetUniformLocation(rtProg, "NovaConstants_0.u_AccumulationAlpha_0");
         // Anti-aliasing uniforms, cached with the rest of the per-frame block. -1 when
         // the shader predates them, and the upload site below is a no-op in that case.
-        s_Data.Loc_SamplePattern = glGetUniformLocation(rtProg, "u_SamplePattern");
-        s_Data.Loc_ReconstructionFilter = glGetUniformLocation(rtProg, "u_ReconstructionFilter");
+        s_Data.Loc_SamplePattern = glGetUniformLocation(rtProg, "NovaConstants_0.u_SamplePattern_0");
+        s_Data.Loc_ReconstructionFilter = glGetUniformLocation(rtProg, "NovaConstants_0.u_ReconstructionFilter_0");
         // WLSR sharpen stage (RCAS, pass 15). -1 when the shader predates them,
         // and the upload site is a no-op in that case -- so an older shader simply
         // never gets the stage, rather than reading an unbound location.
-        s_Data.Loc_RCSEnabled = glGetUniformLocation(rtProg, "u_RCSEnabled");
-        s_Data.Loc_TSRSharpenStrength = glGetUniformLocation(rtProg, "u_TSRSharpenStrength");
+        s_Data.Loc_RCSEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_RCSEnabled_0");
+        s_Data.Loc_TSRSharpenStrength = glGetUniformLocation(rtProg, "NovaConstants_0.u_TSRSharpenStrength_0");
         // TEMPORARY (task 3): drives u_MaskVisualize, which renders the reactive
         // mask into the output so it can be inspected in a screenshot. Removed
         // once the mask is known-good.
-        s_Data.Loc_MaskVisualize = glGetUniformLocation(rtProg, "u_MaskVisualize");
+        s_Data.Loc_MaskVisualize = glGetUniformLocation(rtProg, "NovaConstants_0.u_MaskVisualize_0");
         // The ray-march step length for the volumetrics. Uploaded per frame by the
         // volumetric helper above, not by the pass-0 batch.
-        s_Data.Loc_StepSize = glGetUniformLocation(rtProg, "u_StepSize");
-        s_Data.Loc_PrevViewProjection = glGetUniformLocation(rtProg, "u_PrevViewProjection");
-        s_Data.Loc_InverseViewProjection = glGetUniformLocation(rtProg, "u_InverseViewProjection");
-        s_Data.Loc_ViewProjection = glGetUniformLocation(rtProg, "u_ViewProjection");
-        s_Data.Loc_CameraPosition = glGetUniformLocation(rtProg, "u_CameraPosition");
+        s_Data.Loc_StepSize = glGetUniformLocation(rtProg, "NovaConstants_0.u_StepSize_0");
+        s_Data.Loc_PrevViewProjection = glGetUniformLocation(rtProg, "NovaConstants_0.u_PrevViewProjection_0.data_0[0]");
+        s_Data.Loc_InverseViewProjection = glGetUniformLocation(rtProg, "NovaConstants_0.u_InverseViewProjection_0.data_0[0]");
+        s_Data.Loc_ViewProjection = glGetUniformLocation(rtProg, "NovaConstants_0.u_ViewProjection_0.data_0[0]");
+        s_Data.Loc_CameraPosition = glGetUniformLocation(rtProg, "NovaConstants_0.u_CameraPosition_0");
         // Uploaded per frame by the dynamic resolution scaler, so its value changes with
         // no setter call and no FrameIndex reset -- the location is static even though the
         // value is not.
-        s_Data.Loc_RenderScale = glGetUniformLocation(rtProg, "u_RenderScale");
-        s_Data.Loc_LightCount = glGetUniformLocation(rtProg, "u_LightCount");
-        s_Data.Loc_NeuralEnabled = glGetUniformLocation(rtProg, "u_NeuralEnabled");
-        s_Data.Loc_NeuralTexStrength = glGetUniformLocation(rtProg, "u_NeuralTexStrength");
-        s_Data.Loc_NeuralLightStrength = glGetUniformLocation(rtProg, "u_NeuralLightStrength");
-        s_Data.Loc_NeuralMatStrength = glGetUniformLocation(rtProg, "u_NeuralMatStrength");
+        s_Data.Loc_RenderScale = glGetUniformLocation(rtProg, "NovaConstants_0.u_RenderScale_0");
+        s_Data.Loc_LightCount = glGetUniformLocation(rtProg, "NovaConstants_0.u_LightCount_0");
+        s_Data.Loc_NeuralEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_NeuralEnabled_0");
+        s_Data.Loc_NeuralTexStrength = glGetUniformLocation(rtProg, "NovaConstants_0.u_NeuralTexStrength_0");
+        s_Data.Loc_NeuralLightStrength = glGetUniformLocation(rtProg, "NovaConstants_0.u_NeuralLightStrength_0");
+        s_Data.Loc_NeuralMatStrength = glGetUniformLocation(rtProg, "NovaConstants_0.u_NeuralMatStrength_0");
 
-        // A lambda rather than a free function, so it needs no forward declaration and
-        // captures nothing -- all it does is fill the static s_Data table.
-        auto cacheVolumetricLocations = [](GLuint prog, int progIndex)
+        // Slang stores cbuffer arrays inside generated structs (e.g.
+        // u_ALightColor_0.data_5[0]). Reflect the leaf rather than depending on
+        // the compiler's data_N numbering; aggregate locations are always -1.
+        auto resolveNovaLocation = [](GLuint prog, const char *name) -> GLint {
+            std::string field(name);
+            const size_t bracket = field.find('[');
+            const std::string base = "NovaConstants_0." + field.substr(0, bracket) + "_0";
+            if (bracket == std::string::npos)
+                return glGetUniformLocation(prog, base.c_str());
+            GLint count = 0, maxLength = 0;
+            glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &count);
+            glGetProgramiv(prog, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxLength);
+            std::vector<char> activeName((size_t)std::max(maxLength, 1));
+            const std::string prefix = base + ".";
+            for (GLint index = 0; index < count; ++index)
+            {
+                GLsizei length = 0;
+                GLint size = 0;
+                GLenum type = 0;
+                glGetActiveUniform(prog, (GLuint)index, maxLength, &length, &size, &type, activeName.data());
+                const std::string leaf(activeName.data(), (size_t)length);
+                if (leaf.compare(0, prefix.size(), prefix) == 0 &&
+                    leaf.size() >= 3 && leaf.compare(leaf.size() - 3, 3, "[0]") == 0)
+                    return glGetUniformLocation(prog, leaf.c_str());
+            }
+            return -1;
+        };
+        auto cacheVolumetricLocations = [&](GLuint prog, int progIndex)
         {
             // THE binding contract: this array is positional against the VolLoc enum. A
             // name added, removed or reordered here without a matching enum change
@@ -2987,20 +3288,28 @@ namespace Wasteland
             // Cached for BOTH programs from the same table, which is why the names live in
             // a static array rather than being written out twice.
             for (int i = 0; i < Renderer3DData::VolLoc_Count; i++)
-                s_Data.Loc_Volumetric[progIndex][i] = glGetUniformLocation(prog, names[i]);
+            {
+                s_Data.Loc_Volumetric[progIndex][i] = (progIndex == 0)
+                    ? resolveNovaLocation(prog, names[i])
+                    : glGetUniformLocation(prog, names[i]);
+            }
         };
         // Row 0 for the compute program, called immediately after the lambda is defined.
         // The two calls below are the only two uses of this table, one per program.
         cacheVolumetricLocations(rtProg, 0);
         cacheVolumetricLocations(s_Data.BasicShader->GetRendererID(), 1);
         // The same shape as the volumetric table above, for analytic lights.
-        auto cacheAnalyticLocations = [](GLuint prog, int progIndex)
+        auto cacheAnalyticLocations = [&](GLuint prog, int progIndex)
         {
             static const char *names[Renderer3DData::ALoc_Count] = {
                 "u_ALightCount", "u_ALightPos[0]", "u_ALightDir[0]",
                 "u_ALightColor[0]", "u_ALightData[0]", "u_ALightData2[0]"};
             for (int i = 0; i < Renderer3DData::ALoc_Count; i++)
-                s_Data.Loc_ALights[progIndex][i] = glGetUniformLocation(prog, names[i]);
+            {
+                s_Data.Loc_ALights[progIndex][i] = (progIndex == 0)
+                    ? resolveNovaLocation(prog, names[i])
+                    : glGetUniformLocation(prog, names[i]);
+            }
         };
         // The analytic light table follows the same two-row shape as the volumetric one,
         // so a program bound anywhere in Flush always has a matching row of locations.
@@ -3016,73 +3325,42 @@ namespace Wasteland
         // The start of the global-fog and god-ray block. Both exist only in the Nova
         // compute program, so these stay -1 for the raster row and every upload of them is
         // guarded.
-        s_Data.Loc_GlobalFogEnabled = glGetUniformLocation(rtProg, "u_GlobalFogEnabled");
-        s_Data.Loc_GlobalFogDensity = glGetUniformLocation(rtProg, "u_GlobalFogDensity");
-        s_Data.Loc_GlobalFogHeightFalloff = glGetUniformLocation(rtProg, "u_GlobalFogHeightFalloff");
-        s_Data.Loc_GlobalFogColor = glGetUniformLocation(rtProg, "u_GlobalFogColor");
-        s_Data.Loc_GlobalFogBaseHeight = glGetUniformLocation(rtProg, "u_GlobalFogBaseHeight");
-        s_Data.Loc_GlobalFogDistAtten = glGetUniformLocation(rtProg, "u_GlobalFogDistAtten");
-        s_Data.Loc_GodRaysEnabled = glGetUniformLocation(rtProg, "u_GodRaysEnabled");
-        s_Data.Loc_GodSunScreenPos = glGetUniformLocation(rtProg, "u_GodSunScreenPos");
-        s_Data.Loc_GodSunValid = glGetUniformLocation(rtProg, "u_GodSunValid");
-        s_Data.Loc_GodRayIntensity = glGetUniformLocation(rtProg, "u_GodRayIntensity");
-        s_Data.Loc_GodRayDecay = glGetUniformLocation(rtProg, "u_GodRayDecay");
-        s_Data.Loc_GodRaySamples = glGetUniformLocation(rtProg, "u_GodRaySamples");
-        s_Data.Loc_GodRayDensity = glGetUniformLocation(rtProg, "u_GodRayDensity");
-        s_Data.Loc_GodRayColor = glGetUniformLocation(rtProg, "u_GodRayColor");
+        s_Data.Loc_GlobalFogEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogEnabled_0");
+        s_Data.Loc_GlobalFogDensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogDensity_0");
+        s_Data.Loc_GlobalFogHeightFalloff = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogHeightFalloff_0");
+        s_Data.Loc_GlobalFogColor = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogColor_0");
+        s_Data.Loc_GlobalFogBaseHeight = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogBaseHeight_0");
+        s_Data.Loc_GlobalFogDistAtten = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogDistAtten_0");
+        s_Data.Loc_GodRaysEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRaysEnabled_0");
+        s_Data.Loc_GodSunScreenPos = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodSunScreenPos_0");
+        s_Data.Loc_GodSunValid = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodSunValid_0");
+        s_Data.Loc_GodRayIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRayIntensity_0");
+        s_Data.Loc_GodRayDecay = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRayDecay_0");
+        s_Data.Loc_GodRaySamples = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRaySamples_0");
+        s_Data.Loc_GodRayDensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRayDensity_0");
+        s_Data.Loc_GodRayColor = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRayColor_0");
         // The post-process block. Bloom, vignette, chromatic aberration, colour grading
         // and film grain all live in the composite pass, so these locations are only
         // meaningful while that pass's program is bound.
         // The post-process block closes out the caching. These locations are only
         // meaningful while the composite pass's program is bound, which is why the GL
         // uploads for them sit late in Flush rather than with the pass-0 batch.
-        s_Data.Loc_BloomEnabled = glGetUniformLocation(rtProg, "u_BloomEnabled");
-        s_Data.Loc_BloomIntensity = glGetUniformLocation(rtProg, "u_BloomIntensity");
-        s_Data.Loc_BloomThreshold = glGetUniformLocation(rtProg, "u_BloomThreshold");
-        s_Data.Loc_VignetteEnabled = glGetUniformLocation(rtProg, "u_VignetteEnabled");
-        s_Data.Loc_VignetteIntensity = glGetUniformLocation(rtProg, "u_VignetteIntensity");
-        s_Data.Loc_VignetteRadius = glGetUniformLocation(rtProg, "u_VignetteRadius");
-        s_Data.Loc_VignetteSoftness = glGetUniformLocation(rtProg, "u_VignetteSoftness");
-        s_Data.Loc_ChromaticAberrationEnabled = glGetUniformLocation(rtProg, "u_ChromaticAberrationEnabled");
-        s_Data.Loc_ChromaticAberrationIntensity = glGetUniformLocation(rtProg, "u_ChromaticAberrationIntensity");
-        s_Data.Loc_ColorGradingEnabled = glGetUniformLocation(rtProg, "u_ColorGradingEnabled");
-        s_Data.Loc_ColorTemperature = glGetUniformLocation(rtProg, "u_ColorTemperature");
-        s_Data.Loc_ColorTint = glGetUniformLocation(rtProg, "u_ColorTint");
-        s_Data.Loc_ColorGamma = glGetUniformLocation(rtProg, "u_ColorGamma");
-        s_Data.Loc_FilmGrainEnabled = glGetUniformLocation(rtProg, "u_FilmGrainEnabled");
-        s_Data.Loc_FilmGrainIntensity = glGetUniformLocation(rtProg, "u_FilmGrainIntensity");
+        s_Data.Loc_BloomEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_BloomEnabled_0");
+        s_Data.Loc_BloomIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_BloomIntensity_0");
+        s_Data.Loc_BloomThreshold = glGetUniformLocation(rtProg, "NovaConstants_0.u_BloomThreshold_0");
+        s_Data.Loc_VignetteEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_VignetteEnabled_0");
+        s_Data.Loc_VignetteIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_VignetteIntensity_0");
+        s_Data.Loc_VignetteRadius = glGetUniformLocation(rtProg, "NovaConstants_0.u_VignetteRadius_0");
+        s_Data.Loc_VignetteSoftness = glGetUniformLocation(rtProg, "NovaConstants_0.u_VignetteSoftness_0");
+        s_Data.Loc_ChromaticAberrationEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_ChromaticAberrationEnabled_0");
+        s_Data.Loc_ChromaticAberrationIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_ChromaticAberrationIntensity_0");
+        s_Data.Loc_ColorGradingEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_ColorGradingEnabled_0");
+        s_Data.Loc_ColorTemperature = glGetUniformLocation(rtProg, "NovaConstants_0.u_ColorTemperature_0");
+        s_Data.Loc_ColorTint = glGetUniformLocation(rtProg, "NovaConstants_0.u_ColorTint_0");
+        s_Data.Loc_ColorGamma = glGetUniformLocation(rtProg, "NovaConstants_0.u_ColorGamma_0");
+        s_Data.Loc_FilmGrainEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_FilmGrainEnabled_0");
+        s_Data.Loc_FilmGrainIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_FilmGrainIntensity_0");
 
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AccumulationTexture);
-        glTextureStorage2D(s_Data.AccumulationTexture, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTextureID);
-        glTextureStorage2D(s_Data.BloomTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-
-        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTextureParameteri(s_Data.BloomTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.BloomTempTextureID);
-        glTextureStorage2D(s_Data.BloomTempTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-
-        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTextureParameteri(s_Data.BloomTempTextureID, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.VelocityTextureID);
-        glTextureStorage2D(s_Data.VelocityTextureID, 1, GL_RG16F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.AlbedoTextureID);
-        glTextureStorage2D(s_Data.AlbedoTextureID, 1, GL_RGBA8, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTextureParameteri(s_Data.AlbedoTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-        // SVGF temporal moments, RGBA32F, one texel per traced pixel. The shader
-        // aliases image unit 6 with the trace G-buffer only during the SVGF passes.
-        glCreateTextures(GL_TEXTURE_2D, 1, &s_Data.MomentsTextureID);
-        glTextureStorage2D(s_Data.MomentsTextureID, 1, GL_RGBA32F, s_Data.RayTracingWidth, s_Data.RayTracingHeight);
-        glTextureParameteri(s_Data.MomentsTextureID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTextureParameteri(s_Data.MomentsTextureID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-        // Trace G-buffer (full-size, valid data in the trace subregion):
         // R=NDC depth, GBA=packed normal. Written by pass 1, sampled by
         // passes 0/2/7. Shares one RGBA32F image on unit 6 because this GL
         // driver caps image bindings at 0-7 (units 0-5,7 taken, 6 was dead).
@@ -3182,10 +3460,12 @@ namespace Wasteland
         // Must precede every glUniform call below, since uniform updates apply to
         // whatever program is currently bound.
         s_Data.RayTracingShader->Bind();
-        int samplers[32];
-        for (int i = 0; i < 32; i++)
-            samplers[i] = i + 15;
-        s_Data.RayTracingShader->SetIntArray("u_SceneTextures", samplers, 32);
+        // sampler2DArray u_SceneTextures_0 (GLSL layout(binding=15)) takes a
+        // single GL_TEXTURE_2D_ARRAY at unit 15 — populated in FlushOpenGLNova.
+        // The old sampler2D[32] SetIntArray approach is no longer needed.
+        glGenTextures(1, &s_Data.SceneArrayTexture);
+        glCreateFramebuffers(1, &s_Data.SceneArrayReadFramebuffer);
+        glCreateFramebuffers(1, &s_Data.SceneArrayDrawFramebuffer);
 
         DetectGPUTier();
         // The three GL timer queries the dynamic-resolution scaler uses. Created HERE,
@@ -3199,125 +3479,13 @@ namespace Wasteland
         // so a query created lazily on the first profiled frame would be created
         // mid-chain. Four names, one per segment.
         glGenQueries(4, s_Data.NovaProfileQueries);
-        if (const char *profileEnv = std::getenv("WASTELAND_NOVA_PROFILE"))
-            s_Data.NovaProfile = (std::atoi(profileEnv) != 0);
-        // Screen-space cull threshold, read the same one-shot way. 0 (the default
-        // when the var is absent) disables the cull entirely.
-        if (const char *cullEnv = std::getenv("WASTELAND_SCREEN_CULL"))
-            s_Data.ScreenCullPixels = (float)std::atof(cullEnv);
-        // Master switch for the frustum/distance cull, so it can be A/B measured
-        // against a pinned camera. Absent means on.
-        if (const char *cpuCullEnv = std::getenv("WASTELAND_CPU_CULL"))
-            s_Data.CpuCullEnabled = (std::atoi(cpuCullEnv) != 0);
-        // Volumetric march step cap. Absent means 32, the shader's old hardcoded
-        // bound, so this is inert unless asked for.
-        if (const char *volStepsEnv = std::getenv("WASTELAND_VOL_STEPS"))
-        {
-            int cap = std::atoi(volStepsEnv);
-            if (cap > 0)
-                s_Data.VolStepCap = cap;
-        }
-        // Volumetric light-loop cap. Absent means 0, which the shader reads as the
-        // compile-time WL_VOL_LIGHT_CAP, so this is inert unless asked for.
-        if (const char *volLightsEnv = std::getenv("WASTELAND_VOL_LIGHTS"))
-        {
-            int cap = std::atoi(volLightsEnv);
-            if (cap > 0)
-                s_Data.VolLightCap = cap;
-        }
-        // Range cull off switch. Any value at all disables it, so WASTELAND_VOL_NOCULL=1
-        // and =0 both work; the point is the variable being present.
-        if (std::getenv("WASTELAND_VOL_NOCULL") != nullptr)
-            s_Data.VolRangeCull = false;
-        // DRS query diagnostic logging (see the DRSDebug field's comment).
-        if (std::getenv("WL_DRS_DEBUG") != nullptr)
-            s_Data.DRSDebug = true;
-        // DRS OFF switch, for cost-attribution measurements. WITHOUT THIS the DRS
-        // is a confound: it adapts to the very thing being measured, so a faster
-        // arm is handed a higher RenderScale and can end up SLOWER than the arm it
-        // beat. Measured directly: with the fog volume disabled the frame went
-        // 20.6 -> 26.6 ms and the scale went 0.45 -> 0.57 -- the saving was more
-        // than eaten by the extra pixels the scaler bought with it.
-        //
-        // Note this also means the pre-fix fog A/B (216.7 vs 180.4 ms) was VALID
-        // but for a reason nobody checked at the time: the scale was pinned at its
-        // 0.40 floor in both arms, so the scaler had nowhere to move and could not
-        // confound the comparison. Post-fix runs are NOT safe in the same way,
-        // because the scale is no longer saturated.
-        if (std::getenv("WL_DRS_OFF") != nullptr)
-        {
-            s_Data.DynamicResolutionEnabled = false;
-            WL_CORE_INFO("Dynamic resolution: DISABLED by WL_DRS_OFF -- RenderScale is now fixed");
-        }
-        // Reactive-reconstruction stack override: WL_RECONSTRUCTION=<0|1>.
-        //
-        // THIS LIVES HERE, NOT IN RunNovaPassSchedule, and that placement was a
-        // real bug. It used to sit inside RunNovaPassSchedule -- which is only
-        // called by the DX11/DX12/Vulkan Nova paths. The OpenGL path tracer is a
-        // separate schedule inline in Renderer3D::Flush(), so on OpenGL the flag
-        // was never read from the environment at all and stayed at its default
-        // false: pass 24 never dispatched, img_Bloom_Temp.a kept the alpha pass 7
-        // wrote (1.0), and the composite's mask read returned 1.0 everywhere --
-        // silently replacing the EASU with bilinear. Measured: masked-EASU was
-        // bit-identical to bilinear (0 of 3,383,732 pixels) while a forced 0.5
-        // blend moved 37.2% of pixels.
-        //
-        // Read here every frame, beside the WL_AA_FILTER override, so every
-        // backend sees the same value and a headless run can flip it without a
-        // rebuild.
-        if (const char *reconEnv = getenv("WL_RECONSTRUCTION"))
-        {
-            if (*reconEnv) s_Data.ReconstructionEnabled = atoi(reconEnv) != 0;
-        }
-        // WLSR sharpen stage override: WL_RCAS=<0|1> and WL_RCAS_STRENGTH=<f>.
-        // Both are read here, beside the overrides above, for the same reason:
-        // every backend must see the same value and a headless run must be able to
-        // flip them without a rebuild.
-        if (const char *rcasEnv = getenv("WL_RCAS"))
-        {
-            if (*rcasEnv) s_Data.RCASEnabled = atoi(rcasEnv) != 0;
-        }
-        if (const char *strEnv = getenv("WL_RCAS_STRENGTH"))
-        {
-            if (*strEnv)
-            {
-                float v = (float)atof(strEnv);
-                s_Data.RCASharpness = glm::clamp(v, 0.0f, 1.0f);
-            }
-        }
-        // Reconstruction-filter override, for A/B testing the ladder without
-        // clicking through the editor UI: WL_AA_FILTER=<n> where n is the
-        // Renderer3D::ReconstructionFilter value (1 Nearest, 2 Bilinear, 3 Box,
-        // 4 Bicubic, 5 Lanczos). Absent means "use whatever the project/UI set",
-        // which is what a normal run wants.
-        const char *aaEnv = std::getenv("WL_AA_FILTER");
-        if (aaEnv != nullptr)
-        {
-            int v = std::atoi(aaEnv);
-            if (v >= (int)ReconstructionFilter::None && v <= (int)ReconstructionFilter::Wlaa)
-            {
-                s_Data.CurrentReconstructionFilter = (ReconstructionFilter)v;
-                // Names every value, including the ones that are not really
-                // filters. The old form listed only 0, 1, 3, 4 and 5 and labelled
-                // everything else "Bilinear (default/fall-through)" -- so asking
-                // for FSR1 printed Bilinear and the log read as though the
-                // override had been ignored. WL_AA_FILTER=8 is how the EASU path
-                // gets A/B tested, so it has to be identifiable here.
-                const char *filterName =
-                    v == 0 ? "None"  : v == 1 ? "Nearest" : v == 2 ? "Bilinear" :
-                    v == 3 ? "Box"   : v == 4 ? "Bicubic" : v == 5 ? "Lanczos" :
-                    v == 6 ? "FXAA"  : v == 7 ? "SMAA"    : v == 8 ? "FSR1 (EASU)" :
-                    v == 9 ? "TSR (NOT WIRED -- will not run)" :
-                    v == 10 ? "TAA (not a filter; pass 2 is always on)" :
-                    v == 11 ? "ATrous denoise" :
-                    v == 12 ? "WLAA (native-res AA: accumulate + RCAS sharpen)" :
-                    "ATrous denoise";
-                WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v, filterName);
-            }
-        }
-        if (s_Data.ScreenCullPixels > 0.0f)
-            WL_CORE_INFO("Screen-space instance cull enabled: {} trace px", s_Data.ScreenCullPixels);
-        WL_CORE_INFO("CPU instance cull: {}", s_Data.CpuCullEnabled ? "on" : "OFF (WASTELAND_CPU_CULL=0)");
+        // The overrides now live in ApplyHarnessEnvOverrides, which BOTH the NVRHI
+        // and GL paths call. They used to be inlined right here -- in the GL-only
+        // tail, below Init's NVRHI early return -- so on DX11/DX12/Vulkan not one
+        // of them ever executed.
+        ApplyQualityPreset();
+        // After the preset, so the environment wins over it.
+        ApplyHarnessEnvOverrides();
 
         ApplyQualityPreset();
     }
@@ -3369,6 +3537,11 @@ namespace Wasteland
         glDeleteTextures(1, &s_Data.AlbedoTextureID);
         glDeleteTextures(1, &s_Data.TraceGBufferTextureID);
         glDeleteTextures(2, s_Data.AccumulationTextures);
+        glDeleteTextures(1, &s_Data.SceneArrayTexture);
+        glDeleteFramebuffers(1, &s_Data.SceneArrayReadFramebuffer);
+        glDeleteFramebuffers(1, &s_Data.SceneArrayDrawFramebuffer);
+        // The sampler Init creates for the Slang single-source GLSL path.
+        if (s_Data.PointSamplerObject) glDeleteSamplers(1, &s_Data.PointSamplerObject);
 
         // Only when non-zero: glDeleteQueries on an ungenerated name is an error. The
         // three are zeroed together afterwards, so a second Shutdown is a no-op.
@@ -3397,6 +3570,15 @@ namespace Wasteland
         s_Data.AccumulationTexture=s_Data.BloomTextureID=s_Data.BloomTempTextureID=0;
         s_Data.VelocityTextureID=s_Data.AlbedoTextureID=s_Data.TraceGBufferTextureID=0;
         s_Data.AccumulationTextures[0]=s_Data.AccumulationTextures[1]=0;
+        s_Data.SceneArrayTexture = 0;
+        s_Data.SceneArrayReadFramebuffer = s_Data.SceneArrayDrawFramebuffer = 0;
+        s_Data.SceneArrayWidth = s_Data.SceneArrayHeight = 0;
+
+        // The sampler is a GL name like the rest: released here, and never created here.
+        // This block used to call glGenSamplers/glSamplerParameteri -- creation code
+        // pasted into the teardown path -- which on a non-GL backend ran with null GL
+        // entry points and crashed at RIP 0 the first time the editor switched APIs.
+        s_Data.PointSamplerObject = 0;
         s_Data.DRSTimerQueries[0]=s_Data.DRSTimerQueries[1]=s_Data.DRSTimerQueries[2]=0;
         s_Data.CubeVertexBufferBase=s_Data.SphereVertexBufferBase=nullptr;
         s_Data.SphereIndexBufferBase=nullptr;
@@ -3546,7 +3728,7 @@ namespace Wasteland
         // DEFECT: the guard two lines above uses the one-brace `if (...) {` style with
         // its body at the outer indentation level, unlike the same block in the
         // EditorCamera overload below, which is properly braced. Cosmetic only.
-        glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glUniform4fv(s_Data.Loc_ViewProjection, 4, glm::value_ptr(viewProj));
         glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
         }
         FlushAndReset();
@@ -3559,6 +3741,8 @@ namespace Wasteland
     void Renderer3D::BeginScene(const EditorCamera &camera)
     {
         WL_PROFILE_FUNCTION();
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: BeginScene editor camera begin");
 
         if (!Renderer3DGLAvailable() && !Renderer3DNVRHIAvailable())
             return;
@@ -3639,7 +3823,7 @@ namespace Wasteland
         if (Renderer3DGLAvailable())
         {
             s_Data.RayTracingShader->Bind();
-            glUniformMatrix4fv(s_Data.Loc_ViewProjection, 1, GL_FALSE, glm::value_ptr(viewProj));
+            glUniform4fv(s_Data.Loc_ViewProjection, 4, glm::value_ptr(viewProj));
             glUniform3f(s_Data.Loc_CameraPosition, s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y, s_Data.CurrentCameraPosition.z);
         }
 
@@ -3651,10 +3835,14 @@ namespace Wasteland
     void Renderer3D::EndScene()
     {
         WL_PROFILE_FUNCTION();
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: EndScene begin");
         // Mid-frame overflow flush: submit what is accumulated so far, then reset the
         // batch. This is why the volume and light lists are NOT cleared by
         // FlushAndReset -- they must survive to be uploaded with this same frame.
         Flush();
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: EndScene after Flush");
         // Diagnostic for the mid-frame overflow path. Reported only when the per-frame count
         // CHANGES, so a scene that overflows every frame logs once rather than once per
         // frame. A non-zero delta is the signal that the batch is too small for the
@@ -3681,6 +3869,8 @@ namespace Wasteland
     template <typename NovaT, typename TexVec>
     static void RunNovaPassSchedule(NovaT &n, const TexVec &textures)
     {
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: RunNovaPassSchedule begin textures={}", textures.size());
         // `full` selects RT dimensions rather than the possibly smaller dynamic-
         // resolution compute dimensions. Passes producing final pixels need the former;
         // passes that only feed a later pass tolerate the smaller size.
@@ -3692,6 +3882,56 @@ namespace Wasteland
         // pass 14 performs immutable-input spatial reuse and adds the sole ReSTIR
         // direct-light estimate to img_Bloom before temporal accumulation.
         const int emissiveLightCount = (int)s_Data.m_LightIndices.size();
+
+        // --- The factor-gated schedule (Task 8 Step 6). -------------------------
+        //
+        // One present in WlfgEffectiveFactor runs the trace; the other presents
+        // re-present the accumulation the warp (pass 22) and the head (pass 23) have
+        // already corrected. That is what makes the present rate a multiple of the
+        // render rate, and it is the whole of the plan's "factor-enable wiring".
+        //
+        // The factor is a FUNCTION of the accumulation state, not the requested
+        // constant: a moved camera resolves to 0 (no generation) and a still-
+        // accumulating history to 2, because reprojecting a 1-sample accumulation
+        // multiplies noise rather than hiding it. WlfgMaxFactor() is that function
+        // and it is evaluated PER FRAME, not once at startup -- a schedule decided
+        // at init could not react to the camera starting to move.
+        //
+        // The alpha expression is deliberately the SAME one the accumulation is fed
+        // (u_AccumulationAlpha, set below), so the ceiling and the shader agree on
+        // what "converged" means. Deriving it differently here would let the
+        // schedule call a frame converged that the accumulation does not.
+        {
+            const float wlfgAccumAlpha = s_Data.RayTracingAccumulate
+                ? glm::max(0.02f, 1.0f / (float)(s_Data.FrameIndex + 1))
+                : 1.0f;
+            const int wlfgCeiling = Application::Get().WlfgMaxFactor(
+                s_Data.CameraMoved, wlfgAccumAlpha, /*novaBackend*/ true);
+            s_Data.WlfgEffectiveFactor = glm::min(s_Data.WlfgFactor, wlfgCeiling);
+        }
+        // <= 1 means "no generation": either WLFG is off, or it is on with the warp
+        // and the head running at the ordinary 1:1 rate. The short-circuit also
+        // guards the modulo against a zero divisor.
+        const bool wlfgTraceThisPresent =
+            (s_Data.WlfgEffectiveFactor <= 1) ||
+            ((s_Data.WlfgPresentIndex % (std::uint64_t)s_Data.WlfgEffectiveFactor) == 0);
+        if (wlfgTraceThisPresent)
+            ++s_Data.WlfgRealFrames;
+        else
+            ++s_Data.WlfgWarps;
+        ++s_Data.WlfgPresentIndex;
+        // Push the counts to the Application so the WL_WLFG_TIMING line reports real
+        // numbers. Without this the line prints Task 6's inert baseline and the
+        // present rate -- half of the Step 6 acceptance -- cannot be measured.
+        Application::Get().SetWlfgStats(s_Data.WlfgEffectiveFactor,
+                                        s_Data.WlfgWarps, s_Data.WlfgRealFrames);
+
+        // The trace. Skipped entirely on a generated present: the accumulation is
+        // deliberately left exactly as the warp and head left it, which is the point
+        // -- re-accumulating the same sample would blend the same data twice and
+        // blur a frame that is already correct.
+        if (wlfgTraceThisPresent)
+        {
         if(s_Data.RestirEnabled)n.Set("u_LightCount",0); // omit legacy emissive-light subset in pass 1
         pass(1);pass(0);
         if(s_Data.RestirEnabled){
@@ -3705,6 +3945,7 @@ namespace Wasteland
             n.SwapReservoir();
         }
         pass(2);n.CommitHistory();
+        }
         // Pass 24: the reactive mask, written into img_Bloom_Temp.a. Runs after
         // the velocity (pass 0) and G-buffer (pass 1) are produced and before
         // the composite consumes the bloom temp, and before the reconstruction
@@ -3744,8 +3985,18 @@ namespace Wasteland
         //     passes themselves already work, they are just gated on a flag the
         //     filter never set.
         if(s_Data.SvfgEnabled || s_Data.CurrentReconstructionFilter==ReconstructionFilter::SpatialDenoise){
+            // WLRR pass 20 -- snapshot the PRE-SVGF accumulation. Must run BEFORE
+            // the ping-pong below destroys it: the head's "input" arm is this
+            // buffer, and a one-frame-skewed pair never occurs at inference.
+            if (s_Data.WlrrEnabled) { pass(20); n.CommitWlrrSnapshot(); }
             pass(12);
             for(int i=0;i<glm::min(s_Data.SvfgPasses,4);++i){n.Set("u_StepSize",1<<i);pass(13);n.CommitDenoise();}
+            // WLRR pass 21 -- correct the denoiser's output toward the converged
+            // frame, anchored at the measured blend. Runs after SVGF (the incumbent
+            // is img_Accumulation as pass 13 left it) and before the WLFG warp, so
+            // the warp synthesizes from the CORRECTED frame rather than the raw
+            // denoise. Gated on its own flag: off means the schedule is unchanged.
+            if (s_Data.WlrrEnabled) pass(21);
         }
 
         // The denoiser ping-pongs: each of up to 4 passes widens the step by a factor
@@ -3770,6 +4021,12 @@ namespace Wasteland
             glUniform1i(s_Data.Loc_MaskVisualize, atoi(mv) != 0 ? 1 : 0);
         }
         pass(6,true);
+        // WLFG previous-present history: capture the present we just composited, so
+        // next frame's pass 22 reprojects THIS frame rather than the one before it.
+        // It has to be here and not in CommitHistory() -- that runs after pass 2,
+        // before the composite, when img_Output still holds the previous frame.
+        // No-op on DX11/DX12, which have no t72 texture allocated.
+        n.CommitWlfgHistory();
         // Pass 15: RCAS, the WLSR sharpen stage, BEFORE the bloom. The reactive
         // mask lives in img_Bloom_Temp, which the bloom blur (pass 4/5) overwrites,
         // so RCAS must read it before the bloom runs -- otherwise it reads bloom
@@ -3788,13 +4045,50 @@ namespace Wasteland
         // GodSunValid because shafts from a sun behind the camera smear rather than
         // radiating.
         if(s_Data.GodRaysEnabled&&s_Data.GodSunValid)pass(10,true);
+        // Pass 22: WLFG reprojection warp, the LAST pass. It overwrites
+        // img_Accumulation with the reprojected previous present (read from
+        // wlfgHistory via s_WlfgHistory at t72). Last so nothing reads
+        // img_Accumulation after it in this frame; the composite (pass 6) already
+        // ran, so on a real frame this is a no-visible-effect identity at zero
+        // velocity -- the screenshot bit-identical acceptance. Gated on WL_WLFG.
+        if(s_Data.WlfgWarpEnabled)
+        {
+            pass(22,true);
+            // Pass 23: the WLFG neural synthesis head. Reads the warp's own output
+            // (img_Accumulation as pass 22 left it) plus mask/velocity/depth and
+            // writes back `anchor + gate*residual` -- a CORRECTION of the warp, not a
+            // replacement, so a wrong network degrades to the warp's frame (gate->0)
+            // rather than to a wrong frame.
+            //
+            // Immediately after pass 22, in the same temporal slot: pass 22 produces
+            // the reprojected present and pass 23 corrects it before next frame's
+            // pass 2 consumes it as history. The weights come from the t75 blob
+            // (WL_WLFG_WEIGHTS); with no blob the buffer is zeroed and this pass is
+            // the exact identity, which is the acceptance control.
+            pass(23,true);
+            // One-shot: proves the pass actually dispatched, rather than the flag
+            // being set somewhere the schedule never reads. Without this a silent
+            // no-dispatch is indistinguishable from a warp that produced the same
+            // pixels.
+            static bool wlfgDispatchLogged = false;
+            if (!wlfgDispatchLogged)
+            {
+                wlfgDispatchLogged = true;
+                WL_CORE_INFO("WLFG warp: pass 22 dispatched");
+            }
+        }
         // FrameIndex advances HERE, once per completed schedule, and Prev is folded in
         // at the same moment so the two can never disagree about which frame is which.
         ++s_Data.FrameIndex;s_Data.PrevViewProjection=s_Data.CurrentViewProjection;++s_Data.Stats.DrawCalls;
     }
     static void FlushDX11Nova()
     {
-        auto& n=*s_Nova;
+        // Resolved through the class accessor. The bare `*s_Nova` this replaced read
+        // the file-scope decoy unique_ptr, which was never assigned, so the alias
+        // was a null dereference that survived until the first member access.
+        DX11Nova* nova = Renderer3D::GetNovaDX11();
+        if (!nova) return;
+        auto& n=*nova;
         // Resized every frame rather than only on change: Nova's Resize is expected to
         // be a cheap no-op when the dimensions match, which avoids tracking a flag.
         n.Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
@@ -3820,14 +4114,18 @@ namespace Wasteland
             n.Upload(2,s_Data.m_LightIndices.data(),(UINT)s_Data.m_LightIndices.size(),sizeof(int));
             s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
             s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
+            // See the Vulkan site: the terrain stream is the other half of
+            // SceneInstancesChanged's size test, and leaving it uncopied pins FrameIndex
+            // at 0 forever, disabling temporal accumulation on this backend.
+            s_Data.m_PrevTerrainVertices=s_Data.m_TerrainVertices;
             s_Data.FrameIndex=0;
         }
         // The live count is the REORDERED count, which is why this reads
         // m_ReorderedInstances and not m_SceneInstances. The two are equal in size, but
         // only the reordered one is what the GPU actually holds.
-        n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
+        n.Set("NovaConstants_0.u_InstanceCount_0",(int)s_Data.m_ReorderedInstances.size());
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
-        n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
+        n.Set("NovaConstants_0.u_FrameIndex_0",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
         // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
         // The shader declares these as `uniform int`; without the upload they keep the
@@ -4019,18 +4317,33 @@ namespace Wasteland
     // and not the other shows up only when someone switches API.
     static void FlushDX12Nova()
     {
-        // A reference alias, so the body reads as `n.` rather than `s_Nova12->`. It is a
-        // raw dereference with no null check -- Init guarantees s_Nova12 is non-null
-        // before any frame can reach here.
-        auto& n=*s_Nova12;
-        // Re-declared every frame at the current target size. Cheap when unchanged, and
-        // the reason the output texture always matches the accumulation buffers.
-        n.Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova begin");
+        // Resolved through the class accessor, and null-checked. The previous
+        // `*s_Nova12` dereferenced the file-scope DECOY unique_ptr (always null),
+        // which is why this helper called ResizeSEH with `this == nullptr`.
+        DX12Nova* nova = Renderer3D::GetNovaDX12();
+        if (!nova) return;
+        auto& n=*nova;
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova after alias");
+        // Pin the exact dimensions being handed to Resize. If Resize never logs,
+        // this is the last known-good point.
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova pre-Resize w={} h={}", (int)s_Data.RayTracingWidth, (int)s_Data.RayTracingHeight);
+        n.ResizeSEH(s_Data.RayTracingWidth, s_Data.RayTracingHeight);
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova after Resize");
         // The static-scene skip. FrameIndex==0 forces the first frame through even when
         // nothing changed, so the GPU buffers are populated from an empty CPU state
         // instead of being read before anything has ever been uploaded.
         const bool sceneChanged = SceneInstancesChanged();
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova sceneChanged={} FrameIndex={}", sceneChanged, (int)s_Data.FrameIndex);
         if(sceneChanged || s_Data.FrameIndex==0) {
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova uploading scene buffers instances={} bvh={} lights={} terrain={}",
+                    s_Data.m_SceneInstances.size(), s_Data.m_BVHNodes.size(), s_Data.m_LightIndices.size(), s_Data.m_TerrainVertices.size());
             // Memory pooling: reuse buffers instead of allocating per-frame.
             // Pre-allocate to avoid reallocations during gameplay.
             // InstancePool is an unordered_map, which has bucket_count() rather than
@@ -4043,6 +4356,8 @@ namespace Wasteland
                 s_Data.LightIndexPool.reserve(s_Data.LightIndexPoolCapacity);
 
             BuildAndFlattenBVH(s_Data.m_SceneInstances,s_Data.m_BVHNodes,s_Data.m_BVHPrimOrder);
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova BVH built primOrder={}", s_Data.m_BVHPrimOrder.size());
             // One reordered instance per BVH leaf, in TRAVERSAL order rather than submission
             // order. Coherent memory access matters more than instance ordering here, so the
             // shader's instance array is a permutation of the scene list, not a copy of it.
@@ -4061,10 +4376,20 @@ namespace Wasteland
                 // intensity > 0 is the only criterion; a dim emitter still counts toward the cap.
                 if(v.Emission.w>0) s_Data.m_LightIndices.push_back((int)i);
             }
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova uploading GPU buffers");
             n.Upload(0,s_Data.m_ReorderedInstances.data(),(UINT)s_Data.m_ReorderedInstances.size(),sizeof(RayTracingInstance));
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(0) done");
             n.Upload(1,s_Data.m_BVHNodes.data(),(UINT)s_Data.m_BVHNodes.size(),sizeof(BVHNodeGPU));
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(1) done");
             n.Upload(2,s_Data.m_LightIndices.data(),(UINT)s_Data.m_LightIndices.size(),sizeof(int));
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(2) done");
             n.Upload(3,s_Data.m_TerrainVertices.data(),(UINT)s_Data.m_TerrainVertices.size(),sizeof(TerrainNovaVertex));
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(3) done");
             // The memcmp reference for the next frame's SceneInstancesChanged. Stored BEFORE
             // FrameIndex is reset, and it copies the submission-order list, not the
             // reordered one.
@@ -4072,10 +4397,12 @@ namespace Wasteland
             s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
             s_Data.m_PrevTerrainVertices=s_Data.m_TerrainVertices;
             s_Data.FrameIndex=0;
+            if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+                WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova scene upload done FrameIndex=0");
         }
-        n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
+        n.Set("NovaConstants_0.u_InstanceCount_0",(int)s_Data.m_ReorderedInstances.size());
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
-        n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
+        n.Set("NovaConstants_0.u_FrameIndex_0",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
         // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
         // The shader declares these as `uniform int`; without the upload they keep the
@@ -4268,6 +4595,41 @@ namespace Wasteland
                 throw std::runtime_error("DX12 Nova texture slot has no native ID3D12Resource");
             textures.push_back(resource);
         }
+        // This is an isolated diagnostic draw, not yet a scene visibility pass.
+        // The instance count and camera matrix come from the live scene so the
+        // G-buffer carries real content rather than the synthetic gate cubes.
+        if (std::getenv("WASTELAND_VIS_TEST")) {
+            std::string shapeList;
+            for (const auto& inst : s_Data.m_ReorderedInstances)
+                shapeList += std::to_string((int)(inst.MaterialParams.z + 0.5f)) + ",";
+            WL_CORE_INFO("visibility scene: {} instances, shapes [{}]",
+                         s_Data.m_ReorderedInstances.size(), shapeList);
+            for (size_t i = 0; i < s_Data.m_ReorderedInstances.size() && i < 8; i++) {
+                const auto& m = s_Data.m_ReorderedInstances[i].WorldTransform;
+                WL_CORE_INFO("  inst[{}] scale=({:.2f},{:.2f},{:.2f}) pos=({:.2f},{:.2f},{:.2f})",
+                             i, glm::length(glm::vec3(m[0])),
+                             glm::length(glm::vec3(m[1])), glm::length(glm::vec3(m[2])),
+                             m[3][0], m[3][1], m[3][2]);
+            }
+            {
+                const auto& m = s_Data.CurrentViewProjection;
+                WL_CORE_INFO("vis vp: cam=({:.2f},{:.2f},{:.2f}) m00={:.3f} m01={:.3f} "
+                             "m02={:.3f} m03={:.3f} m30={:.3f} m31={:.3f} m32={:.3f} m33={:.3f}",
+                             s_Data.CurrentCameraPosition.x, s_Data.CurrentCameraPosition.y,
+                             s_Data.CurrentCameraPosition.z,
+                             m[0][0], m[0][1], m[0][2], m[0][3],
+                             m[3][0], m[3][1], m[3][2], m[3][3]);
+            }
+        }
+        n.SetVisibilityScene((UINT)s_Data.m_ReorderedInstances.size(),
+                             &s_Data.CurrentViewProjection[0][0]);
+        // The raster visibility pass must run before the compute schedule that
+        // reads its G-buffer, which is why this precedes RunNovaPassSchedule.
+        const bool rasterVisibility = std::getenv("WASTELAND_VIS_TEST") != nullptr;
+        if (rasterVisibility)
+            n.SubmitVisibility();
+        // Pass 1 uses the raster primary hit only when the G-buffer is current.
+        n.Set("u_UseRasterVisibility", rasterVisibility ? 1 : 0);
         RunNovaPassSchedule(n, textures);
     }
 
@@ -4275,9 +4637,11 @@ namespace Wasteland
     // handles passed to the shared schedule for NVRHI texture resolution.
     static void FlushVulkanNova()
     {
-        // A reference alias to the live instance; routing in Renderer3D::Flush checks
-        // s_NovaVk before entering this helper.
-        auto& n=*s_NovaVk;
+        // A reference alias to the live instance, resolved through the class accessor
+        // (the file-scope decoy this used to read was always null) and null-checked.
+        VulkanNova* nova = Renderer3D::GetNovaVulkan();
+        if (!nova) return;
+        auto& n=*nova;
         // Re-declared every frame at the current target size. Cheap when unchanged, and
         // the reason the output texture always matches the accumulation buffers.
         n.Resize(s_Data.RayTracingWidth,s_Data.RayTracingHeight);
@@ -4312,11 +4676,19 @@ namespace Wasteland
             // reordered one.
             s_Data.m_PrevSceneInstances=s_Data.m_SceneInstances;
             s_Data.m_LastSceneTransformEpoch=s_Data.m_SceneTransformEpoch;
+            // The terrain stream is the OTHER half of SceneInstancesChanged's size test.
+            // Omitting this copy leaves m_TerrainVertices.size() != m_PrevTerrainVertices.size()
+            // true forever, so SceneInstancesChanged() reports "changed" every frame, the
+            // rebuild block runs every frame, and FrameIndex is re-zeroed every frame --
+            // which disables temporal accumulation entirely (u_FrameIndex stays 0, so every
+            // `u_FrameIndex > 0` validity test is false). DX12 copies this at its own site;
+            // the other three backends did not.
+            s_Data.m_PrevTerrainVertices=s_Data.m_TerrainVertices;
             s_Data.FrameIndex=0;
         }
-        n.Set("u_InstanceCount",(int)s_Data.m_ReorderedInstances.size());
+        n.Set("NovaConstants_0.u_InstanceCount_0",(int)s_Data.m_ReorderedInstances.size());
         n.Set("u_LightCount",(int)s_Data.m_LightIndices.size());
-        n.Set("u_FrameIndex",(int)s_Data.FrameIndex);
+        n.Set("NovaConstants_0.u_FrameIndex_0",(int)s_Data.FrameIndex);
         n.Set("u_QualityLevel",(int)s_Data.CurrentQualityPreset);
         // Anti-aliasing: uploaded on every Nova backend alongside the quality preset.
         // The shader declares these as `uniform int`; without the upload they keep the
@@ -4493,6 +4865,9 @@ namespace Wasteland
         textures.reserve(s_Data.TextureSlotIndex);
         for (uint32_t i = 0; i < s_Data.TextureSlotIndex; ++i)
             textures.push_back(s_Data.TextureSlots[i]);
+        // Vulkan has no raster visibility pass yet, so its G-buffer is always the
+        // analytic one; the uniform keeps the shared schedule on that path.
+        n.Set("u_UseRasterVisibility", 0);
         RunNovaPassSchedule(n, textures);
     }
 
@@ -4500,35 +4875,95 @@ namespace Wasteland
 // and returns; the NVRHI raster fallback comes next; the OpenGL path tracer is the
 // final block. Indentation here is one level shallower than its neighbours --
 // left exactly as the user wrote it.
+// Set when the GPU is gone (TDR / DXGI_ERROR_DEVICE_REMOVED): no further draw or
+// upload may be issued. A plain static because Flush() is driven by the scene, not by
+// the backend, and it must stay latched for the rest of the process -- a D3D12 device
+// cannot be recreated from inside this class, so a lost device means a blank viewport
+// until the user restarts, never a resumed pipeline.
+static bool s_DeviceLost = false;
+
 void Renderer3D::Flush()
     {
         if (!Renderer3DGLAvailable() && !Renderer3DNVRHIAvailable())
             return;
 
+        // DEVICE-LOST GATE, once per frame and ahead of every backend.
+        //
+        // After a TDR the NVRHI device is removed but the engine keeps running: the
+        // scene still calls EndScene -> Flush every frame. Every path below then
+        // issues work at a dead device -- the vertex-buffer upload reaches nvrhi's
+        // UploadManager and dereferences freed memory (UploadManager::suballocateBuffer,
+        // seen right after "Device recovery for DX12 requires..." ), and pipeline
+        // creation faults in the root-signature cache. Guarding each call site is a
+        // losing game; there is nothing to draw at all once the GPU has gone away.
+        // s_DeviceLost is a plain latch in this translation unit rather than a query
+        // on NVRHIRendererAPI::GetCurrentContext(): that accessor returned null here
+        // (the context pointer is only published on some init paths), so the gate
+        // silently did nothing and the upload below still ran on a removed device.
+        // The latch is set exactly where the loss is REPORTED -- the Nova dispatch
+        // failure path just below -- so it cannot disagree with what the driver said.
+        if (s_DeviceLost)
+            return;
+
         if(s_Nova && s_Data.RayTracingEnabled) {
-            try { FlushDX11Nova(); return; }
+            // UpdateDynamicResolution() is the frame-time REPORT and the DRS scaler.
+            // It used to be called only from the OpenGL path, which meant DX11/DX12/
+            // Vulkan never logged a frame time and never ran the scaler at all -- so
+            // tools/bench_nova_phase.py read nothing on three of four backends, and the
+            // primary 60 fps lever was inert there. Called AFTER the flush so it reacts
+            // to the frame just measured, matching the GL ordering.
+            try { FlushDX11Nova(); UpdateDynamicResolution(); return; }
             catch (const std::exception& e) {
                 WL_CORE_ERROR("DX11 Nova dispatch failed, disabling ray tracing: {0}", e.what());
                 s_Nova.reset();
                 s_Data.RayTracingEnabled=false;
+                // Abandon the rest of the frame. Falling through to the NVRHI raster
+                // path is what turned a device-removal into a crash: the exception is
+                // raised by the dispatch, but the upload below then ran on the same
+                // dead device in the same Flush() call.
+                return;
             }
         }
 
         if(s_Nova12 && s_Data.RayTracingEnabled) {
-            try { FlushDX12Nova(); return; }
+            // Same shared report + scaler as the DX11 branch above.
+            try { FlushDX12Nova(); UpdateDynamicResolution(); return; }
             catch (const std::exception& e) {
                 WL_CORE_ERROR("DX12 Nova dispatch failed, disabling ray tracing: {0}", e.what());
+                // A dispatch failing with DXGI_ERROR_DEVICE_REMOVED (0x887A0005, printed
+                // as 2289696773) means the GPU was reset under us -- typically a TDR from
+                // a long Nova dispatch. Without this the rest of the frame keeps issuing
+                // D3D12 work to a removed device and faults inside nvrhi's root-signature
+                // cache, which is the crash seen right after "CreateRootSignature failed
+                // 0x887A0005". Marking the context lost makes every later call this frame
+                // (and every later frame) skip instead, and RecoverDevice() logs the
+                // backend-specific outcome once.
+                s_DeviceLost = true;
+                if (auto *ctx = NVRHIRendererAPI::GetCurrentContext())
+                {
+                    ctx->SetDeviceLost();
+                    ctx->RecoverDevice();
+                }
                 s_Nova12.reset();
                 s_Data.RayTracingEnabled=false;
+                // THE FRAME ENDS HERE. Without this the fall-through below uploads
+                // vertex data through nvrhi's UploadManager on the removed device and
+                // faults in suballocateBuffer -- the crash that followed every TDR even
+                // with the latch set, because it happened in the SAME Flush() call.
+                return;
             }
         }
 
         if(s_NovaVk && s_Data.RayTracingEnabled) {
-            try { FlushVulkanNova(); return; }
+            // Same shared report + scaler as the DX11 branch above.
+            try { FlushVulkanNova(); UpdateDynamicResolution(); return; }
             catch (const std::exception& e) {
                 WL_CORE_ERROR("Vulkan Nova dispatch failed, disabling ray tracing: {0}", e.what());
                 s_NovaVk.reset();
                 s_Data.RayTracingEnabled = false;
+                // Same reasoning as the D3D catches: do not continue into the raster
+                // path with a backend that just failed mid-frame.
+                return;
             } catch (...) {
                 WL_CORE_ERROR("Vulkan Nova dispatch failed with an unknown exception, disabling ray tracing");
                 s_NovaVk.reset();
@@ -4888,6 +5323,9 @@ void Renderer3D::Flush()
                 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
                 s_Data.m_PrevSceneInstances = s_Data.m_SceneInstances;
                 s_Data.m_LastSceneTransformEpoch = s_Data.m_SceneTransformEpoch;
+                // See the Vulkan site: the terrain stream is the other half of
+                // SceneInstancesChanged's size test. Uncapped, FrameIndex never escapes 0.
+                s_Data.m_PrevTerrainVertices = s_Data.m_TerrainVertices;
                 // Cleared here, outside the BuildAndFlattenBVH call, so it is reset even when
                 // the rebuild itself was skipped.
                 s_Data.m_SceneDirty = false;
@@ -4918,26 +5356,64 @@ void Renderer3D::Flush()
                 return;
             s_Data.RayTracingTexture = s_Data.RayTracingOutput->GetRendererID();
 
-            glActiveTexture(GL_TEXTURE0 + 3);
+            // --- Texture bindings for the Slang single-source GLSL ---
+            // GLSL uses zero Vulkan shifts, so bindings are raw HLSL register numbers:
+            // s_Accumulation(t48), s_DepthBuffer(t49), s_Output(t50),
+            // s_NormalBuffer(t51), s_InputAlbedo(t52), s_Moments(t53)
+            // read_img_*(t64-68,t69-73), s_WlfgHistory(t72), scene textures(t15+)
+            // sampler s_Sampler(s0) at unit 0
+
+            // Bind sampler object to all texture units used by the shader
+            // (sampler2D in GLSL needs sampler state at each unit).
+            // With sampler2D (combined) in GLSL, each texture unit needs its own
+            // sampler binding — texture units 48-73 hold the trace textures,
+            // units 64-73 are read via texelFetch (sampler state irrelevant),
+            // but units 48-53 may be sampled with textureLod in later passes.
+            for (uint32_t unit = 0; unit <= 73; unit++)
+                glBindSampler(unit, s_Data.PointSamplerObject);
+            // s_Accumulation (t48)
+            glActiveTexture(GL_TEXTURE0 + 48);
             glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]);
-            glActiveTexture(GL_TEXTURE0 + 4);
+            // s_DepthBuffer (t49)
+            glActiveTexture(GL_TEXTURE0 + 49);
             glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
-            glActiveTexture(GL_TEXTURE0 + 8);
+            // s_Output (t50)
+            glActiveTexture(GL_TEXTURE0 + 50);
             glBindTexture(GL_TEXTURE_2D, s_Data.RayTracingTexture);
-            // The G-buffer is bound TWICE, to units 4 and 10, because the shader reads it
-            // through two different samplers in different passes and units are global GL
-            // state rather than per-pass.
-            glActiveTexture(GL_TEXTURE0 + 10);
+            // s_NormalBuffer (t51) — same texture as s_DepthBuffer, different unit.
+            // The shader reads it through two different samplers in different passes.
+            glActiveTexture(GL_TEXTURE0 + 51);
             glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);
 
-            // Unit 13 is s_Moments (the GLSL's `layout(binding = 13) uniform
-            // sampler2D s_Moments`), the read path pass 12 uses to sample the
-            // previous frame's moments. It is a DIFFERENT unit from image unit 6
-            // above even though both name MomentsTextureID: image units and
-            // texture units are separate GL namespaces, and the shader needs the
-            // sampler view for textureLod and the image view for imageStore.
-            glActiveTexture(GL_TEXTURE0 + 13);
+            // Unit 52 is s_InputAlbedo — not bound in the original GLSL twin either;
+            // reads return (0,0,0,1) which matches the legacy behavior.
+
+            // s_Moments (t53) — read by pass 12. DIFFERENT namespace from image unit
+            // 13 (img_MaterialPacked is an image2D, moments is a texture2D).
+            glActiveTexture(GL_TEXTURE0 + 53);
             glBindTexture(GL_TEXTURE_2D, s_Data.MomentsTextureID);
+
+            // read_img_* (texelFetch read views of the image textures)
+            glActiveTexture(GL_TEXTURE0 + 64);
+            glBindTexture(GL_TEXTURE_2D, s_Data.RayTracingTexture);        // read_img_Output
+            glActiveTexture(GL_TEXTURE0 + 65);
+            glBindTexture(GL_TEXTURE_2D, s_Data.AccumulationTextures[readIdx]); // read_img_Accumulation
+            glActiveTexture(GL_TEXTURE0 + 66);
+            glBindTexture(GL_TEXTURE_2D, s_Data.BloomTextureID);           // read_img_Bloom
+            glActiveTexture(GL_TEXTURE0 + 67);
+            glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);     // read_img_MaterialPacked
+            glActiveTexture(GL_TEXTURE0 + 68);
+            glBindTexture(GL_TEXTURE_2D, s_Data.AlbedoTextureID);           // read_img_AlbedoHit
+            glActiveTexture(GL_TEXTURE0 + 69);
+            glBindTexture(GL_TEXTURE_2D, s_Data.VelocityTextureID);         // read_img_Velocity
+            glActiveTexture(GL_TEXTURE0 + 70);
+            glBindTexture(GL_TEXTURE_2D, s_Data.TraceGBufferTextureID);     // read_img_TraceGBuffer
+            glActiveTexture(GL_TEXTURE0 + 71);
+            glBindTexture(GL_TEXTURE_2D, s_Data.BloomTempTextureID);        // read_img_Bloom_Temp
+            glActiveTexture(GL_TEXTURE0 + 72);
+            glBindTexture(GL_TEXTURE_2D, s_Data.RayTracingTexture);         // s_WlfgHistory (history)
+            glActiveTexture(GL_TEXTURE0 + 73);
+            glBindTexture(GL_TEXTURE_2D, s_Data.MomentsTextureID);           // read_img_Moments
 
             // A snapshot. FrameIndex advances later in this same function, and the alpha
             // computation below must see the value this frame started with.
@@ -4986,11 +5462,71 @@ void Renderer3D::Flush()
             glBindImageTexture(4, s_Data.AlbedoTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA8);
             glBindImageTexture(6, s_Data.TraceGBufferTextureID, 0, layered, 0, GL_READ_WRITE, GL_RGBA32F);
 
-            for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+            // Populate the GL_TEXTURE_2D_ARRAY backing u_SceneTextures_0.
+            // Every source occupies the WHOLE normalized layer, not a corner
+            // surrounded by white. Blits also handle RGB/RGBA conversion.
+            if (s_Data.SceneArrayTexture && s_Data.TextureSlotIndex > 0)
             {
-                glActiveTexture(GL_TEXTURE0 + i + 15);
-                glBindTexture(GL_TEXTURE_2D, s_Data.TextureSlots[i]->GetRendererID());
+                uint32_t maxWidth = s_Data.SceneArrayWidth;
+                uint32_t maxHeight = s_Data.SceneArrayHeight;
+                for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                {
+                    if (s_Data.TextureSlots[i])
+                    {
+                        maxWidth = std::max(maxWidth, s_Data.TextureSlots[i]->GetWidth());
+                        maxHeight = std::max(maxHeight, s_Data.TextureSlots[i]->GetHeight());
+                    }
+                }
+                if (maxWidth > 0 && maxHeight > 0)
+                {
+                    // Immutable storage cannot be resized in place. Grow only,
+                    // so different batches/viewports do not churn allocations.
+                    if (s_Data.SceneArrayWidth != maxWidth || s_Data.SceneArrayHeight != maxHeight)
+                    {
+                        glDeleteTextures(1, &s_Data.SceneArrayTexture);
+                        glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &s_Data.SceneArrayTexture);
+                        uint32_t levels = 1;
+                        for (uint32_t size = std::max(maxWidth, maxHeight); size > 1; size >>= 1)
+                            ++levels;
+                        glTextureStorage3D(s_Data.SceneArrayTexture, levels, GL_RGBA8,
+                                           maxWidth, maxHeight, Renderer3DData::MaxTextureSlots);
+                        glTextureParameteri(s_Data.SceneArrayTexture, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+                        glTextureParameteri(s_Data.SceneArrayTexture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        // Match loaded material textures, not screen-space history.
+                        glTextureParameteri(s_Data.SceneArrayTexture, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+                        glTextureParameteri(s_Data.SceneArrayTexture, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+                        s_Data.SceneArrayWidth = maxWidth;
+                        s_Data.SceneArrayHeight = maxHeight;
+                    }
+                    const GLubyte whiteClear[4] = {255, 255, 255, 255};
+                    glClearTexImage(s_Data.SceneArrayTexture, 0, GL_RGBA, GL_UNSIGNED_BYTE, whiteClear);
+                    // Blits honor scissor state, even with named framebuffers.
+                    const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+                    glDisable(GL_SCISSOR_TEST);
+                    glNamedFramebufferReadBuffer(s_Data.SceneArrayReadFramebuffer, GL_COLOR_ATTACHMENT0);
+                    glNamedFramebufferDrawBuffer(s_Data.SceneArrayDrawFramebuffer, GL_COLOR_ATTACHMENT0);
+                    for (uint32_t i = 0; i < s_Data.TextureSlotIndex; i++)
+                    {
+                        if (s_Data.TextureSlots[i])
+                        {
+                            glNamedFramebufferTexture(s_Data.SceneArrayReadFramebuffer, GL_COLOR_ATTACHMENT0,
+                                                      s_Data.TextureSlots[i]->GetRendererID(), 0);
+                            glNamedFramebufferTextureLayer(s_Data.SceneArrayDrawFramebuffer, GL_COLOR_ATTACHMENT0,
+                                                           s_Data.SceneArrayTexture, 0, i);
+                            glBlitNamedFramebuffer(s_Data.SceneArrayReadFramebuffer, s_Data.SceneArrayDrawFramebuffer,
+                                0, 0, s_Data.TextureSlots[i]->GetWidth(), s_Data.TextureSlots[i]->GetHeight(),
+                                0, 0, maxWidth, maxHeight, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                        }
+                    }
+                    if (scissor) glEnable(GL_SCISSOR_TEST);
+                    glGenerateTextureMipmap(s_Data.SceneArrayTexture);
+                }
             }
+            // Materials need mirrored tiling and mip filtering. A screen-space
+            // clamp sampler bound here would override the texture's own state.
+            glBindSampler(15, 0);
+            glActiveTexture(GL_TEXTURE0 + 15);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, s_Data.SceneArrayTexture);
 
             // Ceiling division by the 8x8 workgroup size. The +7 is what makes it a ceiling:
             // without it a width of, say, 1299 would compute 162 groups and drop the last
@@ -5172,8 +5708,8 @@ void Renderer3D::Flush()
             // pass 0 writes velocity, and pass 2 reprojects with the previous matrix. If
             // these landed after pass 0, pass 0 would compute velocity against last frame's
             // matrices and the history would lag by a frame during motion.
-            glUniformMatrix4fv(s_Data.Loc_PrevViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.PrevViewProjection));
-            glUniformMatrix4fv(s_Data.Loc_InverseViewProjection, 1, GL_FALSE, glm::value_ptr(s_Data.InverseViewProjection));
+            glUniform4fv(s_Data.Loc_PrevViewProjection, 4, glm::value_ptr(s_Data.PrevViewProjection));
+            glUniform4fv(s_Data.Loc_InverseViewProjection, 4, glm::value_ptr(s_Data.InverseViewProjection));
 
             // Pass 0: Visibility + Velocity
             // GPU timer around the whole compute chain (passes 0-7, composite,
@@ -5276,6 +5812,45 @@ void Renderer3D::Flush()
             // Passes are selected by a single uniform rather than by separate programs, so
             // the whole chain reuses one compute shader and one set of bindings.
             glUniform1i(s_Data.Loc_PassID, 0);
+            static uint32_t diagnosticFlush = 0;
+            const bool diagnoseNova = getenv("WL_NOVA_DIAGNOSTICS") && ++diagnosticFlush == 10;
+            auto diagnoseImage = [&](const char *stage, GLuint texture) {
+                if (!diagnoseNova) return;
+                glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+                GLint previousTexture = 0;
+                glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+                glBindTexture(GL_TEXTURE_2D, texture);
+                std::vector<float> pixels((size_t)s_Data.RayTracingWidth * s_Data.RayTracingHeight * 4);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, pixels.data());
+                glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
+                double sum = 0.0;
+                float maximum = 0.0f;
+                size_t nonfinite = 0;
+                for (size_t i = 0; i < pixels.size(); ++i)
+                {
+                    if (i % 4 == 3) continue;
+                    if (!std::isfinite(pixels[i])) { ++nonfinite; continue; }
+                    sum += pixels[i];
+                    maximum = std::max(maximum, pixels[i]);
+                }
+                WL_CORE_INFO("[NOVA-DIAG] {} tex={} mean={} max={} nonfinite={} GL={}",
+                    stage, texture, sum / (pixels.size() / 4 * 3), maximum, nonfinite, (unsigned)glGetError());
+            };
+            if (diagnoseNova)
+            {
+                GLfloat gamma = 0.0f, scale = 0.0f, inverseColumn[4] = {};
+                GLint count = 0;
+                glGetUniformfv(s_Data.RayTracingShader->GetRendererID(), s_Data.Loc_ColorGamma, &gamma);
+                glGetUniformfv(s_Data.RayTracingShader->GetRendererID(), s_Data.Loc_RenderScale, &scale);
+                glGetUniformfv(s_Data.RayTracingShader->GetRendererID(), s_Data.Loc_InverseViewProjection, inverseColumn);
+                glGetUniformiv(s_Data.RayTracingShader->GetRendererID(), s_Data.InstanceCountLocation, &count);
+                WL_CORE_INFO("[NOVA-DIAG] uniforms instances={} gamma={} scale={} invVP=({},{},{},{}) GL={}",
+                    count, gamma, scale, inverseColumn[0], inverseColumn[1], inverseColumn[2], inverseColumn[3], (unsigned)glGetError());
+                GLint lightCount = 0;
+                glGetUniformiv(s_Data.RayTracingShader->GetRendererID(), s_Data.Loc_ALights[0][Renderer3DData::AL_Count], &lightCount);
+                WL_CORE_INFO("[NOVA-DIAG] analytic lights={} colorLocation={} positionLocation={}", lightCount,
+                    s_Data.Loc_ALights[0][Renderer3DData::AL_Color], s_Data.Loc_ALights[0][Renderer3DData::AL_Pos]);
+            }
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             // After EVERY dispatch, not once at the end of the chain. Each pass reads what
             // the previous pass wrote, so the barrier has to sit between them; batching them
@@ -5288,6 +5863,7 @@ void Renderer3D::Flush()
             glUniform1i(s_Data.Loc_PassID, 1);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            diagnoseImage("trace-bloom", s_Data.BloomTextureID);
 
             // ReSTIR candidate generation, temporal merge, and spatial reuse.
             // Pass 11 is reservoir-only; pass 14 adds the estimate once before
@@ -5320,6 +5896,8 @@ void Renderer3D::Flush()
             glUniform1i(s_Data.Loc_PassID, 2);
             glDispatchCompute(workGroupsX, workGroupsY, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            diagnoseImage("temporal-write", s_Data.AccumulationTextures[writeIdx]);
+            diagnoseImage("temporal-read", s_Data.AccumulationTextures[readIdx]);
 
             if (s_Data.BilateralBlurEnabled)
             {
@@ -5404,6 +5982,7 @@ void Renderer3D::Flush()
                 glUniform1i(s_Data.Loc_PassID, 6);
                 glDispatchCompute(compositeGroupsX, compositeGroupsY, 1);
                 glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+                diagnoseImage("composite", s_Data.RayTracingTexture);
             }
 
             // Pass 15: RCAS, the WLSR sharpen stage, BEFORE the bloom. The
@@ -6250,6 +6829,22 @@ void Renderer3D::Flush()
     // which is the thing under verification.
     bool Renderer3D::ReadbackRayTraceTarget(std::vector<unsigned char> &rgba, uint32_t &width, uint32_t &height)
     {
+        // WL_NOVA_CAPTURE_IMAGE selects the Nova image the capture reads; the explicit
+        // overload below is what the dataset exporter uses to capture a whole set from
+        // one frame.
+        uint32_t imageIndex = 0;
+        if (const char *envIndex = std::getenv("WL_NOVA_CAPTURE_IMAGE"))
+        {
+            const int parsed = std::atoi(envIndex);
+            if (parsed >= 0 && parsed < 16)
+                imageIndex = static_cast<uint32_t>(parsed);
+        }
+        return ReadbackRayTraceTarget(rgba, width, height, imageIndex);
+    }
+
+    bool Renderer3D::ReadbackRayTraceTarget(std::vector<unsigned char> &rgba, uint32_t &width, uint32_t &height,
+                                            uint32_t imageIndex)
+    {
         // s_Nova12 non-null is the DX12-backend test. The RayTracingEnabled half
         // matters separately: s_Nova12 survives Nova being switched off (the
         // toggle clears the flag, it does not reset the instance), so without
@@ -6262,7 +6857,24 @@ void Renderer3D::Flush()
             // R32G32B32A32_FLOAT pass image the composite writes and the one
             // GetRayTraceTargetNativeSRV hands to ImGui, so this is the same picture
             // the viewport is showing -- not some other image from the same schedule.
-            if (s_Nova12->Readback(0, rgba, w, h))
+            if (s_Nova12->Readback(imageIndex, rgba, w, h))
+            {
+                width = w;
+                height = h;
+                return true;
+            }
+        }
+
+        // Vulkan path: same contract as the DX12 branch above, through the Vulkan
+        // implementation's own staging readback. Without this the editor's capture
+        // logged "no Nova output to read" on Vulkan and fell through to a window grab.
+        if (s_NovaVk && s_Data.RayTracingEnabled)
+        {
+            uint32_t w = 0, h = 0;
+            // Index comes from the caller: 0 = img_Output (what the viewport shows),
+            // 1 = img_Accumulation, 4 = img_AlbedoHit, 5 = img_Velocity,
+            // 6 = img_TraceGBuffer, 9 = img_Mask (u14).
+            if (s_NovaVk->Readback(imageIndex, rgba, w, h))
             {
                 width = w;
                 height = h;
@@ -6293,8 +6905,14 @@ void Renderer3D::Flush()
             // the tracer's imageStore calls would otherwise be dropped.
             std::vector<float> hdr((size_t)width * (size_t)height * 4);
             glBindTexture(GL_TEXTURE_2D, name);
+            // glGetTexImage is a CPU-side read of the texture's data store. The
+            // GL_TEXTURE_FETCH_BARRIER_BIT above only orders image writes against
+            // shader texture fetches (ImGui), NOT against glGetTexImage. glFinish
+            // drains the compute queue so the readback sees the completed image.
+            glFinish();
             glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, hdr.data());
             glBindTexture(GL_TEXTURE_2D, 0);
+            WL_CORE_INFO("[DBG] ReadbackRayTraceTarget: glGetTexImage {0}x{1} ok, sample[0]={2}", width, height, hdr[0]);
 
             // Clamp to [0,1] rather than scale: the composite writes HDR radiance
             // and the PNG is 8-bit. Clamping preserves the linear ramp the
@@ -6346,6 +6964,56 @@ void Renderer3D::Flush()
                      (int)s_Data.RayTracingEnabled, (int)RendererAPI::GetAPI());
         return false;
     }
+
+    bool Renderer3D::ReadbackRayTraceTargetFloat(std::vector<float> &out,
+                                                  uint32_t &width, uint32_t &height,
+                                                  uint32_t imageIndex)
+    {
+        // Lossless float readback for the WLFG dataset state inputs: velocity
+        // (u5, RG32_FLOAT) and depth (u6, RGBA32_FLOAT). DX12 currently returns
+        // false (unverified); the Vulkan branch hands back the raw texels. GL
+        // reads the traced image directly with glGetTexImage into float.
+        if (s_Nova12 && s_Data.RayTracingEnabled)
+        {
+            uint32_t w = 0, h = 0;
+            (void)s_Nova12->ReadbackFloat(imageIndex, out, w, h);
+            width = w;
+            height = h;
+            return true;
+        }
+        if (s_NovaVk && s_Data.RayTracingEnabled)
+        {
+            uint32_t w = 0, h = 0;
+            if (!s_NovaVk->ReadbackFloat(imageIndex, out, w, h))
+                return false;
+            width = w;
+            height = h;
+            return true;
+        }
+        // No Nova instance -> the traced image is s_Data.RayTracingOutput.
+        if (Renderer3DGLAvailable() && s_Data.RayTracingOutput && s_Data.RayTracingEnabled)
+        {
+            const uint32_t name = s_Data.RayTracingOutput->GetRendererID();
+            if (!name) return false;
+            width = s_Data.RayTracingWidth;
+            height = s_Data.RayTracingHeight;
+            if (width == 0 || height == 0) return false;
+            const size_t total = (size_t)width * (size_t)height * 4;
+            out.resize(total);
+            glBindTexture(GL_TEXTURE_2D, name);
+            glFinish();
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, out.data());
+            glBindTexture(GL_TEXTURE_2D, 0);
+            return true;
+        }
+
+        WL_CORE_WARN("Renderer3D: no ray-trace float readback for the active backend "
+                     "(glAvailable={0} outputTexture={1} rtEnabled={2} api={3})",
+                     (int)Renderer3DGLAvailable(), (bool)s_Data.RayTracingOutput,
+                     (int)s_Data.RayTracingEnabled, (int)RendererAPI::GetAPI());
+        return false;
+    }
+
     // Indented a level shallower than its neighbours. Left exactly as written --
     // this file is insertion-only.
     void Renderer3D::ResizeRayTraceTarget(uint32_t width, uint32_t height)
@@ -6482,7 +7150,8 @@ void Renderer3D::Flush()
         // on the first frame after any window resize.
         glClearTexImage(s_Data.TraceGBufferTextureID, 0, GL_RGBA, GL_FLOAT, gbufferResize);
 
-        // Resize Accumulation Textures
+        // Resize Accumulation Textures. Material array dimensions depend on
+        // source images, not the viewport; keep that storage alive on resize.
         if (s_Data.AccumulationTextures[0])
             glDeleteTextures(2, s_Data.AccumulationTextures);
 
@@ -6878,6 +7547,91 @@ void Renderer3D::Flush()
     }
     bool Renderer3D::IsReconstructionEnabled() { return s_Data.ReconstructionEnabled; }
     bool Renderer3D::IsRCASEnabled() { return s_Data.RCASEnabled; }
+
+    // --- The four clean-room features -------------------------------------
+    // WLSR is a PAIR: EASU is the upscale kernel (ReconstructionFilter::FSR1,
+    // consumed inside RunComposite) and RCAS is the sharpen stage that follows
+    // it (pass 15). Both must be set together or the stage is half-configured --
+    // EASU without RCAS is just a different upscale, RCAS without EASU sharpens
+    // a bilinear image that nobody asked to sharpen.
+    bool Renderer3D::IsWlsrEnabled()
+    {
+        return s_Data.CurrentReconstructionFilter == ReconstructionFilter::FSR1 ||
+               s_Data.RCASEnabled;
+    }
+    void Renderer3D::SetWlsrEnabled(bool enabled)
+    {
+        if (enabled)
+        {
+            s_Data.CurrentReconstructionFilter = ReconstructionFilter::FSR1;
+            s_Data.RCASEnabled = true;
+        }
+        else
+        {
+            if (s_Data.CurrentReconstructionFilter == ReconstructionFilter::FSR1)
+                s_Data.CurrentReconstructionFilter = ReconstructionFilter::Bilinear;
+            s_Data.RCASEnabled = false;
+        }
+    }
+    bool Renderer3D::IsWlaaEnabled()
+    {
+        return s_Data.CurrentReconstructionFilter == ReconstructionFilter::Wlaa;
+    }
+    void Renderer3D::SetWlaaEnabled(bool enabled)
+    {
+        // The sharpen is folded into the composite's own WLAA branch, so this is
+        // a filter selection and nothing else.
+        s_Data.CurrentReconstructionFilter =
+            enabled ? ReconstructionFilter::Wlaa : ReconstructionFilter::Bilinear;
+    }
+    bool Renderer3D::IsWlrrEnabled() { return s_Data.WlrrEnabled; }
+    void Renderer3D::SetWlrrEnabled(bool enabled) { s_Data.WlrrEnabled = enabled; }
+    bool Renderer3D::IsWlrrAvailable()
+    {
+        // WLRR is SPIR-V-only (the shader block is compiled out of DXIL/GLSL),
+        // so only the Vulkan backend can have a validated blob.
+        VulkanNova *nova = GetNovaVulkan();
+        return nova && nova->HasWlrrWeights();
+    }
+    bool Renderer3D::IsWlfgEnabled() { return s_Data.WlfgWarpEnabled; }
+    void Renderer3D::SetWlfgEnabled(bool enabled)
+    {
+        s_Data.WlfgWarpEnabled = enabled;
+        if (!enabled)
+            s_Data.WlfgFactor = 0;
+    }
+    int Renderer3D::GetWlfgFactor() { return s_Data.WlfgFactor; }
+    int Renderer3D::GetWlfgMaxFactor()
+    {
+        // The SAME expression the schedule feeds u_AccumulationAlpha, so the
+        // slider's ceiling and the shader's notion of "converged" cannot drift.
+        const float accumAlpha = s_Data.RayTracingAccumulate
+            ? glm::max(0.02f, 1.0f / (float)(s_Data.FrameIndex + 1))
+            : 1.0f;
+        // novaBackend is true: this ceiling is only meaningful where a velocity
+        // buffer exists, which is the Nova path this accessor serves.
+        return Application::Get().WlfgMaxFactor(s_Data.CameraMoved, accumAlpha, /*novaBackend*/ true);
+    }
+    void Renderer3D::SetWlfgFactor(int factor)
+    {
+        s_Data.WlfgFactor = glm::clamp(factor, 0, 6);
+        // Factor >= 1 implies the warp: WL_WLFG=1 is the pre-Step-6 behaviour
+        // (warp + head run, nothing generated), so the two cannot disagree.
+        if (s_Data.WlfgFactor >= 1)
+            s_Data.WlfgWarpEnabled = true;
+    }
+    bool Renderer3D::IsWlfgAvailable()
+    {
+        VulkanNova *nova = GetNovaVulkan();
+        return nova && nova->HasWlfgWeights();
+    }
+    const char *Renderer3D::GetReconstructionTierName()
+    {
+        // Probe the HIGHEST tier; TierFor degrades it to what this backend runs.
+        const RenderCapabilities &caps = GetRenderCapabilities();
+        return RenderCapabilities::TierName(caps.TierFor(FeatureTier::ReconstructFull));
+    }
+
     void Renderer3D::SetRCASEnabled(bool enabled)
     {
         s_Data.RCASEnabled = enabled;
@@ -7521,8 +8275,8 @@ void Renderer3D::Flush()
             if(!Renderer3DGLAvailable()) return;
         s_Data.RayTracingShader->Bind();
 
-        s_Data.RayTracingShader->SetFloat("u_NormalStrength", normalStrength);
-        s_Data.RayTracingShader->SetFloat("u_RoughnessBias", roughBias);
+        s_Data.RayTracingShader->SetFloat("NovaConstants_0.u_NormalStrength_0", normalStrength);
+        s_Data.RayTracingShader->SetFloat("NovaConstants_0.u_RoughnessBias_0", roughBias);
 
         // u_PassID was never set on this path. The DX11 and DX12 branches above pass 9
         // explicitly to Dispatch(); the GL branch dispatched with whatever the previous
@@ -8568,4 +9322,11 @@ void Renderer3D::Flush()
         // there reported 0 every time, because that log runs before the cull.
         s_Data.Stats.LastFrameScreenCulled = s_Data.Stats.ScreenCulledInstances;
     }
+}
+// Static backend Nova instances, defined at file scope.
+namespace Wasteland {
+    using VulkanNovaPtr = std::unique_ptr<VulkanNova>;
+    VulkanNovaPtr Renderer3D::s_NovaVk;
+    std::unique_ptr<DX11Nova> Renderer3D::s_Nova;
+    std::unique_ptr<DX12Nova> Renderer3D::s_Nova12;
 }

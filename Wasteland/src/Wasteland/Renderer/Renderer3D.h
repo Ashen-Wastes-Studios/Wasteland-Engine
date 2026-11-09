@@ -16,6 +16,14 @@
 // here rather than relying on a transitive include, so the header stands alone.
 #include <vector>
 
+// Forward declarations for the Nova backends.
+namespace Wasteland
+{
+    class DX11Nova;
+    class DX12Nova;
+    class VulkanNova;
+}
+
 namespace Wasteland::Terrain
 {
     struct TerrainChunkMesh;
@@ -275,6 +283,19 @@ namespace Wasteland
         // DX11 and GL Nova instances, and NVRHI raster) or when the image has
         // not been rendered yet.
         static bool ReadbackRayTraceTarget(std::vector<unsigned char> &rgba, uint32_t &width, uint32_t &height);
+        // Same readback with the Nova image chosen explicitly instead of through
+        // WL_NOVA_CAPTURE_IMAGE. `imageIndex` is Nova's INTERNAL image index, not the
+        // shader's UAV slot: the two agree for 0..7 and diverge after that
+        // (internal 8 = u9, internal 9 = u14 = img_Mask). Needed by dataset export,
+        // which captures several images from one frame and cannot express that with a
+        // process-wide environment variable.
+        static bool ReadbackRayTraceTarget(std::vector<unsigned char> &rgba, uint32_t &width, uint32_t &height, uint32_t imageIndex);
+        // Lossless float readback of a single Nova image, for the WLFG
+        // state inputs the head reads (velocity is rg16f-packed -> float, depth is
+        // the g-buffer R channel). Backed on Vulkan only; other backends return
+        // false. The float data is written without any quantization, so a
+        // training pair cannot silently lose velocity/depth precision.
+        static bool ReadbackRayTraceTargetFloat(std::vector<float> &out, uint32_t &width, uint32_t &height, uint32_t imageIndex);
         static void ResizeRayTraceTarget(uint32_t width, uint32_t height);
         static float GetRenderScale();
         static void SetRenderScale(float scale);
@@ -300,6 +321,16 @@ namespace Wasteland
         static float GetGPUFrameTimeMs();
         // True while the scaler is holding RenderScale below the preset max.
         static bool IsDynamicResolutionActive();
+
+
+        // Returns whether any backend-specific Nova instance is active.
+        static bool HasNova();
+        // Returns the DX11 Nova instance.
+        static DX11Nova* GetNovaDX11();
+        // Returns the DX12 Nova instance.
+        static DX12Nova* GetNovaDX12();
+        // Returns the Vulkan Nova instance.
+        static VulkanNova* GetNovaVulkan();
         // Classified from the GL renderer string at Init
         // ("RTX 20-series", "RTX 30-series or newer", ...). Empty if unknown.
         static const char *GetGPUTierName();
@@ -440,6 +471,37 @@ namespace Wasteland
         // (1 - mask); this is the ceiling the shader can reach.
         static void SetRCASharpness(float strength);
         static float GetRCASharpness();
+
+        // --- The four clean-room features, as the editor and the Python
+        // --- bindings see them. Each maps to a REAL branch in the schedule:
+        //     WLSR = EASU (ReconstructionFilter::FSR1) + RCAS (pass 15)
+        //     WLAA = ReconstructionFilter::Wlaa (accumulate + sharpen)
+        //     WLRR = the residual-correcting denoiser (passes 20/21)
+        //     WLFG = the reprojection warp + neural synthesis head (22/23)
+        // WLSR is the only one that is a PAIR of controls: EASU is the upscale
+        // kernel and RCAS is the sharpen stage that follows it. Setting WLSR on
+        // selects both; setting it off restores bilinear.
+        static bool IsWlsrEnabled();
+        static void SetWlsrEnabled(bool enabled);
+        static bool IsWlaaEnabled();
+        static void SetWlaaEnabled(bool enabled);
+        static bool IsWlrrEnabled();
+        static void SetWlrrEnabled(bool enabled);
+        // False when no validated blob reached the GPU -- the pass is then the
+        // exact identity, which is indistinguishable from "off" without this.
+        static bool IsWlrrAvailable();
+        static bool IsWlfgEnabled();
+        static void SetWlfgEnabled(bool enabled);
+        // 0 = off, 1..6 = generate (N-1) of every N presents. 1 keeps the
+        // pre-Step-6 behaviour (warp + head run, nothing generated).
+        static int GetWlfgFactor();
+        static void SetWlfgFactor(int factor);
+        // The factor ceiling the accumulation state permits this frame (0 = no
+        // generation). The editor greys the slider out at 0.
+        static int GetWlfgMaxFactor();
+        static bool IsWlfgAvailable();
+        // The resolved reconstruction tier for the active backend, named.
+        static const char *GetReconstructionTierName();
         static bool IsReSTIREnabled();
         static void SetReSTIREnabled(bool enabled);
 
@@ -576,6 +638,10 @@ namespace Wasteland
                                      float *outNonZero);
 
     private:
+        // Static backend Nova instances.
+        static std::unique_ptr<DX11Nova> s_Nova;
+        static std::unique_ptr<DX12Nova> s_Nova12;
+        static std::unique_ptr<VulkanNova> s_NovaVk;
         // Private: the flush+clear pair the frame loop uses, kept out of the public
         // surface so callers cannot leave the counters mid-frame out of step with
         // the GPU.

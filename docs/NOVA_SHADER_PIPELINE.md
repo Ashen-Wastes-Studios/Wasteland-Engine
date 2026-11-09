@@ -1,8 +1,72 @@
 # Nova shader pipeline — twin maintenance, and one rejected approach
 
-Status as of 2026-10-05. **The two-twin arrangement is retained.** A shared-source
-experiment was tried and rejected on evidence; the details are here because the
-failure mode is instructive, not because the idea is wrong in principle.
+Status as of 2026-10-26. **Transitioned to Slang.** The two-twin arrangement
+is replaced by a single `Renderer3D_NovaRenderer.slang` source compiled to
+DXIL (DX12), DXBC (DX11), SPIR-V (Vulkan), and GLSL (OpenGL) via `slangc`
+(Vulkan SDK 1.3.296.0). The dual-authoring problem — and the 5.33-luma
+regression the twin model caused on 2026-10-05 — is eliminated by
+construction. `tools/verify_nova_shader_parity.py` (the twin token-comparison
+gate) is deleted; `compile_nova_spirv.py` is replaced by
+`compile_nova_slang.py`. The GLSL/glslang verification path
+(`verify_nova_glsl.py`) remains as the only GLSL *behavior* gate.
+
+See `.hermes/plans/2026-10-29_180000-slang-transition.md` for the full
+transition plan and task list.
+
+## Mesh-shader path (Phase 2, added 2026-11-08)
+
+The visibility buffer has two producers that write the identical G-buffer (meshId /
+albedo / normal / depth), so the Nova compute schedule cannot tell them apart:
+
+| producer | source | stages | status |
+|---|---|---|---|
+| classic raster | `Renderer3D_NovaVisibility.slang` | VS + FS | working, both backends |
+| mesh pipeline | `Renderer3D_NovaMesh.slang` (Vulkan) + `.hlsl` (DX12) | MS + PS (+ AS on DX12) | compiles, not yet drawn |
+
+### Why there are two mesh sources
+
+Slang's DXIL emit for the mesh stage is broken. It lowers
+
+    out vertices MeshVert verts[64]
+
+to
+
+    out vertices inout MeshVert verts_0[int(64)]
+
+which dxc rejects with `duplicate HLSL parameter usages 'out'`. The SPIR-V emit is
+fine. So Vulkan comes from the `.slang` and DX12 from the `.hlsl`; the two files must
+stay semantically identical and nothing enforces that. The shared contract is the
+G-buffer, which is what downstream reads.
+
+### Amplification shader — resolved, not skipped (Task 2.4)
+
+The open question was how to declare the AS payload. None of the four forms the plan
+listed works:
+
+| form | dxc result |
+|---|---|
+| `struct ASPayload { uint meshlet; };` as an `out` parameter | `Semantic must be defined for all outputs of an entry function` |
+| `... : PAYLOAD;` | `Semantic PAYLOAD is invalid for shader model: as` |
+| `... : MESHLET;` | `Semantic MESHLET is invalid for shader model: as` |
+| `... : SV_DispatchMeshID;` | invalid for `as` |
+
+The `out` parameter itself is the problem: dxc treats it as a shader output needing a
+semantic, and no payload semantic is valid for `as`. **The working form is a local
+struct passed by value to `DispatchMesh`**, exactly as dxc's own test suite does
+(`DirectXShaderCompiler/tools/clang/test/CodeGenHLSL/mesh-val/multipleDispatchMesh.hlsl`).
+`Renderer3D_NovaMeshAS.hlsl` compiles clean at `as_6_5`.
+
+**`DispatchMesh` must be called exactly once.** A loop over the meshlet count fails
+validation with `Non-Dominating DispatchMesh call`. So the CPU dispatches the AS once
+per meshlet and each invocation dispatches one mesh group; `tid.x` is the meshlet index
+and the dispatch count, not a loop, is what covers the mesh.
+
+### Constants duplicated across three languages
+
+The meshlet budget (64 vertices / 124 triangles) lives in `MeshletBuilder.h`, and is
+restated in both shader sources because neither Slang nor dxc can see a C++ header.
+**Nothing checks that the three copies agree.** A meshlet built with a different
+budget than the shader's array sizes would read past the array.
 
 ## Current state
 
@@ -42,23 +106,34 @@ the HLSL does not yet mirror. **That asymmetry is intentional and temporary.**
 | 12 | `RunTemporalMoments` | yes |
 | 13 | `RunATrousFilter` | yes |
 | 14 | `RunRestirSpatial` | yes |
-| 15 | `RunTSRResolve` | **never dispatched** |
-| 16 | `RunTSRCopy` | **never dispatched** |
-| 17 | `RunNeuralReduce` | yes, when the neural stage is enabled |
-| 18 | `RunNeuralEval` | yes, when the neural stage is enabled |
-| 19 | `RunNeuralReduceFinal` | yes, when the neural stage is enabled |
+| 15 | `RunTSRResolve` | yes — **WLSR RCAS sharpen** (clean-room stack) |
+| 16 | `RunTSRCopy` | yes — **WLAA** native-resolution AA sharpen |
+| 17 | `RunNeuralReduce` | GL only, when the neural stage is enabled |
+| 18 | `RunNeuralEval` | GL only, when the neural stage is enabled |
+| 19 | `RunNeuralReduceFinal` | GL only, when the neural stage is enabled |
+| 20 | `RunWlrrSnapshot` | **Nova schedule only** — WLRR pre-SVGF snapshot |
+| 21 | `RunWlrrComposite` | **Nova schedule only** — WLRR residual correct |
+| 22 | `RunWlfgWarp` | **Nova schedule only** — WLFG reprojection warp |
+| 23 | `RunWlfgSynthesis` | **Nova schedule only** — WLFG neural synthesis head |
+| 24 | `RunReactiveMask` | **Nova schedule only** — reactive mask for the upscaler |
 
-### Written but never dispatched: 8, 15, 16
+Passes 20–23 are guarded `#if !defined(WASTELAND_DXIL) && !defined(WASTELAND_GLSL)`:
+they compile to the SPIR-V target only, so the DXIL contains no WLRR symbol. Pass
+17–19 are the opposite — they are dispatched by `glDispatchCompute` in
+`Renderer3D::Flush()`, never through the Nova schedule, so they are GL-only.
 
-These three exist in both twins and are reachable only by setting `u_PassID`
-directly. Nothing in `Renderer3D.cpp` dispatches them, so they are dead code on
-every backend — including Vulkan, where "written but never dispatched" is the
-normal state for anything not yet wired.
+### Written but never dispatched: 8
 
-The risk is not the dead code itself; it is that a future reader can see `case 15`
-in the shader, assume TSR is live, and tune the wrong thing. Passes 15 and 16 are
-the Temporal Super-Resolution resolve and copy; they were written ahead of the
-feature that would dispatch them.
+Pass 8 (`RunUpscale`) exists in the shader and is reachable only by setting
+`u_PassID` directly. Nothing dispatches it on any backend. The clean-room stack
+lands its upscale in pass 15's kernel family instead — see
+`docs/CLEANROOM_RECONSTRUCTION.md` for why pass 8 was not given a body.
+
+The risk is not the dead code itself; it is that a future reader can see `case 8`
+in the shader, assume an upscale is live, and tune the wrong thing.
+
+Passes 15 and 16 were previously listed here as well; they are now dispatched (as
+WLSR and WLAA respectively) and their "never dispatched" status is historical.
 
 ### Pass 9 is dispatched and broken
 
@@ -94,7 +169,10 @@ different image, while a mismatch in a neural constant produces a **confident,
 plausible, wrong** image. The parity tool is the guard; the constants are the thing
 it guards.
 
-## Why there is no shared source today
+## Why there was no shared source — and why Slang resolves it
+
+**RESOLVED (2026-10-26):** Slang resolves both blockers that made shared
+source fail as a `#include`-based probe a year ago.
 
 A probe moved `RunBilateralBlur` into a shared `NovaShared_Bilateral.h` with thin
 per-language macro shims. It worked mechanically — 27 non-comment lines per wrapper,
@@ -122,7 +200,16 @@ already diverge there.
 
 **To revisit this, one change is needed first:** make `OpenGLShader::PreProcess`
 expand `#include` relative to the shader's own directory. Then the GLSL half
-becomes legitimate and the win is real for macro-expressible passes.
+
+→ **Resolved by Slang.** `slangc` resolves all `#include`s at compile time
+and produces GLSL text that `OpenGLShader::PreProcess` consumes unchanged.
+The `EXPENSIVE` semantic-change failure mode (§2) is still a concern — but
+Slang's `-warnings-as-errors` plus `-entry` per-entry-point catches divergences
+that the old twin guard could not. See `docs/NOVA_SHADER_PIPELINE.md` top for
+the resolved status.
+
+The old "to revisit" advice — `OpenGLShader::PreProcess` expanding `#include` — is moot:
+Slang produces fully-flattened GLSL at build time, so the runtime path needs no changes.
 
 ## Incident record — 2026-10-05 shader damage and recovery
 

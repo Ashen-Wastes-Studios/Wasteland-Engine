@@ -4,6 +4,16 @@
 
 ## Current status
 
+> **Update (2026-11-07): the "never observed to run" claim is REFUTED.** The
+> incumbent SVGF denoiser now runs and is measured: `tools/verify_wlrr_incumbent.py`
+> captures five arms from the engine and reports PSNR and SSIM against a converged
+> reference. The no-history pair is the mechanism proof — a variance-guided filter
+> does nothing without temporal variance, and this one does nothing without it and
+> something with it. On SSIM the incumbent is *actively costing quality* at the
+> measurement point, which is exactly the residual WLRR corrects. See
+> `docs/CLEANROOM_RECONSTRUCTION_EVIDENCE/task10/README.md` and
+> `docs/CLEANROOM_RECONSTRUCTION.md` §3.
+
 - **Default-off:** `SvfgEnabled = false` and `RestirEnabled = false` in `Wasteland/src/Wasteland/Renderer/Renderer3D.cpp:679-684`.
 - **OpenGL:** moments texture creation/binding and gated pass-12/pass-13 dispatch with image barriers are in `Wasteland/src/Wasteland/Renderer/Renderer3D.cpp:2069-2075, 3334-3338, 3559-3581`.
 - **NVRHI Nova (DX11/DX12/Vulkan):** the shared dispatch schedule is in `Wasteland/src/Wasteland/Renderer/Renderer3D.cpp:2481-2506`; moments resources/bindings are in `Wasteland/src/Platform/NVRHI/DX11Nova.h:286-307, 497-525`, `DX12Nova.cpp:542-572`, and `VulkanNova.cpp:32-43, 522-538`.

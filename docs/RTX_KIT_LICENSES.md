@@ -17,6 +17,27 @@ The SDK restriction is not a blanket prohibition on every artifact associated wi
 
 Open-source prohibition remains in force for components subject to restricted NVIDIA SDK or STBN terms. It does not prohibit MIT-licensed RTXMU; any future adoption should retain its upstream license and provenance.
 
+## The clean-room reconstruction stack is clean-room too
+
+The WLSR / WLAA / WLRR / WLFG stack documented in `docs/CLEANROOM_RECONSTRUCTION.md`
+is under the same licence boundary as the neural stage above, and for the same
+reasons:
+
+- It contains **no vendor code, no vendor SDK, and no vendor-derived asset**. The
+  EASU/RCAS pair is reimplemented from the published FSR 1 specification; nothing
+  is vendored.
+- It is **not bit-compatible** with DLSS, FSR, or XeSS, and uses no vendor tensor
+  layout, accumulation scheme, or model weights.
+- It is **not RTX-gated.** No tier in `RenderCapabilities::TierFor` reads
+  `tensorCores`; the resolver keys on the graphics API. The OpenGL tier runs
+  WLSR and WLAA on a backend with no hardware ray tracing.
+- Its two trained heads (WLRR residual, WLFG synthesis) are trained on frames this
+  engine captured from itself by `tools/train_wlrr/` and
+  `tools/train_neural/export_dataset.py`. Nothing leaves the tree to train them.
+
+The licence boundary is unchanged: the stack adds no restricted component and
+removes none.
+
 ## The neural rendering stage is clean-room
 
 The trained neural stage documented in `docs/NEURAL_RENDERING.md` contains **no vendor

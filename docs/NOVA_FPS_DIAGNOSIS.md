@@ -608,6 +608,12 @@ The scaffold exists; it needs to be completed and dispatched.
   RTX SDK and reimplements clean-room; do not reintroduce a vendor binary. FSR1's
   EASU/RCAS (5.3) is reimplemented from the published spec, not vendored.
 
+  **This rejection does not extend to the clean-room reconstruction stack**
+  (WLSR / WLAA / WLRR / WLFG, see `docs/CLEANROOM_RECONSTRUCTION.md`). Those are
+  clean-room re-expressions of the *problems* those features solve — no vendor SDK,
+  no vendor weights, not bit-compatible, and not gated on an RTX part. What is
+  rejected is the vendor binary, not the technique.
+
   Note that the trained neural stage in `docs/NEURAL_RENDERING.md` is **not** in this
   category and must not be rejected by this bullet. It is clean-room by construction:
   trained on this engine's own captured frames, 1140 weights, no vendor tensor layout,

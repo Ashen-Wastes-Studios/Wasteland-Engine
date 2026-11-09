@@ -201,9 +201,26 @@ namespace Wasteland
 		// Reads colour attachment 0 of the bound framebuffer to a PNG. Returns
 		// false on failure. OpenGL only -- see the implementation for why.
 		bool CaptureFramebufferPNG(const std::string &path);
-		// Records which backend created m_Framebuffer, so a runtime API switch
-		// can detect that the framebuffer and its native resources belong to a
-		// backend that is no longer current. Reset to None on the next recreate.
+		// Captures the Nova image set one WLFG training pair needs, from a SINGLE
+		// frame: <prefix>_u0.png (output/target), _u1.png (accumulation/warped),
+		// _u4.png (albedo), _u5.png (velocity), _u6.png (g-buffer: depth in R),
+		// _u14.png (reactive mask). Driven by WL_NOVA_CAPTURE_SET=<prefix>.
+		//
+		// One frame, not six runs: the pair is only aligned if every image comes from
+		// the same present, and six separate runs would each advance the clock.
+		bool CaptureNovaImageSetPNG(const std::string &prefix);
+
+		// Phase 1 Tasks 1.2/1.2b: read the visibility G-buffer back and write one
+		// PNG per target (meshId, albedo, normal). Driven by
+		// WL_CAPTURE_VISIBILITY=<prefix>.
+		bool CaptureVisibilityPNG(const std::string &prefix);
+		// Same readback, but writes u5 (motion) and u6 (depth) as lossless float32
+		// .npy instead of the 8-bit PNG quantizes them. Driven by
+		// WL_NOVA_CAPTURE_SET_FLOAT=<prefix>.
+		bool CaptureNovaImageSetFloat(const std::string &prefix);
+		// Records which backend created m_Framebuffer, so a runtime API switch can
+		// detect that the framebuffer and its native resources belong to a backend
+		// that is no longer current. Reset to None on the next recreate.
 		RendererAPI::API m_FramebufferAPI = RendererAPI::API::None;
 
 		// Two scene handles, not one. m_ActiveScene is what the user is editing
@@ -245,6 +262,11 @@ namespace Wasteland
 		// camera starts from the constructor defaults and there is no way to
 		// reproduce a measurement.
 		bool m_CameraPinned = false;
+		// See WASTELAND_PIN_CAMERA_ORBIT in OnAttach: yaw advances by this many
+		// degrees per frame from m_PinnedYaw0, so the camera has moved between
+		// frames (real velocity, real disocclusions) while staying reproducible.
+		float m_PinnedYaw0 = 0.0f;
+		float m_OrbitRate = 0.0f;
 
 		// Screenshot capture window (see the WL_SCREENSHOT block in OnUpdate).
 		// The capture is retried across this many frames starting at
@@ -254,12 +276,15 @@ namespace Wasteland
 		// Named here so the window and the retry log line cannot drift apart.
 		static constexpr int WL_SCREENSHOT_RETRY_WINDOW = 40;
 
-		// Set once a capture succeeds; m_ScreenshotLinger then counts down and
-		// closes the app, so a scripted run terminates instead of idling until
-		// the caller's timeout. 0 means "no linger requested" (interactive F12
-		// capture behaviour is unchanged).
-		bool m_ScreenshotDone = false;
-		int m_ScreenshotLinger = 0;
+				// Set once a screenshot capture succeeds; m_ScreenshotLinger then counts down
+				// and closes the app, so a scripted run terminates instead of idling until
+				// the caller's timeout. 0 means "no linger requested" (interactive F12
+				// capture behaviour is unchanged).
+				bool m_ScreenshotDone = false;
+				int m_ScreenshotLinger = 0;
+				// Set once a mask capture succeeds; no further mask captures are attempted
+				// for the remainder of the run.
+				bool m_MaskCaptured = false;
 
 		// Ref<> because the same texture is sampled every viewport frame and by
 		// the picking blit; recreating it per frame would churn GPU memory.
@@ -337,6 +362,10 @@ namespace Wasteland
 		bool m_ShowViewport = true;
 		bool m_ShowStats = true;
 		bool m_ShowSettings = true;
+		// The clean-room reconstruction panel is a window of its own rather than
+		// a section of Settings: Settings was never docked, so the panel
+		// was unreachable. See the panel's comment in OnImGuiRender.
+		bool m_ShowReconstruction = true;
 
 		// Files written by the AI tool bridge from another thread. The queue is
 		// the hand-off: the bridge pushes under the mutex, and OnImGuiRender

@@ -9,6 +9,7 @@
 #include "Wasteland/Project/Project.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -30,8 +31,11 @@ namespace Wasteland
     static constexpr uint32_t kBindingOffsetSampler = 200;
 
     // Internal image index -> HLSL UAV register. u8 is unused by the shader;
-    // image 8 is the moments texture at u9.
-    const uint32_t VulkanNova::kImageUavSlot[kImageCount] = {0, 1, 2, 3, 4, 5, 6, 7, 9};
+    // image 8 is the moments texture at u9. The WLFG reactive mask (img_Mask)
+    // was moved from the u8 hole to u14 to avoid a Vulkan binding-space
+    // collision with NovaConstants at b1+shift7=8.
+    // index 10 is WLRR's pre-SVGF snapshot (img_WlrrInput) at u15.
+    const uint32_t VulkanNova::kImageUavSlot[kImageCount] = {0, 1, 2, 3, 4, 5, 6, 7, 9, 14, 15};
 
     // HLSL register slots for active read_* SRVs and the image each snapshots.
     // ReSTIR reads AlbedoHit (t68) and TraceGBuffer (t70); temporal/filter passes
@@ -39,8 +43,10 @@ namespace Wasteland
     // declaration-only because the shader has no IMG_LOAD(img_MaterialPacked).
     // Keep this list synchronized with the loaded SPIR-V: VerifySpirvBindings()
     // checks both missing and unused bindings before Vulkan creates the pipeline.
-    const uint32_t VulkanNova::kReadImageSlot[kReadImageCount] = {64, 65, 66, 68, 69, 70, 71, 73};
-    const uint32_t VulkanNova::kReadImageIndex[kReadImageCount] = {0, 1, 2, 4, 5, 6, 7, 8};
+    // t77 (image 10) is WLRR's pre-SVGF snapshot, read by pass 21 as the
+    // "input" arm. t67 stays declaration-only (no IMG_LOAD of MaterialPacked).
+    const uint32_t VulkanNova::kReadImageSlot[kReadImageCount] = {64, 65, 66, 68, 69, 70, 71, 73, 77};
+    const uint32_t VulkanNova::kReadImageIndex[kReadImageCount] = {0, 1, 2, 4, 5, 6, 7, 8, 10};
 
     // NovaConstants field offsets, from fxc /dumpbin. tools/compile_nova_spirv.py
     // asserts these equal the offsets DXC gave the SPIR-V for all 84 members;
@@ -54,7 +60,7 @@ namespace Wasteland
         {"u_SamplesPerPixel", 152, 0},
         {"u_PassID", 156, 0},
         {"u_DepthBuffer", 160, 0},
-        {"u_Jitter", 164, 0},
+        {"u_Jitter", 168, 0},
         {"u_PrevJitter", 176, 0},
         {"u_CameraMoved", 184, 0},
         {"u_ViewProjection", 192, 0},
@@ -86,50 +92,61 @@ namespace Wasteland
         {"u_StepSize", 376, 0},
         {"u_RenderScale", 380, 0},
         {"u_LightCount", 384, 0},
-        {"u_NeuralEnabled", 388, 0},
-        {"u_NeuralTexStrength", 392, 0},
-        {"u_NeuralLightStrength", 396, 0},
-        {"u_NeuralMatStrength", 400, 0},
-        {"u_SunDirection", 404, 0},
-        {"u_Time", 416, 0},
-        {"u_FogEnabled", 420, 0},
-        {"u_SunLightColor", 432, 0},
-        {"u_FogCount", 444, 0},
-        {"u_FogMin", 448, 4},
-        {"u_FogMax", 512, 4},
-        {"u_FogColor", 576, 4},
-        {"u_FogData", 640, 4},
-        {"u_FogData2", 704, 4},
-        {"u_CloudEnabled", 768, 0},
-        {"u_CloudCount", 772, 0},
-        {"u_CloudMin", 784, 2},
-        {"u_CloudMax", 816, 2},
-        {"u_CloudColor", 848, 2},
-        {"u_CloudAmbient", 880, 2},
-        {"u_CloudData", 912, 2},
-        {"u_CloudData2", 944, 2},
-        {"u_CloudData3", 976, 2},
-        {"u_VolFast", 1008, 0},
-        {"u_GlobalFogEnabled", 1012, 0},
-        {"u_GlobalFogDensity", 1016, 0},
-        {"u_GlobalFogHeightFalloff", 1020, 0},
-        {"u_GlobalFogColor", 1024, 0},
-        {"u_GlobalFogBaseHeight", 1036, 0},
-        {"u_GlobalFogDistAtten", 1040, 0},
-        {"u_GodRaysEnabled", 1044, 0},
-        {"u_GodSunScreenPos", 1048, 0},
-        {"u_GodSunValid", 1056, 0},
-        {"u_GodRayIntensity", 1060, 0},
-        {"u_GodRayDecay", 1064, 0},
-        {"u_GodRaySamples", 1068, 0},
-        {"u_GodRayDensity", 1072, 0},
-        {"u_GodRayColor", 1076, 0},
-        {"u_ALightCount", 1088, 0},
-        {"u_ALightPos", 1104, 8},
-        {"u_ALightDir", 1232, 8},
-        {"u_ALightColor", 1360, 8},
-        {"u_ALightData", 1488, 8},
-        {"u_ALightData2", 1616, 8},
+        {"u_ReconstructionFilter", 388, 0},
+        {"u_SamplePattern", 392, 0},
+        {"u_NeuralEnabled", 396, 0},
+        {"u_NeuralTexStrength", 400, 0},
+        {"u_NeuralLightStrength", 404, 0},
+        {"u_NeuralMatStrength", 408, 0},
+        {"u_SunDirection", 416, 0},
+        {"u_Time", 428, 0},
+        {"u_FogEnabled", 432, 0},
+        {"u_SunLightColor", 448, 0},
+        {"u_FogCount", 460, 0},
+        {"u_FogMin", 464, 0},
+        {"u_FogMax", 528, 0},
+        {"u_FogColor", 592, 0},
+        {"u_FogData", 656, 0},
+        {"u_FogData2", 720, 0},
+        {"u_CloudEnabled", 784, 0},
+        {"u_CloudCount", 788, 0},
+        {"u_CloudMin", 800, 0},
+        {"u_CloudMax", 832, 0},
+        {"u_CloudColor", 864, 0},
+        {"u_CloudAmbient", 896, 0},
+        {"u_CloudData", 928, 0},
+        {"u_CloudData2", 960, 0},
+        {"u_CloudData3", 992, 0},
+        {"u_VolFast", 1024, 0},
+        {"u_VolStepCap", 1028, 0},
+        {"u_VolLightCap", 1032, 0},
+        {"u_VolRangeCull", 1036, 0},
+        {"u_GlobalFogEnabled", 1040, 0},
+        {"u_GlobalFogDensity", 1044, 0},
+        {"u_GlobalFogHeightFalloff", 1048, 0},
+        {"u_GlobalFogColor", 1056, 0},
+        {"u_GlobalFogBaseHeight", 1068, 0},
+        {"u_GlobalFogDistAtten", 1072, 0},
+        {"u_GodRaysEnabled", 1076, 0},
+        {"u_GodSunScreenPos", 1080, 0},
+        {"u_GodSunValid", 1088, 0},
+        {"u_GodRayIntensity", 1092, 0},
+        {"u_GodRayDecay", 1096, 0},
+        {"u_GodRaySamples", 1100, 0},
+        {"u_GodRayDensity", 1104, 0},
+        {"u_GodRayColor", 1120, 0},
+        {"u_ALightCount", 1132, 0},
+        {"u_ALightPos", 1136, 0},
+        {"u_ALightDir", 1648, 0},
+        {"u_ALightColor", 2160, 0},
+        {"u_ALightData", 2672, 0},
+        {"u_ALightData2", 3184, 0},
+        {"u_TSREnabled", 3696, 0},
+        {"u_TSRSharpenStrength", 3700, 0},
+        {"u_RCSEnabled", 3704, 0},
+        // Phase 1 hybrid path. Vulkan has no raster visibility pass, so this is
+        // always 0 here and the shader never reads the t78..t81 SRVs.
+        {"u_UseRasterVisibility", 3708, 0},
     };
     static constexpr uint32_t kConstantFieldCount =
         sizeof(kConstantFields) / sizeof(kConstantFields[0]);
@@ -148,6 +165,38 @@ namespace Wasteland
 
     void VulkanNova::SetBytes(const char *name, const void *value, std::size_t size, uint32_t index)
     {
+        // THE CALLER'S KEY IS NOT THE TABLE'S KEY.
+        //
+        // Renderer3D addresses cbuffer members the way Slang names them --
+        // "NovaConstants_0.u_InstanceCount_0" -- while this table stores the source-level
+        // "u_InstanceCount". An exact-match lookup therefore missed instance count, frame
+        // index, camera matrices, pass id and resolution: every pass reported success over
+        // a zeroed constant buffer and the frame came out flat. DX12Nova::Set has the same
+        // normalisation for the same reason.
+        std::string keyStorage;
+        if (name)
+        {
+            keyStorage.assign(name);
+            const std::size_t dot = keyStorage.rfind('.');
+            if (dot != std::string::npos)
+                keyStorage.erase(0, dot + 1);
+            const std::size_t underscore = keyStorage.rfind('_');
+            if (underscore != std::string::npos && underscore + 1 < keyStorage.size())
+            {
+                bool allDigits = true;
+                for (std::size_t i = underscore + 1; i < keyStorage.size(); ++i)
+                {
+                    if (keyStorage[i] < '0' || keyStorage[i] > '9') { allDigits = false; break; }
+                }
+                // A bare identifier that ends in digits (u_Foo2) must survive, so the
+                // suffix is only dropped when it is preceded by a letter and separated by
+                // an underscore -- which is what an entry id looks like.
+                if (allDigits)
+                    keyStorage.erase(underscore);
+            }
+            name = keyStorage.c_str();
+        }
+
         const ConstantField *field = FindConstant(name);
         if (!field)
         {
@@ -286,8 +335,9 @@ namespace Wasteland
         expected.push_back(kBindingOffsetUav + 10);
         for (uint32_t i = 1; i <= 3; ++i)
             expected.push_back(kBindingOffsetShaderResource + i);
-        // Reservoir read at t10 (shader: StructuredBuffer : register(t10))
-        expected.push_back(kBindingOffsetShaderResource + 10);
+        // Reservoir read at t9 (was t10, changed to avoid SSBO namespace
+        // collision with ReservoirWrite at u10 in GLSL with zero shifts)
+        expected.push_back(kBindingOffsetShaderResource + 9);
         expected.push_back(kBindingOffsetSampler);
         expected.push_back(kBindingOffsetConstantBuffer + 1);
         expected.push_back(kBindingOffsetShaderResource + 15);
@@ -295,6 +345,20 @@ namespace Wasteland
             expected.push_back(kBindingOffsetShaderResource + slot);
         for (uint32_t i = 0; i < kReadImageCount; ++i)
             expected.push_back(kBindingOffsetShaderResource + kReadImageSlot[i]);
+        // The neural/terrain/WLFG inputs the module also reads. Offsets are the same
+        // arithmetic NVRHI uses (offset + slot), so these are u12, u13, t4 and t72.
+        expected.push_back(kBindingOffsetUav + kNeuralGlobalsSlot);
+        expected.push_back(kBindingOffsetUav + kNeuralWeightsSlot);
+        expected.push_back(kBindingOffsetShaderResource + kTerrainVertexSlot);
+        expected.push_back(kBindingOffsetShaderResource + kWlfgHistorySlot);
+        expected.push_back(kBindingOffsetShaderResource + kWlfgWeightsSlot);
+        expected.push_back(kBindingOffsetShaderResource + kWlrrWeightsSlot);
+        // Phase 1 hybrid visibility G-buffer (t78..t81). Declared by the module;
+        // bound to stand-ins because this backend has no raster visibility pass.
+        expected.push_back(kBindingOffsetShaderResource + kVisibilityIdsSlot);
+        expected.push_back(kBindingOffsetShaderResource + kVisibilityAlbedoSlot);
+        expected.push_back(kBindingOffsetShaderResource + kVisibilityNormalSrvSlot);
+        expected.push_back(kBindingOffsetShaderResource + kVisibilityDepthSrvSlot);
 
         std::sort(expected.begin(), expected.end());
 
@@ -425,9 +489,372 @@ namespace Wasteland
         for (int i = 0; i < 3; ++i)
             m_StructuredBuffers[i] = nullptr;
 
+        // Before the layout: the descriptor set is built from these, and the layout must
+        // already contain their slots (VerifySpirvBindings enforces that both lists agree
+        // with the module).
+        CreateFeatureInputs();
+
         CreatePipelineAndLayout();
         m_Valid = true;
+
+        // The WLFG synthesis head's weights (t75) are read from disk once, HERE rather
+        // than lazily from Dispatch. Dispatch runs inside a frame, and the upload may
+        // need to open, close and submit the command list -- which would overwrite the
+        // list BeginFrame() owns and drop everything already recorded into it. At Init
+        // no frame is in flight, so the transient upload path is the correct one.
+        LoadWlfgWeights();
+        LoadWlrrWeights();
     }
+
+    // Resources for the bindings the module declares but no pass of this backend
+    // populates (see the note on the slots in the header). Created once, at Init:
+    // their size does not depend on the render target.
+    void VulkanNova::CreateFeatureInputs()
+    {
+        // NeuralGlobals: the reduce stage writes sixteen floats into it (u12 is an
+        // RWStructuredBuffer in the shader). One element of 16 floats is enough for a
+        // disabled neural stage, and it keeps the UAV a real buffer.
+        {
+            nvrhi::BufferDesc desc;
+            desc.byteSize = 64;
+            desc.structStride = 16;
+            // No isShaderResource/isUAV on nvrhi::BufferDesc: a buffer's usage is
+            // described by its state. UnorderedAccess covers the UAV write, and
+            // ShaderResource the read side.
+            desc.initialState = nvrhi::ResourceStates::UnorderedAccess |
+                                nvrhi::ResourceStates::ShaderResource;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaNeuralGlobals";
+            m_NeuralGlobals = m_Device->createBuffer(desc);
+            if (!m_NeuralGlobals)
+                throw std::runtime_error("VulkanNova: could not create NeuralGlobals buffer");
+        }
+
+        // NeuralWeights: read-only float buffer. The real weights live in the neural
+        // stage's upload path, which this backend does not run, so the descriptor points
+        // at a single element that no enabled branch ever indexes past.
+        {
+            nvrhi::BufferDesc desc;
+            desc.byteSize = 4096;
+            desc.structStride = 4;
+            // Both states: the module declares NeuralWeights as a storage buffer, and
+            // NVRHI rejects a descriptor whose permanent state does not cover the access
+            // the layout item implies (validation: "Binding 13, NeuralWeights is
+            // invalid" on every dispatch).
+            desc.initialState = nvrhi::ResourceStates::ShaderResource |
+                                nvrhi::ResourceStates::UnorderedAccess;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaNeuralWeights";
+            m_NeuralWeights = m_Device->createBuffer(desc);
+            if (!m_NeuralWeights)
+                throw std::runtime_error("VulkanNova: could not create NeuralWeights buffer");
+        }
+
+        // TerrainVertices: same shape as a real terrain upload (packed 4-float stride).
+        // Zero instances of terrain are submitted to this backend, so the buffer only
+        // has to exist and be shader-readable.
+        {
+            nvrhi::BufferDesc desc;
+            desc.byteSize = 64;
+            desc.structStride = 16;
+            desc.initialState = nvrhi::ResourceStates::ShaderResource |
+                                nvrhi::ResourceStates::UnorderedAccess;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaTerrainVertices";
+            m_TerrainVertices = m_Device->createBuffer(desc);
+            if (!m_TerrainVertices)
+                throw std::runtime_error("VulkanNova: could not create terrain vertex buffer");
+        }
+
+        // WlfgWeights (t75): the pass-23 synthesis head's weights, kWlfgWeightCount
+        // fp32 values. Created ZEROED and left that way unless LoadWlfgWeights() finds a
+        // valid blob -- a zeroed weight vector makes every matmul zero, so gate*residual
+        // is 0 and pass 23 is exactly the identity. That is the acceptance control:
+        // WL_WLFG=1 with no blob must be byte-identical to WL_WLFG=0.
+        {
+            nvrhi::BufferDesc desc;
+            desc.byteSize = kWlfgWeightCount * sizeof(float);
+            desc.structStride = sizeof(float);
+            desc.initialState = nvrhi::ResourceStates::ShaderResource;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaWlfgWeights";
+            m_WlfgWeights = m_Device->createBuffer(desc);
+            if (!m_WlfgWeights)
+                throw std::runtime_error("VulkanNova: could not create WlfgWeights buffer");
+        }
+
+        // WlrrWeights (t76): the pass-21 residual-correcting denoiser's payload --
+        // weights (524) | mean (9) | std (9) | blend alpha (3) = 545 fp32. Same
+        // zeroed-by-default contract as t75: a zeroed payload makes every matmul
+        // zero AND alpha zero, so pass 21 degenerates to `out == incumbent` (the
+        // blend with alpha=0 IS the incumbent). That is the acceptance control.
+        {
+            nvrhi::BufferDesc desc;
+            desc.byteSize = kWlrrPayloadCount * sizeof(float);
+            desc.structStride = sizeof(float);
+            desc.initialState = nvrhi::ResourceStates::ShaderResource;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaWlrrWeights";
+            m_WlrrWeights = m_Device->createBuffer(desc);
+            if (!m_WlrrWeights)
+                throw std::runtime_error("VulkanNova: could not create WlrrWeights buffer");
+        }
+
+        // s_WlfgHistory: one RGBA8 texel. WLFG is off in this backend; the descriptor
+        // still has to be a valid sampled image for the module's declaration.
+        {
+            nvrhi::TextureDesc desc;
+            desc.width = 1;
+            desc.height = 1;
+            desc.depth = 1;
+            desc.arraySize = 1;
+            desc.mipLevels = 1;
+            desc.sampleCount = 1;
+            desc.format = nvrhi::Format::RGBA8_UNORM;
+            desc.isShaderResource = true;
+            desc.initialState = nvrhi::ResourceStates::ShaderResource;
+            desc.keepInitialState = true;
+            desc.debugName = "NovaWlfgHistory";
+            m_WlfgHistory = m_Device->createTexture(desc);
+            if (!m_WlfgHistory)
+                throw std::runtime_error("VulkanNova: could not create WLFG history texture");
+
+            // t78..t81 stand-ins (Phase 1 hybrid visibility). The SPIR-V declares
+            // them, so they must exist and point at a real resource even though
+            // u_UseRasterVisibility is always 0 on this backend. Formats match
+            // the shader's declared sampled types exactly.
+            auto makeVisDummy = [&](nvrhi::Format format, const char *name) {
+                nvrhi::TextureDesc d;
+                d.width = 1; d.height = 1; d.depth = 1; d.arraySize = 1;
+                d.mipLevels = 1; d.sampleCount = 1;
+                d.format = format;
+                d.isShaderResource = true;
+                d.initialState = nvrhi::ResourceStates::ShaderResource;
+                d.keepInitialState = true;
+                d.debugName = name;
+                return m_Device->createTexture(d);
+            };
+            m_VisDummyInt = makeVisDummy(nvrhi::Format::R32_SINT, "NovaVisIds");
+            m_VisDummyFloat4 = makeVisDummy(nvrhi::Format::RGBA8_UNORM, "NovaVisFloat4");
+            m_VisDummyFloat = makeVisDummy(nvrhi::Format::R32_FLOAT, "NovaVisFloat");
+            if (!m_VisDummyInt || !m_VisDummyFloat4 || !m_VisDummyFloat)
+                throw std::runtime_error("VulkanNova: could not create visibility stand-in textures");
+        }
+    }
+
+    bool VulkanNova::Readback(uint32_t index, std::vector<unsigned char> &rgba,
+                              uint32_t &outWidth, uint32_t &outHeight)
+    {
+        // Entry trace for the dataset capture set: the only place that can say which
+        // early-out a given image index took.
+        std::fprintf(stderr, "[NOVARB] index=%u valid=%d tex=%d list=%d\n", index, (int)m_Valid,
+                     (int)(m_Images[index].texture != nullptr), (int)(m_CommandList != nullptr));
+        if (std::getenv("WL_NOVA_DIAGNOSTICS") && m_Valid && index < kImageCount && m_Images[index].texture)
+        {
+            const nvrhi::TextureDesc &d = m_Images[index].texture->getDesc();
+            WL_CORE_INFO("VulkanNova DIAG readback image={0} {1}x{2}", index, d.width, d.height);
+        }
+        if (!m_Valid || index >= kImageCount)
+            return false;
+        nvrhi::ITexture *source = m_Images[index].texture;
+        if (!source || !m_Device || !m_CommandList)
+        {
+            std::fprintf(stderr, "[NOVARB] index=%u no texture/device/list\n", index);
+            return false;
+        }
+
+        const nvrhi::TextureDesc &sourceDesc = source->getDesc();
+        const uint32_t w = sourceDesc.width;
+        const uint32_t h = sourceDesc.height;
+        if (w == 0 || h == 0)
+        {
+            std::fprintf(stderr, "[NOVARB] index=%u zero extent %ux%u\n", index, w, h);
+            return false;
+        }
+
+        // The staging texture mirrors the source format; the conversion to 8-bit
+        // happens below, not in the copy.
+        nvrhi::TextureDesc stagingDesc = sourceDesc;
+        stagingDesc.isUAV = false;
+        stagingDesc.isRenderTarget = false;
+        stagingDesc.isShaderResource = false;
+        stagingDesc.initialState = nvrhi::ResourceStates::Common;
+        stagingDesc.keepInitialState = false;
+        stagingDesc.debugName = "NovaReadbackStaging";
+        nvrhi::StagingTextureHandle staging =
+            m_Device->createStagingTexture(stagingDesc, nvrhi::CpuAccessMode::Read);
+        if (!staging)
+        {
+            std::fprintf(stderr, "[NOVARB] index=%u createStagingTexture failed fmt=%d %ux%u\n", index, (int)sourceDesc.format, w, h);
+            return false;
+        }
+
+        // A PRIVATE command list, not the context's.
+        //
+        // Using m_CommandList here executed and closed the shared list that the frame
+        // recorder had opened in BeginFrame; NVRHIContext's m_CommandListOpen flag was
+        // left set, so the next frame's first writeBuffer went into a closed list and
+        // aborted inside nvrhi::vulkan::CommandList::writeBuffer. The capture path owns
+        // its own submission and leaves the frame's list untouched.
+        nvrhi::CommandListHandle copyList = m_Device->createCommandList();
+        if (!copyList)
+        {
+            std::fprintf(stderr, "[NOVARB] index=%u createCommandList failed\n", index);
+            return false;
+        }
+        copyList->open();
+        // The source keeps a permanent CopySource state (see CreateImages), so this
+        // copy needs no explicit transition and leaves the image usable next frame.
+        copyList->copyTexture(staging, nvrhi::TextureSlice(), source,
+                              nvrhi::TextureSlice());
+        copyList->close();
+        m_Device->executeCommandList(copyList);
+        m_Device->waitForIdle();
+
+        size_t rowPitch = 0;
+        const uint8_t *mapped = static_cast<const uint8_t *>(m_Device->mapStagingTexture(
+            staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch));
+        if (!mapped)
+        {
+            std::fprintf(stderr, "[NOVARB] index=%u mapStagingTexture failed fmt=%d\n", index, (int)sourceDesc.format);
+            return false;
+        }
+
+        outWidth = w;
+        outHeight = h;
+        const bool isFloat = sourceDesc.format == nvrhi::Format::RGBA32_FLOAT;
+        // RG32_FLOAT is 8 bytes per pixel, not 16: the velocity image needs its own
+        // path, because the generic 4-byte memcpy below would read it as if it were
+        // RGBA8 and scramble the two components into each other. X lands in R, Y in G,
+        // and B/A are filled so the PNG carries the two channels unambiguously.
+        const bool isRg32Float = sourceDesc.format == nvrhi::Format::RG32_FLOAT;
+        const size_t bytesPerPixel = isFloat ? 16u : 4u;
+        rgba.resize(static_cast<size_t>(w) * h * 4u);
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            const uint8_t *row = mapped + static_cast<size_t>(y) * rowPitch;
+            uint8_t *dst = rgba.data() + static_cast<size_t>(y) * w * 4u;
+            if (isRg32Float)
+            {
+                const float *f = reinterpret_cast<const float *>(row);
+                for (uint32_t x = 0; x < w; ++x)
+                {
+                    const float u = f[x * 2 + 0];
+                    const float v = f[x * 2 + 1];
+                    // Velocity is a signed, sub-pixel displacement. It is remapped from
+                    // [-1,1] to [0,1] so it survives an 8-bit PNG, and the exporter
+                    // documents that mapping; storing clamped magnitudes would throw
+                    // away every negative component, which is half of them.
+                    const float cu = 0.5f * (u < -1.0f ? -1.0f : (u > 1.0f ? 1.0f : u)) + 0.5f;
+                    const float cv = 0.5f * (v < -1.0f ? -1.0f : (v > 1.0f ? 1.0f : v)) + 0.5f;
+                    dst[x * 4 + 0] = static_cast<uint8_t>(cu * 255.0f + 0.5f);
+                    dst[x * 4 + 1] = static_cast<uint8_t>(cv * 255.0f + 0.5f);
+                    dst[x * 4 + 2] = 0;
+                    dst[x * 4 + 3] = 255;
+                }
+                continue;
+            }
+            if (isFloat)
+            {
+                // HDR radiance clamped to [0,1]: a PNG is 8-bit and a tone map belongs
+                // in the dataset exporter, matching the GL path's choice.
+                const float *f = reinterpret_cast<const float *>(row);
+                for (uint32_t x = 0; x < w * 4u; ++x)
+                {
+                    const float v = f[x];
+                    const float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+                    dst[x] = static_cast<uint8_t>(c * 255.0f + 0.5f);
+                }
+            }
+            else
+            {
+                memcpy(dst, row, static_cast<size_t>(w) * bytesPerPixel);
+            }
+        }
+
+        m_Device->unmapStagingTexture(staging);
+        return true;
+    }
+
+    bool VulkanNova::ReadbackFloat(uint32_t index, std::vector<float> &out,
+                                    uint32_t &width, uint32_t &height) const
+{
+    // Lossless float readback for the WLFG dataset: the head reads raw float32
+    // (velocity RG32, depth RGBA32), never the 8-bit PNG the visual path emits.
+    if (!m_Valid || index >= kImageCount)
+        return false;
+    nvrhi::ITexture *source = m_Images[index].texture;
+    if (!source || !m_Device || !m_CommandList)
+        return false;
+    const nvrhi::TextureDesc &sourceDesc = source->getDesc();
+    const uint32_t w = sourceDesc.width;
+    const uint32_t h = sourceDesc.height;
+    if (w == 0 || h == 0)
+        return false;
+    if (sourceDesc.format != nvrhi::Format::RGBA32_FLOAT &&
+        sourceDesc.format != nvrhi::Format::RG32_FLOAT)
+        return false;
+
+    nvrhi::TextureDesc stagingDesc = sourceDesc;
+    stagingDesc.isUAV = false;
+    stagingDesc.isRenderTarget = false;
+    stagingDesc.isShaderResource = false;
+    stagingDesc.initialState = nvrhi::ResourceStates::Common;
+    stagingDesc.keepInitialState = false;
+    stagingDesc.debugName = "NovaReadbackFloat";
+    nvrhi::StagingTextureHandle staging =
+        m_Device->createStagingTexture(stagingDesc, nvrhi::CpuAccessMode::Read);
+    if (!staging)
+        return false;
+    nvrhi::CommandListHandle copyList = m_Device->createCommandList();
+    if (!copyList)
+        return false;
+    copyList->open();
+    nvrhi::TextureSlice srcSlice;
+    copyList->copyTexture(staging, nvrhi::TextureSlice(), source, srcSlice);
+    copyList->close();
+    m_Device->executeCommandList(copyList);
+    m_Device->waitForIdle();
+    size_t rowPitch = 0;
+    const uint8_t *mapped = static_cast<const uint8_t *>(m_Device->mapStagingTexture(
+        staging, nvrhi::TextureSlice(), nvrhi::CpuAccessMode::Read, &rowPitch));
+    if (!mapped)
+        return false;
+
+    const size_t total = (size_t)w * h;
+    out.resize(total * 4);
+    if (sourceDesc.format == nvrhi::Format::RG32_FLOAT)
+    {
+        // u5 velocity: R = velX, G = velY, stride 8 bytes per pixel.
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            const float *row = reinterpret_cast<const float *>(mapped + (size_t)y * rowPitch);
+            float *dst = out.data() + (size_t)y * w * 4;
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                dst[x * 4 + 0] = row[x * 2 + 0];
+                dst[x * 4 + 1] = row[x * 2 + 1];
+                dst[x * 4 + 2] = 0.0f;
+                dst[x * 4 + 3] = 0.0f;
+            }
+        }
+    }
+    else
+    {
+        // u6 depth: RGBA32_FLOAT, R = NDC depth.
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            const float *row = reinterpret_cast<const float *>(mapped + (size_t)y * rowPitch);
+            float *dst = out.data() + (size_t)y * w * 4;
+            for (uint32_t x = 0; x < w; ++x)
+                dst[x * 4 + 0] = row[x * 4 + 0];
+        }
+    }
+    m_Device->unmapStagingTexture(staging);
+    width = w;
+    height = h;
+    return true;
+}
 
     void VulkanNova::CreatePipelineAndLayout()
     {
@@ -450,8 +877,13 @@ namespace Wasteland
         // Structured buffers: Instances t1, BVHNodes t2, LightIndices t3.
         for (uint32_t i = 1; i <= 3; ++i)
             layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(i));
-        // ReSTIR reservoir: read at t10, write at u10
-        layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(10));
+        // ReSTIR reservoir: the module reads it at t9 (binding 25 through the t offset)
+        // and writes it at u10 (binding 10). The read side used to be declared at slot 10,
+        // i.e. binding 26 -- a descriptor the shader never reads, while binding 25, the one
+        // it does read, was never declared. Validation reported it both ways: the pipeline
+        // layout was missing binding 25 "ReservoirRead", and the dispatch bound a set with
+        // an unwritten binding.
+        layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_SRV(9));
         layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::StructuredBuffer_UAV(10));
         // Sampler s0 and NovaConstants b1.
         layoutDesc.bindings.push_back(nvrhi::BindingLayoutItem::Sampler(0));
@@ -469,6 +901,38 @@ namespace Wasteland
         for (uint32_t i = 0; i < kReadImageCount; ++i)
             layoutDesc.bindings.push_back(
                 nvrhi::BindingLayoutItem::Texture_SRV(kReadImageSlot[i]));
+        // NeuralGlobals (u12) is read and written by the reduce stage; NeuralWeights
+        // (u13) and TerrainVertices (t4) are read-only buffers; s_WlfgHistory (t72) is
+        // a sampled texture. Declared by the module, so they must exist in the layout
+        // even though this path leaves the features disabled.
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::StructuredBuffer_UAV(kNeuralGlobalsSlot));
+        // UAV, not SRV: NVRHI derives the Vulkan binding as offset + slot, and slot 13
+        // only lands on the module's binding 13 through the UAV offset (0). Declared as an
+        // SRV it became binding 16 + 13 = 29, which the pipeline-layout check rejected and
+        // which left "Binding 13, NeuralWeights" unwritten at every dispatch.
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::StructuredBuffer_UAV(kNeuralWeightsSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::StructuredBuffer_SRV(kTerrainVertexSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::Texture_SRV(kWlfgHistorySlot));
+        // WlfgWeights (t75), the pass-23 synthesis head's weights. Read-only, so an
+        // SRV; the module declares it, so it must exist in the layout even when no blob
+        // was found (the buffer is then zeroed, which makes pass 23 the identity).
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::StructuredBuffer_SRV(kWlfgWeightsSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::StructuredBuffer_SRV(kWlrrWeightsSlot));
+        // Phase 1 hybrid visibility G-buffer (t78..t81). See the header note.
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::Texture_SRV(kVisibilityIdsSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::Texture_SRV(kVisibilityAlbedoSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::Texture_SRV(kVisibilityNormalSrvSlot));
+        layoutDesc.bindings.push_back(
+            nvrhi::BindingLayoutItem::Texture_SRV(kVisibilityDepthSrvSlot));
 
         m_BindingLayout = m_Device->createBindingLayout(layoutDesc);
         if (!m_BindingLayout)
@@ -507,6 +971,10 @@ namespace Wasteland
             return;
         if (w == m_Width && h == m_Height && m_Valid)
             return;
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("VulkanNova DIAG Resize {0}x{1} (was {2}x{3} lastDispatchPass={4})",
+                         w, h, m_Width, m_Height, m_LastDispatchPass);
+        m_LastDispatchPass = -1;
         m_Width = w;
         m_Height = h;
         CreateImages(w, h);
@@ -537,6 +1005,8 @@ namespace Wasteland
             nvrhi::Format::RGBA32_FLOAT, // img_TraceGBuffer  u6
             nvrhi::Format::RGBA32_FLOAT, // img_Bloom_Temp    u7
             nvrhi::Format::RG32_FLOAT,       // img_Moments       u9
+            nvrhi::Format::RGBA8_UNORM,     // img_Mask          u14
+            nvrhi::Format::RGBA32_FLOAT, // img_WlrrInput     u15
         };
 
         for (uint32_t i = 0; i < kImageCount; ++i)
@@ -612,6 +1082,36 @@ namespace Wasteland
         // clears it before the first dispatch.
         m_ImagesNeedClear = true;
 
+        // WLFG previous-present history (t72). CreateFeatureInputs() allocates a
+        // 1x1 RGBA8 placeholder so the descriptor is valid before the first
+        // Resize; this replaces it with the real thing now that the size is
+        // known. Full render size, not trace size: RunWlfgWarp addresses it as
+        // histUV = prevUV * u_RenderScale, i.e. the trace-res region occupying
+        // [0, RenderScale]^2 of a full-res texture.
+        //
+        // Both state bits for the same reason historyDesc needs them: it is
+        // written by copy (CopyDest) and read as an SRV (ShaderResource), and
+        // keepInitialState makes NVRHI verify every use against exactly these.
+        {
+            nvrhi::TextureDesc wlfgDesc;
+            wlfgDesc.width = w;
+            wlfgDesc.height = h;
+            wlfgDesc.depth = 1;
+            wlfgDesc.arraySize = 1;
+            wlfgDesc.mipLevels = 1;
+            wlfgDesc.sampleCount = 1;
+            wlfgDesc.format = nvrhi::Format::RGBA32_FLOAT;
+            wlfgDesc.isShaderResource = true;
+            wlfgDesc.initialState = nvrhi::ResourceStates::CopyDest |
+                                    nvrhi::ResourceStates::ShaderResource;
+            wlfgDesc.keepInitialState = true;
+            wlfgDesc.debugName = "NovaWlfgHistory";
+            m_WlfgHistory = m_Device->createTexture(wlfgDesc);
+            if (!m_WlfgHistory)
+                throw std::runtime_error("VulkanNova: failed to create WLFG history texture");
+            m_ImagesNeedClear = true;
+        }
+
         // ReSTIR reservoir ping-pong buffers. Each is 32 bytes per pixel.
         m_ReservoirWidth = w;
         m_ReservoirHeight = h;
@@ -656,14 +1156,23 @@ namespace Wasteland
 
         // Instances t1, BVHNodes t2, LightIndices t3. There is no
         // StructuredBuffer_SRV factory, so build the item directly.
+        // USE THE FACTORIES, NEVER a hand-filled BindingSetItem.
+        //
+        // nvrhi::BindingSetItem's default constructor initialises NOTHING ("for
+        // performance: stored in large statically sized arrays"), and `item{}` calls that
+        // constructor rather than zero-initialising. So a hand-built item carried an
+        // uninitialised union where the buffer range lives, and on Vulkan that garbage
+        // became pDescriptorWrites[].pBufferInfo.offset -- typically a value equal to or
+        // larger than the buffer itself, which BufferRange::resolve clamps to give
+        // offset == byteSize and range == 0. The descriptor was therefore invalid and the
+        // shader bound no data: every ray missed, the frame came out as sky only, while
+        // DX12 rendered the same scene correctly because it ignores that field.
+        //
+        // StructuredBuffer_SRV/UAV set the range to EntireBuffer, which is what the
+        // resource is bound for in every case here.
         for (uint32_t i = 0; i < 3; ++i)
-        {
-            nvrhi::BindingSetItem item{};
-            item.resourceHandle = m_StructuredBuffers[i];
-            item.slot = i + 1;
-            item.type = nvrhi::ResourceType::StructuredBuffer_SRV;
-            desc.bindings.push_back(item);
-        }
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_SRV(
+                i + 1, m_StructuredBuffers[i]));
 
         desc.bindings.push_back(nvrhi::BindingSetItem::Sampler(0, m_Sampler));
         desc.bindings.push_back(nvrhi::BindingSetItem::ConstantBuffer(1, m_ConstantBuffer));
@@ -734,17 +1243,40 @@ namespace Wasteland
 
         // ReSTIR reservoir ping-pong: read from one buffer (t10), write to the other (u10).
         {
-            nvrhi::BindingSetItem readItem{};
-            readItem.resourceHandle = m_ReservoirBuffers[m_ReservoirReadFlip ? 1 : 0];
-            readItem.slot = 10;
-            readItem.type = nvrhi::ResourceType::StructuredBuffer_SRV;
-            desc.bindings.push_back(readItem);
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_SRV(
+                9, m_ReservoirBuffers[m_ReservoirReadFlip ? 1 : 0]));
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_UAV(
+                10, m_ReservoirBuffers[m_ReservoirReadFlip ? 0 : 1]));
+        }
 
-            nvrhi::BindingSetItem writeItem{};
-            writeItem.resourceHandle = m_ReservoirBuffers[m_ReservoirReadFlip ? 0 : 1];
-            writeItem.slot = 10;
-            writeItem.type = nvrhi::ResourceType::StructuredBuffer_UAV;
-            desc.bindings.push_back(writeItem);
+        // The neural/terrain/WLFG inputs. Bound to real, minimal resources so the
+        // descriptors are valid: with the feature flags off in NovaConstants the shader
+        // never reads past element zero, and a null descriptor would be a driver fault
+        // the moment one of those flags were switched on.
+        {
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_UAV(
+                kNeuralGlobalsSlot, m_NeuralGlobals));
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_UAV(
+                kNeuralWeightsSlot, m_NeuralWeights));
+            desc.bindings.push_back(nvrhi::BindingSetItem::StructuredBuffer_SRV(
+                kTerrainVertexSlot, m_TerrainVertices));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::Texture_SRV(kWlfgHistorySlot, m_WlfgHistory));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::StructuredBuffer_SRV(kWlfgWeightsSlot, m_WlfgWeights));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::StructuredBuffer_SRV(kWlrrWeightsSlot, m_WlrrWeights));
+            // Phase 1 hybrid visibility G-buffer (t78..t81). Never read on this
+            // backend (u_UseRasterVisibility is always 0), but the SPIR-V declares
+            // them, so they must be bound to real resources.
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::Texture_SRV(kVisibilityIdsSlot, m_VisDummyInt));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::Texture_SRV(kVisibilityAlbedoSlot, m_VisDummyFloat4));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::Texture_SRV(kVisibilityNormalSrvSlot, m_VisDummyFloat4));
+            desc.bindings.push_back(
+                nvrhi::BindingSetItem::Texture_SRV(kVisibilityDepthSrvSlot, m_VisDummyFloat));
         }
 
         m_BindingSet = m_Device->createBindingSet(desc, m_BindingLayout);
@@ -853,6 +1385,22 @@ namespace Wasteland
     {
         switch (pass)
         {
+        case 20: // WLRR snapshot copies the accumulation pass 2 just wrote. Its
+                 // IMG_LOAD is served by snapshot 1, so without this refresh the
+                 // "raw input" arm is the PREVIOUS ladder's output, ~0.08 LSB from
+                 // the incumbent instead of the ~0.94 the raw frame really is.
+            CopyImageToSnapshot(1);
+            break;
+        case 21: // WLRR composite reads the pre-SVGF snapshot pass 20 just wrote
+                 // AND the accumulation the a-trous ladder just left. The shader's
+                 // IMG_LOAD(img_Accumulation) is served by snapshot 1, which
+                 // CommitDenoise() marks dirty: without this refresh pass 21 sees
+                 // the accumulation from BEFORE the last ladder step and writes it
+                 // back over the filtered result -- a pure-copy pass 21 changed the
+                 // frame by 0.34 LSB, a no-op body by 0.002.
+            CopyImageToSnapshot(10);
+            CopyImageToSnapshot(1);
+            break;
         case 2: // Temporal accumulation reads this frame's trace and velocity.
             CopyImageToSnapshot(2);
             CopyImageToSnapshot(5);
@@ -925,6 +1473,14 @@ namespace Wasteland
         case 14: markDirty(2); break;
         case 12: markDirty(8); break;
         case 13: markDirty(7); break;
+        // WLRR. Pass 21 writes img_Accumulation (1) directly through the UAV;
+        // nothing else marks it dirty. Without this entry the pass-7 refresh
+        // SKIPS the copy (not dirty), the bilateral blurs the STALE pre-WLRR
+        // snapshot, and CommitDenoise() folds that stale copy back over image 1
+        // -- erasing pass 21's write every frame. Pass 20 writes image 10; the
+        // dirty flag is set by CommitWlrrSnapshot() in the schedule.
+        case 20: markDirty(10); break;
+        case 21: markDirty(1); break;
         default: break;
         }
     }
@@ -943,6 +1499,16 @@ namespace Wasteland
         if (m_HistorySnapshot)
         {
             m_CommandList->clearTextureFloat(m_HistorySnapshot,
+                                             nvrhi::AllSubresources,
+                                             nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
+        }
+        // Same reason as the t48 history: freshly allocated storage is undefined,
+        // and the first pass 22 would otherwise reproject whatever the driver left
+        // in it. Zeroed, the warp's depth test rejects it and falls back to the
+        // current render for the first frame.
+        if (m_WlfgHistory)
+        {
+            m_CommandList->clearTextureFloat(m_WlfgHistory,
                                              nvrhi::AllSubresources,
                                              nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f));
         }
@@ -1033,6 +1599,36 @@ namespace Wasteland
         RefreshImageSnapshotsForPass(pass);
         m_BoundFrame = m_CurrentFrame;
 
+        // TEMPORARY DIAGNOSTIC (WL_NOVA_DIAGNOSTICS): what the constants actually hold
+        // at dispatch, and how big the instance buffer is. A flat image means either the
+        // camera/instance-count never arrived or the buffer is empty; this separates them.
+        if (std::getenv("WL_NOVA_DIAGNOSTICS") && m_DiagDispatchCount < 400)
+        {
+            ++m_DiagDispatchCount;
+            m_LastDispatchPass = pass;
+            WL_CORE_INFO("VulkanNova DIAG dispatch #{0} pass={1} {2}x{3} clearPending={4}",
+                         m_DiagDispatchCount, pass, w, h, m_ImagesNeedClear);
+        }
+        if (std::getenv("WL_NOVA_DIAGNOSTICS") && pass == 0)
+        {
+            uint32_t instanceCount = 0, passId = 0;
+            float camera[3] = {0, 0, 0};
+            std::memcpy(&instanceCount, m_ConstantBytes.data() + 144, 4);
+            std::memcpy(&passId, m_ConstantBytes.data() + 156, 4);
+            std::memcpy(camera, m_ConstantBytes.data() + 0, 12);
+            static uint32_t logged = 0;
+            if (logged < 6)
+            {
+                ++logged;
+                WL_CORE_INFO("VulkanNova DIAG pass={0} {1}x{2} instances={3} u_PassID={4} "
+                             "cam=({5:.2f},{6:.2f},{7:.2f}) instancesBuf={8}B stride={9} "
+                             "cbBytes={10}",
+                             pass, w, h, instanceCount, passId, camera[0], camera[1],
+                             camera[2], m_StructuredBufferSize[0], m_StructuredBufferStride[0],
+                             m_ConstantBytes.size());
+            }
+        }
+
         m_CommandList->writeBuffer(m_ConstantBuffer, m_ConstantBytes.data(),
                                    m_ConstantBytes.size(), 0);
 
@@ -1053,6 +1649,247 @@ namespace Wasteland
         // descriptor set, so it cannot also be the sampled history.
         // Mirrors DX11Nova.h:496, which copies images[1] into history.snapshot.
         RecordCopy(m_HistorySnapshot, m_Images[1].texture);
+    }
+
+    void VulkanNova::CommitWlfgHistory()
+    {
+        // Write half of the t72 binding: capture THIS frame's present so next
+        // frame's pass 22 can reproject it. m_Images[0] is img_Output, the
+        // displayed frame.
+        //
+        // Deliberately not folded into CommitHistory(). That runs straight after
+        // pass 2, and the composite (pass 6) has not run at that point -- so
+        // m_Images[0] still holds the previous frame and the copy would land one
+        // frame early, giving a warp that looks plausible and is wrong. The
+        // schedule calls this immediately after pass(6,true).
+        if (!m_Valid || !m_WlfgHistory || !m_Images[0].texture)
+            return;
+        RecordCopy(m_WlfgHistory, m_Images[0].texture);
+    }
+
+    void VulkanNova::LoadWlfgWeights()
+    {
+        // One-shot. Reads the blob tools/train_wlfg/export_weights.py writes and
+        // uploads its payload to the t75 buffer. The header is validated in FULL
+        // (magic, version, payload size, CRC32): a bit-flipped weight is a silent
+        // visual corruption with no shader error, no link failure and no log line --
+        // the same failure class the neural stage's NeuralStageBlob guards.
+        //
+        // ANY failure leaves the buffer zeroed, which makes pass 23 the identity:
+        // every matmul is zero, so gate*residual is 0 and out == anchor. A missing or
+        // corrupt blob therefore degrades to "no head", never to garbage -- and that
+        // zeroed case is also the pass's acceptance control.
+        m_WlfgWeightsLoaded = true;
+        if (!m_WlfgWeights)
+            return;
+
+        // The payload starts ZEROED and only a fully-validated blob replaces it.
+        // This matters: createBuffer() does not guarantee zeroed memory, so without
+        // this the t75 buffer could hold uninitialised VRAM and pass 23 would emit
+        // garbage instead of the identity. Every failure path below therefore still
+        // uploads zeros -- "no head" is a DEFINED state, not whatever the allocator
+        // happened to leave behind.
+        std::vector<float> payload(kWlfgWeightCount, 0.0f);
+
+        std::filesystem::path path;
+        if (const char *env = getenv("WL_WLFG_WEIGHTS"))
+            path = env;
+        else
+            path = Project::Get().GetAssetPath("wlfg/wlfg_weights.bin");
+
+        constexpr size_t kHeaderBytes = 24;   // magic(4) version(4) payload(4) shapes(4) total(4) crc(4)
+        const size_t payloadBytes = kWlfgWeightCount * sizeof(float);
+        bool loaded = false;
+        std::string reason;
+
+        std::error_code ec;
+        if (path.empty() || !std::filesystem::is_regular_file(path, ec))
+        {
+            reason = "no blob at that path";
+        }
+        else
+        {
+            std::ifstream in(path, std::ios::binary);
+            std::vector<uint8_t> blob((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            if (blob.size() != kHeaderBytes + payloadBytes)
+                reason = "wrong byte size";
+            else if (std::memcmp(blob.data(), "WLFG", 4) != 0)
+                reason = "bad magic";
+            else
+            {
+                auto readU32 = [&blob](size_t off) {
+                    uint32_t v = 0;
+                    std::memcpy(&v, blob.data() + off, sizeof(v));
+                    return v;
+                };
+                if (readU32(4) != 1 || readU32(8) != payloadBytes)
+                    reason = "version/payload mismatch";
+                else
+                {
+                    // CRC32 over the PAYLOAD ONLY, matching export_weights.py's crc32().
+                    uint32_t crc = 0xFFFFFFFFu;
+                    for (size_t i = 0; i < payloadBytes; ++i)
+                    {
+                        crc ^= blob[kHeaderBytes + i];
+                        for (int b = 0; b < 8; ++b)
+                            crc = (crc >> 1) ^ ((crc & 1u) ? 0xEDB88320u : 0u);
+                    }
+                    crc ^= 0xFFFFFFFFu;
+                    if (crc != readU32(20))
+                        reason = "CRC32 mismatch";
+                    else
+                    {
+                        std::memcpy(payload.data(), blob.data() + kHeaderBytes, payloadBytes);
+                        loaded = true;
+                    }
+                }
+            }
+        }
+
+        if (!EnsureCommandList())
+            return;
+        // PRIVATE list, always submitted -- same fix and same reason as
+        // LoadWlrrWeights: a batched write into an ambient list that is never
+        // submitted leaves t75 zeroed and pass 23 the identity.
+        nvrhi::CommandListHandle uploadList = m_Device->createCommandList();
+        if (!uploadList)
+            return;
+        uploadList->open();
+        uploadList->writeBuffer(m_WlfgWeights, payload.data(), payloadBytes, 0);
+        uploadList->close();
+        m_Device->executeCommandList(uploadList);
+        // Published for the editor's gate readout -- see LoadWlrrWeights.
+        m_WlfgWeightsValid = loaded;
+
+        if (loaded)
+            WL_CORE_INFO("VulkanNova: loaded WLFG weights blob '{0}' ({1} floats, CRC32 ok)",
+                         path.string(), kWlfgWeightCount);
+        else
+            WL_CORE_WARN("VulkanNova: no usable WLFG weights blob ({0}: '{1}'); t75 zeroed, "
+                         "so pass 23 is the identity. Set WL_WLFG_WEIGHTS to load one.",
+                         reason, path.string());
+    }
+
+    void VulkanNova::LoadWlrrWeights()
+    {
+        // Same contract as LoadWlfgWeights: a missing or corrupt blob leaves the
+        // payload ZEROED, and a zeroed payload makes pass 21 degenerate to
+        // `out == incumbent` (alpha=0 makes the anchor the incumbent and every
+        // matmul zero makes gate*residual zero). So "no blob" is a SAFE default
+        // that changes nothing -- it is not a silent wrong answer.
+        static constexpr size_t kHeaderBytes = 24;
+        m_WlrrWeightsLoaded = false;
+        if (!m_Valid)
+            return;
+
+        std::vector<uint8_t> blob;
+        std::string reason;
+        if (const char *override = getenv("WL_WLRR_WEIGHTS"))
+        {
+            if (*override)
+            {
+                std::ifstream f(override, std::ios::binary);
+                if (f)
+                    blob.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+                else
+                    reason = "WL_WLRR_WEIGHTS unreadable";
+            }
+        }
+        if (blob.empty())
+        {
+            std::ifstream f("D:/GitHub/Wasteland-Engine/Wasteland/bin/Release-windows-x86_64/DemonCore-Editor/assets/models/wlrr.bin", std::ios::binary);
+            if (!f)
+                f.open("assets/models/wlrr.bin", std::ios::binary);
+            if (f)
+                blob.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            else
+                reason = reason.empty() ? "no wlrr.bin next to the executable" : reason;
+        }
+        if (blob.empty())
+        {
+            WL_CORE_WARN("VulkanNova: no WLRR blob ({0}); t76 zeroed, so pass 21 is the "
+                         "identity (out == incumbent). Set WL_WLRR_WEIGHTS to load one.",
+                         reason);
+            return;
+        }
+        if (blob.size() < kHeaderBytes)
+        {
+            WL_CORE_WARN("VulkanNova: WLRR blob too short ({0} bytes); t76 left zeroed",
+                         blob.size());
+            return;
+        }
+
+        std::vector<uint8_t> payload(kWlrrPayloadCount * sizeof(float), 0);
+        const uint32_t payloadBytes = kWlrrPayloadCount * static_cast<uint32_t>(sizeof(float));
+        bool loaded = false;
+        if (std::memcmp(blob.data(), "WLRR", 4) != 0)
+            reason = "bad magic";
+        else
+        {
+            auto readU32 = [&blob](size_t off) {
+                uint32_t v = 0;
+                std::memcpy(&v, blob.data() + off, sizeof(v));
+                return v;
+            };
+            if (readU32(4) != 1 || readU32(8) != payloadBytes)
+                reason = "version/payload mismatch";
+            else
+            {
+                uint32_t crc = 0xFFFFFFFFu;
+                for (size_t i = 0; i < payloadBytes; ++i)
+                {
+                    crc ^= blob[kHeaderBytes + i];
+                    for (int b = 0; b < 8; ++b)
+                        crc = (crc >> 1) ^ ((crc & 1u) ? 0xEDB88320u : 0u);
+                }
+                crc ^= 0xFFFFFFFFu;
+                if (crc != readU32(20))
+                    reason = "CRC32 mismatch";
+                else
+                {
+                    std::memcpy(payload.data(), blob.data() + kHeaderBytes, payloadBytes);
+                    loaded = true;
+                }
+            }
+        }
+
+        if (!EnsureCommandList())
+            return;
+        // A PRIVATE command list, always submitted here. The old batched path
+        // wrote into whatever list happened to be open at Init; when that ambient
+        // list is never submitted the payload is lost, the buffer reads back as
+        // zeros at dispatch, and EVERY blob -- including br=100 and alpha=1 --
+        // degenerates to the identity. Same class as the Readback private list.
+        nvrhi::CommandListHandle uploadList = m_Device->createCommandList();
+        if (!uploadList)
+            return;
+        uploadList->open();
+        uploadList->writeBuffer(m_WlrrWeights, payload.data(), payloadBytes, 0);
+        uploadList->close();
+        m_Device->executeCommandList(uploadList);
+        // Published so the editor's gate readout can tell "no enhancement" from
+        // "the head is off" -- the buffer being zeroed is what makes pass 21 the
+        // identity, and that is indistinguishable from a disabled head without
+        // this flag.
+        m_WlrrWeightsValid = loaded;
+
+        if (loaded)
+            WL_CORE_INFO("VulkanNova: loaded WLRR blob ({0} floats, CRC32 ok)",
+                         kWlrrPayloadCount);
+        else
+            WL_CORE_WARN("VulkanNova: no usable WLRR blob ({0}); t76 zeroed, "
+                         "so pass 21 is the identity.", reason);
+    }
+
+    void VulkanNova::CommitWlrrSnapshot()
+    {
+        // Pass 20 wrote img_WlrrInput (image index 10); pass 21 reads it through
+        // read_img_WlrrInput, which samples the SNAPSHOT rather than the live UAV.
+        // Marking it dirty here lets RefreshImageSnapshotsForPass(21) copy it at
+        // the pass-21 dispatch boundary -- after pass 20 has run, before pass 21.
+        if (m_Valid && kImageCount > 10)
+            m_Images[10].snapshotDirty = true;
     }
 
     void VulkanNova::CommitDenoise()

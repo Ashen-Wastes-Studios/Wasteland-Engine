@@ -699,6 +699,11 @@ namespace Wasteland
 				if (render_node["ColorGamma"])            r.ColorGamma = render_node["ColorGamma"].as<float>();
 				if (render_node["FilmGrainEnabled"])      r.FilmGrainEnabled = render_node["FilmGrainEnabled"].as<bool>();
 				if (render_node["FilmGrainIntensity"])   r.FilmGrainIntensity = render_node["FilmGrainIntensity"].as<float>();
+				if (render_node["WlsrEnabled"])           r.WlsrEnabled = render_node["WlsrEnabled"].as<bool>();
+				if (render_node["WlaaEnabled"])           r.WlaaEnabled = render_node["WlaaEnabled"].as<bool>();
+				if (render_node["WlrrEnabled"])           r.WlrrEnabled = render_node["WlrrEnabled"].as<bool>();
+				if (render_node["WlfgEnabled"])           r.WlfgEnabled = render_node["WlfgEnabled"].as<bool>();
+				if (render_node["WlfgFactor"])            r.WlfgFactor = render_node["WlfgFactor"].as<int>();
 			}
 		}
 		// Re-sanitized on load: this Name came from a file the user can edit,
@@ -890,6 +895,11 @@ namespace Wasteland
 		out << YAML::Key << "ColorGamma" << YAML::Value << r.ColorGamma;
 		out << YAML::Key << "FilmGrainEnabled" << YAML::Value << r.FilmGrainEnabled;
 		out << YAML::Key << "FilmGrainIntensity" << YAML::Value << r.FilmGrainIntensity;
+		out << YAML::Key << "WlsrEnabled" << YAML::Value << r.WlsrEnabled;
+		out << YAML::Key << "WlaaEnabled" << YAML::Value << r.WlaaEnabled;
+		out << YAML::Key << "WlrrEnabled" << YAML::Value << r.WlrrEnabled;
+		out << YAML::Key << "WlfgEnabled" << YAML::Value << r.WlfgEnabled;
+		out << YAML::Key << "WlfgFactor" << YAML::Value << r.WlfgFactor;
 		out << YAML::EndMap;
 		out << YAML::EndMap;
 

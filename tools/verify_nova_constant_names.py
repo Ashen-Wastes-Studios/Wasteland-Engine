@@ -47,7 +47,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 CPP = REPO / "Wasteland" / "src" / "Wasteland" / "Renderer" / "Renderer3D.cpp"
-HLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.hlsl"
+HLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.slang"
 
 # The value types Set() is instantiated for, plus the scalar/vector/matrix types
 # that appear in the cbuffer. `u_SceneTextures` is an array and is handled by the

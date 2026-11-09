@@ -17,6 +17,12 @@ namespace Wasteland
             return "TierB (denoise compute)";
         case FeatureTier::ComputeEmulated:
             return "TierC (compute)";
+        case FeatureTier::ReconstructSpatial:
+            return "Reconstruct: spatial (WLSR/WLAA/mask)";
+        case FeatureTier::ReconstructTemporal:
+            return "Reconstruct: temporal (+ WLRR)";
+        case FeatureTier::ReconstructFull:
+            return "Reconstruct: full (+ WLFG head)";
         case FeatureTier::Unavailable:
         default:
             return "unavailable";
@@ -62,9 +68,13 @@ namespace Wasteland
             break;
         }
 
+        // Device-feature probe LAST, before the map is published. A reader that
+        // observes s_Capabilities must never see a half-probed map, and the log
+        // line below must report the merged values rather than the pre-probe ones.
+        MergeDeviceFeatureCapabilities(caps);
         s_Capabilities = caps;
 
-        WL_CORE_INFO("Render capability map: API={0} hardwareRT={1} inlineRT={2} rayQuery={3} denoiseCompute={4} -> denoise={5}",
+        WL_CORE_INFO("Render capability map: API={0} hardwareRT={1} inlineRT={2} rayQuery={3} denoiseCompute={4} meshShaders={5} amplification={6} -> denoise={7}",
                      caps.api == RendererAPI::API::OpenGL         ? "OpenGL"
                      : caps.api == RendererAPI::API::NVRHI_DX11  ? "DX11"
                      : caps.api == RendererAPI::API::NVRHI_DX12  ? "DX12"
@@ -74,6 +84,8 @@ namespace Wasteland
                      caps.inlineRaytracing ? "yes" : "no",
                      caps.rayQuery ? "yes" : "no",
                      caps.denoiseComputeCapable ? "yes" : "no",
+                     caps.meshShaders ? "yes" : "no",
+                     caps.amplificationShaders ? "yes" : "no",
                      RenderCapabilities::TierName(caps.TierFor(FeatureTier::DenoiseCompute)));
     }
 

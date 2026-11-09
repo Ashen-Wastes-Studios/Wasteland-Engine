@@ -79,6 +79,24 @@ def replace_in_body(source: str, signature: str, old: str, new: str) -> str | No
     return source[:start] + body.replace(old, new, 1) + source[end:]
 
 
+def replace_all_in_body(source: str, signature: str, old: str, new: str) -> str | None:
+    """Like replace_in_body, but every occurrence in the body.
+
+    Needed when a function legitimately sets the same flag more than once (e.g.
+    CreateImages requests a deferred clear once per newly allocated texture).
+    Replacing only the first leaves the flag set, so the mutation is correctly
+    NOT a violation and the negative control would report a false failure.
+    """
+    span = body_span(source, signature)
+    if span is None:
+        return None
+    start, end = span
+    body = source[start:end]
+    if old not in body:
+        return None
+    return source[:start] + body.replace(old, new) + source[end:]
+
+
 def violations(cpp: str, header: str) -> list[str]:
     errors: list[str] = []
     checks = [
@@ -124,9 +142,9 @@ def violations(cpp: str, header: str) -> list[str]:
     # and the snapshot-image map; omitting them makes VulkanNova reject its own
     # checked-in SPIR-V before the first dispatch.
     active_read_slots = (
-        "kReadImageCount = 8;" in header and
-        "kReadImageSlot[kReadImageCount] = {64, 65, 66, 68, 69, 70, 71, 73};" in cpp and
-        "kReadImageIndex[kReadImageCount] = {0, 1, 2, 4, 5, 6, 7, 8};" in cpp
+        "kReadImageCount = 9;" in header and
+        "kReadImageSlot[kReadImageCount] = {64, 65, 66, 68, 69, 70, 71, 73, 77};" in cpp and
+        "kReadImageIndex[kReadImageCount] = {0, 1, 2, 4, 5, 6, 7, 8, 10};" in cpp
     )
     if not active_read_slots:
         errors.append("Vulkan read-image descriptors cover active shader SRVs")
@@ -246,7 +264,7 @@ def renderer_violations(renderer_cpp: str, renderer_header: str) -> list[str]:
     errors: list[str] = []
     if '#include "Platform/NVRHI/VulkanNova.h"' not in renderer_cpp:
         errors.append("Renderer3D includes VulkanNova")
-    if "static std::unique_ptr<VulkanNova> s_NovaVk;" not in renderer_cpp:
+    if "VulkanNovaPtr Renderer3D::s_NovaVk;" not in renderer_cpp:
         errors.append("Renderer3D owns a VulkanNova instance")
 
     init = method_body(renderer_cpp, "void Renderer3D::Init(")
@@ -259,8 +277,10 @@ def renderer_violations(renderer_cpp: str, renderer_header: str) -> list[str]:
     flush_backend = method_body(renderer_cpp, "static void FlushVulkanNova(")
     if not flush_backend or any(token not in flush_backend for token in (
         "n.Resize(", "SceneInstancesChanged()", "BuildAndFlattenBVH(",
-        "n.Upload(0", "n.Upload(1", "n.Upload(2", "n.Set(\"u_InstanceCount\"",
-        "n.Set(\"u_FrameIndex\"", "n.Set(\"u_CameraPosition\"",
+        "n.Upload(0", "n.Upload(1", "n.Upload(2",
+        "n.Set(\"NovaConstants_0.u_InstanceCount_0\"",
+        "n.Set(\"NovaConstants_0.u_FrameIndex_0\"",
+        "n.Set(\"u_CameraPosition\"",
         "n.Set(\"u_InverseViewProjection\"", "n.Set(\"u_ViewProjection\"",
         "n.Set(\"u_RenderScale\"", "n.Set(\"u_FogCount\"",
         "n.Set(\"u_CloudCount\"", "n.Set(\"u_ALightCount\"",
@@ -294,7 +314,7 @@ def renderer_violations(renderer_cpp: str, renderer_header: str) -> list[str]:
     if not shutdown or "s_NovaVk.reset();" not in shutdown:
         errors.append("VulkanNova is destroyed before its NVRHI context")
     clear = method_body(renderer_cpp, "static void ClearAccumulationBuffers(")
-    if not clear or "s_NovaVk->Clear();" not in clear:
+    if not clear or "nvk->Clear();" not in clear:
         errors.append("VulkanNova history resets with renderer accumulation")
     resize = method_body(renderer_cpp, "void Renderer3D::ResizeRayTraceTarget(")
     if not resize or "s_NovaVk->Resize(" not in resize:
@@ -351,12 +371,15 @@ def main() -> int:
         ("zero-count dummy allocation", "void VulkanNova::Upload(",
          "count == 0 ? 1u", "count == 0 ? 0u"),
         ("initial image clear", "void VulkanNova::CreateImages(",
-         "m_ImagesNeedClear = true;", "/* regression */"),
+         "m_ImagesNeedClear = true;", "/* regression */", True),
         ("storage-image usage", "void VulkanNova::CreateImages(",
          "desc.isUAV = true;", "desc.isUAV = false;"),
     ]
-    for label, signature, old, new in controls:
-        mutated = replace_in_body(cpp, signature, old, new)
+    for control in controls:
+        label, signature, old, new = control[:4]
+        all_occurrences = len(control) > 4 and control[4]
+        replacer = replace_all_in_body if all_occurrences else replace_in_body
+        mutated = replacer(cpp, signature, old, new)
         if mutated is None or not violations(mutated, header):
             print(f"FAIL negative control did not detect {label}")
             return 1
@@ -399,7 +422,7 @@ def main() -> int:
         ("VulkanNova construction", renderer_cpp,
          "void Renderer3D::Init(", "std::make_unique<VulkanNova>()", "std::make_unique<DX11Nova>()"),
         ("VulkanNova history clear", renderer_cpp,
-         "static void ClearAccumulationBuffers(", "s_NovaVk->Clear();", "s_Nova12->Clear();"),
+         "static void ClearAccumulationBuffers(", "nvk->Clear();", "/* regression */"),
         ("VulkanNova pass schedule", renderer_cpp,
          "static void FlushVulkanNova(", "RunNovaPassSchedule(n, textures);", "RunNovaPassSchedule(n, {});"),
         ("Vulkan uniform parity", renderer_cpp,
