@@ -88,7 +88,8 @@ RWTexture2D<float2> img_Velocity      : register(u5);
 RWTexture2D<float4> img_TraceGBuffer  : register(u6);
 RWTexture2D<float4> img_Bloom_Temp    : register(u7);
 RWTexture2D<unorm float4> img_MaterialPacked : register(u3);
-RWTexture2D<float4> img_AlbedoHit     : register(u4);
+RWTexture2D<float4> img_Mask : register(u8); // WLFG reactive mask (pass 24 output), RGBA8, written by RunReactiveMask.
+RWTexture2D<float4> img_AlbedoHit     : register(u4); // The rasterised albedo, write-only, with A = hitMask.
 RWTexture2D<float2> img_Moments       : register(u9);
 RWTexture2D<float4> img_HistoryBuffer : register(u11);
 // u12: the neural stage's globals. An RWStructuredBuffer<uint> whose element
@@ -107,7 +108,12 @@ RWTexture2D<float4> img_HistoryBuffer : register(u11);
 // DX12Nova.h's heap layout comment.
 RWStructuredBuffer<uint> NeuralGlobals : register(u12);
 
-// ---- scene data (GL SSBO bindings 1/2/3 -> t registers) ----
+// u13: the neural stage's trainable weights. A std430 readonly buffer of float
+// weights, matching the GLSL's `NeuralWeights` SSBO at binding 5. Each element is
+// one float weight; the buffer is read by the pass-23 neural head pass.
+RWStructuredBuffer<float> NeuralWeights : register(u13);
+
+// ---- scene data (GL SSOBindings 1/2/3 -> t registers) ----
 StructuredBuffer<RayTracingInstance> Instances    : register(t1);
 StructuredBuffer<BVHNode>            BVHNodes     : register(t2);
 StructuredBuffer<int>                LightIndices : register(t3);
@@ -122,6 +128,11 @@ RWStructuredBuffer<LightReservoir> ReservoirWrite : register(u10);
 // ---- sampled buffers (GL sampler units shifted to t48+ to avoid
 // colliding with the StructuredBuffer registers t1/t2/t3) ----
 Texture2D s_Accumulation  : register(t48);
+// WLFG previous-present history, the pass-22 warp's source. Sampled at t72 (the
+// readable-block padding slot repointed at wlfgHistory.snapshot in DX12Nova), so
+// the warp reads it exactly like pass 2 reads s_Accumulation -- same bilinear
+// fetch, no .Load/UAV, no heap change.
+Texture2D s_WlfgHistory  : register(t72);
 Texture2D s_DepthBuffer   : register(t49);
 Texture2D s_Output        : register(t50);
 Texture2D s_NormalBuffer  : register(t51);
@@ -315,11 +326,16 @@ Texture2D<float4> read_img_AlbedoHit : register(t68);
 Texture2D<float2> read_img_Velocity : register(t69);
 Texture2D<float4> read_img_TraceGBuffer : register(t70);
 Texture2D<float4> read_img_Bloom_Temp : register(t71);
-Texture2D<float2> read_img_Moments : register(t73);
+Texture2D<float4> read_img_Moments : register(t73);
+// t72 is the WLFG previous-present history, the pass-22 warp's source.
+// Sampled at t72 (the readable-block padding slot repointed at
+// wlfgHistory.snapshot in DX12Nova), so the warp reads it exactly like
+// pass 2 reads s_Accumulation -- same bilinear fetch, no .Load/UAV, no
+// heap change. The pass-24 reactive mask is the alpha channel of
+// img_TraceGBuffer (R=NDC depth, GBA=packed normal, A=mask).
 // t74 is claimed, by NeuralWeights below: the readable-snapshot block was widened
 // 10 -> 11 to cover it, which is what moved the DX12 UAV block from heap index 52
 // to 53. t75 remains spare.
-StructuredBuffer<float> NeuralWeights : register(t74);
 #define IMG_LOAD(tex, pos) read_##tex.Load(int3(clamp(int2(pos), int2(0,0), int2(g_dims)-1),0))
 #define IMG_SIZE(tex)            (g_dims)
 
@@ -2840,6 +2856,72 @@ void RunTemporalAccumulation() {
     IMG_STORE(img_Accumulation, pixelCoords, float4(result, 1.0f));
 }
 
+// PASS 22: WLFG reprojection warp. The first half of frame generation -- see
+// the GLSL twin for the full comment. Address math mirrors RunTemporalAccumulation:
+// velocity -> prevUV -> histUV -> clamp -> depth test. Reads s_WlfgHistory (the
+// previous present captured each frame), the same sampled fetch pass 2 makes of
+// s_Accumulation; writes the same img_Accumulation UAV. Dispatch-correct.
+float3 RunWlfgDisocclusionFill(int2 pc, int2 imgSize, float2 curUV, float curDepth) {
+    float3 best = IMG_LOAD(img_Bloom, pc).rgb;   // fallback: the current real render
+    float bestDepthDiff = 1e30f;
+    int2 extent = IMG_SIZE(img_Accumulation);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            int2 sp = pc + int2(x, y);
+            if (sp.x < 0 || sp.y < 0 || sp.x >= imgSize.x || sp.y >= imgSize.y) continue;
+            float2 spUV = (float2(sp) + 0.5f) / float2(imgSize);
+            float2 spVel = IMG_LOAD(img_Velocity, sp).xy;
+            float2 spPrev = spUV - spVel;
+            if (spPrev.x < 0.0f || spPrev.x > 1.0f || spPrev.y < 0.0f || spPrev.y > 1.0f) continue;
+            float2 spHist = spPrev * u_RenderScale;
+            float2 lo = 0.5f / float2(extent);
+            float2 hi = float2(u_RenderScale, u_RenderScale) - 0.5f / float2(extent);
+            spHist = clamp(spHist, lo, hi);
+            float spPrevDepth = TEX(s_DepthBuffer, spHist).r;
+            float spOwnDepth = TEX(s_DepthBuffer, spUV).r;
+            if (abs(spPrevDepth - spOwnDepth) > 0.02f) continue;
+            float diff = abs(spPrevDepth - curDepth);
+            if (diff < bestDepthDiff) {
+                bestDepthDiff = diff;
+                best = TEX(s_WlfgHistory, spHist).rgb;
+            }
+        }
+    }
+    return best;
+}
+
+void RunWlfgWarp() {
+    int2 pixelCoords = int2(g_dt.xy);
+    int2 imgSize = wl_trace_extent(IMG_SIZE(img_Accumulation));
+    float2 uv = (float2(pixelCoords) + 0.5f) / float2(imgSize);
+
+    float2 velocity = IMG_LOAD(img_Velocity, pixelCoords).xy;
+    float2 prevUV = uv - velocity;
+    float2 histUV = prevUV * u_RenderScale;
+    float2 fullRes = float2(IMG_SIZE(img_Accumulation));
+    histUV = clamp(histUV, 0.5f / fullRes, float2(u_RenderScale, u_RenderScale) - 0.5f / fullRes);
+
+    bool valid = u_FrameIndex > 0 && prevUV.x >= 0.0f && prevUV.x <= 1.0f
+               && prevUV.y >= 0.0f && prevUV.y <= 1.0f;
+    if (valid) {
+        float currentDepth = TEX(s_DepthBuffer, uv).r;
+        float prevDepth = TEX(s_DepthBuffer, histUV).r;
+        if (abs(currentDepth - prevDepth) > 0.02f) valid = false;
+    }
+
+    float3 warped = TEX(s_WlfgHistory, histUV).rgb;
+    float3 result = valid ? warped : RunWlfgDisocclusionFill(pixelCoords, imgSize, uv,
+                   TEX(s_DepthBuffer, uv).r);
+
+    // Reactive mask at the pixel (trace) coordinate, point sample -- same reason
+    // as the GLSL: the mask is per accumulation texel, so a bilinear tap would
+    // blend two independent disocclusion verdicts.
+    float mask = IMG_LOAD(img_Bloom_Temp, pixelCoords).a;
+    result = lerp_safe(result, IMG_LOAD(img_Bloom, pixelCoords).rgb, saturate(mask));
+
+    IMG_STORE(img_Accumulation, pixelCoords, float4(result, 1.0f));
+}
+
 // Pass 12: temporal moments accumulation.
 // Computes running mean (m1) and mean-of-squares (m2) of the luminance
 // channel, reprojected to the previous frame. The A-Trous filter (pass 13)
@@ -4955,6 +5037,12 @@ void RunReactiveMask()
     // u_CameraMoved is deliberately NOT used -- see the GLSL twin's comment.
     // It is `CurrentViewProjection != PrevViewProjection`, and TAA jitter makes
     // those differ every frame, so it would force the mask to 1.0 everywhere.
+    // The mask is written to the dedicated img_Mask texture (RGBA8) so the
+    // dataset exporter can capture a standalone mask channel instead of
+    // reading the alpha channel of img_Bloom_Temp (which the bloom blur would
+    // overwrite). The alpha-channel fallback in img_Bloom_Temp stays for the
+    // GPU-only reconstruction passes (8/15/16).
+    img_Mask[pos] = float4(clamp(mask, 0.0f, 1.0f), 0.0f, 0.0f, 1.0f);
     IMG_STORE(img_Bloom_Temp, pos, float4(0.0f, 0.0f, 0.0f, clamp(mask, 0.0f, 1.0f)));
 }
 
@@ -4974,6 +5062,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupID : SV_Group
         case 0: RunVisibilityAndVelocity(); break;
         case 1: RunTraceAndDenoise(); break;
         case 2: RunTemporalAccumulation(); break;
+        // Pass 22: WLFG reprojection warp. Defined and compile-checked, but NOT
+        // dispatched by any u_PassID value yet -- dead code until the second
+        // history buffer and WLFG schedule are wired in. See the GLSL for notes.
+        case 22: RunWlfgWarp(); break;
         case 4: RunBloomBlurHorizontal(); break;
         case 5: RunBloomBlurVertical(); break;
         case 6: RunComposite(); break;

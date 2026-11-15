@@ -1,0 +1,61 @@
+kind: flow
+schema: 1
+name: Mover
+nodes:
+  # The graph's single entry point. The method the compiler emits for this
+  # event is what FlowGraphSystem calls every tick, and its name comes from
+  # this field -- "OnUpdate" here, sanitised, with "OnUpdate" as the fallback
+  # when a graph has no event at all.
+  - id: ev
+    type: FlowOnEvent
+    x: 60
+    y: 80
+    event: OnUpdate
+
+  # Read the entity's current world position. GetTransform returns a
+  # TransformComponent whose Translation member is the live position.
+  - id: get_pos
+    type: GetPosition
+    x: 380
+    y: 80
+
+  # Add a fixed offset. This node exists because the five arithmetic nodes are
+  # Float-ONLY -- before Vec3Add there was no way to offset a position at all,
+  # so "move something by a little, every tick" was unauthorable.
+  - id: offset
+    type: Vec3Add
+    x: 700
+    y: 80
+    pins:
+      - pin: B
+        value: (1, 0, 0)
+
+  # Write the result back. SetTransform takes three separate Vec3 arguments --
+  # it does NOT take a TransformComponent object -- and its Rotation and Scale
+  # pins carry their own defaults, so only Translation has to be wired.
+  - id: apply
+    type: SetTransform
+    x: 1020
+    y: 80
+links:
+  # The exec chain: event -> set transform. Straight-line flow, no branches.
+  - from:
+      node: ev
+      pin: Out
+    to:
+      node: apply
+      pin: In
+
+  # The value chain: position -> add offset -> translation input.
+  - from:
+      node: get_pos
+      pin: Position
+    to:
+      node: offset
+      pin: A
+  - from:
+      node: offset
+      pin: Value
+    to:
+      node: apply
+      pin: Translation

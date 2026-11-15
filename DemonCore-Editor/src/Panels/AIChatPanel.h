@@ -14,6 +14,8 @@
 // mean the worker never blocks the UI while it appends a message.
 #include <mutex>
 #include <string>
+#include "../AI/MemoryStore.h"
+#include "../AI/SubagentSystem.h"
 // The worker thread handle. Joining it is the destructor's job -- see the
 // note there.
 #include <thread>
@@ -55,7 +57,7 @@ namespace Wasteland
 		AIChatPanel();
 		// DEFECT (high risk, documented not fixed): the class owns a std::thread and
 		// TWO mutexes plus vectors, and declares no copy or move operations. The
-		        // implicit copy constructor would be deleted by the thread and the
+		// implicit copy constructor would be deleted by the thread and the
 		// mutexes, so it will not compile -- but the destructor being
 		// non-virtual and user-declared means nothing at the declaration site
 		// records the requirement to join m_Worker and clear the error state.
@@ -87,7 +89,7 @@ namespace Wasteland
 		// and touches no member. That is what makes the JSON assembly testable
 		// without an instance, an API key or a network call.
 		static std::string BuildRequestBody(const std::string &model, float temperature,
-			const std::string &systemPrompt, const std::vector<ChatMessage> &history, size_t maxHistory, bool stream);
+											const std::string &systemPrompt, const std::vector<ChatMessage> &history, size_t maxHistory, bool stream);
 		// Two out-params rather than an optional struct: content and error are
 		// mutually exclusive in practice, and the caller branches on the
 		// bool before reading either, so one of the two is left default.
@@ -180,6 +182,15 @@ namespace Wasteland
 		// would be told their key is missing when it is merely unread.
 		bool m_SettingsLoaded = false;
 
+		// Provider selection.
+		char m_ProviderBuf[64] = "openai";
+		int m_ProviderIndex = 0;
+		// Effort + model preset dropdowns.
+		char m_EffortPresetBuf[32] = "medium";
+		int m_EffortPresetIndex = 1;
+		char m_ModelPresetBuf[64] = {0};
+		int m_ModelPresetIndex = 0;
+
 		// Engine scripting reference (assets/ai/engine_reference.md), UI thread only.
 		// The comment above scopes this to the UI thread, which is the right
 		// constraint: the engine reference is loaded, cached and read during
@@ -218,6 +229,50 @@ namespace Wasteland
 		// future change could introduce a deadlock. The correct discipline is
 		// one lock per scope.
 		std::mutex m_PendingMutex;
-	};
 
+		// Model catalogue fetched from the active provider.
+		std::vector<std::string> m_AvailableModels;
+		int m_SelectedModelIndex = 0;
+		std::string m_ModelsStatus;
+		std::mutex m_ModelsMutex;
+		std::thread m_ModelsWorker;
+
+		// Skills system (Hermes SKILL.md format).
+		std::vector<std::string> m_SkillNames;
+		int m_SelectedSkillIndex = 0;
+		std::string m_SkillsStatus;
+		bool m_SkillsLoaded = false;
+
+		// Memory inspector search results.
+		std::vector<MemoryEntry> m_MemorySearchResults;
+
+		// Subagent system (Hermes delegate_task parity).
+		// Loaded from ApiKeyStore on settings load; the checkbox writes back
+		// through SaveSettings only, so an unsaved change is local until then.
+		bool m_AutoDelegate = false;
+		int m_MaxSubagents = 4;
+		// Results of the most recent delegation, shown in the transcript.
+		// Guarded by m_Mutex because the worker thread fills it and the UI
+		// reads it during render.
+		std::vector<SubagentResult> m_LastSubagentResults;
+		bool m_ShowSubagentResults = false;
+
+		void TriggerModelFetch();
+		void LoadProviderSettings(const char *provider);
+		void RefreshSkills();
+		// Runs the subagent delegation for a parsed <delegate> block. Called
+		// from the worker thread; appends the aggregate to m_Messages and
+		// fills m_LastSubagentResults. Returns false when delegation is
+		// disabled or nothing could be run.
+		// autoDelegate and maxSubagents are PASSED IN rather than read from
+		// members: the worker thread must not touch UI-owned state, so the
+		// UI thread snapshots them before the thread starts.
+		bool RunSubagentDelegation(const std::string &text, const std::string &providerName,
+								   const std::string &model, float temp,
+								   const std::string &systemPrompt, const std::string &toolDefs,
+								   bool autoDelegate, int maxSubagents);
+		// Manual /delegate: wraps the user's goal in a one-task delegate block
+		// and runs it. Returns true when the delegation was dispatched.
+		bool DelegateSingleGoal(const std::string &goal);
+	};
 }

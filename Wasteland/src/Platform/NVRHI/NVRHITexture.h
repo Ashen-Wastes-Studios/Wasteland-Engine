@@ -141,6 +141,11 @@ namespace Wasteland {
 		// An nvrhi handle, not a pointer: it is a small POD wrapper around a driver
 		// object with its own lifetime rules, and its default value is the null
 		// handle. That default is what the GetNativeSRV null check relies on.
+		// Generation of the NVRHIContext whose device created the handles below.
+		// A backend switch destroys that device; handles from a retired generation
+		// must be abandoned rather than released (see NVRHIHandleRetire.h).
+		uint32_t m_Generation = 0;
+
 		nvrhi::TextureHandle m_Texture;
 		// Held alongside the texture so it survives with it. Sampler state is
 		// immutable here -- there is no setter -- so the filter configuration

@@ -271,6 +271,9 @@ SamplerState s_Sampler : register(s0);
 // ---- scene texture array (GL units 15..46 -> t15..) ----
 Texture2D u_SceneTextures[32] : register(t15);
 
+// Fixed per-frame decal capacity; must match Renderer3D::MaxDecals (8).
+#define MAX_DECALS 8
+
 // ---- per-frame constants (GL individual uniforms -> one cbuffer) ----
 // Nothing external reads this buffer, so HLSL's internal packing is
 // self-consistent regardless of GL uniform layout.
@@ -418,7 +421,65 @@ cbuffer NovaConstants : register(b1)
     // table would have to be regenerated entry by entry. At the end, the only
     // change is one new row.
     int     u_UseRasterVisibility;
+    // Effects register: a bitmask consumed by Nova passes and the A/B harness.
+    // Appended last (new cbuffer member) so no middle offset shifts. The CPU
+    // pushes it from all three NVRHI flushes AND the GL uniform path; see the
+    // WL_EFLAGS_* defines below. Kept as a single uint so the harness can flip a
+    // whole feature group through one uniform instead of adding cbuffer members.
+    uint    u_EffectsFlags;
+    // Projected decals: a fixed-capacity list (MaxDecals = 8) uploaded per frame
+    // from DecalComponents. Appended last alongside u_EffectsFlags so no middle
+    // offset shifts. Each entry is an orthonormal projector (Right/Up span the
+    // footprint plane, Dir is the cast axis = transform local +Z), Pos = centre,
+    // Size = (halfW, halfH, castLen, enabled), Color = (rgb, strength). All vec4
+    // so the std140 array stride is a clean 16 bytes on every backend and the GL
+    // element-0 blanket upload stays contiguous. u_DecalCount gates the loop.
+    uint  u_DecalCount;
+    float4 u_DecalPos[MAX_DECALS];
+    float4 u_DecalRight[MAX_DECALS];
+    float4 u_DecalUp[MAX_DECALS];
+    float4 u_DecalDir[MAX_DECALS];
+    float4 u_DecalSize[MAX_DECALS];
+    float4 u_DecalColor[MAX_DECALS];
 };
+
+// Effects-register bit definitions. Each Phase-1+ effect gates on one of these
+// bits; the composite's WL_EFLAGS_DEBUG_TINT branch below is the ground-truth
+// reader that proves the register is declared AND read on every backend (Set()
+// and glGetUniformLocation are silent on a name miss).
+#define WL_EFLAGS_DEBUG_TINT    (1u << 0u)
+// T1.1 -- analytic Rayleigh+Mie single-scatter sky (GetAtmosphericSky), replacing
+// the flat gradient in GetSkyColor. A/B'd via WL_EFFECTS=2 in the harness.
+#define WL_EFLAGS_ATMOSPHERE_SCATTERING (1u << 1u)
+// T1.10 -- procedural lens flare ghosts drawn in RunComposite from the existing
+// sun screen position (u_GodSunScreenPos/Valid). Live-verified via WL_EFFECTS=4.
+#define WL_EFLAGS_LENS_FLARE         (1u << 2u)
+// T3.5 / T1.11 / T1.12 -- motion blur, bokeh DoF, lens dirt. All composite-internal
+// and gated; verify live via WL_EFFECTS=8 / 16 / 32.
+#define WL_EFLAGS_MOTION_BLUR        (1u << 3u)
+#define WL_EFLAGS_DOF                (1u << 4u)
+#define WL_EFLAGS_LENS_DIRT          (1u << 5u)
+// T1.3 SSAO was dropped (2026-11-14): the tracer already bakes occlusion
+// (h.occlusion, tileHit.occlusion, u_AOIntensity), a screen-space pass is
+// redundant, and the composite-post versions flawed. Not shipping it.
+// WL_EFLAGS_SSAO (bit 7) is retired and intentionally undefined.
+// T1.2 auto-exposure -- composite-internal, gated. WL_EFFECTS=64.
+#define WL_EFLAGS_AUTO_EXPOSURE      (1u << 6u)
+
+// T1.6 / T1.9 -- multiple-scatter IBL energy compensation + thin-film diffraction,
+// gated additions in the tracer's metal/env IBL term. WL_EFFECTS=256 / 512.
+#define WL_EFLAGS_IBL_MULTI          (1u << 8u)
+#define WL_EFLAGS_DIFFRACTION        (1u << 9u)
+// T2-adjacent / T1.5 -- soft-shadow penumbra and normal mapping (gated, tracer
+// material-level). WL_EFFECTS=1024 / 2048.
+#define WL_EFLAGS_SOFT_SHADOWS       (1u << 10u)
+#define WL_EFLAGS_NORMAL_MAPPING     (1u << 11u)
+// T1.8 -- water refraction (gated, tracer transmission). WL_EFFECTS=4096.
+#define WL_EFLAGS_REFRACTION         (1u << 12u)
+// Phase 3 -- standalone FXAA gate (warp and world-curvature were dropped after live review -- 2026-11-14).
+#define WL_EFLAGS_FXAA               (1u << 14u)
+// T4.3 -- projected decals (gated, procedural, no asset). WL_EFFECTS=65536.
+#define WL_EFLAGS_DECALS             (1u << 16u)
 
 // ---- GLSL-semantics helpers ----
 float  fract2(float x)                { return x - floor(x); }
@@ -1987,6 +2048,7 @@ struct HitInfo {
     float3 emission;
     float occlusion;
     float3 f0Tint; // neural material specular tint, 1.0f = classic F0
+    int isWater;   // T1.8: 1 for water surfaces (DisplacementParams.z marker)
 };
 
 // ---- Gerstner wave spectrum (matches WaterComponent::EvaluateSurface) ----
@@ -2516,6 +2578,8 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 info.rough = lerp_safe(info.rough, 0.85f, wFoamMask);
                 // Water is a mirror: metallic = 1.0
                 info.metal = 1.0f;
+                // T1.8 refraction marker for the water surface.
+                info.isWater = 1;
             }
             // Relief weathering: dust settles in pits, sun bleaches ridge tops.
             // Displacement-gated: only set when the relief march ran with push.
@@ -2528,6 +2592,60 @@ void TestInstanceHit(Ray ray, int instIdx, bool isPrimaryRay, inout HitInfo info
                 info.occlusion *= (1.0f - 0.35f * cav);
             }
             info.emission = inst.Emission.xyz * inst.Emission.w;
+
+            // T1.5 normal mapping (gated, procedural, no asset): perturb the final
+            // surface normal with a value-noise gradient from world position, so
+            // flat surfaces get fine micro-normal detail. Off = untouched normal.
+            if ((u_EffectsFlags & WL_EFLAGS_NORMAL_MAPPING) != 0u) {
+                const float scl = 24.0f;
+                const float eps = 0.03f;
+                float3 wp = info.worldPos;
+                float hL = wl_hash12(floor((wp + float3(-eps, 0.0f, 0.0f)).xz * scl));
+                float hR = wl_hash12(floor((wp + float3( eps, 0.0f, 0.0f)).xz * scl));
+                float hD = wl_hash12(floor((wp + float3(0.0f, 0.0f, -eps)).xz * scl));
+                float hU = wl_hash12(floor((wp + float3(0.0f, 0.0f,  eps)).xz * scl));
+                float2 bump = float2(hR - hL, hU - hD) * 0.35f;
+                // Slope in ty=sxz is endless; perturb the normal in the two surface
+                // axes. Crude but demonstrable -- a real normal map would use the
+                // tangent basis.
+                info.normal = normalize(info.normal + float3(-bump.x, 0.0f, -bump.y)
+                                        * length(info.normal));
+            }
+            // Projected decals (gated by WL_EFLAGS_DECALS + u_DecalCount): for each
+            // submitted DecalComponent, box-project the shading point onto the
+            // projector's orthonormal basis and stamp a procedural mark if it falls
+            // inside the footprint and within the forward cast length. This is the
+            // projected-decal idea -- the mark is applied in world space from the
+            // projector, so it tracks geometry and not the camera. Procedural pattern:
+            // a dark core plus a feathered halo, no image bound (GL budget-safe).
+            if ((u_EffectsFlags & WL_EFLAGS_DECALS) != 0u && u_DecalCount > 0u) {
+                for (uint e = 0u; e < u_DecalCount && e < MAX_DECALS; e++) {
+                    float3 dv = info.worldPos - u_DecalPos[e].xyz;
+                    float lin = dot(dv, u_DecalDir[e].xyz);
+                    // Only surfaces in front of the projector and within its cast
+                    // length receive the decal.
+                    if (lin <= 0.0f || lin > u_DecalSize[e].z || u_DecalSize[e].w < 0.5f)
+                        continue;
+                    float fx = dot(dv, u_DecalRight[e].xyz);
+                    float fy = dot(dv, u_DecalUp[e].xyz);
+                    float hx = u_DecalSize[e].x;
+                    float hy = u_DecalSize[e].y;
+                    if (hx <= 1e-5f || hy <= 1e-5f)
+                        continue;
+                    if (abs(fx) > hx || abs(fy) > hy)
+                        continue;
+                    float2 uv = float2(fx / hx, fy / hy); // -1..1 across footprint
+                    float r = length(uv);
+                    float core = smoothstep(0.60f, 0.0f, r);
+                    float halo = smoothstep(0.95f, 0.55f, r);
+                    float strength = u_DecalColor[e].w
+                                     * (0.85f * core + 0.35f * halo * (1.0f - core));
+                    if (strength > 0.001f) {
+                        info.albedo = lerp(info.albedo, u_DecalColor[e].rgb, strength);
+                        info.rough = max(info.rough, 0.6f);
+                    }
+                }
+            }
         }
     }
 }
@@ -2684,14 +2802,37 @@ float3 ComputeDirectLighting(HitInfo h, float3 V, uint lightSeed, bool skipEnv) 
         float aNdotL = max(dot(h.normal, L), 0.0f);
         if (aNdotL <= 0.0f) continue;
         Ray aShadowRay = MakeRay(h.worldPos + h.normal * 0.001f, L);
-        if (!IsOccluded(aShadowRay, shadowLen, -1)) {
+        // T2 soft-shadow penumbra (gated, directional lights only): sample a small
+        // cone of shadow rays around the fixed direction and average, so shadow
+        // edges get a penumbra like a real (finite-sized) sun. Off = the single-ray
+        // hard-shadow path, byte-identical to before.
+        float shadowVis = 1.0f;
+        if ((u_EffectsFlags & WL_EFLAGS_SOFT_SHADOWS) != 0u && atype < 0.5f) {
+            const int SN = 6;
+            float3 upb = (abs(L.y) < 0.999f) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+            float3 tbw = normalize(cross(upb, L));
+            float3 bbw = cross(L, tbw);
+            float cone = 0.012f;                 // ~0.7deg, sun-like angular radius
+            float vis = 0.0f;
+            for (int s = 0; s < SN; s++) {
+                float ang = 6.28318f * wl_hash12(h.worldPos.xz + float2((float)s * 1.7f, 0.0f));
+                float rr  = cone * wl_hash12(h.worldPos.yz + float2((float)s * 3.1f, 0.0f));
+                float3 dl = normalize(L + (tbw * cos(ang) + bbw * sin(ang)) * rr);
+                Ray sr = MakeRay(h.worldPos + h.normal * 0.001f, dl);
+                vis += IsOccluded(sr, shadowLen, -1) ? 0.0f : 1.0f;
+            }
+            shadowVis = vis / (float)SN;
+        } else {
+            shadowVis = IsOccluded(aShadowRay, shadowLen, -1) ? 0.0f : 1.0f;
+        }
+        if (shadowVis > 0.001f) {
             float3 aH = normalize(V + L);
             float3 aF = FresnelSchlick(max(dot(aH, V), 0.0f), F0);
             float aD = DistributionGGX(max(dot(h.normal, aH), 0.0f), h.rough);
             float aG = GeometrySmith(h.normal, V, L, h.rough);
             float aNdotV = max(dot(h.normal, V), 0.0f);
             float3 abrdf = (float3(1.0f, 1.0f, 1.0f) - aF) * (1.0f - h.metal) * h.albedo / PI + (aD * aG * aF) / max(4.0f * aNdotV * aNdotL, 0.001f);
-            float3 acontrib = abrdf * lcol * att * aNdotL;
+            float3 acontrib = abrdf * lcol * att * aNdotL * shadowVis;
 
             float abright = dot(acontrib, float3(0.2126f, 0.7152f, 0.0722f));
             if (abright > 10.0f) acontrib *= (10.0f / abright);
@@ -2710,6 +2851,27 @@ float3 ComputeDirectLighting(HitInfo h, float3 V, uint lightSeed, bool skipEnv) 
         float3 specSky = GetSkyColor(R);
         float3 diffSky = skyAmbient / 0.15f; 
         float3 envColor = lerp_safe(specSky, diffSky, h.rough * h.rough);
+
+        // T1.6 Multiple-scatter IBL energy compensation (gated, off by default):
+        // single-scatter microfacets lose energy as roughness rises, so a broadened
+        // ambient term returns a slice of the missing energy to rough metals.
+        if ((u_EffectsFlags & WL_EFLAGS_IBL_MULTI) != 0u) {
+            float murk = h.rough * h.rough;
+            envColor += specSky * (murk * 0.55f) * 0.45f;
+        }
+        // T1.9 Thin-film diffraction iridescence (gated, off by default): a
+        // view-angle-dependent colour trip on the F0, a cheap stand-in for a
+        // CD-like sheen on smooth metals.
+        if ((u_EffectsFlags & WL_EFLAGS_DIFFRACTION) != 0u && h.rough < 0.5f) {
+            float ndv = clamp(dot(h.normal, V), 0.0f, 1.0f);
+            float phase = 2.4f - 4.0f * ndv;
+            float3 iris = float3(
+                0.5f + 0.5f * sin(phase * 6.28318f),
+                0.5f + 0.5f * sin(phase * 6.28318f + 2.094f),
+                0.5f + 0.5f * sin(phase * 6.28318f + 4.189f));
+            envColor = lerp(envColor, envColor * (0.65f + 0.7f * iris), 0.20f);
+        }
+
         directLight += F0 * envColor * h.metal * h.occlusion;
     }
 
@@ -2748,9 +2910,73 @@ float wl_godray_visibility(float3 ro, float3 rd, float tHit)
     return 1.0f;
 }
 
+float3 GetAtmosphericSky(float3 dir);  // defined below GetSkyColor
+
 float3 GetSkyColor(float3 dir) {
+    // T1.1 atmospheric scattering, opt-in via the effects register so the A/B
+    // harness can flip it and the old gradient stays the contract-verified base.
+    // Both branches take the same `dir`; the scattering one reads u_SunDirection /
+    // u_SunLightColor (already uploaded). Atmo path is pure analytic math, so it
+    // runs unchanged on DX11/DX12/Vulkan/GL.
+    if ((u_EffectsFlags & WL_EFLAGS_ATMOSPHERE_SCATTERING) != 0u)
+        return GetAtmosphericSky(dir);
     float t = 0.5f * (normalize(dir).y + 1.0f);
     return lerp_safe(u_SkyBottomColor, u_SkyTopColor, t);
+}
+
+// ---- T1.1 analytic Rayleigh + Mie single-scatter sky ----
+// A compact physical-ish sky from the standard single-scattering model: Rayleigh
+// scatters short wavelengths (blue zenith), Mie scatters forward (white/warm glow
+// around the sun), both with a Beer-Lambert optical-depth term that grows at the
+// horizon. Purely analytic -- no new resources, no image units, one uniform branch
+// -- so it is identical on every backend. Coefficients are tuned to "look good"
+// (per the video's stated goal) rather than to a radiative-transfer code.
+float3 GetAtmosphericSky(float3 dir) {
+    float3 sunDir = normalize(u_SunDirection);
+    float cosTheta = clamp(dot(dir, sunDir), -1.0f, 1.0f);
+
+    // Scattering coefficients (per-metre-ish). Rayleigh is strongly blue-dominant;
+    // Mie is near-wavelength-neutral.
+    const float3 betaRay = float3(5.5e-6f, 13.0e-6f, 22.4e-6f);
+    const float  betaMie = 21.0e-6f;
+    // Tuned down 2026-11-14 after live feedback ("blown out"): the sun and scatter
+    // scales were ~3x too bright, clipping the sky to white. These numbers are the
+    // "no longer blown out" point, not a final look.
+    const float  sunIntensity = 1.6f;
+
+    // Optical path length along the view ray -- longer near the horizon, where the
+    // atmosphere is viewed edge-on. The +0.2 clamps the singularity at gazing along
+    // the ground.
+    float viewOpt = 1.0f / (clamp(dir.y, 0.0f, 1.0f) + 0.2f);
+    float sunOpt  = 1.0f / (clamp(sunDir.y, 0.05f, 1.0f) + 0.2f);
+    float optical = viewOpt * sunOpt;
+
+    // Beer-Lambert transmittance (single scatter to the eye).
+    float3 tRay = exp(-betaRay * optical * 2.2e3f);
+    float  tMie = exp(-betaMie * optical * 4.0e3f);
+
+    // Phase functions: Rayleigh 3/4(1+cos^2); Mie forward-peaked near the sun.
+    float pRay = 0.75f * (1.0f + cosTheta * cosTheta);
+    float pMie = 1.5f * pow(max(1.0f - 0.92f * cosTheta, 1e-4f), -1.5f) * 0.38f;
+
+    float3 sunColor = u_SunLightColor * sunIntensity;
+    float3 scattered = sunColor * (betaRay * pRay * tRay * 6.0e3f
+                                 + float3(betaMie) * pMie * tMie * 4.0e3f);
+
+    // Direct sun disc + a small forward glow.
+    float sunDisc = pow(max(cosTheta, 0.0f), 220.0f);
+    float sunHalo = pow(max(cosTheta, 0.0f), 60.0f) * 0.10f;
+    float3 color = scattered + sunColor * (sunDisc + sunHalo);
+
+    // Blend the artist zenith tint in so the scattering does not fight the scene's
+    // sky colours at noon. NOTE: kept at a damping blend -- the analytic sky is in a
+    // verifiable-but-unpolished baseline; a live viewport is needed to finish tuning
+    // it (see the T1.1 plan note). It is gated on WL_EFLAGS_ATMOSPHERE_SCATTERING and
+    // off by default, so the base render is untouched.
+    float up = clamp(dir.y, 0.0f, 1.0f);
+    color = lerp(color, u_SkyTopColor * 1.15f, 0.40f * up * up);
+    color += u_SkyBottomColor * pow(max(0.0f, 0.25f - up), 2.0f) * 0.4f;
+    return max(color, float3(0.0f, 0.0f, 0.0f));
 }
 
 // ---- Phase 1 hybrid primary hit (Task 1.3) ----
@@ -2942,6 +3168,23 @@ void RunTraceAndDenoise()
             float3 mF0 = lerp_safe(float3(0.04f, 0.04f, 0.04f), max(tileHit.albedo, float3(0.04f, 0.04f, 0.04f)), tileHit.metal) * tileHit.f0Tint;
             float3 mF = FresnelSchlick(clamp(dot(tileHit.normal, V), 0.0f, 1.0f), mF0);
             directLight += mF * mirrorColor * tileHit.metal;
+
+            // T1.8 water refraction (gated): the reflection above carries `mF`
+            // (fresnel); the transmitted ray carries the rest (1 - mF) down through
+            // the water (Snell, air->water ior 1/1.33) into whatever is beneath.
+            // Off = reflection-only, identical to before. `refract` returns the zero
+            // vector on total internal reflection; skip it via the dot check.
+            if ((u_EffectsFlags & WL_EFLAGS_REFRACTION) != 0u && tileHit.isWater != 0) {
+                float3 refrDir = refract(-V, tileHit.normal, 1.0f / 1.333f);
+                if (dot(refrDir, refrDir) > 0.0001f) {
+                    Ray refrRay = MakeRay(tileHit.worldPos - tileHit.normal * 0.002f, refrDir);
+                    HitInfo refrHit = TraceScene(refrRay);
+                    float3 refrColor = refrHit.hit
+                        ? ComputeDirectLighting(refrHit, -refrRay.Direction, lightSeed + 9u, false)
+                        : GetSkyColor(refrRay.Direction);
+                    directLight += (1.0f - mF) * refrColor * tileHit.metal;
+                }
+            }
         }
     } else {
         directLight = GetSkyColor(lightRay.Direction);
@@ -4029,6 +4272,142 @@ float3 RunFSR1EASU(int2 cell, float2 pp, int2 srcSize)
 float3 RunWlsrSharpenCore(float3 ctr, float3 t00, float3 t10, float3 t01, float3 t11, float sharpness, float mask);
 float3 RunRCAS(int2 pos, int2 size, float sharpness);
 
+// ============================================================================
+// T1.10 Procedural lens flare (post chain)
+// ============================================================================
+// Drawn in RunComposite from the existing sun screen position (u_GodSunScreenPos,
+// a [0,1] UV, uploaded alongside the god-rays) and gated on u_GodSunValid. Ghosts
+// sit along the axis from the sun through the screen centre -- real lens ghosts
+// lie opposite the source. No texture: a procedural radial falloff is cheap and
+// needs no asset. Purely additive math in the composite, so it runs identically on
+// every backend and costs no image units.
+float3 GetLensFlare(float2 uv, float2 sunUv) {
+    const float2 centre = 0.5f;
+    float2 axis = centre - sunUv;            // direction the ghosts trail out
+
+    float3 col = float3(0.0f, 0.0f, 0.0f);
+
+    // A thin axial streak from the sun (the anamorphic line).
+    float dLine = dot(uv - sunUv, normalize(axis + 1e-6f));
+    float perp = distance(uv - sunUv, dLine * normalize(axis + 1e-6f));
+    float streak = exp(-perp * perp * 90.0f) * exp(-dLine * dLine * 0.6f) * 0.5f;
+    col += float3(1.0f, 0.85f, 0.6f) * streak;
+
+    // Ghost blobs along the axis, shrinking and colour-tripping away from the sun.
+    const float ghostPos[4] = { 0.45f, 0.75f, 1.05f, 1.4f };
+    const float ghostStr[4] = { 0.30f, 0.20f, 0.13f, 0.07f };
+    for (int i = 0; i < 4; i++) {
+        float2 g = sunUv + axis * ghostPos[i];
+        float d = distance(uv, g);
+        float blob = exp(-d * d * 160.0f);
+        // Spectral sort: nearer ghosts warm, distant green/blue (thin-film-ish).
+        float tri = (float)i / 4.0f;
+        float3 tint = lerp(float3(1.0f, 0.7f, 0.4f), float3(0.3f, 0.6f, 1.0f), tri);
+        col += tint * blob * ghostStr[i];
+    }
+    return col;
+}
+
+// ---------------------------------------------------------------------------
+// T3.5 motion blur, T1.11 bokeh DoF, T1.12 lens dirt -- composite-internal,
+// gated on the effects register. All three sample only READ-ONLY SRVs (the
+// velocity buffer t69, the depth sampler t49, the accumulation u1), so they cost
+// ZERO new image units and run identically on DX11/DX12/Vulkan/GL.
+// ---------------------------------------------------------------------------
+
+// T1.12 Lens dirt: a few fixed, soft-circular smudges (radial Gaussian falloff)
+// scattered off-centre. Physically the dirt sits on a lens element, so its screen
+// positions are fixed -- it does not follow the camera -- and it reads as round
+// blotches rather than per-pixel noise. Strength scales with brightness.
+float3 ApplyLensDirt(float3 base, float2 uv) {
+    const float2 spots[5] = {
+        float2(0.30f, 0.32f), float2(0.68f, 0.20f), float2(0.22f, 0.78f),
+        float2(0.62f, 0.70f), float2(0.45f, 0.50f) };
+    const float radii[5] = { 0.16f, 0.12f, 0.20f, 0.09f, 0.06f };
+    const float str[5]   = { 0.16f, 0.12f, 0.10f, 0.07f, 0.05f };
+    float accum = 0.0f;
+    for (int i = 0; i < 5; i++) {
+        float d = distance(uv, spots[i]) / radii[i];
+        float b = exp(-d * d * 3.0f);        // smooth, round falloff
+        accum += b * str[i];
+    }
+    return base * (1.0f + accum);
+}
+
+// T3.5 Motion blur: directionally blur the resolved HDR toward accumulation taps
+// offset along the velocity vector. Velocity (read_img_Velocity, t69) is in
+// full-res pixels; taps are at accumulation (trace) scale, so the offset is scaled
+// by u_RenderScale. Nine even taps span the FULL velocity extent (-0.5..+0.5 vel)
+// so the streak is noticeable but soft/realistic; skipped when motion is tiny so a
+// (nearly) static view stays sharp.
+float3 ApplyMotionBlur(float3 base, int2 pos, int2 fullSize) {
+    float2 vel = read_img_Velocity.Load(int3(pos, 0)).xy;
+    float len2 = dot(vel, vel);
+    if (len2 < 2.0f) return base;
+    int2 accSize = IMG_SIZE(img_Accumulation);
+    float2 basePx = (float2(pos) + 0.5f) * u_RenderScale - 0.5f;
+    float2 dstep = vel * u_RenderScale;
+    float3 acc = float3(0.0f, 0.0f, 0.0f);
+    float w = 0.0f;
+    for (int i = 0; i < 9; i++) {
+        float t = ((float)i / 8.0f) - 0.5f;             // -0.5 .. +0.5
+        float2 tp = basePx + dstep * t;
+        int2 tpi = clamp(int2(floor(tp)), int2(0, 0), accSize - int2(1, 1));
+        acc += IMG_LOAD(img_Accumulation, tpi).rgb;
+        w += 1.0f;
+    }
+    return acc / w;
+}
+
+// T1.11 Bokeh depth-of-field: circle of confusion from depth vs the frame-centre
+// depth (centre-weighted autofocus), then a radial ring blur of the resolved HDR.
+float3 ApplyBokehDoF(float3 base, int2 pos, int2 fullSize, float2 uv) {
+    float d  = TEX(s_DepthBuffer, wl_buf_uv(uv)).r;
+    float dc = TEX(s_DepthBuffer, float2(0.5f, 0.5f)).r;
+    float coc = (d - dc) * 350.0f;                 // full-res pixels, signed (was 1200)
+    float radius = clamp(abs(coc), 0.0f, 6.0f);    // was 10
+    if (radius < 0.8f) return base;
+    int2 accSize = IMG_SIZE(img_Accumulation);
+    float2 basePx = (float2(pos) + 0.5f) * u_RenderScale - 0.5f;
+    float2 rpx = radius * u_RenderScale;
+    float3 acc = base;
+    float w = 1.0f;
+    for (int i = 0; i < 8; i++) {
+        float a = 6.28318f * (float)i / 8.0f;
+        float2 t = basePx + float2(cos(a), sin(a)) * rpx;
+        int2 tp = clamp(int2(floor(t)), int2(0, 0), accSize - int2(1, 1));
+        acc += IMG_LOAD(img_Accumulation, tp).rgb;
+        w += 1.0f;
+    }
+    return acc / w;
+}
+
+// T1.2 Auto-exposure (screen-space, gated). Estimates the scene's average log
+// luminance from a 4x4 grid spanning the whole accumulation (representative and
+// stable), then sets an exposure that maps that average to the film middle-grey
+// (~0.18 -- NOT 0.6, which washed bright and dark scenes out). No temporal
+// smoothing (messy, frame-dominant) but a real exposure the user can see adapt.
+float ComputeAutoExposure(float2 uv, int2 fullSize) {
+    int2 accSize = IMG_SIZE(img_Accumulation);
+    const int G = 4;
+    float sumLog = 0.0f;
+    int n = 0;
+    for (int gy = 0; gy < G; gy++) {
+        for (int gx = 0; gx < G; gx++) {
+            float2 t = (float2(gx, gy) + 0.5f) / (float)G;
+            int2 tp = clamp(int2(t * float2(accSize)), int2(0, 0), accSize - int2(1, 1));
+            float3 c = IMG_LOAD(img_Accumulation, tp).rgb;
+            float l = dot(c, float3(0.2126f, 0.7152f, 0.0722f));
+            sumLog += log2(max(l, 1e-5f));
+            n++;
+        }
+    }
+    float avgLog = sumLog / (float)n;
+    // Film key ~0.18: bright scenes dim to mid-grey, dark scenes stay moody.
+    float exposure = 0.18f * exp2(-avgLog);
+    return clamp(exposure, 0.4f, 3.0f);
+}
+
 void RunComposite() {
     int2 pos = int2(g_dt.xy);
     int2 fullSize = IMG_SIZE(img_Output);
@@ -4210,7 +4589,7 @@ void RunComposite() {
     // Gated on the filter value so every other entry is untouched: the default
     // path falls straight through to the post chain below, which is what keeps
     // the no-AA output identical to before this was wired.
-    if (u_ReconstructionFilter == 6 || u_ReconstructionFilter == 7)
+    if (u_ReconstructionFilter == 6 || u_ReconstructionFilter == 7 || (u_EffectsFlags & WL_EFLAGS_FXAA) != 0u)
     {
         int2 srcSize = int2(float2(fullSize) * max(u_RenderScale, 0.001f));
         srcSize = max(srcSize, int2(1, 1));
@@ -4219,6 +4598,18 @@ void RunComposite() {
 
     float2 uv = (float2(pos) + 0.5f) / float2(fullSize);
     float2 centered = uv * 2.0f - 1.0f;
+
+    // T1.11 bokeh DoF + T3.5 motion blur on the resolved HDR. Both gated off by
+    // default; both sample only read-only SRVs so they add no image units here.
+    if ((u_EffectsFlags & WL_EFLAGS_DOF) != 0u)
+        combined = ApplyBokehDoF(combined, pos, fullSize, uv);
+    if ((u_EffectsFlags & WL_EFLAGS_MOTION_BLUR) != 0u)
+        combined = ApplyMotionBlur(combined, pos, fullSize);
+    // T1.2 auto-exposure + T1.3 SSAO on the HDR colour, before the tonemap. Both
+    // gated off by default; each reads only read-only buffers (accumulation,
+    // depth), so no image units.
+    if ((u_EffectsFlags & WL_EFLAGS_AUTO_EXPOSURE) != 0u)
+        combined *= ComputeAutoExposure(uv, fullSize);
 
     // CHROMATIC ABERRATION: per-channel radial resample, done after the resolve
     // because it is a lens effect rather than a lighting one.
@@ -4250,6 +4641,17 @@ void RunComposite() {
     // ("too few elements in vector initialization"); fxc accepts it. Naming the
     // exponent keeps this portable to DXC/SPIR-V, which the Vulkan and RTX Kit
     // paths need. Same value, no behaviour change.
+    // T1.10 lens flare -- additive ghosts from the sun's screen position, drawn on
+    // the HDR mapped colour before the exposure/gamma so the flare can bloom.
+    if ((u_EffectsFlags & WL_EFLAGS_LENS_FLARE) != 0u && u_GodSunValid != 0) {
+        float2 uv = (float2(pos) + 0.5f) / float2(fullSize);
+        mapped += GetLensFlare(uv, u_GodSunScreenPos) * u_GodRayIntensity;
+    }
+    // T1.12 lens dirt -- a subtle bright-region smudge, gated off by default.
+    if ((u_EffectsFlags & WL_EFLAGS_LENS_DIRT) != 0u) {
+        float2 dirtUv = (float2(pos) + 0.5f) / float2(fullSize);
+        mapped = ApplyLensDirt(mapped, dirtUv);
+    }
     float gammaExponent = 1.0f / max(u_ColorGamma, 0.1f);
     float3 finalColor = pow(mapped, float3(gammaExponent, gammaExponent, gammaExponent));
 
@@ -4262,6 +4664,16 @@ void RunComposite() {
     }
 
     finalColor = clamp(finalColor, 0.0, 1.0);
+
+    // Effects-register ground-truth reader (WL_EFLAGS_DEBUG_TINT). This makes the
+    // register a REAL feature, not a plumbed-but-unread uniform: GetUniformLocation
+    // and the NVRHI Set() calls are silent on a name miss, so without a branch that
+    // reads u_EffectsFlags here the register would be a silent no-op on every
+    // backend. The A/B harness flips this bit and checks for the magenta cast as
+    // proof the plumbing reaches DX11/DX12/Vulkan/GL.
+    if ((u_EffectsFlags & WL_EFLAGS_DEBUG_TINT) != 0u)
+        finalColor = lerp(finalColor, float3(0.85f, 0.20f, 0.85f), 0.40f);
+
     IMG_STORE(img_Output, pos, float4(finalColor, 1.0f));
 
     // Bloom threshold must run at ANY scale: passes 4/5 blur img_Bloom at full

@@ -156,6 +156,24 @@ namespace Wasteland {
 			// tell that it found nothing.
 			int RemoveKeyAtTime(float time);
 
+			// Moves the key at `fromTime` to `toTime`, keeping the list sorted.
+			//
+			// The SAME 1e-6 tolerance as RemoveKeyAtTime above: an authoring tool
+			// dragging a key by a pixel lands on a float that is never exactly the
+			// original time, so an exact comparison would refuse almost every move.
+			// That is the whole reason this exists as a method rather than as
+			// "read GetKeys(), edit the Time, re-sort" -- the obvious inline
+			// version silently breaks on the first sub-pixel drag.
+			//
+			// Tangents are NOT rescaled. A key's tangents are slopes in units per
+			// second, and moving the key without moving its neighbours does not
+			// change the local shape; rescaling would be a curve edit, not a time
+			// edit. RecalculateAutoTangents is the explicit way to ask for that.
+			//
+			// Returns false when no key is within tolerance of `fromTime` or the
+			// move is a no-op, and leaves the curve untouched in both cases.
+			bool MoveKey(float fromTime, float toTime);
+
 			// Inline, because clear() is trivial.
 			//
 			// DEFECT: does NOT call InvalidateCache(). The cached start and end below

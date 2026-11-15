@@ -25,6 +25,9 @@
     <Filter Include="src\Wasteland">
       <UniqueIdentifier>{BF3F73F7-2B00-EF2D-F43A-38AB60BA330A}</UniqueIdentifier>
     </Filter>
+    <Filter Include="src\Wasteland\Editor">
+      <UniqueIdentifier>{7C1A2D4E-9B33-4F58-A6C1-2E8D5B0F7A14}</UniqueIdentifier>
+    </Filter>
     <Filter Include="src\Wasteland\Age">
       <UniqueIdentifier>{3BEF95FA-A705-9490-F07C-1FB25CD26418}</UniqueIdentifier>
     </Filter>
@@ -141,6 +144,9 @@
     <ClInclude Include="src\Platform\NVRHI\NVRHIFramebuffer.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\NVRHIHandleRetire.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
     <ClInclude Include="src\Platform\NVRHI\NVRHIRendererAPI.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
@@ -153,7 +159,13 @@
     <ClInclude Include="src\Platform\NVRHI\NVRHIVertexArray.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\NovaShaderReflection.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
     <ClInclude Include="src\Platform\NVRHI\VulkanNova.h">
+      <Filter>src\Platform\NVRHI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Platform\NVRHI\VulkanTracer.h">
       <Filter>src\Platform\NVRHI</Filter>
     </ClInclude>
     <ClInclude Include="src\Platform\OpenGL\OpenGLBuffer.h">
@@ -225,6 +237,9 @@
     <ClInclude Include="src\Wasteland\Animation\AnimationClip.h">
       <Filter>src\Wasteland\Animation</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Animation\AnimationRetarget.h">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Animation\AnimationCurve.h">
       <Filter>src\Wasteland\Animation</Filter>
     </ClInclude>
@@ -251,6 +266,27 @@
     </ClInclude>
     <ClInclude Include="src\Wasteland\Audio\Mixer.h">
       <Filter>src\Wasteland\Audio</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\ThumbnailCache.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\ThumbnailImage.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\ThumbnailGraph.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\ThumbnailDiskCache.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\NewAsset.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\BoneThumbnail.h">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Editor\Bc1.h">
+      <Filter>src\Wasteland\Editor</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Avb\AudioBus.h">
       <Filter>src\Wasteland\Avb</Filter>
@@ -294,6 +330,9 @@
     <ClInclude Include="src\Wasteland\Core\Core.h">
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Core\CrashHandler.h">
+      <Filter>src\Wasteland\Core</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Core\EntryPoint.h">
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
@@ -330,6 +369,9 @@
     <ClInclude Include="src\Wasteland\Core\Window.h">
       <Filter>src\Wasteland\Core</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Core\wlpch.h">
+      <Filter>src\Wasteland\Core</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Debug\Instrumentor.h">
       <Filter>src\Wasteland\Debug</Filter>
     </ClInclude>
@@ -357,6 +399,24 @@
     <ClInclude Include="src\Wasteland\Project\Project.h">
       <Filter>src\Wasteland\Project</Filter>
     </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\ProjectTemplates.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\AssetCooker.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\PackageBuilder.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\ProfileAnalyzer.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\RepoStatus.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Project\StringTable.h">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\BlueNoise.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
@@ -376,6 +436,9 @@
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\MeshLoader.h">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Renderer\MeshletBuilder.h">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Renderer\NeuralStageBlob.h">
@@ -439,6 +502,9 @@
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\SceneCamera.h">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Wasteland\Scene\SaveBackup.h">
       <Filter>src\Wasteland\Scene</Filter>
     </ClInclude>
     <ClInclude Include="src\Wasteland\Scene\SceneChunkStore.h">
@@ -1880,6 +1946,9 @@
     <ClCompile Include="src\Wasteland\Animation\AnimationCurve.cpp">
       <Filter>src\Wasteland\Animation</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Animation\AnimationRetarget.cpp">
+      <Filter>src\Wasteland\Animation</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Animation\AnimationStateMachine.cpp">
       <Filter>src\Wasteland\Animation</Filter>
     </ClCompile>
@@ -1906,6 +1975,27 @@
     </ClCompile>
     <ClCompile Include="src\Wasteland\Avb\AudioBus.cpp">
       <Filter>src\Wasteland\Avb</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\ThumbnailCache.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\ThumbnailImage.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\ThumbnailPng.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\ThumbnailDiskCache.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\NewAsset.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\BoneThumbnail.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Editor\Bc1.cpp">
+      <Filter>src\Wasteland\Editor</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Avb\AvbBusEffects.cpp">
       <Filter>src\Wasteland\Avb</Filter>
@@ -1973,6 +2063,24 @@
     <ClCompile Include="src\Wasteland\Project\Project.cpp">
       <Filter>src\Wasteland\Project</Filter>
     </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\ProjectTemplates.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\AssetCooker.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\PackageBuilder.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\ProfileAnalyzer.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\RepoStatus.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Project\StringTable.cpp">
+      <Filter>src\Wasteland\Project</Filter>
+    </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\BlueNoise.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
@@ -1986,6 +2094,9 @@
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\MeshLoader.cpp">
+      <Filter>src\Wasteland\Renderer</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Renderer\MeshletBuilder.cpp">
       <Filter>src\Wasteland\Renderer</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Renderer\OrthographicCamera.cpp">
@@ -2040,6 +2151,9 @@
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\SceneCamera.cpp">
+      <Filter>src\Wasteland\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Wasteland\Scene\SaveBackup.cpp">
       <Filter>src\Wasteland\Scene</Filter>
     </ClCompile>
     <ClCompile Include="src\Wasteland\Scene\SceneChunkStore.cpp">

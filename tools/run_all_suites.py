@@ -22,7 +22,9 @@ HEADLESS_DIR = TESTS_DIR / "headless"
 
 EXPECTED_PROMOTED_COUNTS = {
     "test_node_library.py": 1209,
-    "test_wlbtree_compiler.py": 56,
+    # A.8 added two behaviour nodes (SetAnimationState, SetTrigger), and this
+    # suite derives one check per registered tree node: 56 -> 61.
+    "test_wlbtree_compiler.py": 61,
     "test_visualblocks.py": 101,
     "test_enemy_tree.py": 61,
 }
@@ -301,8 +303,9 @@ def main() -> int:
         # The per-suite runner already enforces each expected count; this
         # separate total guards an accidental omission from the aggregate.
         promoted_observed += expected
-    if promoted_observed != EXPECTED_PROMOTED_TOTAL or EXPECTED_PROMOTED_TOTAL != 1427:
-        bad.append("promoted-suite count contract changed: %d (expected 1427)" %
+    # 1427 -> 1432 with the A.8 tree nodes above.
+    if promoted_observed != EXPECTED_PROMOTED_TOTAL or EXPECTED_PROMOTED_TOTAL != 1432:
+        bad.append("promoted-suite count contract changed: %d (expected 1432)" %
                    promoted_observed)
 
     print("\naggregate:")

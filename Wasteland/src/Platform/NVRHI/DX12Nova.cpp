@@ -10,6 +10,12 @@
 #include "Wasteland/Core/Log.h"
 #include "Wasteland/Project/Project.h"
 #include "Wasteland/Renderer/NeuralStageBlob.h"
+#include "Wasteland/Renderer/MeshletBuilder.h"
+#include "Wasteland/Renderer/RenderCapabilities.h"
+// The per-shape visibility meshes come from the same procedural generators the
+// rasterisers already use, so the G-buffer geometry and the analytic primitives
+// are authored from one set of dimensions.
+#include "Wasteland/Renderer/ProceduralMeshes.h"
 
 // glm is used for the typed Set() instantiations at the bottom of this
 // file -- the CPU-side constant values are glm types so they match the
@@ -78,7 +84,7 @@ void DX12Nova::Init(ID3D12Device* d, ID3D12CommandQueue* q)
     // value is signalled after each submission (see FlushCommandList), so
     // "completed value >= N" means "everything up to submission N is done".
     HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-    Check(hr);
+    Check(hr, "CreateFence");
     // Manual-reset, initially non-signalled event, reused for every wait in
     // this file. Safe to reuse because each wait arms it with a fresh
     // SetEventOnCompletion before waiting.
@@ -94,91 +100,78 @@ void DX12Nova::Init(ID3D12Device* d, ID3D12CommandQueue* q)
         // recycled only after its fence proves the previous use retired.
         hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&frames[i].allocator));
-        Check(hr);
+        Check(hr, "CreateCommandAllocator");
         // The command list is created CLOSED (Close() on the next line).
         // A freshly created command list is in the recording state, and this
         // file only ever records after an explicit Reset in BeginSubmit.
         hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
             frames[i].allocator.Get(), nullptr, IID_PPV_ARGS(&frames[i].commandList));
-        Check(hr);
+        Check(hr, "CreateCommandList");
         hr = frames[i].commandList->Close();
-        Check(hr);
+        Check(hr, "CloseCommandList");
     }
 
     Com<ID3DBlob> error;
-    // Resolved through Project so the compute shader comes from the active
+    // Loaded offline by Slang (tools/compile_nova_slang.py) to
+    // Renderer3D_NovaRenderer.cs.cso, exactly like the DX11 path below.
+    // Resolved through Project so the bytecode comes from the active
     // project's assets rather than the process working directory.
-    // The shader path is resolved through the active PROJECT, not the
-    // process working directory. That matters for an editor: the CWD is
-    // whatever directory the process was launched from, which has nothing to
-    // do with which project the user has open.
-    const std::wstring novaShaderPath =
-        Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.hlsl").wstring();
-    // Compiled at runtime rather than through the offline shader pipeline.
-    // That is a deliberate trade: it keeps one .hlsl as the single source of
-    // truth, at the cost of a compile at startup and no precompiled bytecode.
-    const D3D_SHADER_MACRO shaderMacros[] = {
-        { "WASTELAND_NOVA_TERRAIN_GRID", "1" },
-        { nullptr, nullptr }
-    };
-    hr = D3DCompileFromFile(novaShaderPath.c_str(), shaderMacros,
-        // cs_5_0: shader model 5.0 compute. The entry point is "main", so the
-        // shader needs no [numthreads] entry naming in the build system --
-        // it is named here instead.
-        D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "cs_5_0",
-        D3DCOMPILE_ENABLE_STRICTNESS, 0, &computeShader, &error);
-    if (FAILED(hr)) {
-        // A failed compile throws with the compiler's own message, which is
-        // the difference between "DX12 Nova shader compile failed" and a
-        // readable syntax error with a line number.
-        throw std::runtime_error(error ? (const char*)error->GetBufferPointer() : "Nova shader compile failed");
+    const std::wstring novaCSOPath =
+        Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.cs.cso").wstring();
+    HANDLE hFile = CreateFileW(novaCSOPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error("Nova .cso not found: run tools/compile_nova_slang.py --deploy first");
+    }
+    LARGE_INTEGER fileSize; GetFileSizeEx(hFile, &fileSize);
+    std::vector<uint8_t> bytecode((size_t)fileSize.QuadPart);
+    DWORD bytesRead = 0;
+    ReadFile(hFile, bytecode.data(), (DWORD)fileSize.QuadPart, &bytesRead, nullptr);
+    CloseHandle(hFile);
+    if (bytesRead != (DWORD)fileSize.QuadPart)
+        throw std::runtime_error("Nova .cso read failed (short read)");
+    hr = D3DCreateBlob(fileSize.QuadPart, &computeShader);
+    if (FAILED(hr)) throw std::runtime_error("Nova .cso: D3DCreateBlob failed");
+    memcpy(computeShader->GetBufferPointer(), bytecode.data(), (size_t)fileSize.QuadPart);
+
+    // Constant-buffer layout: COMPILED IN, not reflected at runtime.
+    //
+    // D3DReflect was here and it cannot work: it is the DXBC (shader model 5.x)
+    // reflection entry point, while Slang compiles this shader to shader model 6.0
+    // and the bytecode is therefore DXIL. The call returned E_INVALIDARG
+    // (0x80070057) and Init() threw, so DX12 Nova never created a pipeline state
+    // and the editor silently fell back to raster.
+    //
+    // tools/gen_nova_cb_layout.py now runs `dxc -dumpbin` at shader-build time and
+    // emits NovaShaderReflection.h, a flat {name, offset, size} table. That keeps
+    // the offsets tied to the compiler's decision (no hand-written magic numbers)
+    // with no runtime dependency on dxcompiler.dll and no second code path.
+    //
+    // The table is indexed under BOTH spellings: Slang mangles globals with a
+    // `_0` suffix (`u_PassID_0`) while every Set() call site uses the source name
+    // (`u_PassID`), and a name miss is a silent dropped upload.
+    const UINT cbufferSize = NovaReflection::kCbSize;
+    variables.clear();
+    variables.reserve(NovaReflection::kCbVariableCount * 2);
+    for (UINT i = 0; i < NovaReflection::kCbVariableCount; ++i) {
+        const NovaReflection::CbVariable &v = NovaReflection::kCbVariables[i];
+        variables.emplace(v.Name, v);
+        // The mangled spelling too, so a caller that uses the literal shader name
+        // still resolves.
+        std::string mangled = v.Name;
+        mangled += "_0";
+        variables.emplace(std::move(mangled), v);
     }
 
-    // Reflection, not a hand-written constant layout. The offsets below
-    // are whatever the HLSL compiler decided, which is why no magic
-    // numbers appear in Set() and why a shader edit cannot silently
-    // desynchronise the CPU-side writes.
-    Com<ID3D12ShaderReflection> reflection;
-    hr = D3DReflect(computeShader->GetBufferPointer(), computeShader->GetBufferSize(),
-        IID_ID3D12ShaderReflection, (void**)reflection.GetAddressOf());
-    Check(hr);
-
-    ID3D12ShaderReflectionConstantBuffer* cb = nullptr;
-    // Scans every constant buffer for one named NovaConstants. The shader
-    // may declare more than one, and picking by name rather than index 0
-    // means the layout of the others cannot break this.
-    for (UINT i = 0; ; i++) {
-        cb = reflection->GetConstantBufferByIndex(i);
-        if (!cb) break;
-        D3D12_SHADER_BUFFER_DESC desc;
-        cb->GetDesc(&desc);
-        // Exact strcmp, so a rename of the cbuffer in the shader fails loudly
-        // here rather than producing a silent zero-filled constant buffer.
-        if (strcmp(desc.Name, "NovaConstants") == 0) break;
-        cb = nullptr;
-    }
-    if (!cb) throw std::runtime_error("NovaConstants cbuffer not found");
-
-    D3D12_SHADER_BUFFER_DESC cbDesc;
-    cb->GetDesc(&cbDesc);
     // The staging byte array is sized to the shader's declared size, NOT
     // the 256-aligned allocation size below. The difference is padding the
     // Set() bounds check must not write past.
-    bytes.resize(cbDesc.Size);
-    for (UINT j = 0; j < cbDesc.Variables; j++) {
-        ID3D12ShaderReflectionVariable* var = cb->GetVariableByIndex(j);
-        D3D12_SHADER_VARIABLE_DESC vdesc;
-        var->GetDesc(&vdesc);
-        // Records every variable's name and byte offset. This map is what Set()
-        // looks names up in, which is why an unknown name is a silent no-op
-        // rather than a crash -- see Set() below.
-        variables[vdesc.Name] = vdesc;
-    }
+    bytes.assign(cbufferSize, 0);
 
     // Creation order matters: the constant buffer needs its size (from
-    // reflection), the root signature and PSO need the shader, and the
+    // the generated layout), the root signature and PSO need the shader, and the
     // descriptor heaps need the CBV to exist so slot 0 can point at it.
-    CreateConstantBuffer(cbDesc.Size);
+    CreateConstantBuffer(cbufferSize);
     CreateRootSignature();
     CreatePSO();
     CreateDescriptorHeaps();
@@ -234,14 +227,14 @@ void DX12Nova::CreateConstantBuffer(UINT size)
             // buffer read by a shader. Combined with the persistent mapping
             // below, a Dispatch is just a memcpy into mapped memory.
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&constantBuffers[i]));
-        Check(hr);
+        Check(hr, "CreateCommittedResource(CB)");
 
         D3D12_RANGE readRange = { 0, 0 };
         // An empty read range tells D3D12 the CPU will not read this resource,
         // so the driver may skip any write-combining/cache coherency handling.
         // Upload() does the same for its buffers.
         hr = constantBuffers[i]->Map(0, &readRange, &constantBufferMapped[i]);
-        Check(hr);
+        Check(hr, "Map(CB)");
     }
 }
 
@@ -290,8 +283,14 @@ void DX12Nova::CreateRootSignature()
     // 11 to reach t74. Same reason as the sampled block above, and the reason
     // the readable block ends at heap index 52 -- which is why the UAV block
     // below had to move to 53.
-    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 11, 64);
+    // Twelve, not eleven: t75 is WlfgWeights, the pass-23 WLFG synthesis head's
+    // StructuredBuffer<float>. Contiguity from a base of 64 forces the range to
+    // 12 to reach t75, exactly as t74 forced it to 11. Under-sizing this is the
+    // E_INVALIDARG on CreateComputePipelineState documented above.
+    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18, 64);
     rootParams[6].InitAsDescriptorTable(1, &ranges[2]);
+    WL_CORE_WARN("CreateRootSignature: readable SRV range = {} descriptors from register {}",
+                 (int)ranges[2].NumDescriptors, (int)ranges[2].BaseShaderRegister);
 
     // UAV count is 13, not 12. The shader declares u0..u7, u9, u10, u11 and --
     // since the neural stage -- u12 (NeuralGlobals, an RWStructuredBuffer). u8
@@ -306,12 +305,18 @@ void DX12Nova::CreateRootSignature()
     ranges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, kUavCount, 0);
     rootParams[7].InitAsDescriptorTable(1, &ranges[3]);
 
-    // Root parameter 8: the ReSTIR reservoir read SRV at t10. This is a single
+    // Root parameter 8: the ReSTIR reservoir read SRV. This is a single
     // descriptor (not a table), bound by GPU virtual address like the scene
     // structured buffers above and the terrain buffer at root parameter 9.
-    // The reservoir is a ping-pong pair: two buffers,
-    // read from one and write to the other, swapping each frame.
-    rootParams[8].InitAsShaderResourceView(10);
+    // The reservoir is a ping-pong pair: two buffers, read from one and write
+    // to the other, swapping each frame.
+    //
+    // t9, NOT t10. The shader declares `ReservoirRead : register(t9)`; the
+    // signature said t10, so the register was uncovered and
+    // CreateComputePipelineState returned E_INVALIDARG. Verify against
+    // `dxc -dumpbin <blob>` ("ReservoirRead_0 ... t9") rather than against the
+    // comment above the declaration.
+    rootParams[8].InitAsShaderResourceView(9);
 
     // Root parameter 9: DX12-only terrain-grid vertices at t4. The HLSL
     // declaration is enabled only for this D3DCompileFromFile path.
@@ -350,7 +355,7 @@ void DX12Nova::CreateRootSignature()
     }
 
     hr = device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
-    Check(hr);
+    Check(hr, "CreateRootSignature");
 }
 
 // The compute PSO. Only two fields of the descriptor are set: the
@@ -367,7 +372,7 @@ void DX12Nova::CreatePSO()
     // The PSO owns a reference to both the root signature and the shader
     // bytecode, so this is the point after which those may be released.
     HRESULT hr = device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState));
-    Check(hr);
+    Check(hr, "CreateComputePipelineState");
 }
 
 // Descriptor heap creation. The per-slot decision below is the
@@ -403,7 +408,7 @@ void DX12Nova::CreateDescriptorHeaps()
     for (UINT i = 0; i < kFramesInFlight; i++)
     {
         HRESULT hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&frames[i].descriptorHeap));
-        Check(hr);
+        Check(hr, "CreateDescriptorHeap");
         frames[i].heapCpuStart = frames[i].descriptorHeap->GetCPUDescriptorHandleForHeapStart();
     }
 
@@ -653,6 +658,26 @@ void DX12Nova::CreateImages(UINT w, UINT h)
                 D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&neuralWeights));
             Check(hr);
         }
+
+        // WlfgWeights -- the t75 SRV. DECLARATION-ONLY on this backend, in the same
+        // sense as the t67 and t72 padding slots: the module declares t75, so the
+        // root signature's contiguous readable range must COVER it (ranges[2] is 12
+        // wide from t64) and the slot must hold a valid descriptor -- but this
+        // backend never dispatches the WLFG synthesis head, because pass 23 is gated
+        // on WL_WLFG and DX12's Nova has no WLFG wiring at all. Nothing reads it.
+        //
+        // A dedicated resource rather than an alias of another stage's buffer, so a
+        // future DX12 head cannot silently train on, or read, the wrong memory. It is
+        // deliberately left UNINITIALIZED: a DEFAULT-heap resource has no defined
+        // contents, and pretending otherwise would be the lie. Anything that wants to
+        // run the head here must fill it first (the Vulkan path does exactly that in
+        // VulkanNova::LoadWlfgWeights, and treats a missing blob as zeroed weights,
+        // which is the identity).
+        hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
+            &CD3DX12_RESOURCE_DESC::Buffer((UINT64)kWlfgWeightCount * sizeof(float)),
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+            IID_PPV_ARGS(&wlfgWeights));
+        Check(hr);
     }
 
     // ReSTIR reservoir UAV shape: one 32-byte structured element per pixel.
@@ -731,23 +756,1716 @@ void DX12Nova::CreateImages(UINT w, UINT h)
     reservoirUavDesc = resUavDesc;
 }
 
+// ===========================================================================
+// VISIBILITY G-BUFFER (Phase 1, Tasks 1.2/1.2b)
+//
+// Raw D3D12 because this backend is raw D3D12 -- the engine's generic
+// Framebuffer/Texture2D abstractions go through nvrhi and cannot produce a
+// resource this class can bind. See the Task 1.2 note in the plan.
+// ===========================================================================
+
+void DX12Nova::ReleaseVisibilityResources()
+{
+    // The GPU may still be reading these from submissions in flight, so a
+    // resize must drain before releasing them -- the same rule CreateImages
+    // follows.
+    WL_CORE_WARN("ReleaseVisibilityResources: releasing {}x{} (visReady={})",
+                 vis.width, vis.height, visReady);
+    WaitForGpuIdle();
+    vis = VisibilityTargets{};
+    visRtvHeap = nullptr;
+    visDsvHeap = nullptr;
+    visRtvBase = visDsvBase = 0;
+    visPipelineState = nullptr;
+    visVertexShader = nullptr;
+    visPixelShader = nullptr;
+    // Mesh path (Task 2.5): the pipeline owns the shader blobs too, so releasing
+    // them here rather than at next init keeps a resize from leaking the old ones.
+    visMeshRootSignature = nullptr;
+    visMeshPipelineState = nullptr;
+    visMeshASPipelineState = nullptr;
+    visMeshShader = nullptr;
+    visMeshPixelShader = nullptr;
+    visMeshAS = nullptr;
+    for (int s = 0; s < 8; s++) {
+        visMeshletBuffer[s] = nullptr;
+        visMeshletVertexBuffer[s] = nullptr;
+        visMeshletIndexBuffer[s] = nullptr;
+        visMeshVertexBuffer[s] = nullptr;
+        visMeshletCount[s] = 0;
+    }
+    visMeshletsBuilt = false;
+    for (UINT i = 0; i < kFramesInFlight; i++) {
+        // Unmap before release: a resource cannot be released while mapped, and
+        // the pointer is cleared so no later Reset hands back a dangling address.
+        if (visConstantBufferMapped[i] && visConstantBuffer[i]) {
+            visConstantBuffer[i]->Unmap(0, nullptr);
+            visConstantBufferMapped[i] = nullptr;
+        }
+        visConstantBuffer[i] = nullptr;
+    }
+    visInstanceBuffer = nullptr;
+    for (int s = 0; s < 8; s++) {
+        visShapeVertexBuffer[s] = nullptr;
+        visShapeIndexBuffer[s] = nullptr;
+        visShapeIndexCount[s] = 0;
+        visShapeVertexCount[s] = 0;
+    }
+    visSceneInstanceCount = 0;
+    memset(visViewProjection, 0, sizeof(visViewProjection));
+    visInstanceCount = 0;
+    visReady = false;
+}
+
+void DX12Nova::CreateVisibilityResources(UINT w, UINT h)
+{
+    if (vis.color0 && vis.width == w && vis.height == h) return;
+    ReleaseVisibilityResources();
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    // Three colour targets and one depth target. Created in their WRITE states
+    // so the first use is not a validation-layer error.
+    struct TargetDesc { DXGI_FORMAT format; D3D12_RESOURCE_FLAGS flags; D3D12_RESOURCE_STATES state; };
+    const TargetDesc targets[] = {
+        { DXGI_FORMAT_R32_SINT,          D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+        { DXGI_FORMAT_R8G8B8A8_UNORM,    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+        { DXGI_FORMAT_R8G8B8A8_UNORM,    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,   D3D12_RESOURCE_STATE_RENDER_TARGET },
+        { DXGI_FORMAT_D24_UNORM_S8_UINT, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,  D3D12_RESOURCE_STATE_DEPTH_WRITE },
+    };
+
+    for (int i = 0; i < 4; i++)
+    {
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = w;
+        desc.Height = h;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = targets[i].format;
+        desc.SampleDesc.Count = 1;
+        desc.Flags = targets[i].flags;
+
+        Com<ID3D12Resource>& slot = (i == 0) ? vis.color0
+                                   : (i == 1) ? vis.color1
+                                   : (i == 2) ? vis.color2
+                                              : vis.depth;
+        HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            targets[i].state, nullptr, IID_PPV_ARGS(&slot));
+        Check(hr, "CreateCommittedResource(visibility)");
+    }
+    vis.width = w;
+    vis.height = h;
+    vis.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    WL_CORE_WARN("CreateVisibilityResources: created {}x{} color0={} color1={} color2={} depth={}",
+                 w, h, (bool)vis.color0, (bool)vis.color1, (bool)vis.color2, (bool)vis.depth);
+
+    // RTV heap: three contiguous descriptors. NOT per-slot -- RTV/DSV heaps are
+    // addressed by CPU handle at OMSetRenderTargets time and are not descriptor
+    // tables, so one heap serves every command list. The compute heap is
+    // per-slot because its tables are bound to the pipeline.
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
+    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDesc.NumDescriptors = 3;
+    HRESULT hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&visRtvHeap));
+    Check(hr, "CreateDescriptorHeap(visibility RTV)");
+
+    const UINT rtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = visRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    visRtvBase = 0;
+    device->CreateRenderTargetView(vis.color0.Get(), nullptr, rtv);
+    rtv.ptr += rtvStride;
+    device->CreateRenderTargetView(vis.color1.Get(), nullptr, rtv);
+    rtv.ptr += rtvStride;
+    device->CreateRenderTargetView(vis.color2.Get(), nullptr, rtv);
+
+    D3D12_DESCRIPTOR_HEAP_DESC dsvDesc = {};
+    dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsvDesc.NumDescriptors = 1;
+    hr = device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&visDsvHeap));
+    Check(hr, "CreateDescriptorHeap(visibility DSV)");
+    visDsvBase = 0;
+    device->CreateDepthStencilView(vis.depth.Get(), nullptr,
+                                   visDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // u_ViewProjection. 64 bytes per shape region, 256-aligned because D3D12
+    // requires constant buffers to start on a 256-byte boundary of the allocation.
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC cbDesc = {};
+    cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    cbDesc.Width = kVisCbRegionSize * kVisShapeCount;
+    cbDesc.Height = 1;
+    cbDesc.DepthOrArraySize = 1;
+    cbDesc.MipLevels = 1;
+    cbDesc.SampleDesc.Count = 1;
+    cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    for (UINT i = 0; i < kFramesInFlight; i++) {
+        hr = device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&visConstantBuffer[i]));
+        Check(hr, "CreateCommittedResource(visibility CB)");
+        visConstantBuffer[i]->Map(0, nullptr, &visConstantBufferMapped[i]);
+        memset(visConstantBufferMapped[i], 0, 256);
+    }
+
+    // The t78..t81 SRV slots now have real targets to point at.
+    WriteVisibilitySrvs();
+}
+
+void DX12Nova::CreateVisibilityPipeline()
+{
+    // The VS/FS come from the same offline Slang artifacts as the compute shader
+    // (tools/compile_nova_slang.py --deploy). Resolved through Project so the
+    // bytecode comes from the active project's assets.
+    auto loadCSO = [&](const char* name, Com<ID3DBlob>& blob) {
+        std::wstring path = Project::Get().GetAssetPath(name).wstring();
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            throw std::runtime_error(std::string("visibility .cso not found: ") + name +
+                " -- run tools/compile_nova_slang.py --deploy");
+        LARGE_INTEGER size; GetFileSizeEx(h, &size);
+        std::vector<uint8_t> bytes((size_t)size.QuadPart);
+        DWORD read = 0;
+        ReadFile(h, bytes.data(), (DWORD)size.QuadPart, &read, nullptr);
+        CloseHandle(h);
+        if (read != (DWORD)size.QuadPart)
+            throw std::runtime_error(std::string("visibility .cso short read: ") + name);
+        D3DCreateBlob(size.QuadPart, &blob);
+        memcpy(blob->GetBufferPointer(), bytes.data(), (size_t)size.QuadPart);
+    };
+    loadCSO("shaders/Renderer3D_NovaVisibility.vs.cso", visVertexShader);
+    loadCSO("shaders/Renderer3D_NovaVisibility.ps.cso", visPixelShader);
+
+    // Must match VisVSIn in Renderer3D_NovaVisibility.slang exactly: float3 pos,
+    // float3 normal, float2 uv, one vertex slot, offsets 0/12/24.
+    static const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    // Reuses the compute root signature: it already exposes b1 (the CBV) and t1
+    // (the Instances SRV) and was created with ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    // for exactly this purpose. A second signature would duplicate a working one.
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+    desc.pRootSignature = rootSignature.Get();
+    desc.VS = { visVertexShader->GetBufferPointer(), visVertexShader->GetBufferSize() };
+    desc.PS = { visPixelShader->GetBufferPointer(), visPixelShader->GetBufferSize() };
+    desc.InputLayout = { layout, _countof(layout) };
+    desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    // CULL_NONE for the first verification: the engine's cube winding has not
+    // been matched to a D3D12 front-face convention yet, and a culled cube would
+    // be indistinguishable from a broken pipeline in the capture. The real fix
+    // is to derive FrontCounterClockwise/CullMode from the engine's own vertex
+    // data, not to leave this off.
+    desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    desc.SampleMask = UINT_MAX;
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.NumRenderTargets = 3;
+    desc.RTVFormats[0] = DXGI_FORMAT_R32_SINT;
+    desc.RTVFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.RTVFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    desc.SampleDesc.Count = 1;
+
+    HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&visPipelineState));
+    Check(hr, "CreateGraphicsPipelineState(visibility)");
+}
+
+// A unit cube centred on the origin, 24 vertices (four per face so each face has
+// its own normal) and 36 indices. File scope because both the VS/FS path and the
+// mesh path build their geometry from it -- the mesh path reconstructs a
+// ProceduralMesh from these arrays so MeshletBuilder sees the same triangles the
+// rasteriser uploads.
+struct VisCubeVertex { float px, py, pz, nx, ny, nz, u, v; };
+static const uint32_t cubeIndices[] = {
+    0,1,2, 0,2,3,       4,5,6, 4,6,7,
+    8,9,10, 8,10,11,     12,13,14, 12,14,15,
+    16,17,18, 16,18,19,  20,21,22, 20,22,23,
+};
+static const VisCubeVertex cubeVertices[] = {
+        {  0.5f, -0.5f, -0.5f,  1, 0, 0, 0, 1 },
+        {  0.5f,  0.5f, -0.5f,  1, 0, 0, 1, 1 },
+        {  0.5f,  0.5f,  0.5f,  1, 0, 0, 1, 0 },
+        {  0.5f, -0.5f,  0.5f,  1, 0, 0, 0, 0 },
+        { -0.5f, -0.5f,  0.5f, -1, 0, 0, 0, 1 },
+        { -0.5f,  0.5f,  0.5f, -1, 0, 0, 1, 1 },
+        { -0.5f,  0.5f, -0.5f, -1, 0, 0, 1, 0 },
+        { -0.5f, -0.5f, -0.5f, -1, 0, 0, 0, 0 },
+        { -0.5f,  0.5f, -0.5f,  0, 1, 0, 0, 1 },
+        { -0.5f,  0.5f,  0.5f,  0, 1, 0, 1, 1 },
+        {  0.5f,  0.5f,  0.5f,  0, 1, 0, 1, 0 },
+        {  0.5f,  0.5f, -0.5f,  0, 1, 0, 0, 0 },
+        { -0.5f, -0.5f,  0.5f,  0,-1, 0, 0, 1 },
+        { -0.5f, -0.5f, -0.5f,  0,-1, 0, 1, 1 },
+        {  0.5f, -0.5f, -0.5f,  0,-1, 0, 1, 0 },
+        {  0.5f, -0.5f,  0.5f,  0,-1, 0, 0, 0 },
+        { -0.5f, -0.5f,  0.5f,  0, 0, 1, 0, 1 },
+        {  0.5f, -0.5f,  0.5f,  0, 0, 1, 1, 1 },
+        {  0.5f,  0.5f,  0.5f,  0, 0, 1, 1, 0 },
+        { -0.5f,  0.5f,  0.5f,  0, 0, 1, 0, 0 },
+        {  0.5f, -0.5f, -0.5f,  0, 0,-1, 0, 1 },
+        { -0.5f, -0.5f, -0.5f,  0, 0,-1, 1, 1 },
+        { -0.5f,  0.5f, -0.5f,  0, 0,-1, 1, 0 },
+        {  0.5f,  0.5f, -0.5f,  0, 0,-1, 0, 0 },
+    };
+
+void DX12Nova::CreateVisibilityGeometry()
+{
+    auto makeBuffer = [&](const void* data, UINT size, Com<ID3D12Resource>& out) {
+        D3D12_HEAP_PROPERTIES heap = {};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = size;
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        HRESULT hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&out));
+        Check(hr, "CreateCommittedResource(visibility geometry)");
+        void* mapped = nullptr;
+        out->Map(0, nullptr, &mapped);
+        memcpy(mapped, data, size);
+        out->Unmap(0, nullptr);
+    };
+
+    // Two builders rather than one: shape 0's cube has no ProceduralMeshes
+    // generator (CubeRendererComponent owns the hardcoded version), so it is
+    // supplied as arrays while every other shape comes from the generators.
+    // Indices are uint32_t for ALL shapes -- IcoSphere at subdivision 2 already
+    // exceeds the 65535 limit a 16-bit index would impose.
+    auto uploadShape = [&](int shape, const void* verts, UINT vertCount,
+                           const uint32_t* indices, UINT indexCount) {
+        if (!verts || !vertCount || !indices || !indexCount) return;
+        makeBuffer(verts, (UINT)(sizeof(VisCubeVertex) * vertCount), visShapeVertexBuffer[shape]);
+        makeBuffer(indices, (UINT)(sizeof(uint32_t) * indexCount), visShapeIndexBuffer[shape]);
+        visShapeIndexCount[shape] = indexCount;
+        visShapeVertexCount[shape] = vertCount;
+    };
+    auto buildFromMesh = [&](int shape, const ProceduralMesh& mesh) {
+        std::vector<VisCubeVertex> verts;
+        verts.reserve(mesh.VertexCount());
+        for (size_t i = 0; i < mesh.VertexCount(); i++) {
+            VisCubeVertex v = {};
+            v.px = mesh.Positions[i].x; v.py = mesh.Positions[i].y; v.pz = mesh.Positions[i].z;
+            v.nx = mesh.Normals[i].x;  v.ny = mesh.Normals[i].y;  v.nz = mesh.Normals[i].z;
+            // TexCoords may legitimately be shorter than Positions (seam-duplicated
+            // vertices carry no second UV), so the index is guarded.
+            if (i < mesh.TexCoords.size()) { v.u = mesh.TexCoords[i].x; v.v = mesh.TexCoords[i].y; }
+            verts.push_back(v);
+        }
+        uploadShape(shape, verts.data(), (UINT)verts.size(),
+                    mesh.Indices.data(), (UINT)mesh.Indices.size());
+    };
+
+    // Shape ordinals are PrimitiveShape (ProceduralMeshes.h) and MUST stay in sync
+    // with MaterialParams.z, which is what the compute tracer branches on.
+    uploadShape(0, cubeVertices, 24, cubeIndices, 36);
+    buildFromMesh(1, ProceduralMeshes::IcoSphere());
+    buildFromMesh(2, ProceduralMeshes::Plane());
+    buildFromMesh(3, ProceduralMeshes::Cylinder());
+    buildFromMesh(4, ProceduralMeshes::Cone());
+    buildFromMesh(5, ProceduralMeshes::Torus());
+    buildFromMesh(6, ProceduralMeshes::Circle());
+    buildFromMesh(7, ProceduralMeshes::Grid());
+
+    // Two instances translated apart, so the Task 1.0 gate is visible: two
+    // cubes on screen, not one. The layout matches RayTracingInstance in
+    // Renderer3D_NovaVisibility.slang -- 288 bytes, InvTransform at 0,
+    // WorldTransform at 64.
+    struct InstanceRecord {
+        float inv[16];
+        float world[16];
+        float albedo[4];
+        float material[4];
+        float min[4];
+        float max[4];
+        float emission[4];
+        float maxDistance;
+        int   lodLevel, textureId, packedMaterialMapId;
+        float textureScale[4];
+        float displacement[4];
+        float wave[4];
+        int   terrainVertexOffset, terrainCellsPerSide, terrainPad0, terrainPad1;
+    };
+    static_assert(sizeof(InstanceRecord) == 288, "RayTracingInstance must stay 288 bytes");
+
+    // column_major identity with the translation in the last column.
+    auto translation = [](float x, float y, float z, float m[16]) {
+        memset(m, 0, sizeof(float) * 16);
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+        m[12] = x; m[13] = y; m[14] = z;
+    };
+
+    InstanceRecord instances[2] = {};
+    for (int i = 0; i < 2; i++) {
+        translation(0.0f, 0.0f, 0.0f, instances[i].inv);
+        instances[i].albedo[0] = 0.8f;
+        instances[i].albedo[1] = 0.2f;
+        instances[i].albedo[2] = 0.2f;
+        instances[i].albedo[3] = 1.0f;
+    }
+    translation(-0.9f, 0.0f, 0.0f, instances[0].world);
+    translation( 0.9f, 0.0f, 0.0f, instances[1].world);
+    visInstanceCount = 2;
+
+    makeBuffer(instances, sizeof(instances), visInstanceBuffer);
+
+    // The projection transforms column vectors. Columns encode x/y scale,
+    // depth and the camera translation respectively.
+    const float fovY = 2.41421356f;
+    const float aspect = (float)vis.width / (float)vis.height;
+    const float zNear = 0.1f, zFar = 100.0f;
+    const float z2 = zFar / (zFar - zNear);
+    const float z3 = -zNear * zFar / (zFar - zNear);
+    const float vp[16] = {
+        fovY / aspect, 0.0f, 0.0f,           0.0f,
+        0.0f,          fovY, 0.0f,           0.0f,
+        0.0f,          0.0f, z2,             1.0f,
+        0.0f,          0.0f, 4.0f * z2 + z3, 4.0f,
+    };
+    // Written into every shape region of every slot: the synthetic gate has no
+    // camera, so it falls back to this fixed projection whenever no scene matrix
+    // has been supplied. The SHAPE value is written here once and never again --
+    // writing it per draw would race the GPU, which can execute a recorded draw
+    // long after the CPU has moved on to the next one.
+    for (UINT i = 0; i < kFramesInFlight; i++)
+        for (int s = 0; s < (int)kVisShapeCount; s++) {
+            unsigned char* region = (unsigned char*)visConstantBufferMapped[i]
+                                  + s * kVisCbRegionSize;
+            memcpy(region, vp, sizeof(vp));
+            int shapeValue = s;
+            memcpy(region + kVisShapeOffset, &shapeValue, sizeof(shapeValue));
+        }
+
+    visReady = true;
+    {
+        std::string counts;
+        for (int s = 0; s < 8; s++)
+            counts += std::to_string(visShapeIndexCount[s]) + ",";
+        WL_CORE_INFO("DX12 visibility pass ready: {}x{}, {} scene instances, shape index counts [{}]",
+                     vis.width, vis.height, visSceneInstanceCount, counts);
+    }
+}
+
+// --- Mesh-shader path (Phase 2, Task 2.5) ---
+//
+// The mesh shader's CB is `MeshConstants` (u_ViewProjection + u_Instance), not the
+// visibility CB (u_ViewProjection + u_Shape). They share visConstantBuffer's
+// per-shape 256-byte regions, and the instance index goes at the same offset the
+// shape filter occupies -- 64, right after the matrix. The mesh path does not read
+// the shape slot, so the overlap is harmless.
+static const UINT kVisMeshInstanceOffset = 64;
+// int u_UsePayload sits right after u_Instance: float4x4 (64 bytes) + int (4) = 68.
+static const UINT kVisMeshUsePayloadOffset = 68;
+// int u_Shape sits after u_UsePayload: 64 + 4 + 4 = 72.
+static const UINT kVisMeshShapeOffset = 72;
+
+// Must match MeshletData in Renderer3D_NovaMesh.hlsl exactly. 16-byte alignment is
+// load-bearing: BoundsMin/BoundsMax are float4, so the struct is 8 + 16 + 16 + 4 + 4
+// = 48 bytes and the GPU reads it in aligned transactions. Reordering or narrowing
+// any field silently changes the shader's view of the table.
+struct MeshletData
+{
+    UINT      VertexOffset;
+    UINT      VertexCount;
+    UINT      PrimitiveOffset;
+    UINT      PrimitiveCount;
+    glm::vec4 BoundsMin;
+    glm::vec4 BoundsMax;
+    float     BoundingSphereRadius;
+    float     Pad0;
+};
+
+// Must match MeshVertex in the shader: position, normal, texcoord.
+struct MeshVertex
+{
+    glm::vec3 position;
+    glm::vec3 normal;
+    glm::vec2 texcoord;
+};
+
+void DX12Nova::CreateMeshRootSignature()
+{
+    CD3DX12_ROOT_PARAMETER1 rootParams[7];
+    // b1: MeshConstants (per-shape region of visConstantBuffer)
+    rootParams[0].InitAsConstantBufferView(1);
+    // t1: Instances -- the compute path's own instance buffer, so meshId stays the
+    // same index the tracer uses. Reusing it is what makes the two producers
+    // interchangeable downstream.
+    rootParams[1].InitAsShaderResourceView(1);
+    // t2..t5: the CONCATENATED meshlet tables (slot 0 of each array).
+    rootParams[2].InitAsShaderResourceView(2);
+    rootParams[3].InitAsShaderResourceView(3);
+    rootParams[4].InitAsShaderResourceView(4);
+    rootParams[5].InitAsShaderResourceView(5);
+    // t6: the per-shape dispatch table (meshlet offset/count). The mesh shader
+    // derives (shape, instance, meshlet) from its group index via this buffer,
+    // which is what lets one DispatchMesh draw the whole scene without any
+    // per-dispatch CPU state (CB values and root bindings are read at execution
+    // time, so per-dispatch writes inside one list never take effect).
+    rootParams[6].InitAsShaderResourceView(6);
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
+    rsDesc.Init_1_1(_countof(rootParams), rootParams, 0, nullptr,
+                    D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+    Com<ID3DBlob> sig, error;
+    HRESULT hr = D3DX12SerializeVersionedRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &sig, &error);
+    if (FAILED(hr))
+        throw std::runtime_error(error ? (const char*)error->GetBufferPointer() : "mesh root signature serialize failed");
+
+    hr = device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(),
+                                     IID_PPV_ARGS(&visMeshRootSignature));
+    Check(hr, "CreateRootSignature(mesh)");
+
+    // TEMP DIAGNOSTIC [sigdump]: write the serialized signature for a byte-diff
+    // against the probe's. Removed once the mesh path rasterises.
+    {
+        const char* dumpPath = std::getenv("WASTELAND_VIS_SIG_DUMP");
+        if (dumpPath) {
+            FILE* f = fopen(dumpPath, "wb");
+            if (f) { fwrite(sig->GetBufferPointer(), 1, sig->GetBufferSize(), f); fclose(f); }
+            WL_CORE_WARN("[sigdump] wrote {} bytes to {}", (long long)sig->GetBufferSize(), dumpPath);
+        }
+    }
+}
+
+void DX12Nova::CreateVisibilityMeshPipeline()
+{
+    auto loadCSO = [&](const char* name, Com<ID3DBlob>& blob) {
+        std::wstring path = Project::Get().GetAssetPath(name).wstring();
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            throw std::runtime_error(std::string("mesh .cso not found: ") + name +
+                " -- run tools/compile_nova_slang.py --deploy");
+        LARGE_INTEGER size; GetFileSizeEx(h, &size);
+        std::vector<uint8_t> bytes((size_t)size.QuadPart);
+        DWORD read = 0;
+        ReadFile(h, bytes.data(), (DWORD)size.QuadPart, &read, nullptr);
+        CloseHandle(h);
+        if (read != (DWORD)size.QuadPart)
+            throw std::runtime_error(std::string("mesh .cso short read: ") + name);
+        D3DCreateBlob(size.QuadPart, &blob);
+        memcpy(blob->GetBufferPointer(), bytes.data(), (size_t)size.QuadPart);
+    };
+    // WASTELAND_VIS_MS_PROBE swaps the hardcoded-triangle probe shader in for the
+    // real mesh shader. The probe shader reads no buffers, so this splits "the
+    // engine's pipeline construction/runtime is at fault" from "the real shader's
+    // data path is at fault" with everything else identical.
+    if (std::getenv("WASTELAND_VIS_MS_PROBE"))
+        loadCSO("shaders/mesh_probe.ms.cso", visMeshShader);
+    else
+        loadCSO("shaders/Renderer3D_NovaMesh.ms.cso", visMeshShader);
+    WL_CORE_WARN("CreateVisibilityMeshPipeline: visMeshShader {} bytes (probe=3536, real=8816)",
+                 (long long)visMeshShader->GetBufferSize());
+    loadCSO("shaders/Renderer3D_NovaMesh.ps.cso", visMeshPixelShader);
+    loadCSO("shaders/Renderer3D_NovaMesh.as.cso", visMeshAS);
+
+    D3D12_RASTERIZER_DESC raster = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    raster.CullMode = D3D12_CULL_MODE_NONE;   // same convention as the VS/FS path
+
+    // The mesh PSO is built with the PIPELINE STATE SUBOBJECT STREAM, not
+    // D3D12_MESH_SHADER_PIPELINE_STATE_DESC. The latter does not exist in the
+    // Windows SDK headers this project builds against (grep for it in
+    // Include/10.0.26100.0/um/d3d12.h: zero hits), and NVRHI's own d3d12 backend
+    // uses the stream form for the same reason. The subobject types are the
+    // MS/AS/PS registers.
+    // NVRHI's stream (d3d12-meshlets.cpp) is the reference for this layout. The
+    // alignment matters: each subobject's payload must be 8-byte aligned, which the
+    // ALIGNED_TYPE typedef guarantees and a packed byte buffer does not (a packed
+    // buffer makes CreatePipelineState return E_INVALIDARG).
+    struct MeshPSOStream
+    {
+        typedef __declspec(align(sizeof(void*))) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ALIGNED_TYPE;
+
+        // Subobject order is the one the isolated probe PROVED works on this
+        // driver (12.5% coverage with the real blobs): DEPTH_STENCIL must NOT
+        // sit between RASTERIZER and BLEND -- an order with it there fails
+        // CreatePipelineState with E_INVALIDARG in the probe, and streams that
+        // are accepted despite a rejected layout can dispatch silently empty.
+        ALIGNED_TYPE RootSignature_Type;       ID3D12RootSignature* RootSignature;
+        ALIGNED_TYPE PrimitiveTopology_Type;   D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType;
+        ALIGNED_TYPE MeshShader_Type;          D3D12_SHADER_BYTECODE MeshShader;
+        ALIGNED_TYPE PixelShader_Type;         D3D12_SHADER_BYTECODE PixelShader;
+        ALIGNED_TYPE RasterizerState_Type;     D3D12_RASTERIZER_DESC RasterizerState;
+        ALIGNED_TYPE BlendState_Type;          D3D12_BLEND_DESC BlendState;
+        ALIGNED_TYPE SampleDesc_Type;          DXGI_SAMPLE_DESC SampleDesc;
+        ALIGNED_TYPE SampleMask_Type;          UINT SampleMask;
+        ALIGNED_TYPE RenderTargets_Type;       D3D12_RT_FORMAT_ARRAY RenderTargets;
+        ALIGNED_TYPE AmplificationShader_Type; D3D12_SHADER_BYTECODE AmplificationShader;
+        ALIGNED_TYPE DepthStencilState_Type;   D3D12_DEPTH_STENCIL_DESC DepthStencilState;
+        ALIGNED_TYPE DSVFormat_Type;           DXGI_FORMAT DSVFormat;
+    };
+
+    // MS+PS only: the AS subobject is OMITTED rather than present with a null
+    // bytecode. A null AS bytecode inside an AS subobject is not the same as "no
+    // amplification shader" and may make the driver treat the pipeline as invalid.
+    struct MeshPSOStreamNoAS
+    {
+        typedef __declspec(align(sizeof(void*))) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ALIGNED_TYPE;
+
+        ALIGNED_TYPE RootSignature_Type;      ID3D12RootSignature* RootSignature;
+        ALIGNED_TYPE PrimitiveTopology_Type;  D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType;
+        ALIGNED_TYPE MeshShader_Type;         D3D12_SHADER_BYTECODE MeshShader;
+        ALIGNED_TYPE PixelShader_Type;        D3D12_SHADER_BYTECODE PixelShader;
+        ALIGNED_TYPE RasterizerState_Type;    D3D12_RASTERIZER_DESC RasterizerState;
+        ALIGNED_TYPE BlendState_Type;         D3D12_BLEND_DESC BlendState;
+        ALIGNED_TYPE SampleDesc_Type;         DXGI_SAMPLE_DESC SampleDesc;
+        ALIGNED_TYPE SampleMask_Type;         UINT SampleMask;
+        ALIGNED_TYPE RenderTargets_Type;      D3D12_RT_FORMAT_ARRAY RenderTargets;
+        ALIGNED_TYPE DepthStencilState_Type;  D3D12_DEPTH_STENCIL_DESC DepthStencilState;
+        ALIGNED_TYPE DSVFormat_Type;          DXGI_FORMAT DSVFormat;
+    };
+
+    auto fillCommon = [this, &raster](auto& s) {
+        s.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        s.MeshShader = { visMeshShader->GetBufferPointer(), visMeshShader->GetBufferSize() };
+        s.PixelShader = { visMeshPixelShader->GetBufferPointer(), visMeshPixelShader->GetBufferSize() };
+        s.RasterizerState = raster;
+        s.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // matches the VS/FS path
+        s.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        s.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        s.SampleDesc.Count = 1;
+        s.SampleDesc.Quality = 0;
+        s.SampleMask = 0xFFFFFFFFu;
+        s.RenderTargets.NumRenderTargets = 3;
+        s.RenderTargets.RTFormats[0] = DXGI_FORMAT_R32_SINT;
+        s.RenderTargets.RTFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        s.RenderTargets.RTFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        s.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    };
+
+    // TEMP DIAGNOSTIC [offsetof]: dump every subobject tag's offset. The probe's
+    // identical member list lays out differently if padding holes exist, and a
+    // hole parses as a garbage tag the driver may silently mis-handle.
+    WL_CORE_WARN("[offsetof] MeshPSOStream size={} ROOT={} PRIM={} MS={} PS={} RASTER={} BLEND={} SDESC={} SMASK={} RTFMTS={} AS={} DEPTH={} DSVFMT={}",
+                 (int)sizeof(MeshPSOStream),
+                 (int)offsetof(MeshPSOStream, RootSignature_Type),
+                 (int)offsetof(MeshPSOStream, PrimitiveTopology_Type),
+                 (int)offsetof(MeshPSOStream, MeshShader_Type),
+                 (int)offsetof(MeshPSOStream, PixelShader_Type),
+                 (int)offsetof(MeshPSOStream, RasterizerState_Type),
+                 (int)offsetof(MeshPSOStream, BlendState_Type),
+                 (int)offsetof(MeshPSOStream, SampleDesc_Type),
+                 (int)offsetof(MeshPSOStream, SampleMask_Type),
+                 (int)offsetof(MeshPSOStream, RenderTargets_Type),
+                 (int)offsetof(MeshPSOStream, AmplificationShader_Type),
+                 (int)offsetof(MeshPSOStream, DepthStencilState_Type),
+                 (int)offsetof(MeshPSOStream, DSVFormat_Type));
+
+    ID3D12RootSignature* rootSig = visMeshRootSignature.Get();
+
+    // device2 is ID3D12Device2, which is where CreatePipelineState(stream) lives.
+    Com<ID3D12Device2> device2;
+    HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&device2));
+    Check(hr, "QueryInterface(ID3D12Device2)");
+    if (!device2) throw std::runtime_error("ID3D12Device2 unavailable -- cannot create a mesh pipeline");
+
+    // The AS variant is attempted first; if it fails the MS+PS variant still runs,
+    // which is what separates "the AS bytecode is wrong" from "the mesh pipeline
+    // itself is wrong". Both are logged rather than thrown so the failure is
+    // visible in the normal run.
+    // TEMP DIAGNOSTIC [probepso]: the probe's EXACT working configuration --
+    // probe MS+PS blobs, an EMPTY root signature, engine RT/depth formats,
+    // DispatchMesh(1,1,1), no CB writes. If this writes through the engine's
+    // list, the fault is the dispatch context (sig/CB writes); if not, it is
+    // the engine device/queue. Removed once the mesh path rasterises.
+    if (std::getenv("WASTELAND_VIS_MS_PROBE")) {
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC pe = {};
+        pe.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+        pe.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+        Com<ID3DBlob> pes, pee;
+        if (SUCCEEDED(D3D12SerializeVersionedRootSignature(&pe, &pes, &pee))) {
+            Com<ID3D12RootSignature> pSig;
+            if (SUCCEEDED(device->CreateRootSignature(0, pes->GetBufferPointer(),
+                    pes->GetBufferSize(), IID_PPV_ARGS(&pSig)))) {
+                MeshPSOStreamNoAS ps2 = {};
+                ps2.RootSignature_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+                ps2.PrimitiveTopology_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+                ps2.MeshShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS;
+                ps2.PixelShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+                ps2.RasterizerState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER;
+                ps2.BlendState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND;
+                ps2.SampleDesc_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC;
+                ps2.SampleMask_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK;
+                ps2.RenderTargets_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+                ps2.DepthStencilState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL;
+                ps2.DSVFormat_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+                ps2.RootSignature = pSig.Get();
+                ps2.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+                ps2.MeshShader = { visMeshShader->GetBufferPointer(), visMeshShader->GetBufferSize() };
+                ps2.PixelShader = { visMeshPixelShader->GetBufferPointer(), visMeshPixelShader->GetBufferSize() };
+                ps2.RasterizerState = raster;
+                ps2.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+                ps2.SampleDesc = { 1, 0 };
+                ps2.SampleMask = 0xFFFFFFFFu;
+                ps2.RenderTargets.NumRenderTargets = 3;
+                ps2.RenderTargets.RTFormats[0] = DXGI_FORMAT_R32_SINT;
+                ps2.RenderTargets.RTFormats[1] = DXGI_FORMAT_R8G8B8A8_UNORM;
+                ps2.RenderTargets.RTFormats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+                ps2.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+                ps2.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+                D3D12_PIPELINE_STATE_STREAM_DESC pd = { sizeof(ps2), &ps2 };
+                Com<ID3D12PipelineState> pPSO;
+                HRESULT phr = device2->CreatePipelineState(&pd, IID_PPV_ARGS(&pPSO));
+                WL_CORE_WARN("[probepso] creation {} ({})", SUCCEEDED(phr) ? "OK" : "FAILED",
+                             (long)phr);
+                if (SUCCEEDED(phr)) {
+                    visProbePipelineState = pPSO;
+                    visProbeRootSignature = pSig;
+                }
+            }
+        }
+    }
+
+    auto createPSO = [&](bool withAS, Com<ID3D12PipelineState>& out) -> bool {
+        if (withAS)
+        {
+            MeshPSOStream s = {};
+            s.RootSignature_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+            s.PrimitiveTopology_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+            s.AmplificationShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS;
+            s.MeshShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS;
+            s.PixelShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+            s.RasterizerState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER;
+            s.DepthStencilState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL;
+            s.BlendState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND;
+            s.SampleDesc_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC;
+            s.SampleMask_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK;
+            s.RenderTargets_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+            s.DSVFormat_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+            s.RootSignature = rootSig;
+            s.AmplificationShader = { visMeshAS->GetBufferPointer(), visMeshAS->GetBufferSize() };
+            fillCommon(s);
+            D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+            streamDesc.pPipelineStateSubobjectStream = &s;
+            streamDesc.SizeInBytes = sizeof(s);
+            HRESULT r = device2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&out));
+            if (FAILED(r)) {
+                WL_CORE_WARN("CreatePipelineState(mesh AS+MS+PS) failed: HRESULT {}", (long)r);
+                return false;
+            }
+            WL_CORE_WARN("CreatePipelineState(mesh AS+MS+PS) ok bytes={}", (long)sizeof(s));
+            return true;
+        }
+
+        MeshPSOStreamNoAS s = {};
+        s.RootSignature_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
+        s.PrimitiveTopology_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
+        s.MeshShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS;
+        s.PixelShader_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
+        s.RasterizerState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER;
+        s.DepthStencilState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL;
+        s.BlendState_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND;
+        s.SampleDesc_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC;
+        s.SampleMask_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK;
+        s.RenderTargets_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
+        s.DSVFormat_Type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
+        s.RootSignature = rootSig;
+        fillCommon(s);
+        D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+        streamDesc.pPipelineStateSubobjectStream = &s;
+        streamDesc.SizeInBytes = sizeof(s);
+        HRESULT r = device2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&out));
+        if (FAILED(r)) {
+            WL_CORE_WARN("CreatePipelineState(mesh MS+PS) failed: HRESULT {}", (long)r);
+            return false;
+        }
+        WL_CORE_WARN("CreatePipelineState(mesh MS+PS) ok bytes={}", (long)sizeof(s));
+        return true;
+    };
+    const bool asOk = createPSO(true, visMeshASPipelineState);
+    createPSO(false, visMeshPipelineState);
+    // If the AS variant failed, visMeshASPipelineState stays null and DrawMeshlets
+    // falls back to the MS+PS pipeline, which dispatches mesh groups directly. The
+    // instance index then comes from the constant buffer instead of the payload --
+    // the mesh shader reads u_Instance either way.
+    if (!asOk)
+        WL_CORE_WARN("mesh AS pipeline unavailable; using MS+PS with CB-driven instance index");
+}
+
+void DX12Nova::CreateVisibilityMeshlets()
+{
+    // Build the meshlets for every shape and upload the four tables the mesh shader
+    // reads. One-shot at creation: the procedural meshes are immutable, so the
+    // tables never need rebuilding.
+    auto makeBuffer = [&](const void* data, UINT size, Com<ID3D12Resource>& out) {
+        D3D12_HEAP_PROPERTIES heap = {};
+        heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = size;
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        HRESULT hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&out));
+        Check(hr, "CreateCommittedResource(meshlet)");
+        void* mapped = nullptr;
+        out->Map(0, nullptr, &mapped);
+        memcpy(mapped, data, size);
+        out->Unmap(0, nullptr);
+    };
+
+    std::vector<MeshletData> g_meshlets;
+    std::vector<std::uint32_t> g_meshletVertices;
+    std::vector<std::uint32_t> g_meshletIndices;
+    std::vector<MeshVertex> g_meshVertices;
+    struct DispatchEntry { UINT meshletOffset; UINT meshletCount; };
+    DispatchEntry g_dispatch[8] = {};
+
+    for (int shape = 0; shape < 8; shape++)
+    {
+        if (!visShapeIndexCount[shape] || !visShapeVertexCount[shape]) continue;
+
+        // Reconstruct the mesh the VS/FS path draws, from the same source, so the
+        // two producers rasterise the same triangles. Shape 0 has no generator
+        // (CubeRendererComponent owns the hardcoded cube), so it comes from the
+        // same arrays CreateVisibilityGeometry uploaded.
+        ProceduralMesh mesh;
+        if (shape == 0)
+        {
+            mesh.Indices.assign(std::begin(cubeIndices), std::end(cubeIndices));
+            mesh.Positions.resize(24);
+            mesh.Normals.resize(24);
+            mesh.TexCoords.resize(24);
+            for (int i = 0; i < 24; i++)
+            {
+                mesh.Positions[i] = { cubeVertices[i].px, cubeVertices[i].py, cubeVertices[i].pz };
+                mesh.Normals[i]   = { cubeVertices[i].nx, cubeVertices[i].ny, cubeVertices[i].nz };
+                mesh.TexCoords[i] = { cubeVertices[i].u,  cubeVertices[i].v  };
+            }
+        }
+        else
+        {
+            switch (shape)
+            {
+                case 1: mesh = ProceduralMeshes::IcoSphere(); break;
+                case 2: mesh = ProceduralMeshes::Plane();    break;
+                case 3: mesh = ProceduralMeshes::Cylinder(); break;
+                case 4: mesh = ProceduralMeshes::Cone();     break;
+                case 5: mesh = ProceduralMeshes::Torus();    break;
+                case 6: mesh = ProceduralMeshes::Circle();   break;
+                default: mesh = ProceduralMeshes::Grid();    break;
+            }
+        }
+
+        std::vector<Meshlet> meshlets;
+        std::vector<std::uint32_t> meshletVertices;
+        std::vector<std::uint32_t> meshletIndices;
+        if (!BuildMeshlets(mesh, meshlets, meshletVertices, meshletIndices))
+            continue;
+
+        std::vector<MeshletData> table(meshlets.size());
+        for (size_t i = 0; i < meshlets.size(); i++)
+        {
+            table[i].VertexOffset = meshlets[i].VertexOffset;
+            table[i].VertexCount = meshlets[i].VertexCount;
+            table[i].PrimitiveOffset = meshlets[i].PrimitiveOffset;
+            table[i].PrimitiveCount = meshlets[i].PrimitiveCount;
+            table[i].BoundsMin = glm::vec4(meshlets[i].BoundsMin, 1.0f);
+            table[i].BoundsMax = glm::vec4(meshlets[i].BoundsMax, 1.0f);
+            table[i].BoundingSphereRadius = meshlets[i].BoundingSphereRadius;
+            table[i].Pad0 = 0.0f;
+        }
+
+        std::vector<MeshVertex> verts(mesh.Positions.size());
+        for (size_t i = 0; i < mesh.Positions.size(); i++)
+        {
+            verts[i].position = mesh.Positions[i];
+            verts[i].normal = mesh.Normals[i];
+            verts[i].texcoord = mesh.TexCoords[i];
+        }
+
+        // Concatenate into the global tables (slot 0). The meshlet-vertex
+        // indices and the meshlet VertexOffset are rebased by this shape's
+        // vertex/meshlet-vertex bases so the mesh shader can index one pair of
+        // buffers with a global meshlet index.
+        const UINT vertexBase = (UINT)g_meshVertices.size();
+        const UINT meshletVertexBase = (UINT)g_meshletVertices.size();
+        const UINT meshletBase = (UINT)g_meshlets.size();
+        const UINT meshletIndexBase = (UINT)g_meshletIndices.size();
+        for (size_t i = 0; i < table.size(); i++)
+        {
+            table[i].VertexOffset += meshletVertexBase;
+            // PrimitiveOffset is in TRIANGLES (MeshletBuilder.h) while
+            // meshletIndexBase counts INDICES (3 per triangle) -- adding the raw
+            // index count to a triangle offset reads out of bounds for every
+            // shape after the first, which is what hung the GPU.
+            table[i].PrimitiveOffset += meshletIndexBase / 3;
+        }
+        for (auto v : meshletVertices)
+            g_meshletVertices.push_back(vertexBase + v);
+        for (auto i : meshletIndices)
+            g_meshletIndices.push_back(i);
+        for (auto& v : verts)
+            g_meshVertices.push_back(v);
+        for (auto& t : table)
+            g_meshlets.push_back(t);
+
+        g_dispatch[shape].meshletOffset = meshletBase;
+        g_dispatch[shape].meshletCount = (UINT)meshlets.size();
+        visMeshletCount[shape] = (UINT)meshlets.size();
+
+    }
+
+    // One upload per concatenated table. The mesh shader indexes these with
+    // globally-rebased offsets, so a single DispatchMesh can address every
+    // (shape, instance, meshlet) without per-dispatch CPU state.
+    if (!g_meshlets.empty())
+    {
+        makeBuffer(g_meshlets.data(), (UINT)(sizeof(MeshletData) * g_meshlets.size()), visMeshletBuffer[0]);
+        makeBuffer(g_meshletVertices.data(), (UINT)(sizeof(std::uint32_t) * g_meshletVertices.size()),
+                   visMeshletVertexBuffer[0]);
+        makeBuffer(g_meshletIndices.data(), (UINT)(sizeof(std::uint32_t) * g_meshletIndices.size()),
+                   visMeshletIndexBuffer[0]);
+        makeBuffer(g_meshVertices.data(), (UINT)(sizeof(MeshVertex) * g_meshVertices.size()), visMeshVertexBuffer[0]);
+        makeBuffer(g_dispatch, (UINT)(sizeof(DispatchEntry) * 8), visDispatchBuffer);
+        for (int s = 0; s < 8; s++)
+            visMeshTotal += visMeshletCount[s];
+    }
+    // TEMP DIAGNOSTIC [meshdump]: write the concatenated tables + instances + VP
+    // so the standalone probe can run the exact engine data.
+    if (const char* dd = std::getenv("WASTELAND_VIS_MESH_DUMP"))
+    {
+        FILE* f = fopen((std::string(dd) + "/meshlets.bin").c_str(), "wb");
+        if (f) { fwrite(g_meshlets.data(), 1, sizeof(MeshletData) * g_meshlets.size(), f); fclose(f); }
+        f = fopen((std::string(dd) + "/mverts.bin").c_str(), "wb");
+        if (f) { fwrite(g_meshletVertices.data(), 1, sizeof(std::uint32_t) * g_meshletVertices.size(), f); fclose(f); }
+        f = fopen((std::string(dd) + "/mindices.bin").c_str(), "wb");
+        if (f) { fwrite(g_meshletIndices.data(), 1, sizeof(std::uint32_t) * g_meshletIndices.size(), f); fclose(f); }
+        f = fopen((std::string(dd) + "/verts.bin").c_str(), "wb");
+        if (f) { fwrite(g_meshVertices.data(), 1, sizeof(MeshVertex) * g_meshVertices.size(), f); fclose(f); }
+        WL_CORE_WARN("[meshdump] wrote tables to {}", dd);
+    }
+    // TEMP DIAGNOSTIC [meshdata]: the first few concatenated meshlet records.
+    {
+        std::string ml;
+        for (size_t i = 0; i < g_meshlets.size() && i < 4; i++)
+        {
+            ml += "[" + std::to_string(g_meshlets[i].VertexOffset) + "," + std::to_string(g_meshlets[i].VertexCount)
+                + "," + std::to_string(g_meshlets[i].PrimitiveOffset) + "," + std::to_string(g_meshlets[i].PrimitiveCount) + "]";
+        }
+        WL_CORE_WARN("[meshdata] meshlets {} first[{}] mverts {} mindices {} verts {}",
+                     (long long)g_meshlets.size(), ml, (long long)g_meshletVertices.size(),
+                     (long long)g_meshletIndices.size(), (long long)g_meshVertices.size());
+    }
+    visMeshletsBuilt = true;
+}
+
+void DX12Nova::DrawMeshlets()
+{
+    // MS+PS only. The amplification shader existed to carry a per-dispatch
+    // instance index in its payload, but a payload value still has to come from
+    // a CB read, and CB contents are read at execution time -- per-dispatch CPU
+    // writes inside one command list never reach the GPU. The mesh shader now
+    // derives (shape, instance, meshlet) from its group index via buffer-backed
+    // tables, so one DispatchMesh draws the whole scene.
+    ID3D12PipelineState* meshPSO = visMeshPipelineState.Get();
+    if (!visReady || !meshPSO || !visMeshletsBuilt) return;
+    WL_CORE_WARN("DrawMeshlets: entry this={:p} pso={:p} asState={:p} msState={:p} rs={:p} built={} counts[{},{},{},{},{},{},{},{}]",
+                 (const void*)this, (void*)meshPSO, (void*)visMeshASPipelineState.Get(), (void*)visMeshPipelineState.Get(),
+                 (void*)visMeshRootSignature.Get(), (bool)visMeshletsBuilt,
+                 visMeshletCount[0], visMeshletCount[1], visMeshletCount[2], visMeshletCount[3],
+                 visMeshletCount[4], visMeshletCount[5], visMeshletCount[6], visMeshletCount[7]);
+
+    Transition(vis.color0.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(vis.color1.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(vis.color2.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(vis.depth.Get(), vis.depthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    vis.depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    vis.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    ID3D12GraphicsCommandList* cl = commandList.Get();
+
+    const UINT rtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = visRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[3];
+    for (int i = 0; i < 3; i++) { rtvHandles[i] = rtv; rtv.ptr += rtvStride; }
+
+    cl->OMSetRenderTargets(3, rtvHandles, FALSE,
+                           &visDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    const float clearVisId[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+    const float clearVis[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    cl->ClearRenderTargetView(rtvHandles[0], clearVisId, 0, nullptr);
+    cl->ClearRenderTargetView(rtvHandles[1], clearVis, 0, nullptr);
+    cl->ClearRenderTargetView(rtvHandles[2], clearVis, 0, nullptr);
+    cl->ClearDepthStencilView(visDsvHeap->GetCPUDescriptorHandleForHeapStart(),
+                              D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = (FLOAT)vis.width;
+    viewport.Height = (FLOAT)vis.height;
+    viewport.MaxDepth = 1.0f;
+    cl->RSSetViewports(1, &viewport);
+    D3D12_RECT scissor = { 0, 0, (LONG)vis.width, (LONG)vis.height };
+    cl->RSSetScissorRects(1, &scissor);
+
+    int dispatches = 0;
+    if (visProbePipelineState) {
+        // [probepso] dispatch path: the probe's exact working configuration.
+        cl->SetPipelineState(visProbePipelineState.Get());
+        cl->SetGraphicsRootSignature(visProbeRootSignature.Get());
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> p6;
+        commandList->QueryInterface(IID_PPV_ARGS(&p6));
+        if (p6) p6->DispatchMesh(1, 1, 1);
+        dispatches = 1;
+    } else {
+    cl->SetPipelineState(meshPSO);
+    cl->SetGraphicsRootSignature(visMeshRootSignature.Get());
+
+    const bool sceneDraw = visSceneInstanceCount > 0 && structuredBuffers[0];
+    ID3D12Resource* instanceBuffer = sceneDraw ? structuredBuffers[0].Get()
+                                               : visInstanceBuffer.Get();
+    const UINT instanceCount = sceneDraw ? visSceneInstanceCount : visInstanceCount;
+    if (!instanceBuffer || instanceCount == 0) return;
+    // The concatenated tables are built once at creation; with no shapes they
+    // are empty and there is nothing to dispatch.
+    if (!visMeshletsBuilt || !visMeshletBuffer[0] || !visDispatchBuffer) return;
+
+    // The CB holds only frame-constant values: the view-projection and the
+    // instance count. Per-dispatch values (shape, instance, meshlet) are derived
+    // by the mesh shader from its group index via the dispatch table, because CB
+    // contents and root bindings are read at EXECUTION time -- per-dispatch CPU
+    // writes inside one command list never reach the GPU. (This was the root
+    // cause of the mesh path rasterising nothing: all 64 dispatches executed
+    // with the last-written CB values and the last shape's table bindings, so
+    // the shape filter discarded everything.)
+    ID3D12Resource* cb = visConstantBuffer[currentFrame].Get();
+    if (!cb) return;
+    WL_CORE_WARN("[meshdata] VP row0 [{:.3f},{:.3f},{:.3f},{:.3f}] row1 [{:.3f},{:.3f},{:.3f},{:.3f}]",
+                 visViewProjection[0], visViewProjection[1], visViewProjection[2], visViewProjection[3],
+                 visViewProjection[4], visViewProjection[5], visViewProjection[6], visViewProjection[7]);
+    if (visViewProjection[0] != 0.0f)
+        memcpy((unsigned char*)visConstantBufferMapped[currentFrame],
+               visViewProjection, sizeof(float) * 16);
+    UINT ic = instanceCount;
+    memcpy((unsigned char*)visConstantBufferMapped[currentFrame]
+           + kVisMeshInstanceOffset, &ic, sizeof(ic));
+
+    cl->SetGraphicsRootConstantBufferView(0, cb->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(1, instanceBuffer->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(2, visMeshVertexBuffer[0]->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(3, visMeshletBuffer[0]->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(4, visMeshletVertexBuffer[0]->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(5, visMeshletIndexBuffer[0]->GetGPUVirtualAddress());
+    cl->SetGraphicsRootShaderResourceView(6, visDispatchBuffer->GetGPUVirtualAddress());
+
+    // One dispatch for the whole scene: every (shape, instance, meshlet) group
+    // is addressed by its global group index.
+    const UINT totalGroups = visMeshTotal * instanceCount;
+    Com<ID3D12GraphicsCommandList6> cl6;
+    commandList->QueryInterface(IID_PPV_ARGS(&cl6));
+    if (!std::getenv("WASTELAND_VIS_MESH_NODRAW") && cl6 && totalGroups)
+        cl6->DispatchMesh(totalGroups, 1, 1);
+    dispatches = totalGroups ? 1 : 0;
+    } // end probe-vs-normal dispatch
+
+    std::string meshletCounts;
+    for (int i = 0; i < 8; i++) meshletCounts += std::to_string(visMeshletCount[i]) + ",";
+    WL_CORE_WARN("DrawMeshlets: {} dispatches, scene instances {}, meshlets/shape [{}]",
+                 dispatches, visSceneInstanceCount, meshletCounts);
+
+    // [GPV] Dump the D3D12 info queue after the mesh draws. GPU-based validation
+    // errors surface here, not on the CPU debug layer, and a mesh draw the GPU
+    // silently drops usually leaves one. Removed once the mesh path rasterises.
+    if (std::getenv("WASTELAND_VIS_DEBUG_QUEUE")) {
+        Com<ID3D12InfoQueue> iq;
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&iq)))) {
+            const UINT64 n = iq->GetNumStoredMessages();
+            WL_CORE_WARN("DrawMeshlets: info queue has {} messages", (long long)n);
+            for (UINT64 i = 0; i < n && i < 6; i++) {
+                SIZE_T len = 0;
+                if (FAILED(iq->GetMessage(i, nullptr, &len)) || !len) continue;
+                std::vector<char> buf(len);
+                if (FAILED(iq->GetMessage(i, (D3D12_MESSAGE*)buf.data(), &len))) continue;
+                D3D12_MESSAGE* msg = (D3D12_MESSAGE*)buf.data();
+                WL_CORE_WARN("  sev={} id={} desc={:.400}", (int)msg->Severity, (int)msg->ID,
+                             msg->pDescription ? msg->pDescription : "(null)");
+            }
+            iq->ClearStoredMessages();
+        }
+    }
+
+    Transition(vis.color0.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.color1.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.color2.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.depth.Get(), vis.depthState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    vis.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    vis.depthState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+}
+
+// Points the t78..t81 SRV slots at the live visibility targets, or at 1x1
+// stand-ins before they exist. Every slot's heap needs its own descriptor
+// because the table the GPU reads lives in whichever slot submitted it.
+void DX12Nova::WriteVisibilitySrvs()
+{
+    if (!device) return;
+
+    // 1x1 stand-ins, created once. A null descriptor in a bound range is
+    // undefined behaviour rather than a harmless no-op, so these slots are never
+    // left empty -- the shader gates the read on u_UseRasterVisibility and never
+    // samples them, but the debug layer cannot know that.
+    auto ensureDummy = [&](DXGI_FORMAT format, Com<ID3D12Resource>& out, const void* pixels) {
+        if (out) return;
+        D3D12_RESOURCE_DESC d = {};
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width = 1; d.Height = 1; d.DepthOrArraySize = 1;
+        d.MipLevels = 1; d.SampleDesc.Count = 1;
+        d.Format = format;
+        d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        D3D12_HEAP_PROPERTIES hp = {};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        Com<ID3D12Resource> created;
+        if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&created))))
+            return;
+        out = created;
+    };
+    const int    kDummyIds = 7;
+    const float  kDummyF4[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
+    const float  kDummyF   = 0.5f;
+    ensureDummy(DXGI_FORMAT_R32_SINT, visDummyInt, &kDummyIds);
+    ensureDummy(DXGI_FORMAT_R8G8B8A8_UNORM, visDummyFloat4, &kDummyF4);
+    ensureDummy(DXGI_FORMAT_R32_FLOAT, visDummyFloat, &kDummyF);
+
+    ID3D12Resource* ids    = vis.color0 ? vis.color0.Get() : visDummyInt.Get();
+    ID3D12Resource* albedo = vis.color1 ? vis.color1.Get() : visDummyFloat4.Get();
+    ID3D12Resource* normal = vis.color2 ? vis.color2.Get() : visDummyFloat4.Get();
+    ID3D12Resource* depth  = vis.depth  ? vis.depth.Get()  : visDummyFloat.Get();
+
+    for (UINT s = 0; s < kFramesInFlight; s++) {
+        if (!frames[s].descriptorHeap) continue;
+        WriteVisibilitySrvs(frames[s], s);
+    }
+    WL_CORE_WARN("WriteVisibilitySrvs: ids={} albedo={} normal={} depth={} slots {}/{}/{}/{}"
+                 " | real color0={} color1={} depth={} dummies int={} f4={} f={}",
+                 (bool)ids, (bool)albedo, (bool)normal, (bool)depth,
+                 kVisibilityIdsSrvSlot, kVisibilityAlbedoSrvSlot,
+                 kVisibilityNormalSrvSlot, kVisibilityDepthSrvSlot,
+                 (bool)vis.color0, (bool)vis.color1, (bool)vis.depth,
+                 (bool)visDummyInt, (bool)visDummyFloat4, (bool)visDummyFloat);
+    WL_CORE_WARN("WriteVisibilitySrvs: ptrs color0={:p} ids={:p} albedo={:p} dummyIds={:p}",
+                 (void*)vis.color0.Get(), (void*)ids, (void*)albedo, (void*)visDummyInt.Get());
+}
+
+// One slot's copy. Dispatch calls this per pass because that is the pattern the
+// readable-snapshot SRVs use and the only one proven to reach the shader: a
+// descriptor written once at init can be absent by the time a later slot's
+// command list executes.
+void DX12Nova::WriteVisibilitySrvs(FrameContext& slot, UINT index)
+{
+    if (!device || !slot.descriptorHeap) return;
+
+    ID3D12Resource* ids    = vis.color0 ? vis.color0.Get() : visDummyInt.Get();
+    ID3D12Resource* albedo = vis.color1 ? vis.color1.Get() : visDummyFloat4.Get();
+    ID3D12Resource* normal = vis.color2 ? vis.color2.Get() : visDummyFloat4.Get();
+    ID3D12Resource* depth  = vis.depth  ? vis.depth.Get()  : visDummyFloat.Get();
+    {
+        // Offsets must be applied to a handle that is actually USED. The
+        // CD3DX12_CPU_DESCRIPTOR_HANDLE(base, offset, size) form builds a
+        // temporary; passing the un-offset `dest` to CreateShaderResourceView
+        // wrote every visibility SRV to heap offset 0, which the SRV table (heap
+        // 42..59) never reads -- the descriptor looked unbound and sampled zeros.
+        D3D12_CPU_DESCRIPTOR_HANDLE dest = slot.heapCpuStart;
+        const SIZE_T descSize = cbvSrvUavDescriptorSize;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Texture2D.MipLevels = 1;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE d = dest;
+        d.ptr += (SIZE_T)kVisibilityIdsSrvSlot * descSize;
+        srv.Format = DXGI_FORMAT_R32_SINT;
+        device->CreateShaderResourceView(ids, &srv, d);
+
+        // t76/t77 are the Vulkan-only WLRR slots: not declared in DXIL, but the
+        // readable range is contiguous from t64, so they sit inside the bound
+        // table and must still hold a valid descriptor. Leaving them
+        // uninitialized means the GPU is handed garbage for registers the table
+        // claims to cover -- a device-removal-class fault, not a no-op.
+        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d = dest;
+        d.ptr += (SIZE_T)(kImageSrvBase + 12) * descSize;
+        device->CreateShaderResourceView(visDummyFloat4.Get(), &srv, d);
+        d = dest;
+        d.ptr += (SIZE_T)(kImageSrvBase + 13) * descSize;
+        device->CreateShaderResourceView(visDummyFloat4.Get(), &srv, d);
+
+        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d = dest;
+        d.ptr += (SIZE_T)kVisibilityAlbedoSrvSlot * descSize;
+        device->CreateShaderResourceView(albedo, &srv, d);
+
+        d = dest;
+        d.ptr += (SIZE_T)kVisibilityNormalSrvSlot * descSize;
+        device->CreateShaderResourceView(normal, &srv, d);
+
+        // The depth SRV format must match the resource actually in the slot: the
+        // real target is D24_UNORM_S8_UINT and reads through the typeless
+        // R24_UNORM_X8_TYPELESS view, while the stand-in is R32_FLOAT and needs
+        // R32_FLOAT. Passing the typeless format against the float stand-in is a
+        // format mismatch that removes the device on the default path, where the
+        // stand-in is the only thing ever bound.
+        srv.Format = vis.depth ? DXGI_FORMAT_R24_UNORM_X8_TYPELESS : DXGI_FORMAT_R32_FLOAT;
+        d = dest;
+        d.ptr += (SIZE_T)kVisibilityDepthSrvSlot * descSize;
+        device->CreateShaderResourceView(depth, &srv, d);
+    }
+}
+
+// Draws the visibility pass into the G-buffer. Records into the currently open
+// command list, so it must be called between BeginSubmit and FlushCommandList.
+void DX12Nova::DrawVisibility()
+{
+    if (!visReady || !visPipelineState) return;
+
+    // WASTELAND_VIS_MESH=1 selects the mesh-shader producer. Both write the same
+    // G-buffer and neither knows the other exists; the switch is here rather than
+    // in SubmitVisibility so the state setup is shared.
+    if (std::getenv("WASTELAND_VIS_MESH"))
+    {
+        DrawMeshlets();
+        return;
+    }
+
+    // WASTELAND_VIS_LEVEL bisects the draw to find which call the driver rejects:
+    //   1 = state setup only (barriers, OMSetRenderTargets, viewport, clears)
+    //   2 = + input assembly (vertex/index buffers)
+    //   3 = + DrawIndexedInstanced (the default)
+    int visLevel = 3;
+    if (const char *lvl = std::getenv("WASTELAND_VIS_LEVEL"))
+        visLevel = std::atoi(lvl);
+
+    // DrawVisibility owns the write state. The compute passes transition these
+    // back to shader-readable when they consume them as SRVs.
+    Transition(vis.color0.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(vis.color1.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    Transition(vis.color2.Get(), vis.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    // The depth target moves DEPTH_WRITE -> shader-readable -> DEPTH_WRITE every
+    // frame now that Task 1.3 samples it as an SRV. It used to stay in DEPTH_WRITE
+    // for its whole life, which was correct until something read it.
+    Transition(vis.depth.Get(), vis.depthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    vis.depthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    vis.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+    ID3D12GraphicsCommandList* cl = commandList.Get();
+
+    const UINT rtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = visRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandles[3];
+    for (int i = 0; i < 3; i++) { rtvHandles[i] = rtv; rtv.ptr += rtvStride; }
+
+    if (visLevel < 1) return;
+
+    cl->OMSetRenderTargets(3, rtvHandles, FALSE,
+                           &visDsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // RT0 is R32_SINT and its "nothing here" sentinel is -1, matching the
+    // engine's RED_INTEGER picking attachment (NVRHIFramebuffer.cpp:73). Clearing
+    // to 0 would make every uncovered pixel look like instance 0.
+    const float clearVisId[4] = { -1.0f, 0.0f, 0.0f, 0.0f };
+    const float clearVis[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    cl->ClearRenderTargetView(rtvHandles[0], clearVisId, 0, nullptr);
+    cl->ClearRenderTargetView(rtvHandles[1], clearVis, 0, nullptr);
+    cl->ClearRenderTargetView(rtvHandles[2], clearVis, 0, nullptr);
+    cl->ClearDepthStencilView(visDsvHeap->GetCPUDescriptorHandleForHeapStart(),
+                              D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = (FLOAT)vis.width;
+    viewport.Height = (FLOAT)vis.height;
+    viewport.MaxDepth = 1.0f;
+    cl->RSSetViewports(1, &viewport);
+    D3D12_RECT scissor = { 0, 0, (LONG)vis.width, (LONG)vis.height };
+    cl->RSSetScissorRects(1, &scissor);
+
+    cl->SetPipelineState(visPipelineState.Get());
+    cl->SetGraphicsRootSignature(rootSignature.Get());
+
+    if (visLevel < 2) return;
+
+    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Scene-driven draws read the compute path's own instance buffer at t1, so
+    // meshId == SV_InstanceID == the index the tracer uses. The synthetic gate
+    // keeps its own buffer so it never disturbs the scene's.
+    const bool sceneDraw = visSceneInstanceCount > 0 && structuredBuffers[0];
+    ID3D12Resource* instanceBuffer = sceneDraw ? structuredBuffers[0].Get()
+                                               : visInstanceBuffer.Get();
+    const UINT instanceCount = sceneDraw ? visSceneInstanceCount : visInstanceCount;
+    if (std::getenv("WASTELAND_VIS_TRACE"))
+        WL_CORE_WARN("vis pass: scene={} instances={} slot={} cb={}",
+                     sceneDraw, instanceCount, currentFrame,
+                     visConstantBuffer[currentFrame].Get() != nullptr);
+    if (!instanceBuffer || instanceCount == 0) return;
+
+    // Root parameter 0 is a root descriptor, not a heap entry, so the per-slot
+    // buffer is chosen here rather than being baked into the descriptor heap.
+    ID3D12Resource* cb = visConstantBuffer[currentFrame].Get();
+    if (!cb) return;
+    // The view-projection is shared by every shape region, so it is written into
+    // all of them once per frame. Doing it here rather than per draw is what keeps
+    // the CPU from touching this buffer between draws -- the GPU can execute a
+    // recorded draw long after the CPU has moved on to the next one.
+    if (sceneDraw && visViewProjection[0] != 0.0f)
+        for (int s = 0; s < (int)kVisShapeCount; s++)
+            memcpy((unsigned char*)visConstantBufferMapped[currentFrame]
+                   + s * kVisCbRegionSize, visViewProjection, sizeof(float) * 16);
+    // WASTELAND_VIS_ALLSHAPES disables the per-shape filter for diagnosis: -1 goes
+    // into every region's shape slot, again once per frame.
+    if (std::getenv("WASTELAND_VIS_ALLSHAPES")) {
+        int all = -1;
+        for (int s = 0; s < (int)kVisShapeCount; s++)
+            memcpy((unsigned char*)visConstantBufferMapped[currentFrame]
+                   + s * kVisCbRegionSize + kVisShapeOffset, &all, sizeof(all));
+    }
+    cl->SetGraphicsRootShaderResourceView(1, instanceBuffer->GetGPUVirtualAddress());
+
+    if (visLevel < 3) return;
+
+    // One draw per shape. Every instance is submitted each time and the VS clips
+    // the ones that do not belong to the bound mesh, which keeps meshId identical
+    // to the compute path's instance index.
+    int draws = 0;
+    for (int shape = 0; shape < 8; shape++)
+    {
+        // WASTELAND_VIS_ONLYSHAPE=N draws just shape N -- the diagnostic that
+        // separates "this shape's draw is broken" from "a later draw overwrites it".
+        if (const char* only = std::getenv("WASTELAND_VIS_ONLYSHAPE"))
+            if (shape != atoi(only)) continue;
+        if (!visShapeVertexBuffer[shape] || !visShapeIndexBuffer[shape] ||
+            visShapeIndexCount[shape] == 0 || visShapeVertexCount[shape] == 0)
+            continue;
+
+        // Each shape has its own 256-byte region, so the GPU reads the shape that
+        // belongs to THIS draw no matter when it gets around to executing it.
+        if (std::getenv("WASTELAND_VIS_TRACE"))
+            WL_CORE_WARN("vis draw: shape={} instances={} mesh={}v/{}i scene={}",
+                         shape, instanceCount,
+                         visShapeVertexCount[shape], visShapeIndexCount[shape], sceneDraw);
+        cl->SetGraphicsRootConstantBufferView(
+            0, cb->GetGPUVirtualAddress() + shape * kVisCbRegionSize);
+
+        D3D12_VERTEX_BUFFER_VIEW vbv = {};
+        vbv.BufferLocation = visShapeVertexBuffer[shape]->GetGPUVirtualAddress();
+        vbv.SizeInBytes = (UINT)(sizeof(float) * 8 * visShapeVertexCount[shape]);
+        vbv.StrideInBytes = sizeof(float) * 8;
+        cl->IASetVertexBuffers(0, 1, &vbv);
+
+        D3D12_INDEX_BUFFER_VIEW ibv = {};
+        ibv.BufferLocation = visShapeIndexBuffer[shape]->GetGPUVirtualAddress();
+        ibv.SizeInBytes = (UINT)(sizeof(uint32_t) * visShapeIndexCount[shape]);
+        ibv.Format = DXGI_FORMAT_R32_UINT;
+        cl->IASetIndexBuffer(&ibv);
+
+        cl->DrawIndexedInstanced(visShapeIndexCount[shape], instanceCount, 0, 0, 0);
+        draws++;
+    }
+    WL_CORE_WARN("DrawVisibility: {} draws, scene instances {}, visLevel {}", draws,
+                 visSceneInstanceCount, visLevel);
+    WL_CORE_WARN("DrawVisibility: rtv targets color0={:p} color1={:p} color2={:p} depth={:p}",
+                 (void*)vis.color0.Get(), (void*)vis.color1.Get(),
+                 (void*)vis.color2.Get(), (void*)vis.depth.Get());
+    WL_CORE_WARN("DrawVisibility: post-transition vis.state={} vis.depthState={}",
+                 (int)vis.state, (int)vis.depthState);
+
+    Transition(vis.color0.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.color1.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.color2.Get(), vis.state, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(vis.depth.Get(), vis.depthState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    vis.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    vis.depthState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+}
+
+// Records the visibility pass into the current frame slot and submits it. The
+// frame ring stays private; Renderer3D calls this rather than driving
+// BeginSubmit/FlushCommandList itself.
+void DX12Nova::SubmitVisibility()
+{
+    BeginSubmit();
+    // WASTELAND_VIS_NODRAW=1 isolates the extra submission from the draw: if the
+    // fault persists with the draw skipped, the submission itself is the problem.
+    if (!std::getenv("WASTELAND_VIS_NODRAW"))
+        DrawVisibility();
+
+    // TEMP DIAGNOSTIC [inlist]: copy the meshId target's top-left corner into a
+    // readback buffer in the SAME list, with tracker-consistent states (the
+    // targets are in NON_PIXEL_SHADER_RESOURCE here). If this reports coverage,
+    // the dispatches wrote; if it reports zero, the dispatches themselves are
+    // producing nothing. Removed once the mesh path rasterises.
+    static Microsoft::WRL::ComPtr<ID3D12Resource> s_inlistStaging;
+    static int s_inlistDumps = 0;
+    if (std::getenv("WASTELAND_VIS_INLIST") && std::getenv("WASTELAND_VIS_READBACK") && s_inlistDumps < 2
+        && visReady && vis.width >= 2000) {
+        s_inlistDumps++;
+        if (!s_inlistStaging) {
+            D3D12_RESOURCE_DESC bd = {};
+            bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            bd.Width = 256 * 256 * 4;
+            bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+            bd.SampleDesc = { 1, 0 };
+            D3D12_HEAP_PROPERTIES rb = { D3D12_HEAP_TYPE_READBACK };
+            if (FAILED(device->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s_inlistStaging))))
+                WL_CORE_WARN("[inlist] staging creation failed");
+        }
+        if (s_inlistStaging) {
+            D3D12_RESOURCE_BARRIER ib = {};
+            ib.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            ib.Transition.pResource = vis.color0.Get();
+            ib.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            ib.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            ib.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            commandList->ResourceBarrier(1, &ib);
+            D3D12_TEXTURE_COPY_LOCATION isrc = {};
+            isrc.pResource = vis.color0.Get();
+            isrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            D3D12_TEXTURE_COPY_LOCATION idst = {};
+            idst.pResource = s_inlistStaging.Get();
+            idst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            idst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_SINT;
+            idst.PlacedFootprint.Footprint.Width = 256;
+            idst.PlacedFootprint.Footprint.Height = 256;
+            idst.PlacedFootprint.Footprint.Depth = 1;
+            idst.PlacedFootprint.Footprint.RowPitch = 256 * 4;
+            commandList->CopyTextureRegion(&idst, 0, 0, 0, &isrc, nullptr);
+            std::swap(ib.Transition.StateBefore, ib.Transition.StateAfter);
+            commandList->ResourceBarrier(1, &ib);
+        }
+    }
+    FlushCommandList();
+
+    if (s_inlistStaging && std::getenv("WASTELAND_VIS_READBACK")) {
+        static int s_inlistReports = 0;
+        if (s_inlistReports < s_inlistDumps) {
+            s_inlistReports = s_inlistDumps;
+            void* m = nullptr;
+            D3D12_RANGE dz = {};
+            if (SUCCEEDED(s_inlistStaging->Map(0, &dz, &m))) {
+                const int* px = (const int*)m;
+                long long covered = 0;
+                for (int i = 0; i < 256 * 256; i++) if (px[i] >= 0) covered++;
+                WL_CORE_WARN("SubmitVisibility INLIST: corner 256x256 covered {} ({:.1f}%) first={}",
+                             covered, covered / 655.36, px[0]);
+                D3D12_RANGE dn = {};
+                s_inlistStaging->Unmap(0, &dn);
+            }
+        }
+    }
+
+    // TEMP DIAGNOSTIC [datadump]: write shape 0's 256-byte CB region so the probe
+    // can dispatch the engine's exact constants. Removed once the mesh path
+    // rasterises.
+    if (std::getenv("WASTELAND_VIS_DATA_DUMP")) {
+        static bool cbDumped = false;
+        if (!cbDumped && visConstantBufferMapped[currentFrame]) {
+            cbDumped = true;
+            std::string path = std::string(std::getenv("WASTELAND_VIS_DATA_DUMP")) + "/cb0.bin";
+            FILE* f = fopen(path.c_str(), "wb");
+            if (f) { fwrite(visConstantBufferMapped[currentFrame], 1, kVisCbRegionSize, f); fclose(f); }
+            WL_CORE_WARN("[datadump] wrote {} bytes", path);
+        }
+    }
+
+    // TEMP DIAGNOSTIC [dedlist]: after the frame list retires, replay the mesh
+    // dispatches into a dedicated fresh list on the same device/queue and read
+    // the corner back. Serialized behind the frame fence so no two lists are in
+    // flight on the same resources. If this rasterises, the frame plumbing is
+    // the culprit; if not, the device context is. Removed once the mesh path
+    // rasterises.
+    if (std::getenv("WASTELAND_VIS_DEDLIST") && std::getenv("WASTELAND_VIS_READBACK")
+        && visReady && vis.width >= 2000 && visMeshletsBuilt) {
+        static bool dlDumped = false;
+        if (!dlDumped) {
+            dlDumped = true;
+
+            // Serialize: wait until EVERY queued submission has retired (the
+            // global fenceValue is the highest value queued on the queue), not
+            // just this slot's frame list -- earlier readback lists may still be
+            // in flight and would barrier-race the dedicated list.
+            {
+                const UINT64 dlTarget = fenceValue;
+                if (fence->GetCompletedValue() < dlTarget) {
+                    fence->SetEventOnCompletion(dlTarget, fenceEvent);
+                    WaitForSingleObject(fenceEvent, INFINITE);
+                }
+            }
+
+            ID3D12PipelineState* dlPSO = (visMeshASPipelineState && !std::getenv("WASTELAND_VIS_MESH_NOAS"))
+                                     ? visMeshASPipelineState.Get() : visMeshPipelineState.Get();
+            // The compute path's instance buffer is a UAV-state resource owned
+            // by NVRHI's tracker; reading it as an SRV from a foreign list is
+            // what removed the device. The mesh path's own upload-heap buffer is
+            // GENERIC_READ always and safe from any list. Out-of-range element
+            // reads return zero (legal), so a shorter fallback buffer is fine.
+            ID3D12Resource* dlInst = visInstanceBuffer ? visInstanceBuffer.Get()
+                                                       : structuredBuffers[0].Get();
+            ID3D12Resource* dlCb = visConstantBuffer[currentFrame].Get();
+
+            Microsoft::WRL::ComPtr<ID3D12CommandAllocator> dlAlloc;
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> dlList;
+            Microsoft::WRL::ComPtr<ID3D12Resource> dlStaging;
+            D3D12_RESOURCE_DESC bd = {};
+            bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            bd.Width = 256 * 256 * 4;
+            bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+            bd.SampleDesc = { 1, 0 };
+            D3D12_HEAP_PROPERTIES rb = { D3D12_HEAP_TYPE_READBACK };
+            if (FAILED(device->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&dlStaging)))) {
+                WL_CORE_WARN("[dedlist] staging failed");
+            }
+            device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&dlAlloc));
+            device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dlAlloc.Get(), nullptr,
+                                      IID_PPV_ARGS(&dlList));
+            dlList->Close();
+            dlAlloc->Reset();
+            dlList->Reset(dlAlloc.Get(), nullptr);
+
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource = vis.color0.Get();
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            dlList->ResourceBarrier(1, &b);
+            // color1/color2 and depth are also in NPSR here; OM binding needs
+            // RENDER_TARGET / DEPTH_WRITE. (Missing these removed the device.)
+            D3D12_RESOURCE_BARRIER bs[3] = {};
+            for (int i = 0; i < 3; i++) {
+                bs[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bs[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            }
+            bs[0].Transition.pResource = vis.color1.Get();
+            bs[0].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            bs[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            bs[1].Transition.pResource = vis.color2.Get();
+            bs[1].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            bs[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            bs[2].Transition.pResource = vis.depth.Get();
+            bs[2].Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            bs[2].Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+            dlList->ResourceBarrier(3, bs);
+            if (dlPSO) dlList->SetPipelineState(dlPSO);
+            dlList->SetGraphicsRootSignature(visMeshRootSignature.Get());
+            D3D12_VIEWPORT dvp = {}; dvp.Width = (FLOAT)vis.width; dvp.Height = (FLOAT)vis.height; dvp.MaxDepth = 1.0f;
+            dlList->RSSetViewports(1, &dvp);
+            D3D12_RECT dsc = { 0, 0, (LONG)vis.width, (LONG)vis.height };
+            dlList->RSSetScissorRects(1, &dsc);
+            const UINT dRtvStride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            D3D12_CPU_DESCRIPTOR_HANDLE dRtv = visRtvHeap->GetCPUDescriptorHandleForHeapStart();
+            D3D12_CPU_DESCRIPTOR_HANDLE dHandles[3];
+            for (int i = 0; i < 3; i++) { dHandles[i] = dRtv; dRtv.ptr += dRtvStride; }
+            dlList->OMSetRenderTargets(3, dHandles, FALSE,
+                                       &visDsvHeap->GetCPUDescriptorHandleForHeapStart());
+            if (dlInst)
+                dlList->SetGraphicsRootShaderResourceView(1, dlInst->GetGPUVirtualAddress());
+            if (dlCb && dlPSO) {
+                for (int shape = 0; shape < 8; shape++) {
+                    if (!visMeshletCount[shape] || !visMeshletBuffer[shape]) continue;
+                    dlList->SetGraphicsRootConstantBufferView(
+                        0, dlCb->GetGPUVirtualAddress() + shape * kVisCbRegionSize);
+                    dlList->SetGraphicsRootShaderResourceView(2, visMeshVertexBuffer[shape]->GetGPUVirtualAddress());
+                    dlList->SetGraphicsRootShaderResourceView(3, visMeshletBuffer[shape]->GetGPUVirtualAddress());
+                    dlList->SetGraphicsRootShaderResourceView(4, visMeshletVertexBuffer[shape]->GetGPUVirtualAddress());
+                    dlList->SetGraphicsRootShaderResourceView(5, visMeshletIndexBuffer[shape]->GetGPUVirtualAddress());
+                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> dl6;
+                    dlList->QueryInterface(IID_PPV_ARGS(&dl6));
+                    // WASTELAND_VIS_DEDLIST_ZERO dispatches zero groups: the call
+                    // is legal and does no work. Surviving => the fault is in the
+                    // shader's data reads; removing => the bindings themselves.
+                    const UINT dlCount = std::getenv("WASTELAND_VIS_DEDLIST_ZERO")
+                                       ? 0u : (UINT)visMeshletCount[shape];
+                    if (dl6) dl6->DispatchMesh(dlCount, 1, 1);
+                }
+            }
+            std::swap(b.Transition.StateBefore, b.Transition.StateAfter);  // RT -> NPSR
+            dlList->ResourceBarrier(1, &b);
+            for (int i = 0; i < 3; i++)
+                std::swap(bs[i].Transition.StateBefore, bs[i].Transition.StateAfter);
+            dlList->ResourceBarrier(3, bs);
+            D3D12_RESOURCE_BARRIER b2 = {};
+            b2.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b2.Transition.pResource = vis.color0.Get();
+            b2.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            b2.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            b2.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            dlList->ResourceBarrier(1, &b2);
+            D3D12_TEXTURE_COPY_LOCATION dsrc = {};
+            dsrc.pResource = vis.color0.Get();
+            dsrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            D3D12_TEXTURE_COPY_LOCATION ddst = {};
+            ddst.pResource = dlStaging.Get();
+            ddst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            ddst.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32_SINT;
+            ddst.PlacedFootprint.Footprint.Width = 256;
+            ddst.PlacedFootprint.Footprint.Height = 256;
+            ddst.PlacedFootprint.Footprint.Depth = 1;
+            ddst.PlacedFootprint.Footprint.RowPitch = 256 * 4;
+            dlList->CopyTextureRegion(&ddst, 0, 0, 0, &dsrc, nullptr);
+            b2.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            b2.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            dlList->ResourceBarrier(1, &b2);
+            dlList->Close();
+            ID3D12CommandList* dlists[] = { dlList.Get() };
+            commandQueue->ExecuteCommandLists(1, dlists);
+
+            Com<ID3D12Fence> dlf;
+            device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&dlf));
+            HANDLE dlev = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            dlf->SetEventOnCompletion(1, dlev);
+            commandQueue->Signal(dlf.Get(), 1);
+            WaitForSingleObject(dlev, 10000);
+            CloseHandle(dlev);
+
+            void* dm = nullptr;
+            D3D12_RANGE dz = {};
+            if (dlStaging && SUCCEEDED(dlStaging->Map(0, &dz, &dm))) {
+                const int* dpx = (const int*)dm;
+                long long dcovered = 0;
+                for (int i = 0; i < 256 * 256; i++) if (dpx[i] >= 0) dcovered++;
+                WL_CORE_WARN("[dedlist] corner 256x256 covered {} ({:.1f}%) first={}",
+                             dcovered, dcovered / 655.36, dpx[0]);
+                D3D12_RANGE dnone = {};
+                dlStaging->Unmap(0, &dnone);
+            } else {
+                WL_CORE_WARN("[dedlist] map failed");
+            }
+        }
+    }
+
+    // TEMP DIAGNOSTIC [rmreason]: if the device was removed, every readback is
+    // returning stale data and the app is zombie-running. Log the reason once.
+    {
+        static bool rmLogged = false;
+        if (!rmLogged && device) {
+            rmLogged = true;
+            HRESULT rm = device->GetDeviceRemovedReason();
+            WL_CORE_WARN("[rmreason] device removed reason after visibility flush: 0x{:08x}",
+                         (unsigned)rm);
+        }
+    }
+
+    // TEMP DIAGNOSTIC [postflush]: read the meshId target back AFTER the list has
+    // executed. The readback inside DrawMeshlets runs at RECORD time and measures
+    // the pre-execution clear, so its 0% coverage was never evidence. This one
+    // reports what the GPU actually produced last execute.
+    if (std::getenv("WASTELAND_VIS_READBACK") && visReady && vis.width >= 2000) {
+        static int dumpCount = 0;
+        if (dumpCount++ < 2) {
+            std::vector<unsigned char> rgba; UINT rw = 0, rh = 0;
+            if (ReadbackVisibility(0, rgba, rw, rh)) {
+                long long covered = 0, total = (long long)rw * rh;
+                std::map<int, long long> hist;
+                for (long long i = 0; i < total; i++) {
+                    int id = (int)(rgba[i * 4] | (rgba[i * 4 + 1] << 8) |
+                                   (rgba[i * 4 + 2] << 16) | (rgba[i * 4 + 3] << 24));
+                    if (id >= 0) { covered++; if (hist.size() < 12) hist[id]++; }
+                }
+                std::string h;
+                for (auto& kv : hist) h += std::to_string(kv.first) + ":" + std::to_string(kv.second) + " ";
+                WL_CORE_WARN("SubmitVisibility POSTFLUSH: meshId coverage {}/{} ({:.1f}%) hist[{}]",
+                             covered, total, total ? 100.0 * covered / total : 0.0, h);
+            } else {
+                WL_CORE_WARN("SubmitVisibility POSTFLUSH: readback failed");
+            }
+        }
+    }
+}
+
+// Scene-driven visibility draw state. The matrix is COPIED, not retained by
+// pointer: Renderer3D recomputes its view-projection every frame and the caller's
+// storage does not outlive the call.
+void DX12Nova::SetVisibilityScene(UINT instanceCount, const float* viewProjection)
+{
+    visSceneInstanceCount = instanceCount;
+    if (viewProjection)
+        memcpy(visViewProjection, viewProjection, sizeof(float) * 16);
+    else
+        memset(visViewProjection, 0, sizeof(visViewProjection));
+}
+
+// Diagnostic wrapper around Resize that catches structured exceptions.
+// The DX12 backend is crashing with 0xC0000005 on the second Resize call,
+// and the crash is a Windows access violation rather than a D3D12 API failure.
+// SEH is the only mechanism that can catch it; the caller's try/catch only
+// handles C++ exceptions.
+void DX12Nova::ResizeSEH(UINT w, UINT h)
+{
+    __try {
+        Resize(w, h);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        WL_CORE_ERROR("DX12 Nova ResizeSEH caught structured exception 0x{:X}", GetExceptionCode());
+        // Convert the SEH exception into a C++ exception so the caller's
+        // try/catch can disable ray tracing cleanly instead of crashing.
+        char buf[64];
+        snprintf(buf, sizeof(buf), "DX12 Nova Resize raised SEH 0x%08X", GetExceptionCode());
+        throw std::runtime_error(buf);
+    }
+}
+
 // Resize is guarded, so a same-size call is free. The zero checks
 // matter because CreateImages would create a zero-extent texture, which
 // D3D12 rejects.
 void DX12Nova::Resize(UINT w, UINT h)
 {
-    if (!w || !h || (width == w && height == h)) return;
+    OutputDebugStringA("DX12Nova::Resize ENTRY\n");
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize ENTRY this={} w={} h={} currentWidth={} currentHeight={}", (void*)this, w, h, width, height);
+    if (!w || !h || (width == w && height == h)) {
+        if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+            WL_CORE_INFO("DEBUG NOVA: Resize early return");
+        return;
+    }
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize before Unbind");
     Unbind();
-    // Unbind before rebuilding. No-op on this backend (see Unbind below),
-    // but kept so the DX11/DX12 pair read the same and a future backend
-    // that does bind state has the right order.
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize after Unbind");
     width = w;
     height = h;
-    // Clear after CreateImages, because freshly created UAVs contain
-    // undefined data and the first accumulation frame would read garbage.
-    // This is also why the Drain inside CreateImages is safe to do first.
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize before CreateImages");
     CreateImages(w, h);
+    // This diagnostic is not connected to the compute renderer's visibility
+    // inputs. Keep it opt-in until real scene draws and SRV consumption exist.
+    if (std::getenv("WASTELAND_VIS_TEST"))
+    {
+        CreateVisibilityResources(w, h);
+        // Pipeline and geometry are rebuilt only after a release; a same-size call
+        // keeps them.
+        if (!visPipelineState) CreateVisibilityPipeline();
+        if (!visReady) CreateVisibilityGeometry();
+        // Mesh path (Task 2.5): created alongside the VS/FS path, gated on the
+        // device's mesh-shader support. GetRenderCapabilities() is the engine's
+        // own probe; without it the pipeline would be built on devices that
+        // cannot run it.
+        if (!visMeshASPipelineState && GetRenderCapabilities().meshShaders) {
+            CreateMeshRootSignature();
+            CreateVisibilityMeshPipeline();
+        }
+        if (!visMeshletsBuilt && visMeshPipelineState) CreateVisibilityMeshlets();
+    }
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize after CreateImages");
     Clear();
+    if (std::getenv("WL_NOVA_DIAGNOSTICS"))
+        WL_CORE_INFO("DEBUG NOVA: Resize after Clear");
 }
 
 // Clear() records its own submission: it is not folded into the next
@@ -769,6 +2487,31 @@ void DX12Nova::Clear()
     // resolution).
     if (!width) return;
     Unbind();
+
+    // A removed device must not be asked to do work. Check() throws on ANY
+    // failure, so without this guard the first call after a device loss raises
+    // straight out of the editor's init path and terminates the process.
+    // GetDeviceRemovedReason returns S_OK while the device is present, which
+    // makes it the correct probe. Same shape as the device-lost guards the NVRHI
+    // layer already uses (NVRHIRendererAPI.cpp:261).
+    if (device)
+    {
+        const HRESULT removedReason = device->GetDeviceRemovedReason();
+        if (FAILED(removedReason))
+        {
+            WL_CORE_ERROR("Clear: DX12 device lost (reason 0x{:08x}), skipping clear",
+                          (unsigned)removedReason);
+            return;
+        }
+    }
+
+    // t78..t81 sit inside a bound descriptor range, so they must hold a valid
+    // descriptor before the first Dispatch binds that range. On the default
+    // path the raster pass never runs, so nothing else populates them and the
+    // GPU faults on the uninitialized descriptors. Clear() runs before any
+    // Dispatch, which makes it the earliest safe point that is not device init
+    // (writing them during CreateDescriptorHeaps removes the device).
+    WriteVisibilitySrvs();
 
     BeginSubmit();
     // Recorded here, inside the submission this function already opens: the
@@ -1083,6 +2826,14 @@ void DX12Nova::BeginSubmit()
 // barrier, and the caller must know the exact before-state.
 void DX12Nova::Transition(ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
 {
+    // A no-op transition must be skipped, not issued. The visibility targets are
+    // created in RENDER_TARGET and DrawVisibility declared RENDER_TARGET as their
+    // before-state, so every barrier it recorded was StateBefore == StateAfter --
+    // and the device was removed on the first draw (bisected with
+    // WASTELAND_VIS_LEVEL=0, barriers only). A redundant barrier is a debug-layer
+    // warning at best and a hard error here.
+    if (before == after) return;
+
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -1201,7 +2952,35 @@ void DX12Nova::Set(const char* name, const T& value, UINT index)
     // Throwing would turn a cosmetic no-op into a startup crash. Once per name
     // because Set is called every frame, so an unconditional warn would flood
     // the log at 60 lines a second.
-    auto it = variables.find(name);
+    // NORMALISE THE CALLER'S SPELLING before the lookup.
+    //
+    // Call sites use the shader's fully-qualified Slang name
+    // ("NovaConstants_0.u_InstanceCount_0"), while the generated table stores the
+    // source-level member name ("u_InstanceCount"). The lookup below is exact, so
+    // every one of those uploads missed -- camera matrices, instance count, pass
+    // id, resolution -- and nothing was ever copied into the constant buffer. The
+    // tracer then ran with a zeroed camera over a zeroed scene and returned a flat
+    // image while every pass reported success, which is the worst possible failure
+    // mode: it looks like a rendering bug in the shader.
+    //
+    // Stripping is done on the KEY, never on the table, so a call site keeps
+    // compiling with either spelling.
+    std::string key(name);
+    const size_t lastDot = key.rfind('.');
+    if (lastDot != std::string::npos)
+        key.erase(0, lastDot + 1);
+    // Drop Slang's "_<n>" entry-id suffix, but only when the tail really is a
+    // suffix: an identifier whose own name ends in digits (`u_Foo2`) must survive.
+    const size_t lastUnderscore = key.rfind('_');
+    if (lastUnderscore != std::string::npos && lastUnderscore + 1 < key.size())
+    {
+        const std::string tail = key.substr(lastUnderscore + 1);
+        const bool allDigits = tail.find_first_not_of("0123456789") == std::string::npos;
+        if (allDigits)
+            key.erase(lastUnderscore);
+    }
+
+    auto it = variables.find(key);
     if (it == variables.end()) {
         static std::unordered_set<std::string> warned;
         if (warned.insert(name).second)
@@ -1214,11 +2993,11 @@ void DX12Nova::Set(const char* name, const T& value, UINT index)
     // which is D3D12's cbuffer array element alignment. A caller writing
     // an array element must pass the element index, and the stride is not
     // sizeof(T) -- a vec3 array still strides by 16.
-    UINT offset = it->second.StartOffset + (index * 16);
+    UINT offset = it->second.Offset + (index * 16);
     // The bounds check throws rather than truncating. It is a `>` and not
     // a `>=` because writing exactly up to the end of the variable is
     // legal: offset + sizeof(T) == end is in bounds.
-    if (offset + sizeof(T) > it->second.StartOffset + it->second.Size)
+    if (offset + sizeof(T) > it->second.Offset + it->second.Size)
         throw std::runtime_error("Nova constant size mismatch");
     memcpy(bytes.data() + offset, &value, sizeof(T));
 }
@@ -1613,6 +3392,23 @@ void DX12Nova::Dispatch(int pass, UINT w, UINT h, const std::vector<ID3D12Resour
         device->CreateShaderResourceView(neuralWeights.Get(), &nwSrvDesc, dest);
     }
 
+    // t75 is WlfgWeights, the WLFG synthesis head's weights (pass 23). Same
+    // StructuredBuffer shape as the neural weights above, and the last entry of the
+    // readable-snapshot block -- which is why ranges[2] is 12 wide and why kUavBase
+    // moved. Declaration-only on this backend: nothing here dispatches pass 23, so
+    // the descriptor exists to satisfy the contiguous range, not to be read.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC wwSrvDesc = {};
+        wwSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        wwSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        wwSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        wwSrvDesc.Buffer.NumElements = kWlfgWeightCount;
+        wwSrvDesc.Buffer.StructureByteStride = sizeof(float);
+        D3D12_CPU_DESCRIPTOR_HANDLE dest = cpuHandle;
+        dest.ptr += kWlfgWeightsSrvSlot * cbvSrvUavDescriptorSize;
+        device->CreateShaderResourceView(wlfgWeights.Get(), &wwSrvDesc, dest);
+    }
+
     // These root-signature ranges use static descriptors. Finish all writes to
     // their heap slots before binding the tables; binding first is invalid even
     // when the writes happen before Dispatch is recorded.
@@ -1628,6 +3424,8 @@ void DX12Nova::Dispatch(int pass, UINT w, UINT h, const std::vector<ID3D12Resour
     D3D12_GPU_DESCRIPTOR_HANDLE imgHandle = heapGpuStart;
     imgHandle.ptr += kImageSrvBase * cbvSrvUavDescriptorSize;
     commandList->SetComputeRootDescriptorTable(6, imgHandle);
+    WL_CORE_WARN("Dispatch: SRV table base {} (heap offset {}), visible range covers registers {}-{}",
+                 kImageSrvBase, kImageSrvBase, 64, 64 + 18 - 1);
 
     D3D12_GPU_DESCRIPTOR_HANDLE uavHandle = heapGpuStart;
     uavHandle.ptr += kUavBase * cbvSrvUavDescriptorSize;
@@ -1643,6 +3441,9 @@ void DX12Nova::Dispatch(int pass, UINT w, UINT h, const std::vector<ID3D12Resour
     // moments return to COPY_DEST for their next CopyResource refresh.
     TransitionSnapshot(history, D3D12_RESOURCE_STATE_COPY_DEST);
     TransitionSnapshot(moments, D3D12_RESOURCE_STATE_COPY_DEST);
+    // The visibility G-buffer may have been (re)created since the last Clear;
+    // repoint t78..t81 so the compute passes see the current targets.
+    WriteVisibilitySrvs();
     FlushCommandList();
 }
 
@@ -2099,6 +3900,122 @@ template void DX12Nova::Set<glm::vec2>(const char*, const glm::vec2&, UINT);
 template void DX12Nova::Set<glm::vec3>(const char*, const glm::vec3&, UINT);
 template void DX12Nova::Set<glm::vec4>(const char*, const glm::vec4&, UINT);
 template void DX12Nova::Set<glm::mat4>(const char*, const glm::mat4&, UINT);
+
+bool DX12Nova::CaptureMaskPNG(const std::string& path)
+{
+    // Stub: mask capture is not implemented yet. Returning false keeps the
+    // editor's diagnostic path from crashing on a null/invalid readback.
+    return false;
+}
+
+bool DX12Nova::ReadbackVisibility(UINT index, std::vector<unsigned char>& rgba,
+                                  UINT& outWidth, UINT& outHeight)
+{
+    if (!visReady || index > 2) {
+        WL_CORE_WARN("ReadbackVisibility: not ready (visReady={0}, index={1}, {2}x{3})",
+                     visReady, index, vis.width, vis.height);
+        return false;
+    }
+    // ComPtr::operator& is an output-parameter helper: converting it to a
+    // ComPtr pointer releases the resource. Select the underlying pointer for
+    // this read-only operation instead.
+    ID3D12Resource* target = (index == 0) ? vis.color0.Get()
+                           : (index == 1) ? vis.color1.Get() : vis.color2.Get();
+    if (!target) {
+        WL_CORE_WARN("ReadbackVisibility: target {0} is null (this={1}, visReady={2}, {3}x{4})",
+                     index, (const void*)this, visReady, vis.width, vis.height);
+        return false;
+    }
+
+    D3D12_RESOURCE_DESC sourceDesc = target->GetDesc();
+    const bool isSint32 = sourceDesc.Format == DXGI_FORMAT_R32_SINT;
+    const bool isUnorm8 = sourceDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (!isSint32 && !isUnorm8) {
+        WL_CORE_WARN("ReadbackVisibility: target {0} has unsupported format {1}",
+                     index, (int)sourceDesc.Format);
+        return false;
+    }
+
+    // Shares the readback staging with Readback(). EnsureReadbackStaging rebuilds
+    // it when the format or extent differs, so a Nova readback followed by a
+    // visibility readback reallocates rather than misinterpreting the bytes.
+    EnsureReadbackStaging(sourceDesc);
+    if (!readbackStaging || !readbackRowPitch || !readbackTotalBytes)
+        return false;
+
+    BeginSubmit();
+    Transition(target, vis.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION dstCopy = {};
+    dstCopy.pResource = readbackStaging.Get();
+    dstCopy.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstCopy.PlacedFootprint.Offset = 0;
+    dstCopy.PlacedFootprint.Footprint.Format = sourceDesc.Format;
+    dstCopy.PlacedFootprint.Footprint.Width = (UINT)sourceDesc.Width;
+    dstCopy.PlacedFootprint.Footprint.Height = (UINT)sourceDesc.Height;
+    dstCopy.PlacedFootprint.Footprint.Depth = 1;
+    dstCopy.PlacedFootprint.Footprint.RowPitch = (UINT)readbackRowPitch;
+
+    D3D12_TEXTURE_COPY_LOCATION srcCopy = {};
+    srcCopy.pResource = target;
+    srcCopy.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcCopy.SubresourceIndex = 0;
+
+    commandList->CopyTextureRegion(&dstCopy, 0, 0, 0, &srcCopy, nullptr);
+    Transition(target, D3D12_RESOURCE_STATE_COPY_SOURCE, vis.state);
+    FlushCommandList();
+
+    // The copy is asynchronous: mapping or reusing the staging allocation
+    // before this submission retires can return stale pixels or free it early.
+    FrameContext& slot = frames[currentFrame];
+    if (slot.submittedValue != 0 && fence->GetCompletedValue() < slot.submittedValue) {
+        HRESULT hr = fence->SetEventOnCompletion(slot.submittedValue, fenceEvent);
+        if (FAILED(hr)) return false;
+        if (WaitForSingleObject(fenceEvent, INFINITE) != WAIT_OBJECT_0) return false;
+    }
+
+    outWidth = (UINT)sourceDesc.Width;
+    outHeight = (UINT)sourceDesc.Height;
+    rgba.assign((size_t)outWidth * outHeight * 4, 0);
+
+    D3D12_RANGE readRange = { 0, (SIZE_T)readbackTotalBytes };
+    void* mapped = nullptr;
+    HRESULT hr = readbackStaging->Map(0, &readRange, &mapped);
+    if (FAILED(hr)) return false;
+
+    const unsigned char* src = (const unsigned char*)mapped;
+    for (UINT y = 0; y < outHeight; y++)
+    {
+        const unsigned char* row = src + (size_t)y * readbackRowPitch;
+        unsigned char* dstRow = rgba.data() + (size_t)y * outWidth * 4;
+        if (isUnorm8) {
+            memcpy(dstRow, row, (size_t)outWidth * 4);
+        } else {
+            // R32_SINT meshId as greyscale. The low byte keeps the value in range
+            // and makes adjacent ids visibly different in the PNG.
+            const int* ids = (const int*)row;
+            for (UINT x = 0; x < outWidth; x++) {
+                unsigned char v = (unsigned char)(ids[x] & 0xFF);
+                dstRow[x * 4 + 0] = v;
+                dstRow[x * 4 + 1] = v;
+                dstRow[x * 4 + 2] = v;
+                dstRow[x * 4 + 3] = 255;
+            }
+        }
+    }
+    readbackStaging->Unmap(0, nullptr);
+    return true;
+}
+
+bool DX12Nova::ReadbackFloat(uint32_t /*index*/, std::vector<float>& /*out*/,
+                             UINT& /*width*/, UINT& /*height*/) const
+{
+    // The DX12 float path (copy the float image to a float staging texture and
+    // hand the raw pixels to the dataset) has not been verified. DX12 is not
+    // this task's capture backend, so return false here; the Vulkan implementation
+    // (std::vector<float>, no tone-map/quantize) is what the dataset export uses.
+    return false;
+}
 
 // Closing the namespace opened at the top of the file.
 } // namespace Wasteland

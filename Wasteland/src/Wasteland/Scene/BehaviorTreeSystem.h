@@ -70,6 +70,11 @@ namespace Wasteland
 		static bool IsTraceEnabled(UUID id);
 		static std::vector<BehaviorTreeTraceEntry> GetTraceLog(UUID id);
 
+		// The live tree instance for an entity, or nullptr when it has none.
+		// The event dispatcher uses this so a tree hears the same events a
+		// script or a flow graph does.
+		static py::object *GetInstance(UUID id);
+
 		static void Shutdown();
 
 	private:

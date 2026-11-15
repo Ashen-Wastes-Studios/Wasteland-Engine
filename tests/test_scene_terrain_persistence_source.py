@@ -59,12 +59,25 @@ class SceneTerrainPersistenceSourceTests(unittest.TestCase):
         body = function_body(source, "bool SceneSerializer::Deserialize(")
 
         preflight = body.index("LoadTerrainScenePayload(")
-        first_mutation = body.index("CreateEntityWithUUID(")
+        # `DeserializeEntityNode` has TWO call sites: the binary-sidecar replay
+        # near the top of Deserialize, and the YAML entity loop below. The
+        # sidecar path is excluded from terrain scenes by design --
+        # SceneChunkStore.h:36, "Scenes with terrain ... keep using the YAML path
+        # unchanged" -- so the contract is about the YAML loop, and index() would
+        # find the sidecar call instead. Anchor on the loop's own header, which is
+        # unique to the YAML path.
+        first_mutation = body.index("for (const auto& entity : entities)")
         terrain_commit = body.index("ConfigureTerrainRuntime(")
         success = body.rindex("return true;")
         self.assertLess(preflight, first_mutation)
         self.assertLess(first_mutation, terrain_commit)
         self.assertLess(terrain_commit, success)
+        # The reader the loop calls is where the entity is actually created.
+        # Asserting this separately keeps "terrain is preflighted before the FIRST
+        # entity mutation" meaningful: without it the loop could stop creating
+        # entities and the ordering test would still pass.
+        helper = function_body(source, "bool SceneSerializer::DeserializeEntityNode(")
+        self.assertIn("CreateEntityWithUUID(", helper)
         self.assertIn("project.GetAssetRoot()", body)
         self.assertIn("project.GetRoot()", body)
         self.assertIn("ClearTerrainRuntime()", body)

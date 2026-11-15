@@ -237,7 +237,7 @@ namespace Wasteland
 		// be sampled, because GL_LINEAR_MIPMAP_LINEAR was set on line 75.
 		// This is a per-texture call rather than a framebuffer-level
 		// glGenerateMipmap, so the cost is paid once per load.
-		glGenerateMipmap(m_RendererID);
+		glGenerateTextureMipmap(m_RendererID);
 
 		// Frees stb's buffer. Must use stbi_image_free, not delete[]: the
 		// allocation came from stb_image's own allocator.

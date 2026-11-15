@@ -33,9 +33,9 @@ namespace Wasteland
 	// not synchronised with the reads in Renderer::GetAPI(), which is an
 	// `inline static` accessor in the header returning s_API by value.
 #if defined(WL_PLATFORM_WINDOWS)
-	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
+	RendererAPI::API RendererAPI::s_API = RendererAPI::API::NVRHI_DX12;
 #else
-	RendererAPI::API RendererAPI::s_API = RendererAPI::API::OpenGL;
+	RendererAPI::API RendererAPI::s_API = RendererAPI::API::NVRHI_Vulkan;
 #endif
 
 }

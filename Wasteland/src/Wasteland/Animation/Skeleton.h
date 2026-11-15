@@ -176,12 +176,36 @@ namespace Wasteland {
 					 * glm::scale(glm::mat4(1.0f), Scale);
 			}
 
-			// A named factory for the identity transform.
+			// The matrix for transforming a NORMAL by this transform: the inverse-transpose
+			// of the upper 3x3. ToMatrix() alone is WRONG for normals under non-uniform
+			// scale -- the scale stretches the normal and changes its direction, so a
+			// surface lit by it shades as if it were curved where it is flat.
 			//
-			// Redundant -- BoneTransform() IS the identity, since every field defaults to its
-			// identity value. It exists for READABILITY at the call site: Pose::Resize below
-			// says Bones.assign(boneCount, BoneTransform::Identity()), which states the
-			// intent where a bare BoneTransform() would not.
+			// The hazard is latent rather than live: bone hierarchies use uniform scale,
+			// where ToMatrix and ToNormalMatrix differ only by a scalar and the normal is
+			// renormalised anyway. It becomes real the moment an importer emits
+			// non-uniform bone scale, which is exactly the case ToMatrix cannot handle.
+			glm::mat3 ToNormalMatrix() const
+			{
+				// The upper 3x3 of ToMatrix is R * S. Its inverse-transpose is
+				// (1/S) * R -- scale inverted, rotation kept -- which is the correct
+				// normal transform for a TRS bone.
+				const glm::mat3 rotation = glm::mat3(glm::mat4_cast(Rotation));
+				// glm::inverse on a singular matrix (a zero scale on any axis) yields
+				// garbage rather than an error, so clamp the degenerate axis: a zero
+				// scale means "this bone collapses that axis", and dividing by it would
+				// produce inf/NaN normals. The clamp keeps the direction meaningful.
+				glm::vec3 safeScale = Scale;
+				for (int a = 0; a < 3; ++a)
+					if (std::abs(safeScale[a]) < 1e-8f)
+						safeScale[a] = 1e-8f;
+				const glm::mat3 invScale = glm::mat3(glm::scale(glm::mat4(1.0f), 1.0f / safeScale));
+				// inverse(R) == transpose(R) for a rotation, but glm::inverse is used
+				// so the formula stays correct if Rotation is ever non-normalised.
+				return glm::transpose(invScale) * glm::transpose(glm::inverse(rotation));
+			}
+
+			// A named factory for the identity transform.
 			static BoneTransform Identity() { return BoneTransform(); }
 		};
 
@@ -347,12 +371,12 @@ namespace Wasteland {
 			bool BuildFromNames(const std::vector<std::string> &names,
 								// The parallel array of parent names.
 								//
-								// DEFECT (no size check on the contract): the signature documents that a child
-								// listed before its parent is an error, but nothing in the SIGNATURE enforces that
-								// parentNames.size() == names.size(). Passing a shorter vector is undefined
-								// behaviour at the implementation's index arithmetic, not a clean false. A size_t
-								// parameter for the parent count, or a defaulted empty vector, would make the
-								// contract visible.
+							// The length contract IS enforced, in the implementation, before any bone is
+							// created: a mismatch returns false with both counts in outError and leaves the
+							// skeleton untouched. (An earlier revision of this comment claimed the check
+							// was missing; it had already been added. The check is the contract's only
+							// enforcement -- the signature itself cannot express it, which is exactly why
+							// the early return matters.)
 								const std::vector<std::string> &parentNames,
 								std::string &outError);
 
@@ -404,12 +428,15 @@ namespace Wasteland {
 				// That is the better definition and is robust to a hierarchy where index 0 is not
 				// the root -- which GetRoot() above assumes but this does not.
 				//
-				// DEFECT (missing bounds check): unlike Pose::GetBone, this indexes m_Bones
-				// directly with no `>= m_Bones.size()` test. A valid-but-out-of-range BoneIndex
-				// (constructible via the explicit constructor) reads out of bounds here, where
-				// GetBone would have returned nullptr. The short-circuit on index.IsValid()
-				// covers the -1 sentinel only.
-				return index.IsValid() && !m_Bones[(size_t)index.Value].Parent.IsValid();
+				// The size test is REQUIRED, not defensive. This used to index m_Bones
+				// directly, so a valid-but-out-of-range BoneIndex (constructible via the
+				// explicit constructor) read out of bounds -- where Pose::GetBone would have
+				// returned nullptr. index.IsValid() covers only the -1 sentinel, not a large
+				// positive value. An out-of-range index is not a root: it is not a bone at
+				// all, so false is the truthful answer and the only safe one.
+				if (!index.IsValid() || (size_t)index.Value >= m_Bones.size())
+					return false;
+				return !m_Bones[(size_t)index.Value].Parent.IsValid();
 			}
 
 			// ---- Rest pose ----
@@ -471,20 +498,17 @@ namespace Wasteland {
 									  // per call, not once. For a 64-byte matrix called once per character per frame
 									  // that is real but small avoidable work -- inlining the identity as a static const
 									  // would remove it. The same pattern is on ComputeSkinningMatrices below.
-									  const glm::mat4 &rootTransform = glm::mat4(1.0f),
-									  // The flag that separates the two use cases the pre-existing comment describes:
-									  // true gives "the pose in world space" (rendering a character standing in the
-									  // level), false gives "the pose in the character's local space" (computing
-									  // skinning matrices, where the object transform is applied later and must not be
-									  // baked in).
-									  //
-									  // DEFECT (redundant with rootTransform): BOTH parameters control the same thing.
-									  // Passing a non-identity rootTransform with outWithRoot false silently ignores
-									  // rootTransform, and the two defaults contradict each other -- an identity
-									  // rootTransform with outWithRoot true applies an identity, which is a no-op.
-									  // Either the flag or the parameter is redundant, and there is no comment saying
-									  // which wins.
-									  bool outWithRoot = false) const;
+									  const glm::mat4 &rootTransform = glm::mat4(1.0f)
+								// WAS a second, redundant `outWithRoot` flag. Both parameters controlled the
+								// same thing: a non-identity rootTransform was SILENTLY IGNORED unless the
+								// caller also passed outWithRoot = true, and the two defaults contradicted
+								// each other (identity root + outWithRoot true is a no-op). The flag is gone.
+								//
+								// rootTransform is now the ONLY control, and it is always applied when it is
+								// not identity. That is the single rule: pass identity for character-local
+								// space, pass the object transform for world space. ComputeSkinningMatrices
+								// is character-space by definition and takes no root transform at all.
+							) const;
 
 			// The matrices a skinned mesh is deformed by:
 			// worldPose * inverseBindMatrix.
@@ -493,19 +517,20 @@ namespace Wasteland {
 			// bone at bind time -- it is the expensive half, and it never
 			// changes unless the skeleton is re-bound.
 			// The second evaluation path, producing worldPose * inverseBindMatrix.
+			// CHARACTER-SPACE BY DEFINITION, and therefore takes NO root transform.
+			//
+			// It used to take a rootTransform parameter that was silently ignored (the
+			// outWithRoot flag it was paired with defaulted to false). Removing the flag
+			// from ComputeWorldMatrices would have made that parameter live, so it would
+			// have started applying the object transform -- and the object transform is
+			// applied again by the renderer, doubling it. Deleting the parameter removes
+			// the footgun rather than documenting it: no call legitimately wants a
+			// world-space skinning matrix, because the bind matrices were captured in
+			// character space.
 			void ComputeSkinningMatrices(const Pose &pose,
 										 // Same out-parameter pattern as above, and the same reason: buffer reuse across
 										 // frames rather than a fresh allocation per call.
-										 std::vector<glm::mat4> &outSkinning,
-										 // NOTE the missing outWithRoot flag: this overload always applies the root
-										 // transform, defaulting to identity.
-										 //
-										 // That asymmetry with ComputeWorldMatrices above is not obvious. A skinning
-										 // matrix is object-space by definition, so applying the root here is correct, but
-										 // the caller cannot opt out -- and the pre-existing comment about "applied later
-										 // and must not be baked in" describes the OTHER function's default. Two adjacent
-										 // APIs with opposite defaults and no signpost is a real trap.
-										 const glm::mat4 &rootTransform = glm::mat4(1.0f)) const;
+										 std::vector<glm::mat4> &outSkinning) const;
 
 			// ---- Bind matrices ----
 
@@ -514,12 +539,13 @@ namespace Wasteland {
 			// The one-time bind capture, and the pre-existing comment states the contract:
 			// call once before ComputeSkinningMatrices is used.
 			//
-			// DEFECT (silent failure mode): this returns void, so there is no way to tell
-			// whether it succeeded or whether the skeleton was empty. GetInverseBindMatrix
-			// below papers over that by returning identity, so an omitted capture produces
-			// geometry that does not deform rather than an error. A bool return would have
-			// caught the omission at the call site.
-			void CaptureBindMatrices();
+			// Returns false when there was nothing to capture (an empty skeleton), true
+			// otherwise. It used to return void, so an empty skeleton captured "successfully"
+			// and GetInverseBindMatrix's identity fallback then made the omission invisible:
+			// geometry that never deforms, with no error anywhere. The identity fallback is
+			// kept -- it is right for a skeleton that genuinely has no bind data -- but a
+			// caller can now tell the two cases apart.
+			bool CaptureBindMatrices();
 
 			// The inverse bind matrix for a bone, or identity if none was
 			// captured. Identity is the safe default: it makes an un-bound

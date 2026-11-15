@@ -181,6 +181,18 @@ namespace Wasteland {
 			// Update.
 			const std::vector<glm::mat4> &GetLastWorldMatrices() const { return m_LastWorld; }
 
+		public:
+			// The blend mode for THIS animator, consulted by Evaluate's additive pass.
+			// Interpolate (the default) is the weighted average and is what a plain
+			// crossfade wants; Additive stacks the instances' offsets on top of
+			// m_AdditiveBase instead of competing with it.
+			//
+			// PUBLIC because the additive pass is gated on this value: while it is not
+			// Additive every instance is skipped and the additive blending never runs.
+			// It was private with no setter, so that path was unreachable dead code.
+			void SetBlendMode(BlendMode mode) { m_BlendMode = mode; }
+			BlendMode GetBlendMode() const { return m_BlendMode; }
+
 		private:
 			// Blends `src` into `dst` scaled by `weight`.
 			static void BlendPose(Pose &dst, const Pose &src, float weight,
@@ -224,13 +236,15 @@ namespace Wasteland {
 			// instance's weight bookkeeping mid-fade.
 			std::unordered_map<int, FadeState> m_FadingOut;
 
-			// DEFECT (unreachable member): m_BlendMode is private, the only
-			// constructor is `= default` above, and no method in this class
-			// assigns it -- BlendPose takes the mode as a PARAMETER instead.
-			// So BlendMode::Override and BlendMode::Additive can never be
-			// selected by any caller: every blend is Interpolate. Either add a
-			// SetBlendMode accessor or pass the mode into Update/Evaluate.
+			// SELECTABLE via SetBlendMode below, and it gates the additive pass in
+			// Evaluate: while this is not Additive, every instance `continue`s past
+			// that loop and the additive blending -- including the base-lookup defect
+			// documented on BlendPose -- never runs. It was previously private with no
+			// setter, so the additive path was unreachable dead code: implemented,
+			// correct as far as the source shows, and impossible to select.
 			BlendMode m_BlendMode = BlendMode::Interpolate;
+
+
 
 			Pose m_AdditiveBase;
 			Pose m_LastPose;

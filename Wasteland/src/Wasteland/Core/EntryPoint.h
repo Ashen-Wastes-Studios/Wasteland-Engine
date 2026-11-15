@@ -14,7 +14,9 @@
 #include <filesystem>
 #include <string>
 
+#include <Wasteland/Debug/Instrumentor.h>
 #include <Wasteland/Project/Project.h>
+#include <Wasteland/Core/CrashHandler.h>
 
 #ifdef WL_PLATFORM_WINDOWS
 
@@ -115,6 +117,10 @@ int main(int argc, char **argv)
 	// ordering this guarantees.
 	Wasteland::Log::Init();
 
+	// Fault trace to stderr, installed before anything else can crash during
+	// startup. One SetUnhandledExceptionFilter call when nothing goes wrong.
+	Wasteland::InstallCrashHandler();
+
 	// Absolute path of the running executable, used by Bootstrap to locate a
 	// project relative to the binary.
 	//
@@ -173,3 +179,4 @@ int main(int argc, char **argv)
 }
 
 #endif
+

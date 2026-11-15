@@ -19,10 +19,13 @@
 // variants.
 #include "wlpch.h"
 #include "SceneSerializer.h"
+// The shared glm -> Emitter overloads (vec2/vec3/vec4).
+#include "Wasteland/Scene/YamlGlm.h"
 
 #include "Entity.h"
 #include "SceneChunkStore.h"
 #include "Wasteland/Project/Project.h"
+#include "Wasteland/Scene/SaveBackup.h"
 #include "Wasteland/Terrain/TerrainScenePersistence.h"
 
 #include <fstream>
@@ -34,211 +37,43 @@
 #include <yaml-cpp/yaml.h>
 #include "Components.h"
 
-// yaml-cpp customization namespace.
-//
-// Specializing convert<T> here is how a third-party library is taught to
-// handle a type it has never heard of: node.as<glm::vec3>() on load and
-// the convert path on save then both work without any call-site changes.
-// The alternative -- converting by hand at every component -- is what
-// layer 2 below is the residue of.
-namespace YAML
-{
-
-	template <>
-	// Teaches yaml-cpp to treat a glm::vec2 as a 2-element flow sequence,
-	// e.g. `[1, 2]`.
-	//
-	// A vector is a SEQUENCE, not a mapping, so it round-trips as `[x, y]`
-	// rather than as named keys. That is what makes these converters
-	// non-obvious on read: position carries the meaning, and no key says
-	// which component is which.
-	//
-	// Consequently reordering a vector's components on disk silently
-	// reinterprets the value rather than failing -- a vec3 with its y and z
-	// swapped loads as valid data that is wrong.
-	struct convert<glm::vec2>
-	{
-		// Builds the Node for a vec2.
-		//
-		// Uses push_back to build a sequence of the components in order, then
-		// sets Flow style so it EMITS as `[x, y]` rather than as a block sequence
-		// with dashes. Without the style call a vec3 would be written as three
-		// `- value` lines, which is valid YAML but triples the file size for
-		// every transform in the scene and makes it unreadable.
-		static Node encode(const glm::vec2 &rhs)
-		{
-			// push_back on a default-constructed Node yields a SEQUENCE, one element
-			// per call, in call order. There is no size argument, so the arity is
-			// whatever the number of push_backs -- which is why encode below and the
-			// size check in decode have to be kept in step by hand.
-			Node node;
-			node.push_back(rhs.x);
-			node.push_back(rhs.y);
-			// Flow style makes the emitter write `[x, y]` on one line. Without it the
-			// same sequence is written as block style with a dash per element, which
-			// is valid YAML but three lines per vector -- a readability and file-size
-			// cost multiplied by every transform in the scene.
-			node.SetStyle(EmitterStyle::Flow);
-			return node;
-		}
-
-		// Reads a Node into a vec2, reporting failure by returning false.
-		//
-		// Returning bool is yaml-cpp's failure channel for convert -- the caller
-		// decides what a bad node means.
-		//
-		// HAZARD: the false return covers a wrong SHAPE only (not a sequence, or
-		// not exactly 2 elements). A correctly-shaped sequence containing a
-		// non-float -- `[1, "red"]` -- reaches node[1].as<float>() below, which
-		// THROWS YAML::TypedBadConversion. decode does not catch it, so it
-		// propagates out of node.as<glm::vec2>() and out of Deserialize. Editing
-		// a scene file by hand and mistyping one number therefore throws out of
-		// the load path rather than returning false.
-		static bool decode(const Node &node, glm::vec2 &rhs)
-		{
-			// The only guard: wrong KIND, or wrong COUNT. Both return false, which is
-			// yaml-cpp's failure channel for convert -- there is no exception and no
-			// log here.
-			// Note node.size() is compared against an exact 2, so a 3-element sequence
-			// fails rather than being truncated. Safer than the alternative.
-			if (!node.IsSequence() || node.size() != 2)
-				return false;
-
-			rhs.x = node[0].as<float>();
-			rhs.y = node[1].as<float>();
-			return true;
-		}
-	};
-
-	template <>
-	// glm::vec3 as a 3-element flow sequence, `[x, y, z]`.
-	//
-	// This is the workhorse: TransformComponent's Translation, Rotation and
-	// Scale are all vec3, so almost every entity in a scene round-trips
-	// through this converter.
-	//
-	// NOTE the arity check is strict -- exactly 3 elements, not 'at least
-	// 3'. A hand-edited file with an extra element fails rather than
-	// ignoring it, which is the safer of the two behaviours.
-	struct convert<glm::vec3>
-	{
-		// Three push_backs for three components, matching the size() != 3 check in
-		// decode below. Same manual correspondence as the vec2 converter.
-		static Node encode(const glm::vec3 &rhs)
-		{
-			Node node;
-			node.push_back(rhs.x);
-			node.push_back(rhs.y);
-			node.push_back(rhs.z);
-			node.SetStyle(EmitterStyle::Flow);
-			return node;
-		}
-
-		static bool decode(const Node &node, glm::vec3 &rhs)
-		{
-			if (!node.IsSequence() || node.size() != 3)
-				return false;
-
-			rhs.x = node[0].as<float>();
-			rhs.y = node[1].as<float>();
-			rhs.z = node[2].as<float>();
-			return true;
-		}
-	};
-
-	template <>
-	// glm::vec4 as a 4-element flow sequence, `[r, g, b, a]`.
-	//
-	// Used by every Color field in the primitive renderer components and by
-	// MaterialComponent's Albedo and EmissionColor.
-	//
-	// For a COLOR this positional format is a real hazard: `[1, 1, 1, 1]`
-	// carries no indication of which element is alpha, so a file edited by
-	// hand can shift the channels and produce a wrong colour rather than a
-	// load error.
-	struct convert<glm::vec4>
-	{
-		// Four components. The [r, g, b, a] ordering is positional and therefore
-		// invisible in the file: nothing on disk says which element is alpha.
-		static Node encode(const glm::vec4 &rhs)
-		{
-			Node node;
-			node.push_back(rhs.x);
-			node.push_back(rhs.y);
-			node.push_back(rhs.z);
-			node.push_back(rhs.w);
-			node.SetStyle(EmitterStyle::Flow);
-			return node;
-		}
-
-		static bool decode(const Node &node, glm::vec4 &rhs)
-		{
-			if (!node.IsSequence() || node.size() != 4)
-				return false;
-
-			rhs.x = node[0].as<float>();
-			rhs.y = node[1].as<float>();
-			rhs.z = node[2].as<float>();
-			rhs.w = node[3].as<float>();
-			return true;
-		}
-	};
-
-}
 
 namespace Wasteland
 {
+	// Migrates a parsed scene document from `version` forward to
+	// SceneSerializer::kCurrentSchemaVersion.
+	//
+	// A chain, not an inline `if`: the next layout change adds one rung here rather
+	// than a second ad-hoc version check inside Deserialize.
+	//
+	// There is one schema version today, so there is nothing to migrate. A rung
+	// looks like:
+	//
+	//     if (version < 2)
+	//     {
+	//         data["NewField"] = default;   // rewrite in place
+	//         data["Version"] = 2;
+	//         version = 2;
+	//     }
+	bool MigrateSceneDocument(YAML::Node & /*data*/, int /*version*/)
+	{
+		return true;
+	}
+
 
 	// Stream operators writing glm vectors straight to an Emitter.
 	//
-	// These DUPLICATE the work of the convert specializations above -- both
-	// produce the same `[x, y]` on disk, by two independent implementations.
-	// Both are needed because they serve different call sites: the convert
-	// path is what node.as<T>() uses when LOADING, while these are used when
-	// writing directly with `out << value`.
+	// MOVED to Scene/YamlGlm.h, which is where they are now single-sourced.
+	// They were file-local here, which meant MaterialSerializer.cpp could
+	// not see them: the same vec4 fields a .wlmaterial emits (Albedo,
+	// EmissionColor) failed to compile there rather than sharing one
+	// spelling of the on-disk format. The maintenance hazard this comment
+	// used to describe -- two implementations of the same `[x, y]` -- is
+	// now structural instead of disciplinary.
 	//
-	// MAINTENANCE HAZARD: the duplication is unguarded. If the two
-	// implementations of the on-disk format ever diverge -- say the stream
-	// operator gains different precision -- files written by one path would
-	// not read correctly through the other, with nothing to catch it.
-	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec2 &v)
-	{
-		// YAML::Flow sets the style for everything that FOLLOWS it on this emitter,
-		// which is why it is emitted once before BeginSeq rather than inside. The
-		// style is sticky, not scoped -- see the missing reset noted on the
-		// vec3 overload below.
-		out << YAML::Flow;
-		// BeginSeq/EndSeq bracket the elements; the flow style from the line above
-		// is what collapses them onto one line. Emitting v.x and v.y as separate
-		// `<<` operations is what makes this an overload-by-arity rather than a
-		// loop -- there is no reflection here to iterate a vec2 generically.
-		out << YAML::BeginSeq << v.x << v.y << YAML::EndSeq;
-		return out;
-	}
-
-	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec3 &v)
-	{
-		out << YAML::Flow;
-		// DEFECT: YAML::Flow is sticky on the Emitter, and nothing resets it. Any
-		// later `out << something` on this same emitter inherits flow style, so a
-		// subsequent block-style construct (a nested map or a multi-element
-		// sequence written outside a BeginSeq) can come out inline. The serialize
-		// path does not appear to hit this because every sequence is explicitly
-		// bracketed, but the stream operators have no way to restore block style.
-		out << YAML::BeginSeq << v.x << v.y << v.z << YAML::EndSeq;
-		return out;
-	}
-
-	YAML::Emitter &operator<<(YAML::Emitter &out, const glm::vec4 &v)
-	{
-		out << YAML::Flow;
-		// Same shape as the two overloads above. Note the four overloads of
-		// operator<< together cover every glm vector the components use; a vec4
-		// field in a NEW component compiles only because this exists, and a
-		// different arity would not compile at all rather than fail silently.
-		out << YAML::BeginSeq << v.x << v.y << v.z << v.w << YAML::EndSeq;
-		return out;
-	}
+	// The convert specializations above (node.as<T>() when LOADING) remain
+	// here because only this file loads scenes; the stream operators are
+	// shared because two files now write.
 
 	// Enum-to-string maps for the serialized enums.
 	//
@@ -838,6 +673,37 @@ namespace Wasteland
 			out << YAML::EndMap; // MaterialComponent
 		}
 
+		if (entity.HasComponent<MeshComponent>())
+		{
+			out << YAML::Key << "MeshComponent";
+			out << YAML::BeginMap; // MeshComponent
+
+			auto &meshComponent = entity.GetComponent<MeshComponent>();
+
+			// The SAME normalisation and "assets/" prefix rule as
+			// MaterialComponent::TexturePath above, deliberately: both are asset
+			// references resolved against the project root, and two different
+			// spellings of the same rule would mean a scene that resolves its
+			// textures but not its meshes.
+			std::string meshPathToSave = meshComponent.MeshPath;
+			std::replace(meshPathToSave.begin(), meshPathToSave.end(), '\\', '/');
+			if (meshPathToSave.find("assets/") == std::string::npos)
+				meshPathToSave = "assets/" + meshPathToSave;
+			out << YAML::Key << "MeshPath" << YAML::Value << meshPathToSave;
+
+			// MaterialPath is written verbatim, WITHOUT the prefix rule: it is an
+			// OVERRIDE that may legitimately point outside the asset root (a
+			// shared material library), and prefixing it would break that.
+			std::string materialPathToSave = meshComponent.MaterialPath;
+			std::replace(materialPathToSave.begin(), materialPathToSave.end(), '\\', '/');
+			out << YAML::Key << "MaterialPath" << YAML::Value << materialPathToSave;
+
+			out << YAML::Key << "CastShadow" << YAML::Value << meshComponent.CastShadow;
+			out << YAML::Key << "ReceiveShadow" << YAML::Value << meshComponent.ReceiveShadow;
+
+			out << YAML::EndMap; // MeshComponent
+		}
+
 		if (entity.HasComponent<Rigidbody2DComponent>())
 		{
 			out << YAML::Key << "Rigidbody2DComponent";
@@ -1155,6 +1021,39 @@ namespace Wasteland
 			out << YAML::EndMap;
 		}
 
+		if (entity.HasComponent<AudioGraphComponent>())
+		{
+			out << YAML::Key << "AudioGraphComponent";
+			out << YAML::BeginMap;
+			auto &graph = entity.GetComponent<AudioGraphComponent>();
+			out << YAML::Key << "GraphPath" << YAML::Value << graph.GraphPath;
+			out << YAML::Key << "PlayOnStart" << YAML::Value << graph.PlayOnStart;
+			out << YAML::Key << "Volume" << YAML::Value << graph.Volume;
+			out << YAML::Key << "DurationSeconds" << YAML::Value << graph.DurationSeconds;
+			out << YAML::Key << "Priority" << YAML::Value << graph.Priority;
+			out << YAML::Key << "Spatial" << YAML::Value << graph.Spatial;
+			out << YAML::Key << "MinDistance" << YAML::Value << graph.MinDistance;
+			out << YAML::Key << "MaxDistance" << YAML::Value << graph.MaxDistance;
+			// The trigger map, one map per event. A sequence of flow sequences
+			// would put the pin in a position a reader has to COUNT to find, and
+			// this file is read by humans debugging why a footstep is silent.
+			out << YAML::Key << "Triggers" << YAML::Value << YAML::BeginSeq;
+			for (const auto &trigger : graph.Triggers)
+			{
+				out << YAML::BeginMap;
+				out << YAML::Key << "Event" << YAML::Value << trigger.Event;
+				out << YAML::Key << "Node" << YAML::Value << trigger.Node;
+				out << YAML::Key << "Pin" << YAML::Value << trigger.Pin;
+				out << YAML::EndMap;
+			}
+			out << YAML::EndSeq;
+			// CompileError and Attached are deliberately NOT written. Both are
+			// runtime state regenerated on the next load, and a scene file that
+			// carried a stale error would present it as an authoring fact -- so
+			// fixing the graph would not clear it.
+			out << YAML::EndMap;
+		}
+
 		// The listener travels for the same reason the source does: a
 		// scene whose listener is gone has its 3D panning driven by the
 		// primary-camera fallback, which is a different sound mix with
@@ -1247,6 +1146,20 @@ namespace Wasteland
 			out << YAML::Key << "SilverLining" << YAML::Value << clouds.SilverLining;
 			out << YAML::Key << "ShadowStrength" << YAML::Value << clouds.ShadowStrength;
 			out << YAML::Key << "MaxSteps" << YAML::Value << clouds.MaxSteps;
+			out << YAML::EndMap;
+		}
+
+		// Decal serializes its colour directly as a vec4 -- the component's Color
+		// IS a 4-vector (alpha = overlay strength), unlike the vec3 colours
+		// elsewhere which are widened to 4 elements on disk and narrowed back.
+		if (entity.HasComponent<DecalComponent>())
+		{
+			out << YAML::Key << "DecalComponent";
+			out << YAML::BeginMap;
+			auto &decal = entity.GetComponent<DecalComponent>();
+			out << YAML::Key << "Enabled" << YAML::Value << decal.Enabled;
+			out << YAML::Key << "Color" << YAML::Value << decal.Color;
+			out << YAML::Key << "Softness" << YAML::Value << decal.Softness;
 			out << YAML::EndMap;
 		}
 
@@ -1399,6 +1312,81 @@ namespace Wasteland
 			out << YAML::EndMap; // ScriptComponent
 		}
 
+		// BehaviorTreeComponent and VisualBlocksComponent: the authored-behaviour
+		// pair. Both were missing from the serializer, so a scene saved with either
+		// attached silently lost it on load -- the tree and the graph are not
+		// reconstructed from the entity, only from the path, so an absent block
+		// means an absent component.
+		//
+		// The path is written EXACTLY as authored, with no normalisation and no
+		// project-root rewrite. ScriptComponent above rewrites its path for a
+		// forward-compat contract, which has the documented side effect of
+		// discarding the subdirectory ("scripts/enemies/orc.lua" -> "scripts/
+		// orc.lua"); these two deliberately do not inherit that behaviour, because
+		// a graph or tree reference is resolved by the asset root and rewriting it
+		// is how a reference to a shared graph stops resolving.
+		//
+		// CompileError / Attached / SuspendedTicks are intentionally NOT written:
+		// they are runtime state recomputed on attach, and persisting them would
+		// let a stale "Attached = false" resurrect a component that compiles fine.
+		if (entity.HasComponent<BehaviorTreeComponent>())
+		{
+			out << YAML::Key << "BehaviorTreeComponent";
+			out << YAML::BeginMap; // BehaviorTreeComponent
+			out << YAML::Key << "TreePath" << YAML::Value
+				<< entity.GetComponent<BehaviorTreeComponent>().TreePath;
+			out << YAML::Key << "TreeName" << YAML::Value
+				<< entity.GetComponent<BehaviorTreeComponent>().TreeName;
+			out << YAML::EndMap; // BehaviorTreeComponent
+		}
+
+		if (entity.HasComponent<VisualBlocksComponent>())
+		{
+			out << YAML::Key << "VisualBlocksComponent";
+			out << YAML::BeginMap; // VisualBlocksComponent
+			out << YAML::Key << "GraphPath" << YAML::Value
+				<< entity.GetComponent<VisualBlocksComponent>().GraphPath;
+			out << YAML::Key << "GraphName" << YAML::Value
+				<< entity.GetComponent<VisualBlocksComponent>().GraphName;
+			// Exposed-variable overrides, only when some exist. A map, so the
+			// order is deterministic and a re-saved scene is byte-stable.
+			const auto &overrides =
+				entity.GetComponent<VisualBlocksComponent>().VariableOverrides;
+			if (!overrides.empty())
+			{
+				out << YAML::Key << "VariableOverrides" << YAML::Value
+					<< YAML::BeginMap;
+				for (const auto &entry : overrides)
+				{
+					out << YAML::Key << entry.first << YAML::Value << entry.second;
+				}
+				out << YAML::EndMap;
+			}
+			out << YAML::EndMap; // VisualBlocksComponent
+		}
+
+		// AnimationComponent. One path, because a .wlanim asset carries the rig,
+		// its clips and its state machine together; writing them as separate
+		// fields would let a saved scene reference a clip whose skeleton is not
+		// the one it was authored against.
+		//
+		// Attached / LoadError are runtime state and are not written, for the
+		// same reason as the two components above.
+		if (entity.HasComponent<AnimationComponent>())
+		{
+			out << YAML::Key << "AnimationComponent";
+			out << YAML::BeginMap; // AnimationComponent
+			const auto &animation = entity.GetComponent<AnimationComponent>();
+			out << YAML::Key << "AssetPath" << YAML::Value << animation.AssetPath;
+			out << YAML::Key << "DefaultState" << YAML::Value
+				<< animation.DefaultState;
+			out << YAML::Key << "MeshPath" << YAML::Value << animation.MeshPath;
+			out << YAML::Key << "LoopDefault" << YAML::Value
+				<< animation.LoopDefault;
+			out << YAML::Key << "PlayRate" << YAML::Value << animation.PlayRate;
+			out << YAML::EndMap; // AnimationComponent
+		}
+
 		// Closes the entity mapping opened at line 359. Every component block
 		// above balanced its own map, so this single EndMap is what makes the
 		// next entity in the sequence start at the right nesting level.
@@ -1475,6 +1463,7 @@ namespace Wasteland
 		try
 		{
 			out << YAML::BeginMap;
+			out << YAML::Key << "Version" << YAML::Value << kCurrentSchemaVersion;
 			out << YAML::Key << "Scene" << YAML::Value << "Untitled";
 			if (terrainConfigured)
 			{
@@ -1552,6 +1541,24 @@ namespace Wasteland
 				std::error_code ignored;
 				std::filesystem::remove(temporaryPath, ignored);
 				return fail("could not save terrain sidecars: " + terrainError);
+			}
+		}
+
+		// Preserve the previous version BEFORE the publish rename. The rename makes
+		// the new YAML authoritative, so rotating afterwards would back up the NEW
+		// file and the ring would hold nothing but copies of the current version.
+		//
+		// A backup failure must not abort the save: losing the backup is bad, losing
+		// the user's edit because the backup failed is worse.
+		{
+			SaveBackupRing backupRing;
+			backupRing.KeepCount = 5;
+			backupRing.Directory = Project::Get().GetUserConfigDirectory() / "backups";
+			std::string backupError;
+			if (!backupRing.Rotate(targetPath, &backupError))
+			{
+				WL_WARN("SaveBackup", "could not preserve the previous version of {}: {}",
+				        targetPath.string(), backupError);
 			}
 		}
 
@@ -1969,6 +1976,7 @@ namespace Wasteland
 				src.MinDistance = audioSourceNode["MinDistance"].as<float>();
 			if (audioSourceNode["MaxDistance"])
 				src.MaxDistance = audioSourceNode["MaxDistance"].as<float>();
+
 			// MinPlayTime is left at 0, which is both the component default and
 			// the correct restored state: it counts the tail of a sound that is
 			// CURRENTLY playing, and a scene file describes an authored level
@@ -1994,6 +2002,52 @@ namespace Wasteland
 			// is a separate authored-only field on the editor path read into a
 			// different attribute -- not a blind round trip of this one, because
 			// the runtime save path shares this file and would replay on every load.
+		}
+
+		const auto audioGraphNode = entity["AudioGraphComponent"];
+		if (audioGraphNode)
+		{
+			// Added before its fields are read, for the same reason as the
+			// source above: a component with every field at its default must
+			// round-trip as a component rather than vanishing.
+			auto &graph = deserializedEntity.AddComponent<AudioGraphComponent>();
+			if (audioGraphNode["GraphPath"])
+				graph.GraphPath = audioGraphNode["GraphPath"].as<std::string>();
+			if (audioGraphNode["PlayOnStart"])
+				graph.PlayOnStart = audioGraphNode["PlayOnStart"].as<bool>();
+			if (audioGraphNode["Volume"])
+				graph.Volume = audioGraphNode["Volume"].as<float>();
+			if (audioGraphNode["DurationSeconds"])
+				graph.DurationSeconds = audioGraphNode["DurationSeconds"].as<float>();
+			if (audioGraphNode["Priority"])
+				graph.Priority = audioGraphNode["Priority"].as<int>();
+			if (audioGraphNode["Spatial"])
+				graph.Spatial = audioGraphNode["Spatial"].as<bool>();
+			if (audioGraphNode["MinDistance"])
+				graph.MinDistance = audioGraphNode["MinDistance"].as<float>();
+			if (audioGraphNode["MaxDistance"])
+				graph.MaxDistance = audioGraphNode["MaxDistance"].as<float>();
+			// `if (const auto triggers = ...)` is safe on an ABSENT key: the
+			// test reads IsDefined() without throwing. The typed predicates
+			// (IsSequence) would throw InvalidNode on a zombie -- see the same
+			// trap recorded in MeshSerializer.
+			if (const auto triggers = audioGraphNode["Triggers"])
+			{
+				for (const auto &entry : triggers)
+				{
+					AudioGraphComponent::Trigger trigger;
+					if (entry["Event"])
+						trigger.Event = entry["Event"].as<std::string>();
+					if (entry["Node"])
+						trigger.Node = entry["Node"].as<std::string>();
+					if (entry["Pin"])
+						trigger.Pin = entry["Pin"].as<std::string>();
+					graph.Triggers.push_back(std::move(trigger));
+				}
+			}
+			// CompileError and Attached stay at their defaults: neither is
+			// written, and both are regenerated by the OnComponentAdded hook
+			// that fires on AddComponent above.
 		}
 
 		// Single bool, same presence-check convention.
@@ -2315,6 +2369,43 @@ namespace Wasteland
 					mc.EmissionIntensity = materialComponent["EmissionIntensity"].as<float>();
 				if (materialComponent["DisplacementScale"])
 					mc.DisplacementScale = materialComponent["DisplacementScale"].as<float>();
+			}
+
+		// MeshComponent. Every field presence-checked: a scene authored before
+		// this component existed must load with the defaults, not throw.
+		//
+		// The mesh is NOT loaded here. Loading happens on first draw, through
+		// the Scene's cache, because a scene can be deserialized in a context
+		// with no renderer (the headless test runner, a server build) and
+		// loading a mesh would require one. The path is all the scene stores.
+		const auto meshComponent = entity["MeshComponent"];
+		if (meshComponent)
+		{
+			auto &mec = deserializedEntity.AddComponent<MeshComponent>();
+
+			// Same normalisation and duplicate-prefix collapse as
+			// MaterialComponent::TexturePath above: both are asset references
+			// resolved against the project root, so both must survive the same
+			// historical bug (an "assets/assets/" path written by an older
+			// serializer).
+			std::string rawMeshPath = meshComponent["MeshPath"] ? meshComponent["MeshPath"].as<std::string>() : "";
+			std::replace(rawMeshPath.begin(), rawMeshPath.end(), '\\', '/');
+			const std::string meshPrefix = "assets/";
+			while (rawMeshPath.find(meshPrefix + meshPrefix) == 0)
+				rawMeshPath = rawMeshPath.substr(meshPrefix.size());
+			mec.MeshPath = rawMeshPath;
+
+			// MaterialPath has no prefix rule on write, so it gets none on
+			// read either -- only the separator normalisation, which is not a
+			// rule about where the file lives.
+			std::string rawMaterialPath = meshComponent["MaterialPath"] ? meshComponent["MaterialPath"].as<std::string>() : "";
+			std::replace(rawMaterialPath.begin(), rawMaterialPath.end(), '\\', '/');
+			mec.MaterialPath = rawMaterialPath;
+
+			if (meshComponent["CastShadow"])
+				mec.CastShadow = meshComponent["CastShadow"].as<bool>();
+			if (meshComponent["ReceiveShadow"])
+				mec.ReceiveShadow = meshComponent["ReceiveShadow"].as<bool>();
 		}
 
 		// Guarded by node truthiness only -- the fields inside are read
@@ -2537,6 +2628,20 @@ namespace Wasteland
 				clouds.MaxSteps = volumetricCloudsComponent["MaxSteps"].as<int>();
 		}
 
+		// Decal reader: vec4 Color is read directly (it is the component's native
+		// type, alpha = strength), not widened-then-narrowed.
+		auto decalComponent = entity["DecalComponent"];
+		if (decalComponent)
+		{
+			auto &decal = deserializedEntity.AddComponent<DecalComponent>();
+			if (decalComponent["Enabled"])
+				decal.Enabled = decalComponent["Enabled"].as<bool>();
+			if (decalComponent["Color"])
+				decal.Color = decalComponent["Color"].as<glm::vec4>();
+			if (decalComponent["Softness"])
+				decal.Softness = decalComponent["Softness"].as<float>();
+		}
+
 		// Guarded by node truthiness only -- the fields inside are read
 		// unconditionally, so a partial node throws out of Deserialize instead of
 		// keeping the component's defaults. The health and weapon blocks above
@@ -2724,6 +2829,74 @@ namespace Wasteland
 					sc.ScriptName = scriptComponent["ScriptName"].as<std::string>();
 		}
 
+		// BehaviorTreeComponent and VisualBlocksComponent.
+		//
+		// The path is stored VERBATIM. ScriptComponent above rewrites its path to
+		// "scripts/" + filename, which discards the subdirectory and is a
+		// documented defect; these two must not do the same, because a graph or
+		// tree reference is resolved against the asset root by its full
+		// project-relative path.
+		//
+		// Missing keys are tolerated: a scene authored before the component
+		// existed is the common case, not an error, and the component keeps its
+		// defaults rather than throwing.
+		auto behaviorTreeComponent = entity["BehaviorTreeComponent"];
+		if (behaviorTreeComponent)
+		{
+			auto &btc = deserializedEntity.AddComponent<BehaviorTreeComponent>();
+			if (behaviorTreeComponent["TreePath"])
+				btc.TreePath = behaviorTreeComponent["TreePath"].as<std::string>();
+			if (behaviorTreeComponent["TreeName"])
+				btc.TreeName = behaviorTreeComponent["TreeName"].as<std::string>();
+		}
+
+		auto visualBlocksComponent = entity["VisualBlocksComponent"];
+		if (visualBlocksComponent)
+		{
+			auto &vbc = deserializedEntity.AddComponent<VisualBlocksComponent>();
+			if (visualBlocksComponent["GraphPath"])
+				vbc.GraphPath = visualBlocksComponent["GraphPath"].as<std::string>();
+			if (visualBlocksComponent["GraphName"])
+				vbc.GraphName = visualBlocksComponent["GraphName"].as<std::string>();
+			// Exposed-variable overrides. A missing map is not an error: a scene
+			// authored before a variable was exposed must still load, with the
+			// variable reading the graph's default.
+			//
+			// Iterated as a NODE rather than converted through as<...>: the values
+			// are authored literals read as strings, and iterating a map node
+			// yields (key, value) pairs directly.
+			const auto overrideNode =
+				visualBlocksComponent["VariableOverrides"];
+			if (overrideNode && overrideNode.IsMap())
+			{
+				for (const auto &entry : overrideNode)
+				{
+					vbc.VariableOverrides[entry.first.as<std::string>()] =
+						entry.second.as<std::string>();
+				}
+			}
+		}
+
+		// AnimationComponent. Missing keys are tolerated, as above: a scene
+		// authored before the component existed must still load, with the
+		// component at its defaults.
+		auto animationComponent = entity["AnimationComponent"];
+		if (animationComponent)
+		{
+			auto &ac = deserializedEntity.AddComponent<AnimationComponent>();
+			if (animationComponent["AssetPath"])
+				ac.AssetPath = animationComponent["AssetPath"].as<std::string>();
+			if (animationComponent["DefaultState"])
+				ac.DefaultState =
+					animationComponent["DefaultState"].as<std::string>();
+			if (animationComponent["MeshPath"])
+				ac.MeshPath = animationComponent["MeshPath"].as<std::string>();
+			if (animationComponent["LoopDefault"])
+				ac.LoopDefault = animationComponent["LoopDefault"].as<bool>();
+			if (animationComponent["PlayRate"])
+				ac.PlayRate = animationComponent["PlayRate"].as<float>();
+		}
+
 		return true;
 	}
 
@@ -2805,6 +2978,51 @@ namespace Wasteland
 		}
 		if (!data.IsMap() || !data["Scene"])
 			return false;
+
+		// The scene layout version.
+		//
+		// A MISSING key means current, so a scene written before this key existed
+		// loads unchanged -- the Project::Settings rule (Project.h:34-38), and the
+		// only behaviour that does not silently treat every older file as broken.
+		//
+		// A NEWER version fails loudly. Reading a layout this build does not
+		// understand would produce a half-loaded scene, and the user would then
+		// SAVE it -- silently destroying every field this build did not recognise.
+		// "This scene is from a newer engine" is actionable; a quietly lossy load is
+		// not.
+		int schemaVersion = SceneSerializer::kCurrentSchemaVersion;
+		if (data["Version"])
+		{
+			try
+			{
+				schemaVersion = data["Version"].as<int>();
+			}
+			catch (const YAML::Exception &exception)
+			{
+				WL_CORE_ERROR("Could not read the layout version of scene '{0}': {1}",
+				              filepath, exception.what());
+				return false;
+			}
+
+			if (schemaVersion > SceneSerializer::kCurrentSchemaVersion)
+			{
+				WL_CORE_ERROR(
+				    "Scene '{0}' was written by a newer engine (layout version {1}; "
+				    "this build understands {2}). Open it with the engine that saved "
+				    "it -- saving it here would discard the fields this build does "
+				    "not know about.",
+				    filepath, schemaVersion, SceneSerializer::kCurrentSchemaVersion);
+				return false;
+			}
+		}
+
+		if (schemaVersion < SceneSerializer::kCurrentSchemaVersion &&
+		    !MigrateSceneDocument(data, schemaVersion))
+		{
+			WL_CORE_ERROR("Could not migrate scene '{0}' from layout version {1}.",
+			              filepath, schemaVersion);
+			return false;
+		}
 
 		// The trained neural stage's enabled flag. Absent means default (true),
 		// per this file's documented error model: a missing key means default,

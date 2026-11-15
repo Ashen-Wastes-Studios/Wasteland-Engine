@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace Wasteland {
 
 	// Scoped enum: the type only exists as ShaderDataType::Float, never as a

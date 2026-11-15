@@ -1,11 +1,38 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <Filter Include="AI">
+      <UniqueIdentifier>{EF725900-DBFE-870B-44AD-880B3058880B}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Panels">
       <UniqueIdentifier>{A80D95C9-94AF-BF9F-7D6A-D3F369AB46F0}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\AI\AnthropicProvider.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\GoogleProvider.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\IAIProvider.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\MemoryStore.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\OpenAICompatibleProvider.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\ProviderFactory.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\SkillLoader.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AI\SubagentSystem.h">
+      <Filter>AI</Filter>
+    </ClInclude>
     <ClInclude Include="src\EditorLayer.h" />
     <ClInclude Include="src\Panels\AIChatPanel.h">
       <Filter>Panels</Filter>
@@ -16,10 +43,19 @@
     <ClInclude Include="src\Panels\AudioClipPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
+    <ClInclude Include="src\Panels\AnimationTimelinePanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\AnimatorPanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
     <ClInclude Include="src\Panels\AudioMixerPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
     <ClInclude Include="src\Panels\AudioScenePanel.h">
+      <Filter>Panels</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Panels\MeshEditorPanel.h">
       <Filter>Panels</Filter>
     </ClInclude>
     <ClInclude Include="src\Panels\AvbGraphPanel.h">
@@ -69,6 +105,27 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\AI\AnthropicProvider.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\GoogleProvider.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\MemoryStore.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\OpenAICompatibleProvider.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\ProviderFactory.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\SkillLoader.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AI\SubagentSystem.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\DemonCoreEditorApp.cpp" />
     <ClCompile Include="src\EditorLayer.cpp" />
     <ClCompile Include="src\Panels\AIChatPanel.cpp">
@@ -80,10 +137,19 @@
     <ClCompile Include="src\Panels\AudioClipPanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
+    <ClCompile Include="src\Panels\AnimationTimelinePanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\AnimatorPanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
     <ClCompile Include="src\Panels\AudioMixerPanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\AudioScenePanel.cpp">
+      <Filter>Panels</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Panels\MeshEditorPanel.cpp">
       <Filter>Panels</Filter>
     </ClCompile>
     <ClCompile Include="src\Panels\AvbGraphPanel.cpp">

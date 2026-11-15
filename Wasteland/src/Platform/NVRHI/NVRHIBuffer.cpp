@@ -1,5 +1,6 @@
 #include "wlpch.h"
 #include "NVRHIBuffer.h"
+#include "NVRHIHandleRetire.h"
 #include "NVRHIContext.h"
 #include "NVRHIRendererAPI.h"
 #include "Wasteland/Core/Log.h"
@@ -73,7 +74,11 @@ namespace Wasteland {
 		// silently.
 		// Ref assignment releases any previous handle, so re-running this
 		// would replace rather than leak.
+		// Release (or abandon) any previous handle before replacing it, so a buffer
+		// rebuilt after a backend switch never releases into a dead device.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 		m_Buffer = device->createBuffer(desc);
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 		if (!m_Buffer)
 		{
 			WL_CORE_ERROR("NVRHIVertexBuffer: Failed to create buffer");
@@ -105,7 +110,11 @@ namespace Wasteland {
 		desc.initialState = nvrhi::ResourceStates::VertexBuffer;
 		desc.keepInitialState = true;
 
+		// Release (or abandon) any previous handle before replacing it, so a buffer
+		// rebuilt after a backend switch never releases into a dead device.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 		m_Buffer = device->createBuffer(desc);
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 		if (!m_Buffer)
 		{
 			WL_CORE_ERROR("NVRHIVertexBuffer: Failed to create buffer");
@@ -128,7 +137,7 @@ namespace Wasteland {
 		// Dropping the last Ref is the release. Nothing to unbind first --
 		// NVRHI resources are reference-tracked, and a buffer still in use by
 		// a submitted command list is kept alive by that list.
-		m_Buffer = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 	}
 
 	// Interface-satisfying no-op. On this path vertex buffers are attached
@@ -221,7 +230,11 @@ namespace Wasteland {
 		desc.initialState = nvrhi::ResourceStates::IndexBuffer;
 		desc.keepInitialState = true;
 
+		// Release (or abandon) any previous handle before replacing it, so a buffer
+		// rebuilt after a backend switch never releases into a dead device.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 		m_Buffer = device->createBuffer(desc);
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 		if (!m_Buffer)
 		{
 			WL_CORE_ERROR("NVRHIIndexBuffer: Failed to create buffer");
@@ -242,7 +255,7 @@ namespace Wasteland {
 
 	NVRHIIndexBuffer::~NVRHIIndexBuffer()
 	{
-		m_Buffer = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 	}
 
 	void NVRHIIndexBuffer::Bind() const
@@ -322,7 +335,11 @@ namespace Wasteland {
 		desc.initialState = nvrhi::ResourceStates::ShaderResource;
 		desc.keepInitialState = true;
 
+		// Release (or abandon) any previous handle before replacing it, so a buffer
+		// rebuilt after a backend switch never releases into a dead device.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 		m_Buffer = device->createBuffer(desc);
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 		if (!m_Buffer)
 		{
 			WL_CORE_ERROR("NVRHIStructuredBuffer: Failed to create buffer");
@@ -331,7 +348,7 @@ namespace Wasteland {
 
 	NVRHIStructuredBuffer::~NVRHIStructuredBuffer()
 	{
-		m_Buffer = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Buffer, m_Generation);
 	}
 
 	// Third copy of the same SetData body. Same consequence as the vertex

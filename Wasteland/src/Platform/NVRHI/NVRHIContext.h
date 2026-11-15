@@ -224,6 +224,23 @@ namespace Wasteland
 		// Get the renderer API type
 		RendererAPI::API GetAPI() const { return m_API; }
 
+		// Backend generations -------------------------------------------------------
+		// A backend switch destroys a whole nvrhi::Device. Any GPU wrapper created
+		// under that device (a framebuffer, a texture) still holds handles, and
+		// releasing one afterwards calls into freed driver objects -- the crash was
+		// nvrhi::d3d12::Framebuffer's deleting destructor running inside
+		// RefCounter<rt::IAccelStruct>::Release during a Vulkan run, reached from
+		// ~NVRHIFramebuffer in EditorLayer::OnUpdate's API-change block.
+		//
+		// Every context takes a generation id at construction and retires it in its
+		// destructor. A wrapper records the generation it was created under and, if
+		// that generation is retired by the time it is destroyed, abandons its
+		// handles instead of releasing them: the GPU memory died with the device, so
+		// only the CPU-side reference object is left to leak.
+		static uint32_t GetCurrentGeneration();
+		static bool IsGenerationRetired(uint32_t generation);
+		uint32_t GetGeneration() const { return m_Generation; }
+
 		// Resize rebuilds the swapchain rather than resizing it in place -- the
 		// same whole-object-rebuild approach the OpenGL framebuffer takes.
 		// Not virtual and not an override, unlike most of this interface: only
@@ -242,6 +259,7 @@ namespace Wasteland
 		// native device is dead and all GPU operations must be skipped until
 		// RecoverDevice() re-creates the device and swapchain.
 		bool IsDeviceLost() const { return m_IsDeviceLost; }
+
 		// Rebuilds the device and swapchain after a loss. NOT inline and not
 		// idempotent by construction -- the .cpp is where the ordering discipline
 		// for a partial teardown lives.
@@ -310,6 +328,9 @@ namespace Wasteland
 		// meaningful after the ctor body has run, which every accessor above relies
 		// on.
 		RendererAPI::API m_API;
+
+		// Stamped at construction and retired in the destructor; see GetCurrentGeneration.
+		uint32_t m_Generation = 0;
 		// NVRHI objects
 		// NVRHI handles, not raw pointers: a DeviceHandle is a refcounted smart
 		// handle that keeps the underlying object alive. The raw IDevice* that
@@ -395,6 +416,12 @@ namespace Wasteland
 		VkQueue m_VkPresentQueue = VK_NULL_HANDLE;
 		VkSurfaceKHR m_VkSurface = VK_NULL_HANDLE;
 		VkSwapchainKHR m_VkSwapchain = VK_NULL_HANDLE;
+		// The extension names the device was actually created with. NVRHI derives its
+		// per-extension capability flags (m_Context.extensions.EXT_mesh_shader and the
+		// rest) by matching these strings in Device::create, so a list that is not
+		// handed to the DeviceDesc leaves every optional feature reported absent even
+		// when the extension is enabled and working.
+		std::vector<const char *> m_VkDeviceExtensions;
 		// Zero-init, NOT VK_NULL_HANDLE: these are indices, not handles. A default
 		// of 0 is a real family index, so it is indistinguishable from 'found
 		// family 0' until GetVulkanQueueFamilyIndices() has run. The .cpp uses
@@ -467,6 +494,17 @@ namespace Wasteland
 		// below is the least discoverable member in this class.
 		bool m_CommandListOpen = false;
 		bool m_IsDeviceLost = false;
+		// One-shot guard for Init(). Init() creates the native device, the
+		// swapchain and the per-frame command objects, and it is reachable from
+		// TWO owners: WindowsWindow::ExecuteSwitch (which owns the context) and
+		// NVRHIRendererAPI::Init (which only borrows the pointer). Without this
+		// flag the second call built a SECOND D3D12 device and a second swapchain
+		// on the same HWND -- the swapchain creation failed E_ACCESSDENIED
+		// (0x80070005) and the orphaned device is what produced the later
+		// DXGI_ERROR_DEVICE_REMOVED (0x887A0005) on framebuffer creation.
+		// A context that is deliberately recreated (API switch) is a NEW object,
+		// so its flag starts false and it still initialises.
+		bool m_Initialized = false;
 		// The only member with no accessor and no reader outside the .cpp's
 		// device-creation path, where it gates whether
 		// VK_LAYER_KHRONOS_validation is requested at instance AND device level.

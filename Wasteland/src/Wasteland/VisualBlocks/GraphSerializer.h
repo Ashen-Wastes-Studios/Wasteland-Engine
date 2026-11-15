@@ -81,6 +81,23 @@ namespace Wasteland::VisualBlocks
 		// caller keeps ownership of the path, and Save does not itself choose
 		// a filename.
 		static bool Save(const std::string &path, const Graph &graph, GraphError &error);
+
+		// The text written when a designer creates a NEW flow graph.
+		//
+		// One function rather than a string literal in the editor panel, so
+		// the template cannot drift from the loader that must read it: a test
+		// can call this and run the result through Parse, ValidateFlow and
+		// CompileFlow, and the editor writes exactly the same bytes.
+		//
+		// `graphName` is a DISPLAY name, not an identifier. The compiler
+		// sanitises it when it derives the Python class name, so "My Script"
+		// and "MyScript" both work and neither needs to be a valid Python
+		// identifier.
+		//
+		// Schema 2, not 1: a fresh graph should start on the schema that
+		// supports several event nodes, so the designer never has to migrate
+		// after adding a second trigger.
+		static std::string NewFlowGraphText(const std::string &graphName);
 	};
 
 }

@@ -1,6 +1,11 @@
 #include "wlpch.h"
 #include "Entity.h"
 
+// Only here, not in Entity.h: this header includes Entity.h, so including it
+// there would be a cycle. The declaration in Entity.h forward-declares the
+// enum for exactly this reason.
+#include "Wasteland/Scene/ScriptEventDispatcher.h"
+
 namespace Wasteland {
 
 	// Handle-and-scene pair, i.e. a reference into one registry. Copyable by
@@ -76,6 +81,14 @@ namespace Wasteland {
 		// Forwards the margin unchanged, so the scene applies its own hysteresis or
 		// surface-offset rule on top of the caller's value.
 		return m_Scene->IsUnderwater(worldPos, margin);
+	}
+
+	void Entity::DispatchEvent(ScriptEventId id, const std::vector<py::object> &args)
+	{
+		// One line, and no validation of our own: the dispatcher already rejects
+		// an invalid entity, a missing IDComponent and a dead interpreter, and
+		// doing it twice would be a second place for the rules to drift.
+		ScriptEventDispatcher::Dispatch(*this, id, args);
 	}
 
 }

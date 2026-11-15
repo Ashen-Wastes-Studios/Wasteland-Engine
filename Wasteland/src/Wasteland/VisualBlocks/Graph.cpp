@@ -129,6 +129,36 @@ namespace Wasteland::VisualBlocks
 	// Returns the single event node, or nullptr. A flow graph has exactly one; a
 	// behaviour tree has none (it ticks from OnUpdateEntity instead), which is
 	// why a scan -- not a direct index -- is what identifies it.
+	std::string GraphNode::TypeIdForEventMethod(const std::string &typeId)
+	{
+		// The type id IS the method name for every current entry. Written as a
+		// mapping rather than `return typeId;` so a future type whose method name
+		// differs is one line instead of a search through four call sites.
+		if (typeId == "OnBeginPlay")
+			return "OnBeginPlay";
+		if (typeId == "OnAnimationEvent")
+			return "OnAnimationEvent";
+
+		// Unreachable while IsTypeNamedEvent is the only gate. An empty name would
+		// compile to `def (self, ...)`, so failing loudly is the right answer.
+		return std::string();
+	}
+
+	bool GraphNode::IsTypeNamedEvent() const
+	{
+		// The closed set of node types whose entire purpose is one engine event.
+		//
+		// Kept as an explicit list rather than a naming convention ("starts with
+		// On") because a convention would silently include a future task node
+		// called OnDamageDealt, and because the dispatcher's own mapping
+		// (ScriptEventId -> method name) is the thing that decides whether the
+		// name means anything at runtime. Adding a type here without a
+		// ScriptEventId case produces a method nothing ever calls.
+		if (!EventName.empty())
+			return false;
+		return TypeId == "OnBeginPlay" || TypeId == "OnAnimationEvent";
+	}
+
 	const GraphNode *Graph::FindEvent() const
 	{
 		for (const GraphNode &node : Nodes)
@@ -140,7 +170,13 @@ namespace Wasteland::VisualBlocks
 			// may exist, but a hand-edited or merge-damaged file with two returns the
 			// FIRST and never reports the duplicate. Correctness here relies on the
 			// validator rather than on this function.
-			if (!node.EventName.empty())
+			// A node counts as an event when it carries an authored event name OR
+			// its TYPE names one. The second case is what lets an OnBeginPlay or
+			// OnAnimationEvent node be placed from the palette and never edited.
+			//
+			// GraphNode::IsTypeNamedEvent is the single predicate, shared with
+			// Compiler::CompileFlow and the validator, so the three cannot drift.
+			if (!node.EventName.empty() || node.IsTypeNamedEvent())
 				return &node;
 		}
 		return nullptr;
@@ -517,6 +553,30 @@ namespace Wasteland::VisualBlocks
 	// the exact Python expression the emitter splices into generated code.
 	// Returns false with `error` set for a malformed value -- never throws, and
 	// never substitutes a zero.
+	// The inverse of what ParseLiteral produces for a STRING pin.
+	//
+	// ParseLiteral's output is a PYTHON LITERAL -- quoted -- because it feeds
+	// generated code. Every caller that wants the raw authored TEXT (a function
+	// name, a variable name, a node title) has to strip those quotes, and each
+	// was doing it by hand or not at all: the CallFunction resolver compared a
+	// quoted name against an unquoted one, so it NEVER matched and the node
+	// exposed only its base pins.
+	//
+	// Returns the input unchanged when it is not a quoted literal, so a caller
+	// can apply it unconditionally.
+	std::string UnquotePyLiteral(const std::string &text)
+	{
+		// Both quote characters are accepted because ParseString emits double
+		// quotes but a hand-authored file may carry either. Only a MATCHING pair
+		// at both ends is stripped -- a lone leading quote is not a literal.
+		for (const char quote : {'"', '\''})
+		{
+			if (text.size() >= 2 && text.front() == quote && text.back() == quote)
+				return text.substr(1, text.size() - 2);
+		}
+		return text;
+	}
+
 	bool ParseLiteral(PinType type, const std::string &literal, std::string &outValue,
 					  std::string &error)
 	{

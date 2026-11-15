@@ -1,5 +1,11 @@
 #pragma once
 
+// ProceduralMesh is the renderer's mesh layout. MeshLoader needs it because
+// BuildProceduralMesh converts its own MeshData into that layout, and
+// MeshAssetCache stores the result. ProceduralMeshes.h includes only glm and
+// the standard library, so this does not pull the renderer into the loader.
+#include "ProceduralMeshes.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -82,5 +88,56 @@ namespace Wasteland {
 	// base64 buffers) can share the front half of the path.
 	bool ParseOBJFromString(const std::string &text, const std::string &virtualPath,
 						   MeshData &outMesh, std::string &outError);
+
+	// Converts DE-INDEXED import data into the renderer's ProceduralMesh.
+	//
+	// MeshData stores one MeshVertex per triangle corner because that is what
+	// a GPU upload wants. ProceduralMesh stores parallel glm vectors because
+	// that is what the procedural generators and the raster batch want. The
+	// two layouts are not interchangeable, so an imported mesh cannot be
+	// drawn without this step.
+	//
+	// A mesh whose vertex and normal counts disagree is rejected rather than
+	// padded: ProceduralMesh documents that mismatch as a defect because the
+	// GPU reads both attributes positionally, so a padded normal would render
+	// with plausible-looking garbage instead of failing.
+	bool BuildProceduralMesh(const MeshData &data, ProceduralMesh &out,
+							 std::string &outError);
+
+	// Loads and caches the RUNTIME mesh for one asset path.
+	//
+	// A scene references meshes by path, and the same path is drawn every
+	// frame. Parsing it per frame would be an unbounded cost, so the parsed
+	// result is kept. The cache is keyed by the path AS WRITTEN IN THE SCENE,
+	// which means two paths that resolve to the same file are loaded twice --
+	// correct, and the duplication is bounded by how many ways an author
+	// spelled the path.
+	//
+	// A failed load is cached too, as a nullptr with a reason. Without that,
+	// a missing asset would re-parse (and re-fail) on every frame forever.
+	class MeshAssetCache
+	{
+	public:
+		// Returns the mesh for a path, loading it on first use. nullptr when
+		// the asset does not exist or could not be parsed; `outError` then
+		// carries the reason from the FIRST attempt (the cached failure), not
+		// a fresh parse.
+		const ProceduralMesh *Get(const std::string &path, std::string *outError = nullptr);
+
+		// Drops every entry. Called when the project's asset root changes,
+		// because every cached path is relative to it.
+		void Clear();
+
+		// Number of live entries, for tests and the editor's asset panel.
+		size_t Count() const { return m_Meshes.size(); }
+
+	private:
+		// Meshes and their cached failures are stored side by side so a
+		// missing asset is not re-attempted. entt is not involved; this is a
+		// plain path -> index map plus a vector.
+		std::unordered_map<std::string, size_t> m_Index;
+		std::vector<ProceduralMesh> m_Meshes;
+		std::vector<std::string> m_Errors;
+	};
 
 } // namespace Wasteland

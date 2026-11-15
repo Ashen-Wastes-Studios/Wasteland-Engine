@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -13,6 +15,30 @@
 
 namespace Wasteland::Audio
 {
+
+	// A voice whose samples come from a CALLBACK rather than a clip. This is the
+	// one path by which an audio graph reaches the mixer: a compiled .wlavb
+	// renders a block on demand and the voice consumes it, so a graph's output
+	// is subject to the same voice cap, priority, steal and fade rules as every
+	// other sound rather than being a privileged bypass.
+	//
+	// The mixer holds a shared_ptr, so the owner (AudioGraphSystem) can swap a
+	// reloaded graph's generator without the mixer keeping a stale copy, and
+	// the voice and the owner retire together by dropping the last reference.
+	struct ProceduralVoice
+	{
+		std::string Name;
+
+		// Fills `frames` MONO samples and returns true to keep playing, false to
+		// retire. Returning false still leaves the samples already written in the
+		// buffer, so the block that ends a sound is heard rather than cut.
+		//
+		// Called from MixVoice, which holds the mixer lock for the whole mix.
+		// Re-entering the mixer is therefore possible (the mutex is recursive)
+		// but a generator that Plays or Stops a voice per block would pay that
+		// lock twice per frame; nothing in the engine does.
+		std::function<bool(float *output, int frames)> Generate;
+	};
 
 	// What a source is asking for when it starts a sound.
 	struct PlayRequest
@@ -46,6 +72,12 @@ namespace Wasteland::Audio
 		// locate belongs in 3D.
 		bool Spatial = false;
 
+		// When set, the voice plays THIS instead of a clip. The only use is an
+		// audio graph, and it is a shared_ptr so the generator can be replaced
+		// without the mixer seeing a copy. A clip and a procedural source are
+		// mutually exclusive; Procedural wins if both are somehow set.
+		std::shared_ptr<ProceduralVoice> Procedural;
+
 		// World position for a 3D sound. Ignored when Spatial is false.
 		glm::vec3 Position = {0.0f, 0.0f, 0.0f};
 
@@ -63,6 +95,17 @@ namespace Wasteland::Audio
 	{
 		Ref<AudioClip> Clip;
 		int VoiceId = -1;
+
+		// Non-null for a procedural voice, in which case Clip is null and the
+		// sample source is Generate below. The two are mutually exclusive by
+		// construction, so MixVoice tests Procedural FIRST.
+		std::shared_ptr<ProceduralVoice> Procedural;
+
+		// Scratch block for one procedural voice, sized to the largest block the
+		// mixer is ever asked for and reused every frame. A separate buffer is
+		// required because the output is INTERLEAVED STEREO while a generator
+		// writes mono, so the samples cannot be written in place.
+		std::vector<float> ProceduralBlock;
 
 		// Playback position in FRAMES, not samples or seconds. Frames are the
 		// only unit that survives a pitch change without accumulating drift.
@@ -190,6 +233,16 @@ namespace Wasteland::Audio
 		// (most effects) can ignore it safely.
 		int Play(const PlayRequest &request);
 
+		// Start a PROCEDURAL voice: one whose samples come from a callback rather
+		// than a clip. Same return convention as Play -- a voice id, or -1.
+		//
+		// This exists so an audio graph is subject to the mixer's voice cap,
+		// priority and steal rules instead of being a privileged direct-to-output
+		// path. A graph that can always be heard is a graph that cannot be
+		// silenced by a busy firefight, which is the bug the cap is for.
+		int PlayProcedural(const PlayRequest &request,
+						   std::shared_ptr<ProceduralVoice> procedural);
+
 		// Stop a voice, optionally over a fade. A zero-or-negative fade cuts
 		// immediately, which is correct for UI and wrong for a gunshot.
 		// fadeSeconds <= 0 means an immediate cut. The header says so, but
@@ -206,6 +259,14 @@ namespace Wasteland::Audio
 		// already finished, which is normal and not an error.
 		bool SetVoiceVolume(int voiceId, float volume);
 		bool SetVoicePitch(int voiceId, float pitch);
+
+		// Move a playing voice. The only way a 3D sound can follow its emitter:
+		// MixVoice reads Position per frame, so without this a moving source would
+		// keep its launch position and pan as if it had not moved.
+		//
+		// Returns false if the voice has already finished, which is normal and not
+		// an error -- the same convention as SetVoiceVolume.
+		bool SetVoicePosition(int voiceId, const glm::vec3 &position);
 
 		// Change volume on every playing voice from a given clip.
 		void SetClipVolume(const AudioClip *clip, float volume);
@@ -377,6 +438,17 @@ namespace Wasteland::Audio
 		// Mix one voice into the buffer. `writeGain` is the master/attenuation
 		// product applied on top of the voice's own volume.
 		void MixVoice(Voice &voice, float *output, int frameCount, float masterGain);
+
+		// Mix a procedural voice. Separate from MixVoice because a generator
+		// produces a MONO block while the mixer's output is interleaved stereo,
+		// so the two cannot share an inner loop.
+		void MixProceduralVoice(Voice &voice, float *output, int frameCount,
+								float masterGain);
+
+		// Pick a slot for a new voice, stealing when the cap is reached, or -1 to
+		// drop. Shared by Play and PlayProcedural so the two cannot disagree
+		// about what "at the cap" means or which voice gets stolen.
+		int ReserveVoiceSlot(int priority);
 
 		// Free a voice slot, retiring the finished one if any.
 		int AllocateVoiceSlot();

@@ -32,6 +32,29 @@
 namespace Wasteland::VisualBlocks
 {
 
+	namespace
+	{
+		// The method name a flow event node compiles to.
+		//
+		// Mirrors Compiler::FlowMethodNameFor's type-named rule so the duplicate
+		// check compares what the GENERATED class will actually contain -- an
+		// authored `event: OnAnimationEvent` and an unedited OnAnimationEvent node
+		// both produce a method called OnAnimationEvent, and only a check on the
+		// resolved name catches that collision.
+		//
+		// Deliberately does NOT call SanitizeIdentifier (file-local to
+		// Compiler.cpp). Two distinct authored names that sanitise to the same
+		// identifier are a pre-existing hole in this check, not one this introduces.
+		std::string ResolveEventMethodName(const GraphNode &node)
+		{
+			if (node.IsTypeNamedEvent())
+			{
+				return GraphNode::TypeIdForEventMethod(node.TypeId);
+			}
+			return node.EventName.empty() ? std::string("OnUpdate") : node.EventName;
+		}
+	}
+
 	// "Did this graph fail?" -- the single question every caller asks
 	// after Validate*(), so it short-circuits on the first error rather
 	// than counting.
@@ -131,12 +154,104 @@ namespace Wasteland::VisualBlocks
 	// the Validator API.
 	namespace
 	{
+		// Declared here, defined below: CheckFunctionAcyclic is above MakeError
+		// in this namespace, and C++ requires a declaration before use.
+		// The default belongs on the FIRST declaration only; repeating it on the
+		// definition is an error, and omitting it here makes every 2-argument
+		// call before the definition a compile error.
+
+		// Find a pin on a node's EFFECTIVE pin set -- the resolver's answer when
+		// the type has one, otherwise the static set.
+		//
+		// NodeDef::FindPin only searches the STATIC set, so every caller that
+		// asks it about a resolved node (CallFunction, FunctionEntry, Return)
+		// gets nullptr for a pin that genuinely exists. That produced six errors
+		// on a correct graph: 'CallFunction has no pin p', 'has no output pin
+		// result'. One helper, so the link check and the literal check cannot
+		// disagree about what pins a node has.
+		// Returns a COPY, not a pointer: EffectivePins returns its vector BY
+		// VALUE, so a pointer into it dangles the moment the full expression
+		// ends. The first version did exactly that and the caller read freed
+		// memory -- the failure looked like "the pins do not exist" rather than
+		// a dangling read, which is why it was not obvious.
+		//
+		// `found` reports a miss. PinDef is four strings and an enum, so a copy
+		// is cheaper than the bug it prevents.
+		PinDef FindEffectivePin(const NodeDef &def, const Graph &graph,
+								const GraphNode &node, const std::string &pinId,
+								bool &found)
+		{
+			for (const PinDef &pin : NodeRegistry::EffectivePins(def, graph, node))
+			{
+				if (pin.Id == pinId)
+				{
+					found = true;
+					return pin;
+				}
+			}
+			found = false;
+			return PinDef();
+		}
+		GraphError MakeError(const std::string &message, const std::string &nodeId,
+							 const std::string &pinId = "");
+
+		// Task B.2: reject a function whose body calls itself.
+		//
+		// The plan asks for acyclic CALL VALIDATION. What this file can
+		// actually see is narrower, and it is worth stating rather than
+		// implying more: a flow graph's declared functions live in SEPARATE
+		// body files, so a cycle spanning two files cannot be detected
+		// without loading every body -- and loading a body to validate its
+		// caller would make validation order-dependent.
+		//
+		// What IS detectable, and is the accident an author actually makes,
+		// is a function whose own body calls its own name. That is a direct
+		// infinite recursion, and the generated Python would be perfectly
+		// valid -- it would simply never return.
+		void CheckFunctionAcyclic(const Graph &graph, ValidationResult &out)
+		{
+			if (graph.Kind != "function" || graph.Functions.empty())
+				return;
+
+			const std::string &self = graph.Functions[0].Name;
+
+			for (const GraphNode &node : graph.Nodes)
+			{
+				if (node.TypeId != "CallFunction")
+					continue;
+
+				std::string target;
+				for (const PinLiteral &literal : node.Literals)
+				{
+					if (literal.Key != "Name")
+						continue;
+					std::string parsed;
+					std::string parseError;
+					if (ParseLiteral(PinType::String, literal.Value, parsed,
+									 parseError))
+						// Unquoted: the declared function name is raw text, and
+						// ParseLiteral's output is a quoted Python literal.
+						target = UnquotePyLiteral(parsed);
+				}
+
+				if (target != self)
+					continue;
+
+				out.Findings.push_back(MakeError(
+					"function '" + self + "' calls itself; function calls must "
+					"be acyclic", node.Id));
+			}
+		}
+
+
+
+
 		// Error constructor. HasNode is derived from the id rather than passed
 		// -- a finding with no node id (a whole-graph problem such as "no
 		// root") is still a valid finding, and the distinction is what lets
 		// the UI attach a marker to a node.
 		GraphError MakeError(const std::string &message, const std::string &nodeId,
-							 const std::string &pinId = "")
+							 const std::string &pinId)
 		{
 			// Default-constructed GraphError, then field-by-field. Value
 			// semantics throughout -- no heap, no shared ownership.
@@ -233,11 +348,13 @@ namespace Wasteland::VisualBlocks
 					// The literal's KEY is looked up in the definition, so a stale key
 					// from an older node version surfaces here rather than being
 					// silently ignored.
-					const PinDef *pinDef = def->FindPin(literal.Key);
+					bool pinFound = false;
+					const PinDef pinDef =
+						FindEffectivePin(*def, graph, node, literal.Key, pinFound);
 					// A literal for a pin the definition no longer has. The graph is
 					// from a different node version; reported rather than ignored so a
 					// value is never silently dropped.
-					if (pinDef == nullptr)
+					if (!pinFound)
 					{
 						// A pin the current registry does not know about means the graph was
 						// authored against a different node version. Reporting it beats
@@ -255,7 +372,7 @@ namespace Wasteland::VisualBlocks
 					// Skip unset literals (nothing to parse) and exec pins (they carry
 					// flow, not a value). An exec pin with a stray literal is not
 					// flagged here.
-					if (!literal.IsSet || pinDef->Type == PinType::Exec)
+					if (!literal.IsSet || pinDef.Type == PinType::Exec)
 						continue;
 
 					// Two locals so a parse failure can produce a message and a parse
@@ -267,22 +384,27 @@ namespace Wasteland::VisualBlocks
 					// cannot disagree with execution about what a valid int looks like.
 					// DEFECT: `parsed` receives the converted value and is then never
 					// read -- the check is purely "did it parse".
-					if (!ParseLiteral(pinDef->Type, literal.Value, parsed, parseError))
+					if (!ParseLiteral(pinDef.Type, literal.Value, parsed, parseError))
 					{
 						// The message names the expected type and the parser's own reason,
 						// so the author does not have to guess which type was meant.
 						out.Findings.push_back(MakeError(
 							"pin '" + literal.Key + "' expects a " +
-								PinTypeName(pinDef->Type) + ": " + parseError,
+								PinTypeName(pinDef.Type) + ": " + parseError,
 							node.Id, literal.Key));
 					}
 				}
 
-				// Required, unlinked, unlit input pins. Reported, never defaulted: a
-				// missing required pin must not become a zero that ships.
 				// Required, unlinked, unlit pins. Reported, never defaulted:
 				// a missing required pin must not become a zero that ships.
-				for (const PinDef &pinDef : def->Pins)
+				//
+				// EffectivePins, not def->Pins: a CallFunction node's required
+				// parameter pins only exist once its Name resolves to a declared
+				// function. Using the static set would check zero pins and report
+				// nothing -- a missing required parameter would ship as a default.
+				const std::vector<PinDef> pins =
+					NodeRegistry::EffectivePins(*def, graph, node);
+				for (const PinDef &pinDef : pins)
 				{
 					// Only IN pins can be required -- an output pin the graph does not
 					// read is legal and common.
@@ -844,33 +966,191 @@ namespace Wasteland::VisualBlocks
 		// used in two places), and only a behaviour tree's once-per-parent
 		// -- evaluation makes sharing a defect.
 		CheckNodesRegisteredAndLiterals(graph, out);
-
-		// Exactly one event node, and it is the only legal entry point.
-		// Exactly one event node, and it is the only legal entry point.
-		const GraphNode *event = graph.FindEvent();
-		// No event means the graph can never be triggered. Reported with no
-		// node id because the cause is the absence of something.
-		if (event == nullptr)
+		// ================================================================
+		// TASK B.2 -- function graphs
+		// ================================================================
+		//
+		// A `kind: function` graph is a BODY, not a component: it has no
+		// events, no instance variables and exactly one declared function. Each
+		// of those three is a hard rule, because each one is what makes the
+		// generated `_fn_<name>` method a pure function of its arguments.
+		if (graph.Kind == "function")
 		{
-			out.Findings.push_back(MakeError(
-				"a flow graph must have exactly one event node "
-				"(name an existing engine event in its Event field)", ""));
+			// Exactly one declared function: the graph IS that function. Zero
+			// means the compiler has nothing to name the method after; more
+			// than one means the file holds several bodies, and the compiler
+			// would silently emit only the first.
+			if (graph.Functions.size() != 1)
+			{
+				out.Findings.push_back(MakeError(
+					"a function graph must declare exactly one function "
+					"(found " + std::to_string(graph.Functions.size()) + ")",
+					""));
+			}
+
+			// No event node. An event is an entry point into a COMPONENT, and
+			// a function has no component -- its entry is its argument list.
+			// This is the plan's negative control: the error must NAME the
+			// node, not just report that one exists.
+			for (const GraphNode &node : graph.Nodes)
+			{
+				if (node.EventName.empty() && !node.IsTypeNamedEvent())
+					continue;
+				const std::string name = node.EventName.empty()
+					? node.TypeId : node.EventName;
+				out.Findings.push_back(MakeError(
+					"a function may not contain an event node ('" + name + "')",
+					node.Id));
+			}
+
+			// No instance variables. A function is a pure transformation of
+			// its arguments; `self.<var>` would make it depend on the caller's
+			// state and on call order. The plan states this as a deliberate
+			// divergence from Blueprints, so it is documented here rather than
+			// left for a reader to discover.
+			if (!graph.Variables.empty())
+			{
+				out.Findings.push_back(MakeError(
+					"a function may not declare instance variables (found " +
+					std::to_string(graph.Variables.size()) + ")", ""));
+			}
+
+			// A Return node is REQUIRED: without one the generated method
+			// returns None, and a CallFunction node indexing [0] into that
+			// raises TypeError at runtime rather than failing at load.
+			bool hasReturn = false;
+			for (const GraphNode &node : graph.Nodes)
+				if (node.TypeId == "Return")
+					hasReturn = true;
+			if (!hasReturn)
+			{
+				out.Findings.push_back(MakeError(
+					"a function must contain a Return node", ""));
+			}
+
+			// A FunctionEntry node is REQUIRED: it is the only way a parameter
+			// reaches the body. Without it the method's arguments are unused and
+			// every output is computed from literals -- a function that ignores
+			// its inputs, which no author intends and nothing else would catch.
+			bool hasEntry = false;
+			for (const GraphNode &node : graph.Nodes)
+				if (node.TypeId == "FunctionEntry")
+					hasEntry = true;
+			if (!hasEntry)
+			{
+				out.Findings.push_back(MakeError(
+					"a function must contain a FunctionEntry node", ""));
+			}
 		}
 		else
 		{
-			// A second event node is reported by name. Comparing node ADDRESSES
-			// against the event pointer works because FindEvent returns a
-			// -- pointer into this same vector, so it is the same object.
+			// A Return node outside a function has no signature to match, so
+			// its pin set would be the bare exec pin and every output link
+			// would be a type error with no useful message.
 			for (const GraphNode &node : graph.Nodes)
 			{
-				// Address comparison, not id comparison: FindEvent returned a
-				// pointer into this same vector, so identity is exact and cheap.
-				if (&node != event && !node.EventName.empty())
+				if (node.TypeId == "Return")
 				{
 					out.Findings.push_back(MakeError(
-						"a second event node ('" + node.EventName +
-							"'); a flow graph has exactly one entry point",
+						"Return is only valid inside a function graph", node.Id));
+				}
+				else if (node.TypeId == "FunctionEntry")
+				{
+					out.Findings.push_back(MakeError(
+						"FunctionEntry is only valid inside a function graph",
 						node.Id));
+				}
+			}
+
+			// Acyclic call check (Task B.2). A function that reaches itself,
+			// directly or through another, would recurse without a base case
+			// at runtime -- and the generated Python would be accepted by the
+			// compiler because nothing in the emitted text is wrong.
+			//
+			// The graph's OWN functions are the nodes; an edge is a
+			// CallFunction node naming another declared function. Only
+			// same-graph calls are visible here -- cross-file cycles cannot
+			// be seen without loading every body, and the per-file check
+			// catches the self-recursive case that is actually constructible
+			// by accident.
+		}
+
+		// OUTSIDE the kind split: the check itself decides what it applies to.
+		// It was previously called in the `else` branch while returning early for
+		// any graph that was not a function -- so it could never fire at all.
+		CheckFunctionAcyclic(graph, out);
+
+
+
+		// Event nodes are the graph's entry points, and each one becomes a
+		// generated method (schema 2 -- a Blueprint has one function per
+		// event, and a flow graph is the same shape).
+		//
+		// Schema 1 allows exactly ONE. Schema 2 allows several, provided each
+		// has a unique non-empty EventName. The split is by schema rather than
+		// by a new file kind so every existing .wlblocks keeps compiling
+		// exactly as before.
+		std::vector<const GraphNode *> events;
+		for (const GraphNode &node : graph.Nodes)
+			// An authored event name OR a type that names one -- see
+			// GraphNode::IsTypeNamedEvent. Without the second condition an
+			// unedited OnBeginPlay node is invisible here, so the graph reports
+			// "must have at least one event node" while visibly having one.
+			if (!node.EventName.empty() || node.IsTypeNamedEvent())
+				events.push_back(&node);
+
+		// No event means the graph can never be triggered. Reported with no
+		// node id because the cause is the absence of something.
+		//
+		// A `kind: function` graph is EXEMPT: it has no events BY RULE (checked
+		// above), and its entry is its argument list. Applying the requirement
+		// here produced "a flow graph must have at least one event node" on a
+		// correct function body -- a contradictory pair of errors.
+		if (events.empty() && graph.Kind != "function")
+		{
+			out.Findings.push_back(MakeError(
+				"a flow graph must have at least one event node "
+				"(name an existing engine event in its Event field)", ""));
+		}
+		else if (graph.Schema <= 1 && events.size() > 1)
+		{
+			// Schema 1 predates multi-event graphs. Reported against every extra
+			// node after the first, naming it, so the author knows which to
+			// remove -- or which schema to declare.
+			for (size_t i = 1; i < events.size(); ++i)
+			{
+				out.Findings.push_back(MakeError(
+					"a second event node ('" + events[i]->EventName +
+						"'); a schema-1 flow graph has exactly one entry point "
+						"(bump the file to schema: 2 for several)",
+						events[i]->Id));
+			}
+		}
+
+		// Duplicate event names are an error at ANY schema. The emitter writes
+		// one method per event, so two events sharing a name would silently
+		// overwrite each other in the generated class -- the second def wins
+		// and the first event can never fire.
+		//
+		// Compared by the RESOLVED METHOD NAME, not the authored EventName. A
+		// type-named event node carries an EMPTY EventName, so comparing raw
+		// values would let an OnAnimationEvent node and a FlowOnEvent authored
+		// with `event: OnAnimationEvent` both through -- and they generate the
+		// same method, which is exactly the silent overwrite this check exists to
+		// catch.
+		for (size_t i = 0; i < events.size(); ++i)
+		{
+			const std::string nameI = ResolveEventMethodName(*events[i]);
+			for (size_t j = i + 1; j < events.size(); ++j)
+			{
+				const std::string nameJ = ResolveEventMethodName(*events[j]);
+				if (nameI == nameJ)
+				{
+					out.Findings.push_back(MakeError(
+						"duplicate event name '" + nameI +
+							"' (also on node '" + events[j]->Id +
+							"'); each event needs a unique name",
+						events[i]->Id));
 				}
 			}
 		}
@@ -899,20 +1179,24 @@ namespace Wasteland::VisualBlocks
 
 			// Pins are resolved through each endpoint's own definition. Both
 			// ends must resolve before any direction or type rule can run.
-			const PinDef *outPin = fromDef->FindPin(link.FromPin);
+			bool outPinFound = false;
+			const PinDef outPin =
+				FindEffectivePin(*fromDef, graph, *from, link.FromPin, outPinFound);
 			// The TARGET pin resolved separately from the source, since the two
 			// ends are different nodes with different definitions.
-			const PinDef *inPin = toDef->FindPin(link.ToPin);
+			bool inPinFound = false;
+			const PinDef inPin =
+				FindEffectivePin(*toDef, graph, *to, link.ToPin, inPinFound);
 			// Every failure below `continue`s rather than piling on: a link with
 			// -- a bad source pin tells you nothing useful about its target pin.
-			if (outPin == nullptr)
+			if (!outPinFound)
 			{
 				out.Findings.push_back(MakeError(
 					"'" + from->TypeId + "' has no output pin '" + link.FromPin + "'",
 					from->Id, link.FromPin));
 				continue;
 			}
-			if (inPin == nullptr)
+			if (!inPinFound)
 			{
 				out.Findings.push_back(MakeError(
 					"'" + to->TypeId + "' has no input pin '" + link.ToPin + "'",
@@ -922,7 +1206,7 @@ namespace Wasteland::VisualBlocks
 			// Direction is checked from the definitions, not from the link
 			// -- a link naming an input pin as its source is a data-flow error the
 			// -- author can make by picking the wrong pin.
-			if (outPin->Dir != PinDir::Out)
+			if (outPin.Dir != PinDir::Out)
 			{
 				out.Findings.push_back(MakeError(
 					"pin '" + link.FromPin + "' is an input, so it cannot be a "
@@ -932,7 +1216,7 @@ namespace Wasteland::VisualBlocks
 			}
 			// A link into an output pin. Distinct from the exec rules below:
 			// this one is about direction, not type.
-			if (inPin->Dir != PinDir::In)
+			if (inPin.Dir != PinDir::In)
 			{
 				out.Findings.push_back(MakeError(
 					"pin '" + link.ToPin + "' is an output, so it cannot be a "
@@ -945,17 +1229,17 @@ namespace Wasteland::VisualBlocks
 			// separate check because it is the mistake people actually make.
 			// Exec-to-exec is fine; exec-to-data is a hard error, and it is a
 			// separate check because it is the mistake people actually make.
-			if (outPin->Type == PinType::Exec && inPin->Type != PinType::Exec)
+			if (outPin.Type == PinType::Exec && inPin.Type != PinType::Exec)
 			{
 				out.Findings.push_back(MakeError(
 					"exec wire cannot feed a data pin; '" + link.ToPin +
-						"' is a " + PinTypeName(inPin->Type),
+						"' is a " + PinTypeName(inPin.Type),
 					to->Id, link.ToPin));
 				continue;
 			}
 			// The mirror of the exec-to-data check above. Both are needed --
 			// checking only one would let the other through.
-			if (inPin->Type == PinType::Exec && outPin->Type != PinType::Exec)
+			if (inPin.Type == PinType::Exec && outPin.Type != PinType::Exec)
 			{
 				out.Findings.push_back(MakeError(
 					"a data wire cannot drive an exec pin; '" + link.ToPin +
@@ -968,11 +1252,11 @@ namespace Wasteland::VisualBlocks
 			// DEFECT: this is the only rule in the loop that does NOT `continue`
 			// -- harmless today (it is the last check), but any rule added after
 			// -- it would run even for a link that already failed here.
-			if (inPin->Type != PinType::Exec && !IsAssignable(outPin->Type, inPin->Type))
+			if (inPin.Type != PinType::Exec && !IsAssignable(outPin.Type, inPin.Type))
 			{
 				out.Findings.push_back(MakeError(
-					"cannot connect " + std::string(PinTypeName(outPin->Type)) +
-						" to " + PinTypeName(inPin->Type),
+					"cannot connect " + std::string(PinTypeName(outPin.Type)) +
+						" to " + PinTypeName(inPin.Type),
 					to->Id, link.ToPin));
 			}
 		}
@@ -995,7 +1279,11 @@ namespace Wasteland::VisualBlocks
 				continue;
 			// Driven by the DEFINITION's pin list rather than by the graph's
 			// links -- so a pin with zero links is checked and simply passes.
-			for (const PinDef &pinDef : def->Pins)
+			// EffectivePins: a CallFunction node's parameter pins are resolved
+			// from its Name, so the static set would check none of them.
+			const std::vector<PinDef> pins =
+				NodeRegistry::EffectivePins(*def, graph, node);
+			for (const PinDef &pinDef : pins)
 			{
 				if (pinDef.Dir != PinDir::In)
 					continue;
@@ -1025,7 +1313,7 @@ namespace Wasteland::VisualBlocks
 		// A node with no path from the event never runs. Reported as a warning:
 		// it is legal to keep unfinished scaffolding around, and an error would
 		// block saving the work.
-		if (event != nullptr)
+		if (!events.empty())
 		{
 			// Separate from the link-validation loop above: this asks a
 			// reachability question, not a type question.
@@ -1034,7 +1322,12 @@ namespace Wasteland::VisualBlocks
 			// graph cannot overflow the stack. `frontier` is used as a LIFO stack
 			// (back/pop_back), which is a DFS -- order does not matter for
 			// reachability.
-			std::vector<std::string> frontier = { event->Id };
+			//
+			// Seeded with EVERY event node: under schema 2 a graph has several
+			// entry points, and a node reachable from any of them does run.
+			std::vector<std::string> frontier;
+			for (const GraphNode *ev : events)
+				frontier.push_back(ev->Id);
 			while (!frontier.empty())
 			{
 				// back()/pop_back() makes this a LIFO, i.e. depth-first. Order is
@@ -1095,8 +1388,11 @@ namespace Wasteland::VisualBlocks
 				// -- that never set the flag explicitly.
 				bool isStatement = def->IsStatement;
 				// Any exec pin makes a node statement-like, overriding a false
-				// IsStatement flag.
-				for (const PinDef &pin : def->Pins)
+				// IsStatement flag. EffectivePins, so a resolved node's exec pins
+				// are seen too.
+				const std::vector<PinDef> pins =
+					NodeRegistry::EffectivePins(*def, graph, node);
+				for (const PinDef &pin : pins)
 				{
 					if (pin.Type == PinType::Exec)
 						isStatement = true;
@@ -1110,7 +1406,7 @@ namespace Wasteland::VisualBlocks
 				// expressions are skipped by the check above, so this fires on the
 				// dead-statement case the warning exists for.
 				out.Findings.push_back(MakeWarning(
-					"no exec path from the event reaches this node, so it will "
+					"no exec path from any event reaches this node, so it will "
 					"never run",
 					node.Id));
 			}

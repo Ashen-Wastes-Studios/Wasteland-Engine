@@ -385,6 +385,11 @@ namespace Wasteland::Audio
 		if (!m_Scene)
 			return;
 
+		// Audio graphs prune themselves and follow their emitters here rather
+		// than on component removal: Scene has no OnComponentRemoved hook, so
+		// this is the only reliable point.
+		UpdateGraphs();
+
 		// Resolve the listener every frame.
 
 		// Re-resolved rather than cached -- see the per-frame cost note at
@@ -415,6 +420,337 @@ namespace Wasteland::Audio
 			// Up is +Y rotated.
 			glm::vec3 up = glm::normalize(rotation * glm::vec3(0.0f, 1.0f, 0.0f));
 			m_Mixer.SetListenerTransform(transform.Translation, forward, up);
+		}
+	}
+
+	// ---- Audio graphs ----
+
+	namespace
+	{
+		// The block geometry every graph voice is prepared with. Fixed so the
+		// runtime's internal buffering is predictable, and equal to the engine's
+		// 48 kHz mix rate so a rendered block is one millisecond of audio.
+		constexpr std::uint32_t kGraphSampleRate = 48000;
+		constexpr std::size_t kGraphBlockFrames = 480;
+		constexpr std::size_t kGraphMaxTriggers = 256;
+
+		// The mixer's entry point for one graph voice.
+		//
+		// Returns false to RETIRE the voice. The mixer holds its lock for the whole
+		// of this call, so nothing here may call back into the mixer.
+		bool GenerateGraphBlock(AudioSystem::GraphInstance &instance,
+								float *output, int frames)
+		{
+			if (!instance.Runtime || !instance.Runtime->IsPrepared())
+				return false;
+
+			// Drain queued triggers at the block boundary. Frame 0 is the honest
+			// granularity for an event that arrived from gameplay: the graph's own
+			// timing stays sample-accurate, but the event did not arrive on a
+			// sample boundary and pretending otherwise would be a lie.
+			if (!instance.Pending.empty())
+			{
+				for (const auto &pending : instance.Pending)
+					instance.Runtime->QueueTrigger(pending.first, pending.second, 0);
+				instance.Pending.clear();
+			}
+
+			if (!instance.Runtime->RenderBlock(output, (size_t)frames))
+				return false;
+
+			// The instance's own clock, in seconds. DurationSeconds == 0 means
+			// "until stopped", which is what an ambient graph wants; a one-shot
+			// graph sets a limit so its voice is released rather than held forever.
+			instance.Elapsed += (float)frames / (float)kGraphSampleRate;
+			if (instance.DurationSeconds > 0.0f &&
+				instance.Elapsed >= instance.DurationSeconds)
+				return false;
+
+			return true;
+		}
+	}
+
+	void AudioSystem::SyncInstanceFromComponent(GraphInstance &instance,
+												 const AudioGraphComponent &component)
+	{
+		// Only the ENTITY-FACING fields. GraphPath and Error belong to the load;
+		// overwriting them here would make a failed load look successful.
+		instance.Volume = component.Volume;
+		instance.DurationSeconds = component.DurationSeconds;
+		instance.Priority = component.Priority;
+		instance.Spatial = component.Spatial;
+		instance.MinDistance = component.MinDistance;
+		instance.MaxDistance = component.MaxDistance;
+	}
+
+	void AudioSystem::StartGraphVoice(GraphInstance &instance, Entity entity,
+									  const AudioGraphComponent &component)
+	{
+		// A runtime that is not prepared cannot render; starting a voice for it
+		// would retire on the first block and look like "the trigger did nothing".
+		if (!instance.Runtime || !instance.Runtime->IsPrepared())
+			return;
+
+		// Already audible: a second trigger must not stack a second voice, which
+		// would double the graph's output and consume two slots for one sound.
+		if (instance.MixerVoiceId >= 0 && m_Mixer.IsPlaying(instance.MixerVoiceId))
+			return;
+
+		PlayRequest request;
+		request.Procedural = instance.Voice;
+		request.Volume = component.Volume;
+		request.Priority = component.Priority;
+		request.Spatial = component.Spatial;
+		request.Position = glm::vec3(0.0f, 0.0f, 0.0f);
+		if (m_Scene)
+			ResolveSourcePosition(*m_Scene, entity, request.Position);
+		request.MinDistance = component.MinDistance;
+		request.MaxDistance = component.MaxDistance;
+
+		instance.MixerVoiceId = m_Mixer.PlayProcedural(request, instance.Voice);
+		if (instance.MixerVoiceId < 0)
+			return;
+
+		// A restarted voice restarts its clock: a graph re-triggered after it
+		// ended plays from the top, which is what a footstep means.
+		instance.Elapsed = 0.0f;
+	}
+
+	bool AudioSystem::AttachGraph(Entity entity, std::string *error)
+	{
+		if (!entity.IsValid())
+		{
+			if (error) *error = "the entity is not valid";
+			return false;
+		}
+		if (!entity.HasComponent<AudioGraphComponent>())
+		{
+			if (error) *error = "the entity has no AudioGraphComponent";
+			return false;
+		}
+		if (!entity.HasComponent<IDComponent>())
+		{
+			if (error) *error = "the entity has no IDComponent";
+			return false;
+		}
+
+		const UUID id = entity.GetComponent<IDComponent>().ID;
+		const auto &component = entity.GetComponent<AudioGraphComponent>();
+
+		// An empty path is an INERT component, not an error: detach so that
+		// clearing a path stops a graph that was already playing.
+		if (component.GraphPath.empty())
+		{
+			DetachGraph(entity);
+			return true;
+		}
+
+		// The same asset is already loaded: sync the fader and leave the runtime
+		// alone. Recompiling an unchanged graph would drop its live state
+		// (envelope, delay lines, oscillator phase) for nothing.
+		if (auto existing = m_Graphs.find(id); existing != m_Graphs.end())
+		{
+			if (existing->second.GraphPath == component.GraphPath)
+			{
+				SyncInstanceFromComponent(existing->second, component);
+				if (error)
+					*error = existing->second.Error;
+				return existing->second.Error.empty();
+			}
+			// A DIFFERENT asset: retire the old voice before the runtime is
+			// replaced, so the two never overlap in the mixer.
+			DetachGraph(entity);
+		}
+
+		GraphInstance instance;
+		instance.EntityId = id;
+		instance.GraphPath = component.GraphPath;
+		instance.Runtime = std::make_unique<Avb::AvbProjectRuntime>();
+
+		std::string loadError;
+		const bool loaded = instance.Runtime->Load(component.GraphPath,
+												   kGraphSampleRate,
+												   kGraphBlockFrames,
+												   kGraphMaxTriggers,
+												   &loadError);
+		if (!loaded)
+		{
+			// The reason is kept on the instance so the editor can show it and a
+			// test can assert on it, rather than living only in a log line.
+			instance.Error = loadError.empty()
+				? "the graph could not be loaded or compiled"
+				: loadError;
+			if (error)
+				*error = instance.Error;
+			m_Graphs[id] = std::move(instance);
+			return false;
+		}
+
+		SyncInstanceFromComponent(instance, component);
+		instance.Error.clear();
+
+		// The generator captures the entity id and looks the instance up on every
+		// block, rather than capturing the instance's address. An
+		// unordered_map's elements are node-based so the address WOULD be stable,
+		// but an id lookup also survives the instance being erased and re-added
+		// (a reload) without the lambda holding a dangling reference.
+		auto voice = std::make_shared<ProceduralVoice>();
+		voice->Name = component.GraphPath;
+		voice->Generate = [this, id](float *output, int frames) -> bool
+		{
+			const auto it = m_Graphs.find(id);
+			if (it == m_Graphs.end())
+				return false;
+			return GenerateGraphBlock(it->second, output, frames);
+		};
+		instance.Voice = std::move(voice);
+
+		GraphInstance &stored = m_Graphs[id];
+		stored = std::move(instance);
+
+		if (component.PlayOnStart)
+			StartGraphVoice(stored, entity, component);
+
+		if (error)
+			*error = "";
+		return true;
+	}
+
+	void AudioSystem::DetachGraph(Entity entity)
+	{
+		if (!entity.IsValid() || !entity.HasComponent<IDComponent>())
+			return;
+
+		const auto it = m_Graphs.find(entity.GetComponent<IDComponent>().ID);
+		if (it == m_Graphs.end())
+			return;
+
+		if (it->second.MixerVoiceId >= 0)
+			m_Mixer.Stop(it->second.MixerVoiceId);
+		m_Graphs.erase(it);
+	}
+
+	bool AudioSystem::TriggerGraph(Entity entity, const std::string &eventName,
+								   const std::string &arg)
+	{
+		if (!m_Scene || !entity.IsValid())
+			return false;
+		if (!entity.HasComponent<AudioGraphComponent>() ||
+			!entity.HasComponent<IDComponent>())
+			return false;
+
+		const auto it = m_Graphs.find(entity.GetComponent<IDComponent>().ID);
+		if (it == m_Graphs.end())
+			return false;
+
+		const auto &component = entity.GetComponent<AudioGraphComponent>();
+		for (const auto &trigger : component.Triggers)
+		{
+			if (trigger.Event != eventName)
+				continue;
+			if (trigger.Node.empty())
+				continue;
+
+			// The arg is the trigger's payload. It is carried nowhere yet: the
+			// runtime's QueueTrigger has a pin name but no per-call value, so
+			// there is no Float input to write. Routing on the event name is what
+			// the map is for; the arg stays in the signature so a future value
+			// pin has somewhere to go without changing every call site.
+			(void)arg;
+
+			// A trigger both LOADS and SOUNDS: a footstep event on an entity whose
+			// graph has no live voice starts it. The alternative -- requiring a
+			// separate Play call -- is a second thing for a script to forget.
+			StartGraphVoice(it->second, entity, component);
+			it->second.Pending.emplace_back(trigger.Node, trigger.Pin);
+			return true;
+		}
+		// An event with no matching Trigger entry is a quiet no-op, matching
+		// ScriptEventDispatcher's convention for a missing Python method. A game
+		// can therefore fire one event at every entity without checking which
+		// ones listen.
+		return false;
+	}
+
+	int AudioSystem::GetGraphVoiceCount() const
+	{
+		// Counted from the MIXER, not from m_Graphs: an instance whose voice was
+		// stolen or stopped is still attached and must not be counted. This is the
+		// number the plan's verification reads, so it has to mean "audible now".
+		int count = 0;
+		for (const auto &entry : m_Graphs)
+		{
+			if (entry.second.MixerVoiceId >= 0 &&
+				m_Mixer.IsPlaying(entry.second.MixerVoiceId))
+				++count;
+		}
+		return count;
+	}
+
+	bool AudioSystem::IsGraphAttached(Entity entity) const
+	{
+		if (!entity.IsValid() || !entity.HasComponent<IDComponent>())
+			return false;
+		return m_Graphs.find(entity.GetComponent<IDComponent>().ID) != m_Graphs.end();
+	}
+
+	std::string AudioSystem::GetGraphError(Entity entity) const
+	{
+		if (!entity.IsValid() || !entity.HasComponent<IDComponent>())
+			return "the entity is not valid";
+		const auto it = m_Graphs.find(entity.GetComponent<IDComponent>().ID);
+		if (it == m_Graphs.end())
+			return "the entity has no loaded audio graph";
+		return it->second.Error;
+	}
+
+	// Per-frame graph work: prune instances whose component is gone, and follow
+	// the emitter for a spatial graph voice.
+	void AudioSystem::UpdateGraphs()
+	{
+		if (!m_Scene)
+			return;
+
+		// One pass over the scene rather than one lookup per instance: the entity
+		// count dominates the graph count in every real scene, and this runs every
+		// frame. A set rather than a linear scan per instance keeps it O(n).
+		std::unordered_map<UUID, Entity> present;
+		auto view = m_Scene->GetAllEntitiesWith<AudioGraphComponent>();
+		// Range-for + view.get, the same shape the AudioSourceComponent pass
+		// above uses. entt's `.each` is not used anywhere in this file, and its
+		// one-argument form does not accept an (entity, component) lambda here.
+		for (auto handle : view)
+		{
+			Entity entity(handle, m_Scene);
+			if (!entity.HasComponent<IDComponent>())
+				continue;
+			present.emplace(entity.GetComponent<IDComponent>().ID, entity);
+		}
+
+		for (auto it = m_Graphs.begin(); it != m_Graphs.end();)
+		{
+			// There is no OnComponentRemoved hook in Scene, so the only place a
+			// component removed without an explicit DetachGraph can be noticed is
+			// here. The alternative is a leaked runtime holding a mixer voice.
+			if (present.find(it->second.EntityId) == present.end())
+			{
+				if (it->second.MixerVoiceId >= 0)
+					m_Mixer.Stop(it->second.MixerVoiceId);
+				it = m_Graphs.erase(it);
+				continue;
+			}
+
+			// A spatial graph follows its entity. A false result from the mixer
+			// simply means the voice already retired; the runtime stays, so a
+			// later trigger starts it again.
+			if (it->second.Spatial && it->second.MixerVoiceId >= 0)
+			{
+				Entity probe = present.find(it->second.EntityId)->second;
+				glm::vec3 position(0.0f, 0.0f, 0.0f);
+				if (ResolveSourcePosition(*m_Scene, probe, position))
+					m_Mixer.SetVoicePosition(it->second.MixerVoiceId, position);
+			}
+			++it;
 		}
 	}
 

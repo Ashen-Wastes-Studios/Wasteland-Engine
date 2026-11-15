@@ -1340,11 +1340,21 @@ static bool HasGLExtension(const char *name)
 			return "Visual Blocks";
 		case Workflow::Audio:
 			return "Audio";
+		case Workflow::Animation:
+			return "Animation";
 		case Workflow::Review:
 			return "Review";
 		}
 		return "Scene";
 	}
+
+	// A window with DockId == 0 is not in the dockspace at all. That single
+	// fact is what the layout audit needs at runtime, and it is checked by
+	// scanning ImGui's live window list -- see the WL_DUMP_DOCK_TREE block at
+	// the end of OnImGuiRender. A tree walk was tried first and does not work
+	// here: DockBuilderGetNode looks the id up in ctx->DockContext.Nodes, which
+	// is not populated the way the tree API expects once the frame has run, and
+	// the dockspace host window's DockNode pointer is null at that point.
 
 	void EditorLayer::ApplyLayout(Workflow workflow)
 	{
@@ -1375,6 +1385,16 @@ static bool HasGLExtension(const char *name)
 			rightRatio = 0.30f;
 			bottomRatio = 0.20f;
 			break;
+		case Workflow::Animation:
+			// The timeline is the widest surface here: keyframe diamonds and a frame
+			// ruler both want horizontal room, and a narrow rail turns a 2-second
+			// clip into a few indistinguishable pixels. The viewport shares the
+			// centre because authoring a pose you cannot see on an entity is
+			// guesswork.
+			leftRatio = 0.18f;
+			rightRatio = 0.22f;
+			bottomRatio = 0.26f;
+			break;
 		case Workflow::Audio:
 			// A wider right rail than any other workflow: the mixer's voice table
 			// is seven columns and is unreadable below about 34% of a 1920-wide
@@ -1404,6 +1424,23 @@ static bool HasGLExtension(const char *name)
 		m_NPCBehaviorPanel.SetVisible(workflow == Workflow::Visual);
 		m_VisualBlocksPanel.SetVisible(workflow == Workflow::Visual);
 		m_TerrainAssetPanel.SetVisible(false);
+		// Only the Animation workflow shows the timeline. It is still constructed
+		// in every workflow, so a clip left open survives a layout switch.
+		m_AnimationTimelinePanel.SetVisible(workflow == Workflow::Animation);
+		// The Animator is the state-machine half of the same asset. Both stay
+		// visible in the Animation workflow because they edit different halves:
+		// the timeline edits clips, the Animator wires states between them.
+		m_AnimatorPanel.SetVisible(workflow == Workflow::Animation);
+		// The library scans the project's asset root, and SetVisible does not
+		// populate it. Without this the Animation workflow opens an empty panel --
+		// a timeline with no clip list, which is worse than no panel because it
+		// looks authored and is not. Refresh on every layout so a project switch
+		// cannot leave the previous project's clips on screen.
+		if (workflow == Workflow::Animation)
+		{
+			m_AnimationTimelinePanel.SetAssetRoot(Project::Get().GetAssetRoot());
+			m_AnimatorPanel.SetAssetRoot(Project::Get().GetAssetRoot());
+		}
 		m_AIChatPanel.SetVisible(workflow == Workflow::Review);
 		m_ModelDownloaderPanel.SetVisible(workflow == Workflow::Scene);
 		// The AVB graph is the routing half of the Audio workflow -- it is what
@@ -1470,9 +1507,16 @@ static bool HasGLExtension(const char *name)
 			"Audio Mixer",
 			"Audio Sources",
 			"Terrain Asset",
+			"Animation Timeline",
+			"Animator",
 			"AI Chatbot",
 			"Model Downloader",
+			// Render settings. It was absent from this array, so it floated free
+			// at a hardcoded position -- see the draw site below for why that
+			// position was chosen and why it is no longer needed.
+			"Clean-Room Reconstruction",
 			"Settings",
+			"Mesh Editor",
 			"Stats",
 		};
 
@@ -1484,6 +1528,7 @@ static bool HasGLExtension(const char *name)
 			// Settings gets its own node in the same rail. It is declared here with
 			// the others so the dock call below can reference it unconditionally.
 			ImGuiID settingsNode = left;
+			ImGuiID meshEditorNode = left;
 		if (left != 0)
 		{
 			// Hierarchy on top, Properties below.
@@ -1498,6 +1543,8 @@ static bool HasGLExtension(const char *name)
 			hierarchy = left;
 			properties = left;
 			settingsNode = left;
+			// The Mesh Editor, stacked under Settings in the same rail.
+			meshEditorNode = left;
 			// Three stacked nodes, not two. Settings used to be listed in
 			// kPanels below but never passed to dock(), so ImGui treated it as a
 			// free-floating window and restored it to whatever position the last
@@ -1509,10 +1556,14 @@ static bool HasGLExtension(const char *name)
 			if (properties != 0)
 				(void)ImGui::DockBuilderSplitNode(properties, ImGuiDir_Down, 0.5f,
 					&settingsNode, &properties);
+			if (settingsNode != 0)
+				(void)ImGui::DockBuilderSplitNode(settingsNode, ImGuiDir_Down, 0.5f,
+					&meshEditorNode, &settingsNode);
 			}
 			dock("Scene Hierarchy", hierarchy);
 			dock("Properties", properties);
 			dock("Settings", settingsNode);
+			dock("Mesh Editor", meshEditorNode);
 		dock("Content Browser", bottom);
 
 		// Audio's regions, declared here because the generic loop further down
@@ -1583,9 +1634,25 @@ static bool HasGLExtension(const char *name)
 			dock("Audio Clips", audioClipsNode);
 		}
 
+		if (workflow == Workflow::Animation && top != 0)
+		{
+			// Timeline on top, viewport below. The split happens BEFORE anything is
+			// docked into `top`, for the reason the Audio branch above gives: a
+			// window docked into an already-split node lands in an arbitrary child.
+			ImGuiID timelineNode = 0;
+			ImGuiID viewportNode = 0;
+			(void)ImGui::DockBuilderSplitNode(top, ImGuiDir_Down, 0.42f,
+				&viewportNode, &timelineNode);
+			dock("Animation Timeline", timelineNode);
+			dock("Viewport", viewportNode);
+		}
+
 		const char *primary = "Viewport";
 		switch (workflow)
 		{
+		case Workflow::Animation:
+			primary = "Animation Timeline";
+			break;
 		case Workflow::Scripting:
 			primary = "Script Editor";
 			break;
@@ -1600,7 +1667,9 @@ static bool HasGLExtension(const char *name)
 		}
 		// Audio docks its centre pair explicitly above (Viewport over AVB Graph),
 		// so the generic dock here would put the viewport in the wrong half.
-		if (workflow != Workflow::Audio)
+		// Audio and Animation dock their centre pair explicitly above, so the
+		// generic dock here would put the primary panel in the wrong half.
+		if (workflow != Workflow::Audio && workflow != Workflow::Animation)
 			dock(primary, top);
 
 		// Everything not primary is docked into the side rail: docked but
@@ -1617,6 +1686,10 @@ static bool HasGLExtension(const char *name)
 			// generic path does not have. Left in this loop they would all pile
 			// into the right rail as tabs, which is the one arrangement that
 			// makes the mixer unusable.
+			if (workflow == Workflow::Animation &&
+				(std::strcmp(name, "Animation Timeline") == 0 ||
+				std::strcmp(name, "Viewport") == 0))
+				continue;
 			if (workflow == Workflow::Audio &&
 				(std::strcmp(name, "Audio Clips") == 0 ||
 				 std::strcmp(name, "Audio Mixer") == 0 ||
@@ -1645,6 +1718,16 @@ static bool HasGLExtension(const char *name)
 		}
 
 		ImGui::DockBuilderFinish(dockspace);
+
+		// The dock tree is NOT dumped here. ImGui assigns windows to dock nodes
+		// during the frame, so a dump taken right after DockBuilderFinish reports
+		// windows=[] for every leaf -- the shape is there but nothing is in it.
+		// See the WL_DUMP_DOCK_TREE block at the end of OnImGuiRender, which
+		// runs after the first frame has submitted and the nodes are populated.
+		//
+		// That dump is the only cursor-free way to verify a layout: the PNG hook
+		// reads the GL framebuffer in OnUpdate, before ImGui renders, so a
+		// captured image never contains a panel. See DumpDockNode.
 		WL_CORE_INFO("Applied '{0}' editor layout", WorkflowName(workflow));
 	}
 
@@ -1717,7 +1800,9 @@ static bool HasGLExtension(const char *name)
 																				m_Workflow = Workflow::Scripting;
 															else if (name == "Visual" || name == "Visual Blocks")
 																				m_Workflow = Workflow::Visual;
-															else if (name == "Audio")
+else if (name == "Animation")
+															m_Workflow = Workflow::Animation;
+											else if (name == "Audio")
 																				m_Workflow = Workflow::Audio;
 															else if (name == "Review")
 																				m_Workflow = Workflow::Review;
@@ -1825,7 +1910,32 @@ static bool HasGLExtension(const char *name)
 						m_AvbGraphPanel.SetVisible(avb);
 					bool terrain = m_TerrainAssetPanel.IsVisible();
 					if (ImGui::MenuItem("Terrain Asset", nullptr, &terrain))
+					{
 						m_TerrainAssetPanel.SetVisible(terrain);
+					}
+					// The timeline's library scans the CURRENT project's asset root.
+					// Refreshed on every show rather than only on project change, so
+					// the panel can never offer another project's clips as if they
+					// were this one's.
+					bool animationTimeline = m_AnimationTimelinePanel.IsVisible();
+					if (ImGui::MenuItem("Animation Timeline", nullptr, &animationTimeline))
+					{
+						m_AnimationTimelinePanel.SetVisible(animationTimeline);
+						if (animationTimeline)
+							m_AnimationTimelinePanel.SetAssetRoot(Wasteland::Project::Get().GetAssetRoot());
+						}
+					// The Animator edits the same asset's state machine, so it needs the
+					// same asset root for its own clip list.
+					bool animator = m_AnimatorPanel.IsVisible();
+					if (ImGui::MenuItem("Animator", nullptr, &animator))
+					{
+						m_AnimatorPanel.SetVisible(animator);
+						if (animator)
+							m_AnimatorPanel.SetAssetRoot(Wasteland::Project::Get().GetAssetRoot());
+					}
+					bool meshEditor = m_MeshEditorPanel.IsVisible();
+					if (ImGui::MenuItem("Mesh Editor", nullptr, &meshEditor))
+						m_MeshEditorPanel.SetVisible(meshEditor);
 					ImGui::MenuItem("Stats", nullptr, &m_ShowStats);
 					ImGui::MenuItem("Settings", nullptr, &m_ShowSettings);
 ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
@@ -1861,7 +1971,7 @@ ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
 					if (ImGui::BeginMenu("Layout"))
 					{
 						const Workflow workflows[] = {Workflow::Scene, Workflow::Scripting,
-													 Workflow::Visual, Workflow::Audio,
+Workflow::Visual, Workflow::Audio, Workflow::Animation,
 													 Workflow::Review};
 						for (Workflow workflow : workflows)
 						{
@@ -1925,6 +2035,10 @@ ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
 		m_TerrainAssetPanel.OnImGuiRender(Project::Get().GetAssetRoot(),
 			Project::Get().GetRoot(), m_ActiveScene,
 			m_SceneState == SceneState::Edit);
+		// Unconditional: the panel draws its own empty state when nothing is
+		// open, which is how an author picks a clip in the first place.
+		m_AnimationTimelinePanel.OnImGuiRender();
+		m_AnimatorPanel.OnImGuiRender();
 		m_ScriptEditorPanel.OnImGuiRender();
 
 			m_AIChatPanel.OnImGuiRender();
@@ -1937,6 +2051,7 @@ ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
 			if (m_ActiveScene)
 			{
 				m_AudioClipPanel.OnImGuiRender(*m_ActiveScene);
+				m_MeshEditorPanel.OnImGuiRender(*m_ActiveScene);
 				m_AudioMixerPanel.OnImGuiRender(*m_ActiveScene);
 				m_AudioScenePanel.OnImGuiRender(*m_ActiveScene);
 
@@ -2032,18 +2147,21 @@ ImGui::MenuItem("Reconstruction", nullptr, &m_ShowReconstruction);
 			// readouts are read-only: without them a user cannot tell "no
 			// enhancement" from "the head never loaded".
 			//
-			// Its own window, positioned explicitly. As a section of Settings it
-			// was unreachable: Settings is listed in the dock panel array but is
-			// never passed to dock(), so ImGui restored it to a 3840-wide saved
-			// position that lands outside the framebuffer the editor renders
-			// into. A panel of render settings the user cannot reach is the same
-			// as one that does not exist.
+			// Docked like every other panel.
+			//
+			// This used to be a free-floating window at a hardcoded (800, 800),
+			// positioned there to escape a bug where Settings was listed in the
+			// dock array but never passed to dock() -- ImGui restored it to a
+			// 3840-wide saved position that lands outside the framebuffer the
+			// editor renders into. That bug is FIXED (Settings is docked at
+			// EditorLayer.cpp:1515), so the workaround now only left this panel
+			// un-docked and therefore unreachable on a wide display.
+			//
+			// The SetNextWindowPos is deliberately gone: a docked window must
+			// not carry a manual position, or the first frame fights the dock
+			// builder and the panel lands wherever ImGui last put it.
 			if (m_ShowReconstruction)
 			{
-				// y=800, not 20: the OpenGL screenshot reads GL_VIEWPORT rows from the
-// BOTTOM of the framebuffer, so a window near the top of a 2130-tall
-// window lands above the 1451 rows the capture actually covers.
-ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
 				ImGui::Begin("Clean-Room Reconstruction");
 				const char *tier = Wasteland::Renderer3D::GetReconstructionTierName();
 				const bool tierOk = tier && strcmp(tier, "unavailable") != 0;
@@ -2656,6 +2774,77 @@ ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
 				}
 			}
 
+			ImGui::Separator();
+
+			// Effects register (T0.2) -- one checkbox per WL_EFLAGS_* bit. Bit 0 is
+			// DEBUG_TINT, the ground-truth read that proves u_EffectsFlags is pushed
+			// and read on every backend (the A/B harness flips the same bit via
+			// WL_EFFECTS). New bits from Phase 1+ land as another checkbox here.
+			bool effectsDebugTint = Wasteland::Renderer3D::IsEffectsFlagSet(1u);
+			if (ImGui::Checkbox("Effects: Debug Tint (bit 0)", &effectsDebugTint))
+			{
+				Wasteland::Renderer3D::SetEffectsFlag(1u, effectsDebugTint);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("WL_EFLAGS_DEBUG_TINT: casts the composite magenta to prove u_EffectsFlags reaches the shader on every backend.");
+			// T1.1 atmospheric scattering -- the analytic Rayleigh+Mie sky. Off by
+			// default; tick literally for the live viewport look (T1.1 in-progress).
+			bool effectsAtmosphere = Wasteland::Renderer3D::IsEffectsFlagSet(2u);
+			if (ImGui::Checkbox("Effects: Atmospheric Sky (bit 1)", &effectsAtmosphere))
+			{
+				Wasteland::Renderer3D::SetEffectsFlag(2u, effectsAtmosphere);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("WL_EFLAGS_ATMOSPHERE_SCATTERING: analytic Rayleigh+Mie single-scatter sky (T1.1). In-progress look; off by default.");
+			// T1.10 lens flare -- procedural ghosts drawn from the sun's screen pos.
+			bool effectsLensFlare = Wasteland::Renderer3D::IsEffectsFlagSet(4u);
+			if (ImGui::Checkbox("Effects: Lens Flare (bit 2)", &effectsLensFlare))
+			{
+				Wasteland::Renderer3D::SetEffectsFlag(4u, effectsLensFlare);
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("WL_EFLAGS_LENS_FLARE: additive flare ghosts on the sun (T1.10). Off by default.");
+			// T3.5 / T1.11 / T1.12 -- motion blur, bokeh DoF, lens dirt. All
+			// composite-internal, gated off; tick to compare live.
+			bool effectsMotionBlur = Wasteland::Renderer3D::IsEffectsFlagSet(8u);
+			if (ImGui::Checkbox("Effects: Motion Blur (bit 3)", &effectsMotionBlur))
+				Wasteland::Renderer3D::SetEffectsFlag(8u, effectsMotionBlur);
+			bool effectsDof = Wasteland::Renderer3D::IsEffectsFlagSet(16u);
+			if (ImGui::Checkbox("Effects: Bokeh DoF (bit 4)", &effectsDof))
+				Wasteland::Renderer3D::SetEffectsFlag(16u, effectsDof);
+			bool effectsLensDirt = Wasteland::Renderer3D::IsEffectsFlagSet(32u);
+			if (ImGui::Checkbox("Effects: Lens Dirt (bit 5)", &effectsLensDirt))
+				Wasteland::Renderer3D::SetEffectsFlag(32u, effectsLensDirt);
+			// T1.2 / T1.6 / T1.9 -- auto-exposure, multiple-scatter IBL, diffraction.
+			// (SSAO was dropped: the tracer bakes occlusion.)
+			bool effectsAutoExposure = Wasteland::Renderer3D::IsEffectsFlagSet(64u);
+			if (ImGui::Checkbox("Effects: Auto Exposure (bit 6)", &effectsAutoExposure))
+				Wasteland::Renderer3D::SetEffectsFlag(64u, effectsAutoExposure);
+			bool effectsIblMulti = Wasteland::Renderer3D::IsEffectsFlagSet(256u);
+			if (ImGui::Checkbox("Effects: IBL Multi-Scatter (bit 8)", &effectsIblMulti))
+				Wasteland::Renderer3D::SetEffectsFlag(256u, effectsIblMulti);
+			bool effectsDiffraction = Wasteland::Renderer3D::IsEffectsFlagSet(512u);
+			if (ImGui::Checkbox("Effects: Diffraction (bit 9)", &effectsDiffraction))
+				Wasteland::Renderer3D::SetEffectsFlag(512u, effectsDiffraction);
+			// T2-adjacent / T1.5 / T1.8 -- soft shadows, normal mapping, refraction.
+			bool effectsSoftShadows = Wasteland::Renderer3D::IsEffectsFlagSet(1024u);
+			if (ImGui::Checkbox("Effects: Soft Shadows (bit 10)", &effectsSoftShadows))
+				Wasteland::Renderer3D::SetEffectsFlag(1024u, effectsSoftShadows);
+			bool effectsNormalMapping = Wasteland::Renderer3D::IsEffectsFlagSet(2048u);
+			if (ImGui::Checkbox("Effects: Normal Mapping (bit 11)", &effectsNormalMapping))
+				Wasteland::Renderer3D::SetEffectsFlag(2048u, effectsNormalMapping);
+			bool effectsRefraction = Wasteland::Renderer3D::IsEffectsFlagSet(4096u);
+			if (ImGui::Checkbox("Effects: Refraction (bit 12)", &effectsRefraction))
+				Wasteland::Renderer3D::SetEffectsFlag(4096u, effectsRefraction);
+			// Phase 3 -- standalone FXAA gate (warp dropped after live review).
+			bool effectsFXAA = Wasteland::Renderer3D::IsEffectsFlagSet(16384u);
+			if (ImGui::Checkbox("Effects: FXAA (bit 14)", &effectsFXAA))
+				Wasteland::Renderer3D::SetEffectsFlag(16384u, effectsFXAA);
+			// T4.3 projected decals.
+			bool effectsDecals = Wasteland::Renderer3D::IsEffectsFlagSet(65536u);
+			if (ImGui::Checkbox("Effects: Decals (bit 16)", &effectsDecals))
+				Wasteland::Renderer3D::SetEffectsFlag(65536u, effectsDecals);
+
 			ImGui::TextWrapped("Add Volumetric Fog / Volumetric Clouds components to an entity; its Transform defines the volume box.");
 
 			ImGui::End();
@@ -2865,6 +3054,52 @@ ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
 			void *srv = m_CheckerboardTexture->GetNativeSRV();
 			ImGui::Image(srv ? srv : (void *)textureID, ImVec2{1280.0f, 720.0f}, ImVec2{0, 1}, ImVec2{1, 0});
 			ImGui::End();
+		}
+
+		// WL_DUMP_DOCK_TREE: log the built tree once, AFTER the panels have
+		//
+		// The dump cannot live in ApplyLayout: ImGui assigns windows to dock
+		// nodes during the frame's window submission, so a dump taken right
+		// after DockBuilderFinish reports windows=[] for every leaf -- the tree
+		// shape is there but nothing is in it. Here the first frame is complete
+		// and node->Windows is populated.
+		static bool dockTreeDumped = false;
+		if (!dockTreeDumped && std::getenv("WL_DUMP_DOCK_TREE"))
+		{
+			dockTreeDumped = true;
+
+			// Scan ImGui's LIVE WINDOW LIST rather than the dock tree.
+			//
+			// This is the direct form of the question "is anything floating?":
+			// a window with DockId == 0 is not in the dockspace at all, and a
+			// window with DockId != 0 is docked into the node with that id. The
+			// tree walk cannot answer it reliably here -- DockBuilderGetNode
+			// looks the id up in ctx->DockContext.Nodes, which is not populated
+			// the way the tree API expects after the frame has run, and the
+			// dockspace host window's DockNode pointer is null at this point.
+			//
+			// Hidden windows are skipped: a panel the workflow hid is not drawn
+			// and has no dock state worth asserting on.
+			WL_CORE_INFO("Docked windows for '{0}':", WorkflowName(m_Workflow));
+			if (ImGuiContext *ctx = ImGui::GetCurrentContext())
+			{
+				for (const ImGuiWindow *window : ctx->Windows)
+				{
+					if (window == nullptr || window->Name == nullptr)
+						continue;
+					if (window->DockId == 0)
+					{
+						// The dockspace host itself and child windows (##ids)
+						// legitimately have no DockId; everything else is a
+						// floater, which is the failure kPanels[] prevents.
+						if (window->DockNode == nullptr && window->Name[0] != '#' &&
+						    strstr(window->Name, "DockSpace") == nullptr)
+							WL_CORE_INFO("  FLOATING '{0}'", window->Name);
+						continue;
+					}
+					WL_CORE_INFO("  docked   '{0}' dockId={1}", window->Name, window->DockId);
+				}
+			}
 		}
 	}
 
@@ -3676,6 +3911,10 @@ ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
 		// The content browser was browsing the previous project's tree.
 		m_ContentBrowserPanel.ResetToRoot();
 		m_TerrainAssetPanel.Reset();
+		// A project switch invalidates the clip library and any open asset: the
+		// panel holds an in-memory AnimationAsset, and leaving it loaded would
+		// show the previous project's clip as if it belonged to this one.
+		m_AnimationTimelinePanel.Reset();
 
 		// Entities hold absolute texture paths resolved from the old asset
 		// root, so the open scene has to go. Reload the project's start
@@ -3957,6 +4196,15 @@ ImGui::SetNextWindowPos(ImVec2(800.0f, 800.0f), ImGuiCond_FirstUseEver);
 		{
 			m_TerrainAssetPanel.SetVisible(true);
 			m_TerrainAssetPanel.OpenAsset(p, Project::Get().GetAssetRoot());
+		}
+		else if (ext == ".wlanim")
+		{
+			// Double-clicking a clip in the content browser opens it in the
+			// timeline, the only editor that can write it back. The asset root
+			// is passed so the library list is populated even if this is the
+			// first clip opened this session.
+			m_AnimationTimelinePanel.SetVisible(true);
+			m_AnimationTimelinePanel.OpenAsset(p, Project::Get().GetAssetRoot());
 		}
 		else
 		{

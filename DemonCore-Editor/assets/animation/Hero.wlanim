@@ -1,0 +1,92 @@
+schema: 1
+name: Hero
+skeleton:
+  bones:
+    - name: Root
+      parent: ""
+    - name: Spine
+      parent: Root
+    - name: Chest
+      parent: Spine
+    - name: Head
+      parent: Chest
+    - name: ArmL
+      parent: Chest
+    - name: ArmR
+      parent: Chest
+  rest_pose:
+    []
+clips:
+  - name: Idle
+    looping: true
+    play_rate: 1
+    tracks:
+      - bone: Chest
+        position_x:
+          - t: 0
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 1
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 2
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+        position_y:
+          - t: 0
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 1
+            v: 0.0199999996
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 2
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+        position_z:
+          - t: 0
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 1
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+          - t: 2
+            v: 0
+            in: 0
+            out: 0
+            mode: Cubic
+      - bone: Head
+        rotation:
+          - t: 0
+            v: [1, 0, 0, 0]
+            mode: Cubic
+          - t: 1
+            v: [0.999550045, 0, 0.0299954992, 0]
+            mode: Cubic
+          - t: 2
+            v: [1, 0, 0, 0]
+            mode: Cubic
+state_machine:
+  states:
+    - name: Idle
+      clip: Idle
+      speed: 1
+      looping: true
+      transition_duration: 0.200000003
+  transitions:
+    []

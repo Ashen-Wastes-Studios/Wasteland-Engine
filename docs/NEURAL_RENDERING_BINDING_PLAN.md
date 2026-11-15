@@ -19,7 +19,7 @@ because each one would have cost a debugging session:
 ## 1. The binding map (HLSL registers -> Vulkan bindings)
 
 Vulkan binding = `offset + slot`, per `vulkan-resource-bindings.cpp:100` and
-mirrored in `tools/compile_nova_spirv.py:55-58`:
+mirrored in `tools/compile_nova_slang.py:55-58`:
 
 ```
 u -> +0     b -> +7     t -> +16     s -> +200
@@ -93,8 +93,8 @@ of every dispatch. Two options were considered:
 
 **Decision: constant buffer, appended to `NovaConstants`.** The trade-off is
 that the constant-buffer upload path must grow and `kConstantBufferSize` must
-be re-derived — `tools/compile_nova_spirv.py` asserts the block size against
-DXC, so it will fail loudly rather than silently. That is the acceptable cost.
+be re-derived — `tools/compile_nova_slang.py` asserts the block size against
+slangc output, so it will fail loudly rather than silently. That is the acceptable cost.
 
 Consequence for the table above: **`t74`, `t75`, `t76` are NOT consumed by
 weights.** They remain free for the feature/history read SRVs (`t75`, `t76`)
@@ -135,7 +135,7 @@ execution.
 `CreateImages` gains two formats; `CreateBindingSet` gains two UAV items and
 two SRV items. `VerifySpirvBindings()` will fail the pipeline if a declared
 binding is unused or a used one is missing, so the SPIR-V must be regenerated
-(`tools/compile_nova_spirv.py`) **before** the pipeline is created.
+(`tools/compile_nova_slang.py`) **before** the pipeline is created.
 
 **DX12** — `kUavCount` 12 → 14; `kDescriptorsPerHeap` follows. The
 `kSamplerBase`/`kImageSrvBase`/`kUavBase` block bases must move **together**;
@@ -220,7 +220,13 @@ second is a real cross-backend bug, not a verifier artifact — fix it.**
   again, re-measure rather than assuming.
 
 - **`tools/verify_nova_shader_parity.py` FAILS** — and this one is a genuine
-  defect, confirmed at `HEAD` (`d4d2c09`) in committed code:
+  defect, confirmed at `HEAD` (`d4d2c09`) in committed code.
+
+  **RESOLVED (2026-10-29):** With the Slang transition (§0.5), this defect class
+  is eliminated by construction. A single `.slang` source means the GLSL and
+  HLSL/DX targets cannot diverge on `maxLightsCap` — `slangc` emits both from
+  one file. The literal `32` is now `u_MaxLights` in the single source, and the
+  parity question is moot.
 
   ```
   ComputeDirectLighting:

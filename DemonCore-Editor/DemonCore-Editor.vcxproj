@@ -173,12 +173,23 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="src\AI\AnthropicProvider.h" />
+    <ClInclude Include="src\AI\GoogleProvider.h" />
+    <ClInclude Include="src\AI\IAIProvider.h" />
+    <ClInclude Include="src\AI\MemoryStore.h" />
+    <ClInclude Include="src\AI\OpenAICompatibleProvider.h" />
+    <ClInclude Include="src\AI\ProviderFactory.h" />
+    <ClInclude Include="src\AI\SkillLoader.h" />
+    <ClInclude Include="src\AI\SubagentSystem.h" />
     <ClInclude Include="src\EditorLayer.h" />
     <ClInclude Include="src\Panels\AIChatPanel.h" />
     <ClInclude Include="src\Panels\ApiKeyStore.h" />
     <ClInclude Include="src\Panels\AudioClipPanel.h" />
+    <ClInclude Include="src\Panels\AnimationTimelinePanel.h" />
+<ClInclude Include="src\Panels\AnimatorPanel.h" />
     <ClInclude Include="src\Panels\AudioMixerPanel.h" />
     <ClInclude Include="src\Panels\AudioScenePanel.h" />
+    <ClInclude Include="src\Panels\MeshEditorPanel.h" />
     <ClInclude Include="src\Panels\AvbGraphPanel.h" />
     <ClInclude Include="src\Panels\ContentBrowserPanel.h" />
     <ClInclude Include="src\Panels\GraphHistory.h" />
@@ -196,13 +207,23 @@ xcopy /Y /E /I "C:\Users\rtoue\AppData\Local\Python\pythoncore-3.14-64\DLLs" "$(
     <ClInclude Include="src\Panels\VisualBlocksPanel.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\AI\AnthropicProvider.cpp" />
+    <ClCompile Include="src\AI\GoogleProvider.cpp" />
+    <ClCompile Include="src\AI\MemoryStore.cpp" />
+    <ClCompile Include="src\AI\OpenAICompatibleProvider.cpp" />
+    <ClCompile Include="src\AI\ProviderFactory.cpp" />
+    <ClCompile Include="src\AI\SkillLoader.cpp" />
+    <ClCompile Include="src\AI\SubagentSystem.cpp" />
     <ClCompile Include="src\DemonCoreEditorApp.cpp" />
     <ClCompile Include="src\EditorLayer.cpp" />
     <ClCompile Include="src\Panels\AIChatPanel.cpp" />
     <ClCompile Include="src\Panels\ApiKeyStore.cpp" />
     <ClCompile Include="src\Panels\AudioClipPanel.cpp" />
+    <ClCompile Include="src\Panels\AnimationTimelinePanel.cpp" />
+<ClCompile Include="src\Panels\AnimatorPanel.cpp" />
     <ClCompile Include="src\Panels\AudioMixerPanel.cpp" />
     <ClCompile Include="src\Panels\AudioScenePanel.cpp" />
+    <ClCompile Include="src\Panels\MeshEditorPanel.cpp" />
     <ClCompile Include="src\Panels\AvbGraphPanel.cpp" />
     <ClCompile Include="src\Panels\ContentBrowserPanel.cpp" />
     <ClCompile Include="src\Panels\GraphHistory.cpp" />

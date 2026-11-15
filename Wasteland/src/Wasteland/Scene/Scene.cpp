@@ -11,6 +11,14 @@
 #include "ScriptableEntity.h"
 #include "Wasteland/Scripting/ScriptEngine.h"
 #include "Wasteland/Scene/BehaviorTreeSystem.h"
+// FlowGraphSystem ticks VisualBlocksComponent the way
+// BehaviorTreeSystem ticks BehaviorTreeComponent. Same shape on
+// purpose: a designer should not have to learn two attachment models.
+#include "Wasteland/Scene/AnimationSystem.h"
+#include "Wasteland/Scene/FlowGraphSystem.h"
+// ScriptEventDispatcher is the one dispatch path for engine events: scripts,
+// flow graphs and behaviour trees all hear the same event through it.
+#include "Wasteland/Scene/ScriptEventDispatcher.h"
 
 #include <cfloat>
 #include <cstdlib>
@@ -523,22 +531,43 @@ namespace Wasteland
 		entity.AddComponent<TransformComponent>();
 		auto &tag = entity.AddComponent<TagComponent>();
 		tag.Tag = name.empty() ? "Entity" : name;
+
+		// An entity born into an ALREADY-RUNNING world gets its BeginPlay now;
+		// OnRuntimeStart already ran for the ones that existed then. Without this
+		// a script that spawns at runtime produces an entity whose construction
+		// script never runs -- the failure is invisible because the entity still
+		// ticks, it just never initialised.
+		//
+		// Deferred to the first tick rather than run here? No: at this point the
+		// entity has only ID/Transform/Tag, so a handler that reads a component it
+		// expects to have been added would fail. The caller adds components and
+		// then ticks; the graph attaches on that first tick, so the handler sees
+		// the complete entity.
+		if (m_RuntimeStarted)
+			DispatchBeginPlay(entity);
+
 		return entity;
 	}
 
 	void Scene::DestroyEntity(Entity entity)
 	{
 		// Release per-entity Python state BEFORE the registry drops the
-		// components -- ScriptEngine::OnDestroyEntity and
-		// BehaviorTreeSystem::OnDestroyEntity both key off IDComponent, which
-		// is about to disappear. Neither was called here at all, so every
-		// destroyed entity leaked its script instance and its behaviour tree
+		// components -- ScriptEngine::OnDestroyEntity,
+		// BehaviorTreeSystem::OnDestroyEntity and FlowGraphSystem::
+		// OnDestroyEntity all key off IDComponent, which is about to disappear.
+		// None of them was called here at all, so every destroyed entity leaked
+		// its script instance, its behaviour tree instance and its flow graph
 		// instance for the life of the process.
 		if (entity.HasComponent<IDComponent>())
 		{
 			UUID id = entity.GetComponent<IDComponent>().ID;
 			ScriptEngine::OnDestroyEntity(id);
 			BehaviorTreeSystem::OnDestroyEntity(id);
+			FlowGraphSystem::OnDestroyEntity(id);
+			// Animation last, matching the tick order. Without this the runtime
+			// would survive the entity and a respawn reusing the UUID would
+			// inherit a stale Animator and a stale failure latch.
+			AnimationSystem::OnDestroyEntity(id);
 		}
 
 		m_Registry.destroy(entity);
@@ -553,10 +582,49 @@ namespace Wasteland
 	// The 2D world is started before the 3D one, so body handles allocated in
 	// 2D get lower indices. Nothing depends on that today, but it means the
 	// order of these two calls is observable rather than arbitrary.
+	void Scene::DispatchBeginPlay()
+	{
+		// Every entity, not only those with an attached graph/script: the
+		// dispatcher's CallIfPresent is a no-op for a system with no instance, so
+		// a bare entity costs three map lookups. Filtering by component here would
+		// be an optimisation that silently breaks the moment a new system learns
+		// to answer BeginPlay.
+		//
+		// The handles are COLLECTED FIRST and the dispatch happens after the loop.
+		// entt invalidates a view when the registry changes, and a construction
+		// script that spawns an entity is the idiomatic case -- iterating while
+		// Python creates entities is undefined behaviour, not a rare one. An
+		// entt::entity handle (index + version) stays valid across a creation, so
+		// the collected list remains usable; a live VIEW would not.
+		std::vector<entt::entity> handles;
+		handles.reserve(m_Registry.view<IDComponent>().size());
+		for (auto entity : m_Registry.view<IDComponent>())
+			handles.push_back(entity);
+
+		for (entt::entity handle : handles)
+			DispatchBeginPlay(Entity{handle, this});
+	}
+
+	void Scene::DispatchBeginPlay(Entity entity)
+	{
+		// The id enum, not a method-name string: MethodNameFor maps BeginPlay to
+		// "OnBeginPlay", and going through the enum means a rename there cannot
+		// leave this call site naming an event nothing answers.
+		ScriptEventDispatcher::Dispatch(entity, ScriptEventId::BeginPlay, {});
+	}
+
 	void Scene::OnRuntimeStart()
 	{
 		OnPhysics2DStart();
 		OnPhysics3DStart();
+
+		// BeginPlay, dispatched to every entity that exists at play start.
+		//
+		// BEFORE the flag is set, so a handler that spawns an entity sees
+		// IsRuntimeActive() already true and the spawned entity gets its own
+		// BeginPlay from CreateEntityWithUUID rather than missing it.
+		m_RuntimeStarted = true;
+		DispatchBeginPlay();
 
 		// The editor's play lifecycle owns the output device. Headless tests set
 		// WASTELAND_DISABLE_AUDIO_OUTPUT=1 and still exercise the deterministic
@@ -587,6 +655,10 @@ namespace Wasteland
 	// during play survives.
 	void Scene::OnRuntimeStop()
 	{
+		// Cleared BEFORE the subsystems stop, so a shutdown path that creates or
+		// destroys an entity does not dispatch a BeginPlay into a stopped world.
+		m_RuntimeStarted = false;
+
 		if (m_AudioSystem)
 		{
 			m_AudioSystem->StopAll();
@@ -723,6 +795,40 @@ namespace Wasteland
 				Entity e = {entity, this};
 				BehaviorTreeSystem::OnUpdateEntity(*this, e, ts.GetSeconds());
 				scriptPassTicked = true;
+			}
+		}
+
+		// Flow graphs tick in their own pass, AFTER behaviour trees. The
+		// ordering is deliberate: a graph can read what a tree decided this
+		// frame, which is the same relationship scripts have to trees.
+		//
+		// Without this pass a `.wlblocks` graph is a demo -- the engine can
+		// load, validate and compile one, and the panel can emit its Python,
+		// but nothing in the scene ever asks an entity to run it.
+		{
+			auto flowView = m_Registry.view<VisualBlocksComponent>();
+			for (auto entity : flowView)
+			{
+				Entity e = {entity, this};
+				FlowGraphSystem::OnUpdateEntity(*this, e, ts.GetSeconds());
+			}
+		}
+
+		// Animation ticks after the authored-behaviour pair, and BEFORE the script
+		// pass below. The ordering is the same argument as the graph/tree pair: a
+		// script can read a bone's world position this frame (a muzzle point, a
+		// footstep test) only if the pose has already been produced, and a graph or
+		// tree that moves the entity should not have its animation computed from
+		// last frame's transform.
+		//
+		// Without this pass an AnimationComponent is inert: the asset loads, the
+		// pose is never advanced, and the character stands at its rest pose.
+		{
+			auto animationView = m_Registry.view<AnimationComponent>();
+			for (auto entity : animationView)
+			{
+				Entity e = {entity, this};
+				AnimationSystem::OnUpdateEntity(*this, e, ts.GetSeconds());
 			}
 		}
 
@@ -1880,7 +1986,20 @@ namespace Wasteland
 			auto &clouds = cloudView.get<VolumetricCloudsComponent>(entity);
 			Renderer3D::SubmitCloudVolume(tc.GetTransform(), clouds);
 		}
-	}
+
+		// Projected decals: same per-frame submission pattern. The DecalComponent's
+		// Transform defines the projector (Translation = centre, Rotation = orientation,
+		// Scale.x/.y = footprint half-extents, Scale.z = cast length). SubmitDecal
+		// honours Enabled and caps at Renderer3D::MaxDecals (first-N wins), and the
+		// renderer only shades them while the WL_EFLAGS_DECALS effects bit is set.
+		auto decalView = m_Registry.view<TransformComponent, DecalComponent>();
+		for (auto entity : decalView)
+		{
+			auto &tc = decalView.get<TransformComponent>(entity);
+			auto &decal = decalView.get<DecalComponent>(entity);
+			Renderer3D::SubmitDecal(tc.GetTransform(), decal);
+		}
+		}
 
 	// Submits every analytic light in the scene to the renderer.
 	//
@@ -2109,6 +2228,92 @@ namespace Wasteland
 			Renderer3D::DrawTorus(tc.GetTransform(), trc.Color, trc.MajorRadius, trc.MinorRadius,
 							  trc.MajorSegments, trc.MinorSegments, mc, (int)entity);
 		}
+
+		// Skinned characters. Same MaterialComponent contract as every shape
+		// above, and the same single function so the editor viewport and the
+		// runtime cannot drift. Nothing is drawn until AnimationSystem has
+		// produced a deformed mesh (first runtime tick), so an editor-mode
+		// character without a tick simply is not shown rather than shown unskinned.
+		auto skinView = m_Registry.view<TransformComponent, AnimationComponent, MaterialComponent>();
+		for (auto entity : skinView)
+		{
+			Entity e = {entity, this};
+			const ProceduralMesh *deformed = AnimationSystem::GetDeformedMesh(e.GetUUID());
+			if (!deformed)
+				continue;
+			auto &tc = skinView.get<TransformComponent>(entity);
+			auto &mc = skinView.get<MaterialComponent>(entity);
+			Renderer3D::DrawSkinnedMesh(tc.GetTransform(), *deformed, mc, (int)entity);
+		}
+
+		// Static meshes from assets (glTF/OBJ). Same MaterialComponent contract
+		// as every draw above, and the same single function so the editor
+		// viewport and the runtime cannot drift.
+		//
+		// The mesh comes from the Scene's cache, which loads on first use. A
+		// failed load is NOT fatal and NOT retried every frame: the cache holds
+		// the failure with its reason, so a missing asset costs one parse for
+		// the life of the scene and the reason is stable.
+		auto meshView = m_Registry.view<TransformComponent, MeshComponent, MaterialComponent>();
+		for (auto entity : meshView)
+		{
+			auto &meshComponent = meshView.get<MeshComponent>(entity);
+
+			// An unassigned path is a normal editor state (component added
+			// before the asset is chosen). Draw nothing, say nothing.
+			if (meshComponent.MeshPath.empty())
+				continue;
+
+			std::string loadError;
+			const ProceduralMesh *mesh = m_MeshCache.Get(meshComponent.MeshPath, &loadError);
+			if (!mesh)
+			{
+				// Reported ONCE per path, not per frame: a scene with a broken
+				// reference would otherwise spam the log every tick. Per-SCENE,
+				// not a function-local static -- a static would suppress the
+				// message in every scene after the first one to hit it.
+				if (m_ReportedMeshErrors.insert(meshComponent.MeshPath).second)
+					WL_CORE_ERROR("Scene: mesh '{0}' could not be loaded: {1}",
+								  meshComponent.MeshPath, loadError);
+				continue;
+			}
+
+			auto &tc = meshView.get<TransformComponent>(entity);
+			auto &mc = meshView.get<MaterialComponent>(entity);
+
+			// MaterialPath is an OVERRIDE: empty means use the entity's own
+			// MaterialComponent, non-empty means use the .wlmaterial asset.
+			// Loaded through the Scene's cache, so a missing file costs one
+			// parse for the life of the scene rather than one per frame.
+			//
+			// A failed override FALLS BACK to the entity's own material rather
+			// than drawing nothing: a mesh whose material file is missing
+			// should still be visible, or the scene looks empty for a reason
+			// the author cannot see from the viewport.
+			const MaterialComponent *material = &mc;
+			if (!meshComponent.MaterialPath.empty())
+			{
+				std::string materialError;
+				const MaterialComponent *overrideMaterial =
+					m_MaterialCache.Get(meshComponent.MaterialPath, &materialError);
+				if (overrideMaterial)
+				{
+					material = overrideMaterial;
+				}
+				else
+				{
+					// Per-SCENE, not a function-local static -- a static would
+					// suppress the message in every scene after the first to
+					// hit it, which is the same trap m_ReportedMeshErrors
+					// already avoids.
+					if (m_ReportedMaterialErrors.insert(meshComponent.MaterialPath).second)
+						WL_CORE_ERROR("Scene: material '{0}' could not be loaded: {1}",
+									  meshComponent.MaterialPath, materialError);
+				}
+			}
+
+			Renderer3D::DrawMesh(tc.GetTransform(), *mesh, *material, (int)entity);
+		}
 	}
 
 	void Scene::SubmitTerrainChunks()
@@ -2266,43 +2471,19 @@ namespace Wasteland
 	// through (a 0.5 item against 0 available still fails by miles).
 	static constexpr float kWeightEpsilon = 1e-4f;
 
-	// Notify the script attached to an inventory owner after its count changed.
-	// This runs from both Python bindings and native gameplay, so acquire the GIL
-	// explicitly and keep a missing hook a quiet no-op like CallScriptMethod.
+	// Notify every attached system on an inventory owner after its count changed.
+	//
+	// This runs from both Python bindings and native gameplay, so it goes
+	// through ScriptEventDispatcher, which owns the GIL acquire, the
+	// missing-hook-as-quiet-no-op rule and the catch ordering. Those rules
+	// used to be re-implemented here -- which is how a second dispatch path,
+	// and a second set of ways to get the catch order wrong, came to exist.
 	static void NotifyInventoryChanged(Entity entity, const std::string &itemId,
 									   int oldCount, int newCount)
 	{
-		if (!entity.IsValid() || !entity.HasComponent<IDComponent>() || !Py_IsInitialized())
-			return;
-
-		py::gil_scoped_acquire gil;
-		const UUID id = entity.GetComponent<IDComponent>().ID;
-		py::object *instance = ScriptEngine::GetInstance(id);
-		if (!instance || !instance->ptr())
-			return;
-
-		try
-		{
-			py::object callback = py::getattr(*instance, "OnInventoryChanged", py::none());
-			if (callback.is_none() || !PyCallable_Check(callback.ptr()))
-				return;
-			callback(itemId, oldCount, newCount);
-		}
-		catch (const py::error_already_set &e)
-		{
-			WL_CORE_ERROR("Script for entity {0} raised during OnInventoryChanged: {1}", id, e.what());
-			PyErr_Clear();
-		}
-		catch (const std::exception &e)
-		{
-			WL_CORE_ERROR("Script binding error for entity {0} during OnInventoryChanged: {1}", id, e.what());
-			PyErr_Clear();
-		}
-		catch (...)
-		{
-			WL_CORE_ERROR("Unknown error for entity {0} during OnInventoryChanged", id);
-			PyErr_Clear();
-		}
+		ScriptEventDispatcher::DispatchNamed(
+			entity, "OnInventoryChanged",
+			{py::str(itemId), py::int_(oldCount), py::int_(newCount)});
 	}
 
 	// Adds items to an inventory, topping up existing stacks before opening new
@@ -3751,6 +3932,20 @@ namespace Wasteland
 	}
 
 	template <>
+	void Scene::OnComponentAdded<MeshComponent>(Entity entity, MeshComponent &component)
+	{
+		// Nothing to do at attach time. The mesh is loaded LAZILY by the draw
+		// path through the Scene's MeshAssetCache, so attaching a component
+		// never touches the filesystem -- a scene can be built and serialized
+		// in a headless process with no renderer and no assets present.
+		//
+		// This specialization is REQUIRED, not decorative: the primary
+		// template is a static_assert, so a component without one fails to
+		// LINK wherever AddComponent<T> is instantiated (SceneSerializer and
+		// the Python bindings both do).
+	}
+
+	template <>
 	void Scene::OnComponentAdded<NativeScriptComponent>(Entity entity, NativeScriptComponent &component)
 	{
 	}
@@ -3777,6 +3972,38 @@ namespace Wasteland
 		component.Attached = false;
 		component.CompileError.clear();
 		component.SuspendedTicks = 0;
+	}
+
+	template <>
+	void Scene::OnComponentAdded<VisualBlocksComponent>(Entity entity, VisualBlocksComponent &component)
+	{
+		// Same contract as the tree specialization above, for the same reasons:
+		// the graph compiles on the first runtime tick rather than at attach
+		// time (attach may happen on any code path, including deserialization),
+		// and the specialization MUST exist or the primary template's
+		// static_assert(false) makes the linker fail with LNK1120.
+		//
+		// State is cleared so re-attaching a different graph is not confused
+		// with the previous one -- a stale `Attached = true` would make the
+		// runtime skip compiling a graph that has not been compiled yet.
+		component.Attached = false;
+		component.CompileError.clear();
+		component.SuspendedTicks = 0;
+	}
+
+	// AnimationComponent: the asset loads on the first runtime tick, not at
+	// attach, for the same reasons as the graph and the tree. Attach happens on
+	// deserialization too, where the asset root may not be open yet, and the
+	// specialization MUST exist or the linker fails.
+	//
+	// The failure latch lives in AnimationSystem, not here: a latch cleared at
+	// attach would be cleared by a scene reload, which is the one moment the
+	// asset SHOULD be retried. So this clears only the component's own state.
+	template <>
+	void Scene::OnComponentAdded<AnimationComponent>(Entity entity, AnimationComponent &component)
+	{
+		component.Attached = false;
+		component.LoadError.clear();
 	}
 
 	template <>
@@ -3821,6 +4048,11 @@ namespace Wasteland
 
 	template <>
 	void Scene::OnComponentAdded<VolumetricCloudsComponent>(Entity entity, VolumetricCloudsComponent &component)
+	{
+	}
+
+	template <>
+	void Scene::OnComponentAdded<DecalComponent>(Entity entity, DecalComponent &component)
 	{
 	}
 
@@ -3920,6 +4152,23 @@ namespace Wasteland
 		// template for them, so the missing definition was invisible until the
 		// first script could attach a source -- which is the whole point of
 		// binding them.
+	}
+
+	template <>
+	void Scene::OnComponentAdded<AudioGraphComponent>(Entity entity, AudioGraphComponent &component)
+	{
+		// Unlike the audio source pair, this one is NOT inert: attaching a graph
+		// is what loads and compiles the .wlavb, and a component that never
+		// attaches is a component that never makes a sound.
+		//
+		// PlayOnStart is still deferred to AudioSystem::PlayAutoStartSources --
+		// the runtime is PREPARED here, the voice is not started. Attaching on
+		// deserialization is deliberate: it surfaces a graph's compile error at
+		// load time, where an author is looking at the scene, rather than at the
+		// first trigger, where it looks like a missing sound.
+		std::string error;
+		GetAudioSystem()->AttachGraph(entity, &error);
+		component.CompileError = error;
 	}
 
 	template <>

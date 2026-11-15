@@ -32,6 +32,43 @@ namespace Wasteland {
 		//
 		// Takes a const ref so the caller's quaternion is not copied before it
 		// has been validated -- the parameter is normalized into a local below.
+		int RotationTrack::RemoveKeyAtTime(float time)
+		{
+			const float kTimeTolerance = 1e-6f;
+			auto it = std::remove_if(m_Keys.begin(), m_Keys.end(),
+									 [time, kTimeTolerance](const Key &k)
+									 { return std::abs(k.Time - time) <= kTimeTolerance; });
+			const int removed = (int)std::distance(it, m_Keys.end());
+			m_Keys.erase(it, m_Keys.end());
+			// No InvalidateCache: RotationTrack keeps no cached range, unlike
+			// AnimationCurve. GetStartTime/GetEndTime read m_Keys directly, so
+			// an erase is immediately visible.
+			return removed;
+		}
+
+		bool RotationTrack::MoveKey(float fromTime, float toTime)
+		{
+			if (m_Keys.empty() || fromTime == toTime)
+				return false;
+
+			const float kTimeTolerance = 1e-6f;
+			auto it = std::find_if(m_Keys.begin(), m_Keys.end(),
+								   [fromTime, kTimeTolerance](const Key &k)
+								   { return std::abs(k.Time - fromTime) <= kTimeTolerance; });
+			if (it == m_Keys.end())
+				return false;
+
+			Key moved = *it;
+			m_Keys.erase(it);
+			moved.Time = toTime;
+
+			auto at = std::lower_bound(m_Keys.begin(), m_Keys.end(), moved.Time,
+									   [](const Key &k, float t) { return k.Time < t; });
+			m_Keys.insert(at, moved);
+			// No InvalidateCache -- see RemoveKeyAtTime above.
+			return true;
+		}
+
 		void RotationTrack::AddKey(float time, const glm::quat &value,
 								   Interpolation mode)
 		{

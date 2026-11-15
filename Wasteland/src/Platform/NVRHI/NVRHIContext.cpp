@@ -14,6 +14,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <GLFW/glfw3.h>
+#include <cstdlib>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
@@ -82,6 +83,7 @@ namespace
 // DirectX headers
 #include <d3d11.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>   // ID3D12Debug -- WASTELAND_D3D12_DEBUG
 #include <dxgi1_4.h>
 
 // NVRHI backend headers
@@ -93,14 +95,55 @@ namespace
 namespace Wasteland
 {
 
-	NVRHIContext::NVRHIContext(GLFWwindow *windowHandle, RendererAPI::API api)
-		: m_WindowHandle(windowHandle), m_API(api)
+	// See GetCurrentGeneration/IsGenerationRetired in the header for why these exist.
+	// The retired set is deliberately never pruned: a switch happens a handful of
+	// times per process, and a false negative here is a use-after-free of a driver
+	// object while a false positive only abandons an already-dead handle.
+	namespace
 	{
+		uint32_t g_NextGeneration = 1;
+		// The context whose device wrappers are being stamped right now. A pointer, not
+		// the counter, because during a switch the OUTGOING context's destructor runs
+		// after the INCOMING one has been constructed: reading "newest id" would stamp
+		// new resources with an id that belonged to no context at all.
+		NVRHIContext *g_LiveContext = nullptr;
+
+		std::vector<uint32_t> &RetiredGenerations()
+		{
+			static std::vector<uint32_t> *retired = new std::vector<uint32_t>();
+			return *retired;
+		}
+	}
+
+	uint32_t NVRHIContext::GetCurrentGeneration()
+	{
+		return g_LiveContext ? g_LiveContext->GetGeneration() : 0;
+	}
+
+	bool NVRHIContext::IsGenerationRetired(uint32_t generation)
+	{
+		if (generation == 0)
+			return false; // not tagged: assume it belongs to the live context
+		auto &retired = RetiredGenerations();
+		return std::find(retired.begin(), retired.end(), generation) != retired.end();
+	}
+
+	NVRHIContext::NVRHIContext(GLFWwindow *windowHandle, RendererAPI::API api)
+		: m_WindowHandle(windowHandle), m_API(api), m_Generation(g_NextGeneration++)
+	{
+		g_LiveContext = this;
 	}
 
 	NVRHIContext::~NVRHIContext()
 	{
 		WL_PROFILE_FUNCTION();
+
+		// Retire this generation BEFORE any handle is released, so a wrapper that is
+		// destroyed during the teardown below already sees its handles as dead. Also
+		// hand out a fresh id so later wrappers are not stamped with this one.
+		RetiredGenerations().push_back(m_Generation);
+		if (g_LiveContext == this)
+			g_LiveContext = nullptr;
 
 		// Shutdown ImGui resources before releasing device
 		if (m_API == RendererAPI::API::NVRHI_Vulkan)
@@ -256,6 +299,15 @@ namespace Wasteland
 		{
 		WL_PROFILE_FUNCTION();
 
+		// ONE SHOT. A second Init() on a live context built a SECOND D3D12 device and
+		// a second swapchain on the same HWND: the swapchain creation failed with
+		// E_ACCESSDENIED, the orphaned device was left unreferenced, and every later
+		// call on the original device reported DXGI_ERROR_DEVICE_REMOVED (0x887A0005),
+		// including framebuffer creation. A failed first attempt leaves m_Initialized
+		// false, so the retry inside the Vulkan path still works.
+		if (m_Initialized && m_Device)
+			return;
+
 		// Get window size
 		int width, height;
 		glfwGetWindowSize(m_WindowHandle, &width, &height);
@@ -328,6 +380,9 @@ namespace Wasteland
 		// Route NVRHI device-removal messages to m_IsDeviceLost
 		s_NVRHILogCallback.context = this;
 
+		// Set only on the success path: a failed first attempt must stay retryable
+		// (the Vulkan creation path retries from scratch after a device loss).
+		m_Initialized = true;
 		WL_CORE_INFO("NVRHI Context initialized successfully");
 	}
 
@@ -422,6 +477,38 @@ namespace Wasteland
 		ID3D12Device *device = nullptr;
 		ID3D12CommandQueue *commandQueue = nullptr;
 
+		// WASTELAND_D3D12_DEBUG turns the debug layer on at runtime, before the
+		// device exists. The layer's messages go to the debug output (stderr when
+		// the process is launched from a terminal), which is the only way to see
+		// why a draw the CPU recorded never reaches the GPU.
+		if (std::getenv("WASTELAND_D3D12_DEBUG"))
+		{
+			ID3D12Debug* dbg = nullptr;
+			if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg))))
+			{
+				dbg->EnableDebugLayer();
+				// WASTELAND_D3D12_GPV adds GPU-based validation on top: the CPU
+				// debug layer cannot see GPU-side faults (a mesh shader sampling
+				// a stale descriptor, a resource in the wrong state), and those
+				// manifest as "the draw silently produces nothing".
+				if (std::getenv("WASTELAND_D3D12_GPV"))
+				{
+					ID3D12Debug1* dbg1 = nullptr;
+					if (SUCCEEDED(dbg->QueryInterface(IID_PPV_ARGS(&dbg1))))
+					{
+						dbg1->SetEnableGPUBasedValidation(TRUE);
+						dbg1->Release();
+						WL_CORE_WARN("D3D12 GPU-based validation enabled");
+					}
+				}
+				dbg->Release();
+				WL_CORE_WARN("D3D12 debug layer enabled");
+			}
+			else
+			{
+				WL_CORE_WARN("D3D12 debug layer NOT available");
+			}
+		}
 #ifdef WL_DEBUG
 		// Enable D3D12 debug layer if available (Agility SDK path)
 		{
@@ -434,18 +521,29 @@ namespace Wasteland
 		}
 #endif
 
+		// Feature level 12_0 minimum: mesh-shader pipelines (AS/MS subobjects)
+		// are rejected with E_INVALIDARG by the runtime on devices created at
+		// 11_0, even when Options7.MeshShaderTier reports Tier_1_0. The Nova
+		// mesh path (Task 2.5) needs 12_0; every DX12 GPU that runs this engine
+		// supports it. (This was the root cause of the mesh pipeline silently
+		// rasterising nothing: at 11_0 the driver's subobject parser accepted a
+		// mesh PSO with a broken layout and produced a pipeline that dispatches
+		// nothing, while a correctly-ordered mesh PSO is rejected outright.)
 		HRESULT hr = D3D12CreateDevice(
 			nullptr,
-			D3D_FEATURE_LEVEL_11_0,
+			D3D_FEATURE_LEVEL_12_0,
 			IID_PPV_ARGS(&device));
 
 		if (FAILED(hr))
 		{
-			// Try without debug layer
+			// Fall back to 11_0 -- the engine runs, but the mesh path gates off
+			// (meshShaders capability reports unsupported at 11_0).
 			hr = D3D12CreateDevice(
 				nullptr,
 				D3D_FEATURE_LEVEL_11_0,
 				IID_PPV_ARGS(&device));
+			if (SUCCEEDED(hr))
+				WL_CORE_WARN("D3D12 device created at feature level 11_0 -- mesh shaders unavailable");
 		}
 
 		if (FAILED(hr) || !device)
@@ -1070,6 +1168,10 @@ namespace Wasteland
 		// the device without the feature — nvrhi::vulkan::Queue then crashed in nvoglv64.dll when creating its
 		// internal timeline semaphore.
 		VkPhysicalDeviceFeatures deviceFeatures = {};
+		// Extension presence flags for the optional features. Declared OUTSIDE the
+		// diagnostic block below because the extension list and the feature-enable
+		// chain are built after that block closes.
+		bool hasMeshShader = false, hasAccelerationStructure = false, hasRayTracingPipeline = false;
 		// Scene samplers request 16x anisotropy (GL parity). The feature must
 		// be enabled or vkCreateSampler fails on aniso samplers. Enable only
 		// when supported so device creation never regresses.
@@ -1093,12 +1195,68 @@ namespace Wasteland
 			for (auto &e : extsDbg) {
 				if (strcmp(e.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)==0) hasSwapchain = true;
 				if (strcmp(e.extensionName, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME)==0) hasTimelineKHRDbg = true;
+				if (strcmp(e.extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME)==0) hasMeshShader = true;
+				if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)==0) hasAccelerationStructure = true;
+				if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)==0) hasRayTracingPipeline = true;
 			}
-			WL_CORE_INFO("  Extensions: swapchain={0} timelineKHR={1} total={2}", hasSwapchain, hasTimelineKHRDbg, extCountDbg);
+			WL_CORE_INFO("  Extensions: swapchain={0} timelineKHR={1} meshShader={2} accelStruct={3} rtPipeline={4} total={5}",
+			             hasSwapchain, hasTimelineKHRDbg, hasMeshShader, hasAccelerationStructure, hasRayTracingPipeline, extCountDbg);
 			for (auto &e : extsDbg) {
-				if (strstr(e.extensionName, "timeline") || strstr(e.extensionName, "swapchain"))
+				if (strstr(e.extensionName, "timeline") || strstr(e.extensionName, "swapchain") ||
+				    strstr(e.extensionName, "mesh_shader") || strstr(e.extensionName, "ray_tracing") ||
+				    strstr(e.extensionName, "acceleration_structure"))
 					WL_CORE_INFO("    ext: {0}", e.extensionName);
 			}
+		}
+		// Mesh shaders and RT: request only what the device enumerated. Asking for an
+		// extension the device does not expose makes vkCreateDevice fail the whole
+		// device, which would take down the Vulkan backend that currently works.
+		if (hasMeshShader)
+			deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
+		if (hasAccelerationStructure)
+			deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+		if (hasRayTracingPipeline)
+			deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+		// Keep the list for the NVRHI DeviceDesc: NVRHI builds its extension flags by
+		// matching these strings, and without them EXT_mesh_shader (and every other
+		// optional extension) reads as absent even though the device has it enabled.
+		m_VkDeviceExtensions = deviceExtensions;
+		// Build the name list by hand: fmt::join needs <fmt/ranges.h>, which is not
+		// pulled in by the spdlog/fmt already available to this translation unit.
+		{
+			std::string requested;
+			for (size_t i = 0; i < deviceExtensions.size(); ++i)
+			{
+				if (i) requested += ", ";
+				requested += deviceExtensions[i];
+			}
+			WL_CORE_INFO("  Requested device extensions: {0}", requested);
+		}
+
+
+		// Mesh shader features: the extension alone is not enough. VK_EXT_mesh_shader
+		// requires meshShader (and taskShader for task->mesh draws) to be enabled in
+		// the device-create pNext chain, or every vkCmdDrawMeshTasks* call is invalid.
+		// The feature is queried here rather than assumed, because the extension can be
+		// present on a driver whose implementation does not support the feature.
+		VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeaturesQuery = {};
+		VkPhysicalDeviceMeshShaderFeaturesEXT enabledMeshShaderFeatures = {};
+		enabledMeshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+		bool meshShaderSupported = false;
+		if (hasMeshShader)
+		{
+			meshShaderFeaturesQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+			VkPhysicalDeviceFeatures2 features2 = {};
+			features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			features2.pNext = &meshShaderFeaturesQuery;
+			vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+			meshShaderSupported = meshShaderFeaturesQuery.meshShader == VK_TRUE;
+			WL_CORE_INFO("  Query meshShader={0} taskShader={1} (VK_EXT_mesh_shader)",
+			             (bool)meshShaderFeaturesQuery.meshShader, (bool)meshShaderFeaturesQuery.taskShader);
+		}
+		else
+		{
+			WL_CORE_INFO("  VK_EXT_mesh_shader not enumerated -- mesh pipeline stays unavailable");
 		}
 		bool timelineSemaphoreSupported = false;
 		bool hasTimelineSemaphoreExtension = false;
@@ -1231,6 +1389,31 @@ namespace Wasteland
 			enabledTimelineFeaturesKHR.pNext = &enabledVulkan13Features;
 		if (deviceCreatePNext)
 			WL_CORE_INFO("Enabling synchronization2 via VkPhysicalDeviceVulkan13Features (core 1.3)");
+
+		// Mesh shader feature enable, chained onto the tail of whichever feature
+		// chain was assembled above. Enabling an extension without its feature bits
+		// leaves every mesh-shader entry point invalid, so this is the part that
+		// actually makes vkCmdDrawMeshTasks* usable; the extension string alone only
+		// makes the driver expose the entry points.
+		//
+		// `WASTELAND_VK_NO_MESH_FEATURE` disables the enable for diagnosis. It was
+		// introduced to test a suspicion that the enable caused the nvlddmkm driver
+		// resets; the TDR rate was identical with it on and off, and the DX12 path
+		// loses its device too, so the enable is not the cause.
+		if (meshShaderSupported && !std::getenv("WASTELAND_VK_NO_MESH_FEATURE"))
+		{
+			enabledMeshShaderFeatures.meshShader = VK_TRUE;
+			enabledMeshShaderFeatures.taskShader = VK_TRUE;
+			if (deviceCreatePNext)
+				enabledVulkan13Features.pNext = &enabledMeshShaderFeatures;
+			else
+				deviceCreatePNext = &enabledMeshShaderFeatures;
+			WL_CORE_INFO("Enabling mesh shaders via VkPhysicalDeviceMeshShaderFeaturesEXT (meshShader + taskShader)");
+		}
+		else if (hasMeshShader)
+		{
+			WL_CORE_WARN("VK_EXT_mesh_shader is enumerated but meshShader is not supported -- mesh pipeline stays unavailable");
+		}
 
 		// Device create info
 		VkDeviceCreateInfo createInfo = {};
@@ -1421,9 +1604,16 @@ namespace Wasteland
 			return;
 		}
 
-		// Initialize the Vulkan-Hpp dispatcher with device-level functions
-		// This is required because NVRHI uses vulkan.hpp but we're not building with NVRHI_SHARED_LIBRARY_BUILD
-		VULKAN_HPP_DEFAULT_DISPATCHER.init(m_VkInstance, vkGetInstanceProcAddr, m_VkDevice);
+		// DO NOT initialise the vulkan.hpp dispatcher from here.
+		//
+		// The table is a single global whose layout is fixed where vulkan.hpp is
+		// included. Engine TUs and nvrhi's library resolved that layout differently
+		// (6688 vs 6672 bytes, vkCreateSemaphore at 336 vs 320), so writing the table
+		// from this TU corrupted every entry the backend then called -- device calls
+		// landed on the wrong functions and faulted inside nvoglv64. The storage and
+		// the init both belong to the backend now: nvrhi-dispatch-storage.cpp defines
+		// the object and createDevice fills it. Engine code uses the plain ::vk*
+		// entry points, which were never affected.
 
 		// Create NVRHI Vulkan device
 			nvrhi::vulkan::DeviceDesc deviceDesc;
@@ -1437,6 +1627,13 @@ namespace Wasteland
 			deviceDesc.transferQueueIndex = m_VkGraphicsQueueFamilyIndex;
 			deviceDesc.computeQueue = static_cast<VkQueue>(m_VkGraphicsQueue);
 			deviceDesc.computeQueueIndex = m_VkGraphicsQueueFamilyIndex;
+			// Hand NVRHI the extension list the device was created with. It matches
+			// these strings against its extensionStringMap to set
+			// m_Context.extensions.* -- which is what queryFeatureSupport() reads.
+			// Leaving it null made every optional extension report absent, including
+			// EXT_mesh_shader, even though the device had it enabled.
+			deviceDesc.deviceExtensions = m_VkDeviceExtensions.data();
+			deviceDesc.numDeviceExtensions = m_VkDeviceExtensions.size();
 
 			if (m_VkGraphicsQueue == VK_NULL_HANDLE)
 			{
@@ -1563,11 +1760,22 @@ namespace Wasteland
 		// for DX11 is correct -- STRETCH and IGNORE are the DX11 defaults too -- but it means
 		// the two paths do not describe the same thing, and adding a DX11 override later would
 		// need to be conditional for the same reason.
+		// WASTELAND_BITBLT_SWAPCHAIN=1 forces the legacy DISCARD model on DX12.
+		// The FLIP model hangs the present path on this system (device removed
+		// at the first frame) while DX11's BitBlt path runs fine.
 		if (m_API == RendererAPI::API::NVRHI_DX12)
 		{
-			swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-			swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
-			swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+			if (std::getenv("WASTELAND_BITBLT_SWAPCHAIN"))
+			{
+				swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+				swapChainDesc.BufferCount = 1;
+			}
+			else
+			{
+				swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+				swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+				swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+			}
 		}
 		else // DX11 legacy bitblt
 		{

@@ -197,10 +197,10 @@ exist for that reason.
 | Backend | Status |
 |---|---|
 | **OpenGL** | the only path that actually renders on this machine; the verification target |
-| **DX11** | HLSL twin + `DX11Nova.h`; contract-verified |
+| **DX11** | Slang source + `DX11Nova.h`; contract-verified |
 | **DX12** | hangs during init when forced on this machine; contract-verified only |
-| **Vulkan** | `VulkanNova` compiled but never instantiated; the `.spv` is built from the **HLSL**, not the GLSL |
+| **Vulkan** | `VulkanNova` compiled but never instantiated; the `.spv` is built from the **single Slang source** (which compiles to all four targets) |
 
 No Vulkan claim in this stack may be a rendering claim. Verify by contract:
 `tools/verify_vulkan_nova_contract.py`,
-`tools/verify_vulkan_reservoir_allocation.py`, `tools/compile_nova_spirv.py --check`.
+`tools/verify_vulkan_reservoir_allocation.py`, `tools/compile_nova_slang.py --check`, and the

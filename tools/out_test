@@ -1,0 +1,22 @@
+#version 450
+layout(row_major) uniform;
+layout(row_major) buffer;
+
+#line 4 0
+layout(rgba32f)
+layout(binding = 14)
+uniform image2D img_Mask_0;
+
+
+#line 6
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main()
+{
+
+#line 6
+    imageStore((img_Mask_0), (ivec2(uvec2(ivec2(0, 0)))), vec4(1.0, 0.0, 0.0, 1.0));
+
+#line 6
+    return;
+}
+

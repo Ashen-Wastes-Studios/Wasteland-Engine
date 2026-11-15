@@ -50,6 +50,10 @@ namespace Wasteland {
 		// Default-constructed to an empty handle. If CreateBuffer failed in
 		// the .cpp this stays null and every later call must cope -- which
 		// the .cpp's guards do.
+		// Generation of the NVRHIContext whose device created m_Buffer; handles from a
+		// retired generation are abandoned instead of released (NVRHIHandleRetire.h).
+		uint32_t m_Generation = 0;
+
 		nvrhi::BufferHandle m_Buffer;
 		BufferLayout m_Layout;
 		// Byte size of this handle, cached from the constructor's `size`
@@ -84,6 +88,10 @@ namespace Wasteland {
 		nvrhi::BufferHandle GetBuffer() const { return m_Buffer; }
 
 	private:
+		// Generation of the NVRHIContext whose device created m_Buffer; handles from a
+		// retired generation are abandoned instead of released (NVRHIHandleRetire.h).
+		uint32_t m_Generation = 0;
+
 		nvrhi::BufferHandle m_Buffer;
 		uint32_t m_Count;
 	};
@@ -107,6 +115,10 @@ namespace Wasteland {
 		nvrhi::BufferHandle GetBuffer() const { return m_Buffer; }
 
 	private:
+		// Generation of the NVRHIContext whose device created m_Buffer; handles from a
+		// retired generation are abandoned instead of released (NVRHIHandleRetire.h).
+		uint32_t m_Generation = 0;
+
 		nvrhi::BufferHandle m_Buffer;
 		uint32_t m_Size;
 		// The per-element stride, cached so the .cpp and any future upload

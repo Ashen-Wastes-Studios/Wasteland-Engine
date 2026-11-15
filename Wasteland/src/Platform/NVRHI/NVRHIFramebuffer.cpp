@@ -14,6 +14,8 @@
 // "backends/..." and not "imgui/backends/...".
 #include "backends/imgui_impl_vulkan.h"
 
+#include "NVRHIHandleRetire.h"
+
 #include <cstring>
 
 // The NVRHI backend of the engine's cross-API Framebuffer interface.
@@ -111,9 +113,27 @@ namespace Wasteland
 
 		// Dropping the vector's elements releases the colour textures, but the
 		// vector's capacity stays, so a resize does not reallocate the array.
-		m_Framebuffer = nullptr;
+		// Handles from a destroyed backend are abandoned instead of released.
+		ReleaseAttachments();
+	}
+
+	void NVRHIFramebuffer::ReleaseAttachments()
+	{
+		const bool deviceGone = NVRHIContext::IsGenerationRetired(m_Generation);
+
+		// Order is load-bearing even when abandoning: the framebuffer names the
+		// attachment views, so it goes first.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Framebuffer, m_Generation);
+		for (auto &texture : m_ColorTextures)
+			WastelandHandleRetire::ReleaseOrAbandon(texture, m_Generation);
+		WastelandHandleRetire::ReleaseOrAbandon(m_DepthTexture, m_Generation);
+
+		// Every element is null by now (released or abandoned), so this only frees
+		// the array either way.
 		m_ColorTextures.clear();
-		m_DepthTexture = nullptr;
+
+		if (deviceGone)
+			WL_CORE_WARN("NVRHIFramebuffer: abandoned attachments from a retired backend generation (device already destroyed)");
 	}
 
 	void NVRHIFramebuffer::Invalidate()
@@ -155,10 +175,12 @@ namespace Wasteland
 		if (!ReleaseVulkanImGuiDescriptorSet())
 			return;
 
-		// Clear old resources
-		m_Framebuffer = nullptr;
-		m_ColorTextures.clear();
-		m_DepthTexture = nullptr;
+		// Clear old resources. ReleaseAttachments drops them normally, or abandons
+		// them if a backend switch already killed the device that owned them.
+		ReleaseAttachments();
+		// Everything created below belongs to the live context, so re-stamp before
+		// the attachments are built.
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 
 		// Create attachments
 		// Walks the SPEC's attachment list, not a fixed count. Slot numbers come

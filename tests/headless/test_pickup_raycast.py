@@ -59,6 +59,8 @@ def main():
         scene.StepPhysics(0.016)
 
     ok = True
+    passed = 0
+    total = len(PICKUPS)
     for tag, pos in PICKUPS.items():
         origin = Wasteland.Vec3(pos[0], EYE_HEIGHT, pos[2] + STANDOFF)
         direction = Wasteland.Vec3(
@@ -76,12 +78,17 @@ def main():
 
         good = hit and has_interactable
         ok = ok and good
+        if good:
+            passed += 1
         print(
             "  %-14s hit=%-5s hittable=%-5s dist=%-6.2f interactable=%-5s %s"
             % (tag, hit, hittable, distance, has_interactable, "OK" if good else "MISS")
         )
 
     print()
+    # The aggregate harness reads an "N/N checks passed" line; without one this
+    # suite runs but is reported UNCOUNTED and its result is invisible.
+    print("%d/%d checks passed" % (passed, total))
     if ok:
         print("PASS: every pickup is raycast-hittable.")
         return 0

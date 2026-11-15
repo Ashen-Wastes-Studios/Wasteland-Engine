@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -713,6 +714,42 @@ namespace Wasteland
 		MaterialComponent(const MaterialComponent &) = default;
 	};
 
+	// Draws a mesh loaded from an ASSET PATH: a glTF/OBJ file on disk.
+	//
+	// This is the DCC round-trip component -- the thing a Blender-exported
+	// model is attached to -- and it is deliberately separate from the
+	// CubeRendererComponent family, which generate their geometry in code.
+	// A static mesh has a path and a triangle count; a procedural shape has
+	// parameters and none, and conflating them would mean a cube could be
+	// "replaced by a file" in a way nothing downstream is built for.
+	//
+	// The path is stored AS WRITTEN IN THE SCENE, relative to the project's
+	// asset root, never resolved to an absolute path. An absolute path would
+	// make the scene machine-specific and silently unloadable on another
+	// checkout; the cache resolves it at load time.
+	struct MeshComponent
+	{
+		// "models/hero.gltf". Empty means the component is assigned but no
+		// asset is chosen yet, which draws nothing and is not an error -- the
+		// editor adds the component before the asset is picked.
+		std::string MeshPath;
+
+		// Optional per-entity material override. Empty means "use the
+		// material the asset carries", which for a glTF is its
+		// metallicRoughness parameters (see C.4).
+		std::string MaterialPath;
+
+		// Both default TRUE. A mesh that casts but does not receive shadows is
+		// a common authoring choice, but the pair is exposed because the
+		// alternative -- a mesh that receives but does not cast -- is also
+		// real, and silently forcing one direction would be visible.
+		bool CastShadow = true;
+		bool ReceiveShadow = true;
+
+		MeshComponent() = default;
+		MeshComponent(const MeshComponent &) = default;
+	};
+
 	// Makes the entity a camera: it contributes a SceneCamera to the render
 	// pass, and the scene uses the primary one as the active viewpoint.
 	//
@@ -873,6 +910,133 @@ namespace Wasteland
 
 		BehaviorTreeComponent() = default;
 		BehaviorTreeComponent(const BehaviorTreeComponent &) = default;
+	};
+
+	// Flow graphs (.wlblocks) attach exactly like a script or a tree.
+	//
+	// Before this existed an authored .wlblocks could only run behind a
+	// hand-written host .py -- `assets/scripts/DamageFlashHost.py` is that
+	// workaround, and its header documents the resulting AttributeError. The
+	// attach model is deliberately identical to BehaviorTreeComponent so one
+	// contract covers every authored behaviour, which is the spine the rest of
+	// the parity plan hangs off.
+	//
+	// GraphPath is project-relative ("graphs/DamageFlash.wlblocks"), resolved
+	// against the attached asset root. GraphName overrides the class name the
+	// compiler emits; empty means "use the graph's own `name:`".
+	//
+	// CompileError / Attached / SuspendedTicks are engine-owned diagnostics.
+	// They are exposed read-only to Python so a test (and the editor) can see
+	// WHY a graph is inert instead of guessing -- the same reason the tree
+	// component has them.
+	struct VisualBlocksComponent
+	{
+		// Project-relative, e.g. "graphs/DamageFlash.wlblocks".
+		std::string GraphPath;
+
+		// Class name the compiler emits. Empty => use the graph's own `name:`.
+		std::string GraphName;
+
+		// Why a compile failed, if it did. Surfaced so a broken graph is
+		// visible instead of silently doing nothing.
+		std::string CompileError;
+
+		bool Attached = false;
+
+		// Pause counter: a graph with a positive value skips its update. It is
+		// read-write so a script can freeze a graph, and Phase B uses it for
+		// per-node stepping.
+		int SuspendedTicks = 0;
+
+		// Per-ENTITY values for the graph's EXPOSED variables, as raw authored
+		// literals -- the same text DefaultLiteral holds, so the same string is
+		// emitted on save and handed to Python at attach.
+		//
+		// The split is: the graph file owns the variable's TYPE, its default, and
+		// whether it is exposed; this map owns only the values a particular entity
+		// overrode. A variable with no entry here reads the graph's default.
+		//
+		// std::map, not std::unordered_map: the scene serializer walks it in a
+		// deterministic order, and a scene file whose variable order depends on a
+		// hash table's iteration order does not round-trip byte for byte.
+		std::map<std::string, std::string> VariableOverrides;
+
+		// Accessors, because a BINDING lambda is not callable from C++ -- the
+		// editor's inspector needs them, and pybind binds these same functions
+		// rather than duplicating the logic.
+		//
+		// Empty means "no override", which reads the same as the graph's
+		// default. That is deliberate: a caller with nothing to say and a
+		// caller asking for the default must not need two code paths.
+		std::string GetVariableOverride(const std::string &name) const
+		{
+			auto entry = VariableOverrides.find(name);
+			return entry == VariableOverrides.end() ? std::string()
+											: entry->second;
+		}
+
+		// An EMPTY value REMOVES the override. "No override" and "override to
+		// nothing" must read the same, or a caller cannot clear a field.
+		void SetVariableOverride(const std::string &name,
+									const std::string &value)
+		{
+			if (value.empty())
+				VariableOverrides.erase(name);
+			else
+				VariableOverrides[name] = value;
+		}
+
+		bool HasVariableOverride(const std::string &name) const
+		{
+			return VariableOverrides.find(name) != VariableOverrides.end();
+		}
+
+		void ClearVariableOverrides() { VariableOverrides.clear(); }
+
+		VisualBlocksComponent() = default;
+		VisualBlocksComponent(const VisualBlocksComponent &) = default;
+	};
+
+	// Animation
+	//
+	// Attaches a `.wlanim` asset to an entity: a rig, the clips authored on it,
+	// and optionally the state machine that picks between them. The asset model
+	// is why this is ONE path rather than separate skeleton/clip/machine fields
+	// -- a rig and the actions authored against it ship together, and splitting
+	// them would let a character's clips reference a skeleton it does not have.
+	//
+	// The component deliberately does not hold an Animator. An Animator is
+	// per-entity runtime state, and keeping it here would put a skeleton-shared,
+	// frame-mutated object in a component that is copied by value on
+	// AddComponent. `AnimationSystem` owns the runtime, keyed by entity UUID.
+	struct AnimationComponent
+	{
+		// Project-relative path to a `.wlanim`, e.g. "animation/Hero.wlanim".
+		std::string AssetPath;
+
+		// The state machine's starting state. Empty means "do not enter a state
+		// at attach", which is the direct-control case: the script picks clips
+		// through the Animator instead.
+		std::string DefaultState;
+
+		// The skinned mesh to deform. Empty is valid and common -- a door, a
+		// turret barrel, and a headless test rig all want a pose without a mesh.
+		// The pose is still produced; it is simply not written to a vertex buffer.
+		std::string MeshPath;
+
+		bool LoopDefault = true;
+		float PlayRate = 1.0f;
+
+		// Runtime only, not serialized: recomputed on attach, and persisting
+		// them would let a stale "Attached = false" resurrect a component whose
+		// asset has since been fixed.
+		bool Attached = false;
+		// Why loading the asset failed, if it did, in the form the serializer
+		// reports -- file, context and message on one line.
+		std::string LoadError;
+
+		AnimationComponent() = default;
+		AnimationComponent(const AnimationComponent &) = default;
 	};
 
 	// Physics
@@ -1381,7 +1545,40 @@ namespace Wasteland
 
 		VolumetricCloudsComponent() = default;
 		VolumetricCloudsComponent(const VolumetricCloudsComponent &other) = default;
-	};
+		};
+
+		// Projects a projected decal onto geometry from this entity's transform.
+		//
+		// A projected decal is camera-independent world-space paint: a mark stamped
+		// into whatever surfaces lie in the projector's box, so it tracks geometry
+		// rather than the screen (the OpenGL "decals" technique). Placement comes
+		// entirely from the Transform, matching the volumetric volume convention:
+		//   * Translation  = centre of the projector (the footpoint window's origin)
+		//   * Rotation     = projector orientation; the decal casts forward along the
+		//                    transform's local +Z
+		//   * Scale.x/.y   = half-extents of the footprint on the projected surface
+		//   * Scale.z      = cast length in world units (how far forward the decal
+		//                    reaches onto surfaces; 0 applies it only at the origin)
+		//
+		// Rendered only while the "Effects: Decals" bit (WL_EFLAGS_DECALS) is set in
+		// the settings panel: the component defines WHERE and WHAT, the effect
+		// register decides WHETHER it shows. Off = this entity's decal is ignored.
+		//
+		// No image is bound -- the pattern is procedural, which is what keeps it
+		// inside the GL 8-image-unit budget. The trade-off is that a procedural mark
+		// cannot be replaced by an authored texture without adding a binding.
+		struct DecalComponent
+		{
+		// Master switch, per entity. Independent of the global decals effect bit.
+		bool Enabled = true;
+		// Colour the decal paints. Alpha carries the overlay strength.
+		glm::vec4 Color = {0.05f, 0.04f, 0.035f, 0.85f};
+		// Edge softness, 0 = hard footprint edge .. 1 = fully feathered.
+		float Softness = 0.5f;
+
+		DecalComponent() = default;
+		DecalComponent(const DecalComponent &) = default;
+		};
 
 	// --- Water Simulation Components ---
 // Entity Transform defines the water body: Translation.y = still water level,
@@ -2560,6 +2757,78 @@ struct WaterComponent
 
 		AudioListenerComponent() = default;
 		AudioListenerComponent(const AudioListenerComponent &) = default;
+	};
+
+	// A compiled audio graph attached to an entity, in the shape a MetaSound is
+	// attached to an actor: an asset reference plus the trigger map that decides
+	// which gameplay events reach which input pin.
+	//
+	// The component is pure DATA. The runtime -- the compiled graph, its block
+	// buffer, its mixer voice -- lives in AudioSystem, keyed by entity id. A
+	// component that owned an AvbProjectRuntime would be copied into the chunk
+	// store, and a runtime is neither copyable nor serializable.
+	struct AudioGraphComponent
+	{
+		// Project-relative .wlavb asset, e.g. "audio/Footsteps.wlavb". Empty
+		// means the component is inert, which is a valid authoring state -- the
+		// same as an AudioSourceComponent with no clip name.
+		std::string GraphPath;
+
+		// Fired when the runtime starts. Off by default, for the same reason as
+		// AudioSourceComponent::PlayOnStart: a scene that starts every graph on
+		// load sounds wrong and is hard to debug.
+		bool PlayOnStart = false;
+
+		// The E.2 map: a gameplay event becomes a trigger on one graph input.
+		// An empty Node means the event starts the graph's own trigger input
+		// rather than reaching a node inside it.
+		struct Trigger
+		{
+			std::string Event;
+			std::string Node;
+			std::string Pin;
+
+			Trigger() = default;
+			Trigger(std::string event, std::string node, std::string pin)
+				: Event(std::move(event)), Node(std::move(node)), Pin(std::move(pin)) {}
+		};
+
+		// A TYPEDEF rather than a bare std::vector, for the same reason
+		// GraphVariableList is one: pybind11's PYBIND11_MAKE_OPAQUE must name a
+		// single type, and bind_vector registers the container as a real Python
+		// class. With a bare std::vector the list converts to a Python COPY and
+		// an authored trigger map silently fails to save.
+		using TriggerList = std::vector<Trigger>;
+		TriggerList Triggers;
+
+		// Entity-level fader. The graph's own Gain nodes are untouched; this is
+		// the same role AudioSourceComponent::Volume plays for a clip.
+		float Volume = 1.0f;
+
+		// How long a triggered graph keeps its voice, in SECONDS. A graph is a
+		// continuous source, so without a limit a one-shot footstep graph would
+		// hold a mixer voice forever and the voice cap would fill with stale
+		// graphs. 0 means "until stopped", which is what an ambient graph wants.
+		float DurationSeconds = 0.0f;
+
+		// Compared against other voices at steal time. A graph is usually the
+		// most important sound on its entity, so 0 (neutral) is the default.
+		int Priority = 0;
+		bool Spatial = false;
+		float MinDistance = 1.0f;
+		float MaxDistance = 30.0f;
+
+		// NOT serialized: the last compile failure, so the editor can show why a
+		// graph is silent instead of the entity simply having no sound. Regenerated
+		// on every load attempt.
+		std::string CompileError;
+
+		// NOT serialized: whether a live mixer voice exists right now. A
+		// diagnostic the editor panel reads; gameplay never needs it.
+		bool Attached = false;
+
+		AudioGraphComponent() = default;
+		AudioGraphComponent(const AudioGraphComponent &) = default;
 	};
 
 }

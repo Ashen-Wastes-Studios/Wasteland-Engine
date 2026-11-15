@@ -75,6 +75,10 @@ namespace Wasteland {
 		nvrhi::BindingLayoutHandle GetBindingLayout() const { return m_BindingLayout; }
 
 	private:
+		// See NVRHIHandleRetire.h: handles from a destroyed backend are abandoned,
+		// not released.
+		uint32_t m_Generation = 0;
+
 		// The graphics pipeline build. Private because it mutates three
 		// handles at once and has no meaningful partial-success state.
 		void Compile(const std::string& vertexSrc, const std::string& fragmentSrc);

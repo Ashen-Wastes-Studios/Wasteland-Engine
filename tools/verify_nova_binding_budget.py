@@ -62,8 +62,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-HLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.hlsl"
-GLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.glsl"
+HLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.slang"
+GLSL = REPO / "DemonCore-Editor" / "assets" / "shaders" / "Renderer3D_NovaRenderer.slang.glsl"  # Slang-generated
 CPP = REPO / "Wasteland" / "src" / "Wasteland" / "Renderer" / "Renderer3D.cpp"
 DX12H = REPO / "Wasteland" / "src" / "Platform" / "NVRHI" / "DX12Nova.h"
 
@@ -73,6 +73,104 @@ SHIFTS = {"u": 0, "b": 7, "t": 16, "s": 200}
 
 REGISTER_RE = re.compile(r"register\(\s*([ubts])\s*(\d+)\s*\)")
 BIND_IMAGE_RE = re.compile(r"glBindImageTexture\(\s*(\d+)")
+
+# Preprocessor directives that decide whether a block survives a given -D.
+_PP_RE = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)$")
+
+
+def strip_guarded_blocks(src: str, *defined: str) -> str:
+    """Re-evaluate the source's #if/#ifdef ladder as if `defined` were -D flags.
+
+    The verifier reads the .slang SOURCE, but each backend target compiles it
+    with its own defines (`-D WASTELAND_DXIL`, `-D WASTELAND_GLSL`). A register
+    inside `#if !defined(WASTELAND_DXIL)` is real for the Vulkan target and
+    absent from the DXIL, so counting the raw source over-reports DX12's needs
+    and under-reports GL's. This walks the ladder with a small stack and keeps
+    only the lines the named target would compile.
+
+    Supports the subset the shader actually uses: #if / #ifdef / #ifndef with
+    `defined(X)` and `!defined(X)`, #elif, #else, #endif, nested. An expression
+    this cannot evaluate is treated as TRUE (keep the block) -- a verifier that
+    cannot decide must not silently drop a register it was meant to count.
+    """
+    defined_set = set(defined)
+    out = []
+    # Each frame: (parent_active, this_branch_taken, currently_active)
+    stack = []
+    active = True
+
+    def eval_cond(expr: str) -> bool:
+        expr = expr.strip()
+        if not expr:
+            return True
+        # Split on || then && and evaluate each term, so compound guards like
+        # `#if !defined(WASTELAND_DXIL) && !defined(WASTELAND_GLSL)` work. A term
+        # this cannot parse makes the WHOLE condition True (keep the block) --
+        # a verifier that cannot decide must not drop a register it counts.
+        def eval_term(t: str) -> bool | None:
+            t = t.strip()
+            m = re.fullmatch(r"!\s*defined\(\s*(\w+)\s*\)", t)
+            if m:
+                return m.group(1) not in defined_set
+            m = re.fullmatch(r"defined\(\s*(\w+)\s*\)", t)
+            if m:
+                return m.group(1) in defined_set
+            m = re.fullmatch(r"!\s*(\w+)", t)
+            if m:
+                return m.group(1) not in defined_set
+            m = re.fullmatch(r"(\w+)", t)
+            if m:
+                return m.group(1) in defined_set
+            return None
+
+        or_parts = re.split(r"\|\|", expr)
+        or_results = []
+        for part in or_parts:
+            and_terms = [eval_term(t) for t in re.split(r"&&", part)]
+            if any(t is None for t in and_terms):
+                or_results.append(True)
+            else:
+                or_results.append(all(and_terms))
+        return any(or_results)
+
+    for line in src.splitlines():
+        m = _PP_RE.match(line)
+        if not m:
+            if active:
+                out.append(line)
+            continue
+        directive, rest = m.group(1), m.group(2)
+        if directive in ("if", "ifdef", "ifndef"):
+            parent = active
+            if directive == "ifdef":
+                cond = rest.strip().split()[0] in defined_set if rest.strip() else False
+            elif directive == "ifndef":
+                cond = rest.strip().split()[0] not in defined_set if rest.strip() else True
+            else:
+                cond = eval_cond(rest)
+            taken = parent and cond
+            stack.append((parent, taken, cond))
+            active = taken
+        elif directive == "elif":
+            if not stack:
+                continue
+            parent, taken, _ = stack[-1]
+            cond = eval_cond(rest)
+            now = parent and (not taken) and cond
+            stack[-1] = (parent, taken or now, cond)
+            active = now
+        elif directive == "else":
+            if not stack:
+                continue
+            parent, taken, _ = stack[-1]
+            now = parent and not taken
+            stack[-1] = (parent, taken or now, False)
+            active = now
+        elif directive == "endif":
+            if stack:
+                parent, _, _ = stack.pop()
+                active = parent
+    return "\n".join(out)
 
 # GLSL image-uniform declaration. The binding index lives in the layout clause
 # BEFORE the uniform keyword (`layout(rgba32f, binding = 0) uniform image2D
@@ -206,8 +304,38 @@ def declared_claims(src):
     hazard -- DXC rejects it and a hand-merge can silently pick one -- but it is
     invisible once folded into a set. Found by --self-test-dup: the first
     version of that check passed, because both claims were 'u0'.
+
+    Preprocessor-conditional groups are collapsed to their LAST branch. A
+    `#if/#else` pair that declares the same register with two target-specific
+    types is ONE logical declaration (DXC only ever sees one branch), so counting
+    both is a false positive. The collapse is per group: nested groups keep their
+    own branch state.
     """
-    return [(m.group(1), int(m.group(2))) for m in REGISTER_RE.finditer(src)]
+    # (kind, slot, group_id, branch_index)
+    tagged = []
+    stack = []            # per open group: [group_id, highest_branch_index]
+    next_group = [0]
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#if"):
+            next_group[0] += 1
+            stack.append([next_group[0], 0])
+        elif stripped.startswith("#elif") or stripped.startswith("#else"):
+            if stack:
+                stack[-1][1] += 1
+        elif stripped.startswith("#endif"):
+            if stack:
+                stack.pop()
+        for m in REGISTER_RE.finditer(line):
+            group = stack[-1][0] if stack else 0
+            branch = stack[-1][1] if stack else 0
+            tagged.append((m.group(1), int(m.group(2)), group, branch))
+
+    # Drop every declaration that is not in the last branch of its group.
+    last_branch = {}
+    for _, _, group, branch in tagged:
+        last_branch[group] = max(last_branch.get(group, 0), branch)
+    return [(k, s) for (k, s, g, b) in tagged if b == last_branch[g]]
 
 
 def check(src, label):
@@ -437,17 +565,24 @@ def check_dx12_uav_count(src):
     is the exact shape of the u8-hole trap, one backend over: a hole in the
     numbering still costs a slot, and the range must run past it.
 
-    Measured 2026-10-26: shader declares u0..u7, u9, u10, u11, u12; DX12Nova.h
-    has kUavCount = 13. Adding u13 makes 14. The header comment at
-    DX12Nova.h:165-175 records the last such move (52 -> 53) and is the
-    template; this check is what stops the next one being forgotten.
+    # Measured 2026-10-29: shader declares u0..u7, u9, u10, u11, u12, u14; DX12Nova.h
+    # has kUavCount = 15. Adding u15 makes 16. The header comment at
+    # DX12Nova.h:165-180 records the last such move (52 -> 53) and is the
+    # template; this check is what stops the next one being forgotten.
     """
     failures = []
     if not CPP.exists():
         return failures
     c = CPP.read_text(encoding="utf-8", errors="replace")
 
-    uav_slots = {int(m.group(2)) for m in REGISTER_RE.finditer(src)
+    # The DXIL is compiled with -D WASTELAND_DXIL, and the source guards the
+    # Vulkan-only resources (WLRR's t76/t77 and u15) with
+    # `#if !defined(WASTELAND_DXIL)`. Counting the raw source would flag a
+    # registers that target never emits -- a false positive that trains people to
+    # ignore this check. Strip those blocks the same way the DXIL build does.
+    dxil_src = strip_guarded_blocks(src, "WASTELAND_DXIL")
+
+    uav_slots = {int(m.group(2)) for m in REGISTER_RE.finditer(dxil_src)
                  if m.group(1) == "u"}
     if not uav_slots:
         return failures
@@ -676,11 +811,11 @@ def self_test_reconstruction(original):
     expect_detected("SampleSceneTexture's case IDs are not read as pass IDs",
                     scene_tex_not_pass_ids)
 
-    # Case 5 -- DX12 kUavCount too low. Real state is 13, and the real shader
-    # tops out at u12, so a shader declaring u13 must be reported.
+    # Case 5 -- DX12 kUavCount too low. Real state is 15, and the real shader
+    # tops out at u14 (img_Mask), so a shader declaring u15 must be reported.
     def uav_count_low():
         return check_dx12_uav_count(
-            original + "\nRWTexture2D<float4> img_WlrrScratch : register(u13);")
+            original + "\nRWTexture2D<float4> img_WlrrScratch : register(u15);")
     expect_detected("DX12 kUavCount below the highest declared UAV", uav_count_low)
 
     # Case 6 -- the GL borrow table. A borrow naming a unit the GLSL does not

@@ -4,6 +4,7 @@
 // Its own header: the three nvrhi::ShaderHandle members, the constant buffers
 // and the mutable uniform staging vectors this file fills.
 #include "NVRHIShader.h"
+#include "NVRHIHandleRetire.h"
 // Needed for context->GetAPI() in the constructor's .glsl/.hlsl fallback.
 #include "NVRHIContext.h"
 // For the static s_CurrentContext, which is the only route from here to the
@@ -163,14 +164,18 @@ namespace Wasteland {
 	{
 		// Cleared alongside the graph stages even though they are mutually exclusive.
 		// The three are separate members, and nothing enforces the exclusivity.
-		m_ComputeShader = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_ComputeShader, m_Generation);
 		// Order is irrelevant -- no destructor below depends on another still holding a
 		// value.
-		m_PixelShader = nullptr;
-		// The constant buffers and m_BindingLayout are NOT cleared here. They are
-		// ref-counted too, so they release with the object; doing it explicitly would
-		// be redundant.
-		m_VertexShader = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_PixelShader, m_Generation);
+		// The constant buffers and m_BindingLayout used to be left to their members'
+		// destructors. They are cleared explicitly now because those releases have to
+		// go through the retirement check -- a shader destroyed after a backend
+		// switch still holds handles whose device is gone.
+		WastelandHandleRetire::ReleaseOrAbandon(m_VSConstantBuffer, m_Generation);
+		WastelandHandleRetire::ReleaseOrAbandon(m_PSConstantBuffer, m_Generation);
+		WastelandHandleRetire::ReleaseOrAbandon(m_VertexShader, m_Generation);
+		WastelandHandleRetire::ReleaseOrAbandon(m_BindingLayout, m_Generation);
 	}
 
 	// Whole-file read. No size limit and no streaming: shader sources are small and
@@ -615,7 +620,9 @@ namespace Wasteland {
 		// Not null-checked. A layout the driver rejects leaves m_BindingLayout null, and
 		// GetOrCreateBindingSet then returns nullptr for every call -- a null that is
 		// indistinguishable from the legitimate "no layout" case.
+		WastelandHandleRetire::ReleaseOrAbandon(m_BindingLayout, m_Generation);
 		m_BindingLayout = device->createBindingLayout(layoutDesc);
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 	}
 
 	// Discovers constant-buffer layout from compiled bytecode. Called once per

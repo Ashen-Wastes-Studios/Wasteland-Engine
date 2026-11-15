@@ -530,8 +530,7 @@ namespace Wasteland {
 		// BuildFromNames restores by reordering.
 		void Skeleton::ComputeWorldMatrices(const Pose &pose,
 											std::vector<glm::mat4> &outWorld,
-											const glm::mat4 &rootTransform,
-											bool outWithRoot) const
+											const glm::mat4 &rootTransform) const
 		{
 			// The loop bound and the output size, captured once.
 			const size_t count = m_Bones.size();
@@ -595,14 +594,13 @@ namespace Wasteland {
 					outWorld[i] = localMatrix;
 			}
 
-			// The object transform, applied only on request and only when it is not
-			// already identity -- a redundant multiply per bone is worth skipping.
-
-			// This flag is the difference between "the pose in world space"
-			// (rendering a character standing in the level) and "the pose in the
-			// CHARACTER'S local space" (skinning matrices, where the object
-			// transform is applied later and must not be baked in).
-			if (outWithRoot && rootTransform != m_Identity)
+			// The object transform, applied whenever it is not identity -- a redundant
+			// multiply per bone is worth skipping. This used to be gated on a second
+			// `outWithRoot` flag that defaulted to false, so a non-identity
+			// rootTransform was SILENTLY DROPPED unless the caller also remembered the
+			// flag. The flag is gone: rootTransform is the only control, and the rule
+			// is simply "identity means do not apply".
+			if (rootTransform != m_Identity)
 			{
 				// A second pass, unavoidable: the root transform cannot be folded in
 				// during the first because a parent's world matrix is not final until
@@ -619,14 +617,16 @@ namespace Wasteland {
 		// cached: it is the expensive half, and it never changes unless the
 		// skeleton is re-bound.
 		void Skeleton::ComputeSkinningMatrices(const Pose &pose,
-											   std::vector<glm::mat4> &outSkinning,
-											   const glm::mat4 &rootTransform) const
+											   std::vector<glm::mat4> &outSkinning) const
 		{
 			// outWithRoot = FALSE, and this is the critical argument. The bind
 			// matrices were captured in the character's own space, so baking the
 			// object transform in here would apply it twice -- once in the inverse
 			// bind and once in the world pose.
-			ComputeWorldMatrices(pose, outSkinning, rootTransform, false);
+			// Character space, ALWAYS. There is no root transform to pass any more:
+			// baking the object transform here would apply it a second time when the
+			// renderer places the deformed mesh in the world.
+			ComputeWorldMatrices(pose, outSkinning, m_Identity);
 
 			// BOTH sizes checked. outSkinning comes from ComputeWorldMatrices and
 			// equals the bone count, so the second half is defensive -- but
@@ -642,15 +642,17 @@ namespace Wasteland {
 
 		// Snapshots the inverse bind matrices from the CURRENT rest pose. Must
 		// be called once before ComputeSkinningMatrices is used.
-		void Skeleton::CaptureBindMatrices()
+		bool Skeleton::CaptureBindMatrices()
 		{
+			// An empty skeleton has nothing to capture. Returning false is the whole
+			// point of the change: the caller can now distinguish "captured" from
+			// "there was no rig", where the identity fallback used to hide the latter.
+			if (m_Bones.empty())
+				return false;
+
 			const size_t count = m_Bones.size();
 			// Sized and defaulted in one call. The identity default means a skeleton
 			// that is never re-captured keeps "no deformation" rather than garbage.
-			// The bind matrices come from the REST pose, not the current one. Using
-			// the current pose would make the bind pose itself the identity, and
-			// every skinned mesh would collapse to a primitive at the joint instead
-			// of keeping its shape.
 			m_InverseBindMatrices.assign(count, m_Identity);
 
 			// The bind matrices come from the REST pose, not the current one.
@@ -660,10 +662,10 @@ namespace Wasteland {
 			// Scratch, local rather than a member: this runs once at setup, not per
 			// frame, so there is nothing to reuse.
 			std::vector<glm::mat4> world;
-			// Resolve the rest pose into world matrices, with outWithRoot = false
-			// for the same reason ComputeSkinningMatrices does -- these are
-			// character-space by definition.
-			ComputeWorldMatrices(m_RestPose, world, m_Identity, false);
+			// Resolve the rest pose into world matrices. Identity root, i.e.
+			// character space -- bind matrices are object-space by definition, and
+			// baking the object transform in would apply it twice.
+			ComputeWorldMatrices(m_RestPose, world, m_Identity);
 
 			// One inverse per bone.
 			for (size_t i = 0; i < count; ++i)
@@ -678,6 +680,10 @@ namespace Wasteland {
 				// NaNs then propagate into every vertex skinned to that bone and, via
 				// the hierarchy, into its descendants. There is no singularity check.
 				m_InverseBindMatrices[i] = glm::inverse(world[i]);
+
+			// Every bone got a matrix. Reaching here means the capture succeeded, and
+			// the caller can now tell that apart from the empty-skeleton early return.
+			return true;
 		}
 
 		// One bone's inverse bind matrix. Identity for an out-of-range index --

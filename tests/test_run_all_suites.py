@@ -23,12 +23,12 @@ class AggregateCounterTests(unittest.TestCase):
             run_all_suites.EXPECTED_PROMOTED_COUNTS,
             {
                 "test_node_library.py": 1209,
-                "test_wlbtree_compiler.py": 56,
+                "test_wlbtree_compiler.py": 61,
                 "test_visualblocks.py": 101,
                 "test_enemy_tree.py": 61,
             },
         )
-        self.assertEqual(run_all_suites.EXPECTED_PROMOTED_TOTAL, 1427)
+        self.assertEqual(run_all_suites.EXPECTED_PROMOTED_TOTAL, 1432)
 
     def test_pass_fail_markers_count_with_crlf(self):
         output = "  PASS: one\r\n  FAIL: two\r\n1 passed, 1 failed\r\n"

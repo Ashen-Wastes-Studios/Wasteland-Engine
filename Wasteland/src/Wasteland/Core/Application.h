@@ -110,6 +110,74 @@ namespace Wasteland
 		// commands outside a Layer callback.
 		ImGuiLayer *GetImGuiLayer() { return m_ImGuiLayer; }
 
+		// Scales game time relative to real time. The timestep handed to every
+		// layer's OnUpdate becomes `rawDelta * m_SimTimescale`; the render loop
+		// itself still runs at the real rate. This is the mechanism WLFG uses to
+		// advance the simulation by 1/factor of real time per interpolated
+		// present: at a 6x factor the sim advances one sixth as fast, so the
+		// synthetic frames show the game at the correct speed. Defaults to 1.0,
+		// so with no call the engine behaves exactly as before.
+		//
+		// @param scale Game-time multiplier. Values <= 0 are ignored (kept at
+		//              1.0) so a bad value cannot freeze the simulation.
+		void SetSimTimescale(float scale);
+
+		// The current game-time multiplier. Inline because it is a bare member
+		// read, and the WLFG timing line reports it every interval.
+		inline float GetSimTimescale() const { return m_SimTimescale; }
+
+		// Sets the synthetic frame-rate cap, in seconds per present. 0 (the
+		// default) means uncapped -- the loop runs unthrottled, exactly as
+		// before. The cap is a sleep until the target interval and is
+		// INDEPENDENT of vsync: vsync is a display synchronisation that cannot
+		// be disabled at runtime without a window recreate, so it is not a
+		// pacing mechanism. WLFG needs a cap so an interpolated present does not
+		// compete with a real one for the swapchain.
+		//
+		// @param seconds Target present interval. <= 0 disables the cap.
+		void SetFrameInterval(double seconds);
+
+		// The current present interval in seconds (0 = uncapped).
+		inline double GetFrameInterval() const { return m_FrameInterval; }
+
+		// Reports the WLFG accounting for the timing line: the active factor,
+		// the warp count, the real-frame count, and the accumulated
+		// simulated-vs-real drift in milliseconds. WLFG fills these in Task 7+;
+		// Task 6 only needs the plumbing and the baseline (factor 1, zero warps,
+		// drift 0), so the values are inert until then.
+		//
+		// @param factor     Active interpolation factor (1 = off).
+		// @param warps      Presents reprojected by the warp so far.
+		// @param realFrames Real (non-interpolated) presents so far.
+		// @param driftMs    |simulated time - real time| accumulated, in ms.
+		//                   Pass a negative value (the default) to leave the
+		//                   Application's own drift reading untouched. The
+		//                   renderer calls this every frame to report the factor
+		//                   and the two counts, but it has no view of the sim
+		//                   clock, so the drift stays the Application's to own
+		//                   rather than being zeroed by the renderer each frame.
+		void SetWlfgStats(int factor, std::uint64_t warps,
+		                  std::uint64_t realFrames, double driftMs = -1.0);
+
+		// The WLFG interpolation-factor ceiling as a function of the
+		// accumulation state. WLFG re-projects the history, and Wasteland's
+		// history IS its quality: re-projecting a converged frame is nearly free,
+		// re-projecting a 1-sample frame multiplies noise. So the factor is not a
+		// constant -- it is this function, and 6x is reachable only where the
+		// accumulation has converged.
+		//
+		// @param cameraMoved True when the camera or scene moved this frame
+		//                    (u_CameraMoved): reprojection is undefined, so the
+		//                    incumbent frame is the only truth.
+		// @param accumAlpha  The temporal accumulation's current blend weight.
+		//                    Its 0.02 floor marks a converged history.
+		// @param novaBackend True when a Nova backend is active (it owns the
+		//                    velocity buffer the warp needs).
+		// @returns The maximum legal factor: 6 converged + static + Nova, 2
+		//          partially converged, 0 (off) on camera move or a non-Nova
+		//          backend.
+		int WlfgMaxFactor(bool cameraMoved, float accumAlpha, bool novaBackend) const;
+
 		// Returns the one live Application.
 		//
 		// Dereferences s_Instance unconditionally, so calling this before the
@@ -181,6 +249,22 @@ namespace Wasteland
 		// and rendering into a zero-sized swapchain is at best wasted work and
 		// at worst a validation error.
 		bool m_Minimized = false;
+
+		// WLFG sim clock (Task 6). m_SimTimescale divides game time relative to
+		// real time (1.0 = unchanged); the timestep handed to layers is
+		// rawDelta * m_SimTimescale. m_FrameInterval is the synthetic present
+		// cap in seconds (0 = uncapped); m_NextFrameTime is the next present's
+		// target glfwGetTime. The WLFG accounting members feed the timing line:
+		// m_WlfgFactor the active factor, m_WlfgWarps/m_WlfgRealFrames the
+		// warp/real-frame counts, m_SimDriftMs the accumulated sim-vs-real
+		// drift. All default to the inert baseline.
+		float m_SimTimescale = 1.0f;
+		double m_FrameInterval = 0.0;
+		double m_NextFrameTime = 0.0;
+		int m_WlfgFactor = 1;
+		std::uint64_t m_WlfgWarps = 0;
+		std::uint64_t m_WlfgRealFrames = 0;
+		double m_SimDriftMs = 0.0;
 
 	private:
 		// The live Application, set by the constructor and cleared by the

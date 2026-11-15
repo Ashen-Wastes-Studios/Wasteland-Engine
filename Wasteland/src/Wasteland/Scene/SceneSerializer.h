@@ -27,6 +27,19 @@ namespace Wasteland
 	class SceneSerializer
 	{
 	public:
+		// The on-disk scene layout version.
+		//
+		// Bumped when the layout changes; Deserialize migrates older files forward
+		// rather than rejecting them. The same pattern Project::Settings uses
+		// (Project.h:34-38), and for the same reason: a scene written by an older
+		// build must still open, and one written by a NEWER build must fail loudly
+		// rather than being half-read.
+		//
+		// The default is 1 rather than 0 so a hand-edited or older file with no
+		// Version key reads as "current" instead of "ancient" -- exactly the
+		// Project::Settings rule.
+		static constexpr int kCurrentSchemaVersion = 1;
+
 		// Binds this serializer to a scene.
 		//
 		// Shares ownership with the scene, so the serializer cannot outlive the

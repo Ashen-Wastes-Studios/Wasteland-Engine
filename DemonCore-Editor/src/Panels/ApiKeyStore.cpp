@@ -136,24 +136,12 @@ namespace Wasteland
 			// which guard on !value.empty() so a blank value cannot wipe a default.
 			if (key == "openai_api_key")
 				OpenAIKey = value;
-			// DEFECT (inconsistent blank handling): an empty openai_base_url in the file
-			// leaves the current value alone, while an empty openai_api_key clears it. The
-			// intent is presumably "empty means unset, keep the default" -- but for the key
-			// the same file, empty means "erase". Whichever is wanted, one rule would be less
-			// surprising than two. Not fixed here.
 			else if (key == "openai_base_url" && !value.empty())
 				OpenAIBaseURL = value;
 			else if (key == "openai_model" && !value.empty())
 				OpenAIModel = value;
-			// The only numeric field, and the only one parsed rather than assigned as text.
-			// std::stof throws std::invalid_argument on non-numeric text and
-			// std::out_of_range when the value is unrepresentable as a float.
 			else if (key == "temperature")
 			{
-				// try/catch rather than a checked conversion. The empty catch body is
-				// deliberate-looking but silent: a malformed temperature leaves the previous value
-				// in place with no diagnostic anywhere. A one-line WL_CORE_ERROR here would cost
-				// nothing and would make a hand-edited config debuggable.
 				try
 				{
 					Temperature = std::stof(value);
@@ -165,10 +153,45 @@ namespace Wasteland
 			else if (key == "system_prompt" && !value.empty())
 				SystemPrompt = value;
 			else if (key == "hf_token")
-				// The last field. No branch matches an unrecognised key, so a typo in the file
-				// (say "huggingface_token") is ignored without complaint -- the user sees their
-				// key absent and no reason why.
 				HuggingFaceToken = value;
+			else if (key == "anthropic_api_key")
+				AnthropicKey = value;
+			else if (key == "anthropic_base_url" && !value.empty())
+				AnthropicBaseURL = value;
+			else if (key == "anthropic_model" && !value.empty())
+				AnthropicModel = value;
+			else if (key == "google_api_key")
+				GoogleKey = value;
+			else if (key == "google_base_url" && !value.empty())
+				GoogleBaseURL = value;
+			else if (key == "google_model" && !value.empty())
+				GoogleModel = value;
+			else if (key == "hermes_api_key")
+				HermesKey = value;
+			else if (key == "hermes_base_url" && !value.empty())
+				HermesBaseURL = value;
+			else if (key == "hermes_model" && !value.empty())
+				HermesModel = value;
+			else if (key == "effort_preset" && !value.empty())
+				EffortPreset = value;
+			else if (key == "model_preset" && !value.empty())
+				ModelPreset = value;
+			else if (key == "provider" && !value.empty())
+				Provider = value;
+			else if (key == "auto_delegate")
+				AutoDelegate = (value == "1" || value == "true" || value == "yes");
+			else if (key == "max_subagents")
+			{
+				try
+				{
+					int v = std::stoi(value);
+					if (v >= 1 && v <= 16)
+						MaxSubagents = v;
+				}
+				catch (...)
+				{
+				}
+			}
 		}
 	}
 
@@ -206,13 +229,23 @@ namespace Wasteland
 		file << "openai_api_key=" << OpenAIKey << "\n";
 		file << "openai_base_url=" << OpenAIBaseURL << "\n";
 		file << "openai_model=" << OpenAIModel << "\n";
-		// Written with the stream's default float formatting -- six significant digits,
-		// not the shortest round-trip representation. A temperature of 0.7 round-trips
-		// exactly, but a value the user set to something like 0.123456789 loses its tail
-		// on the next load. Harmless for a 0-2 slider.
 		file << "temperature=" << Temperature << "\n";
 		file << "system_prompt=" << SystemPrompt << "\n";
 		file << "hf_token=" << HuggingFaceToken << "\n";
+		file << "anthropic_api_key=" << AnthropicKey << "\n";
+		file << "anthropic_base_url=" << AnthropicBaseURL << "\n";
+		file << "anthropic_model=" << AnthropicModel << "\n";
+		file << "google_api_key=" << GoogleKey << "\n";
+		file << "google_base_url=" << GoogleBaseURL << "\n";
+		file << "google_model=" << GoogleModel << "\n";
+		file << "hermes_api_key=" << HermesKey << "\n";
+		file << "hermes_base_url=" << HermesBaseURL << "\n";
+		file << "hermes_model=" << HermesModel << "\n";
+		file << "effort_preset=" << EffortPreset << "\n";
+		file << "model_preset=" << ModelPreset << "\n";
+		file << "provider=" << Provider << "\n";
+		file << "auto_delegate=" << (AutoDelegate ? "1" : "0") << "\n";
+		file << "max_subagents=" << MaxSubagents << "\n";
 	}
 
 }

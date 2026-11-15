@@ -114,6 +114,24 @@ namespace Wasteland::VisualBlocks
 		// from here rather than from a parallel table that could drift.
 		std::vector<PinDef> Pins;
 
+		// OPTIONAL override that computes the pin set from the graph and the node.
+		//
+		// Task B.2: a CallFunction node exposes one pin per PARAMETER of the
+		// function it names, and parameter names are author-supplied -- so no
+		// static Pins vector can describe it. This is the single extension point
+		// that lets a node have a per-instance pin set without a parallel table.
+		//
+		// Null means "use Pins as-is", which is every existing node. The resolver
+		// receives the graph so it can read the function's declared endpoints, and
+		// the node so it can read the Name literal that selects the function.
+		//
+		// A resolver MUST be pure: the validator calls it to type-check links and
+		// the compiler calls it to emit, so two different answers for the same
+		// (graph, node) produce a graph that validates and then miscompiles.
+		using ResolvePinsFn =
+			std::function<std::vector<PinDef>(const Graph &, const GraphNode &)>;
+		ResolvePinsFn ResolvePins;
+
 		// Emits the node's Python. Return an error string, empty on success.
 		//
 		// Two kinds:
@@ -132,7 +150,7 @@ namespace Wasteland::VisualBlocks
 		// rejected at registration.
 		EmitFn Emit;
 
-		// The EXPR/STMT distinction the comment above describes, stored as one
+	// The EXPR/STMT distinction the comment above describes, stored as one
 		// bool rather than two node classes. A STMT node fills no Outputs.
 		bool IsStatement = false;   // emits statements, not a single expression
 
@@ -168,8 +186,27 @@ namespace Wasteland::VisualBlocks
 	// validator, codegen and docs is the design constraint -- two tables
 	// would drift silently, as the comment above RegisterFlowNodes says.
 	class NodeRegistry
+
 	{
 	public:
+			// The pins a node effectively has: the resolver's answer when present,
+		// otherwise the static set.
+		//
+		// Centralised because three call sites (the validator's link type-check,
+		// its duplicate-input check, and the compiler's emitter) each need the
+		// SAME answer, and a fourth copy of the null test is how they would
+		// drift -- exactly the failure mode that produced the IsTypeNamedEvent
+		// consolidation in B.1.
+		static std::vector<PinDef> EffectivePins(const NodeDef &def,
+												const Graph &graph,
+												const GraphNode &node)
+		{
+			if (def.ResolvePins)
+				return def.ResolvePins(graph, node);
+			return def.Pins;
+		}
+
+
 		// Accessor rather than a global object, so construction order does not
 		// matter for translation units that touch nodes during static init.
 		static NodeRegistry &Get();

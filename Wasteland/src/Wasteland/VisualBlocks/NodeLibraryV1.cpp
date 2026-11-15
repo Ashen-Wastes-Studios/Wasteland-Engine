@@ -425,6 +425,61 @@ namespace Wasteland::VisualBlocks
 		}
 
 		{
+			// SetAnimationState -- crossfade to a named state.
+			//
+			// The DIFFERENCE from PlayAnimation is the Blend pin: PlayAnimation is a
+			// hard cut (SetState), this is a crossfade (TransitionTo). A hard cut on
+			// a walk->run transition snaps; a crossfade does not. Both are needed,
+			// which is why they are two nodes and not one node with a mode pin --
+			// a mode pin would make the common case (cut) and the careful case
+			// (fade) the same authoring act.
+			NodeDef def;
+			def.TypeId = "SetAnimationState";
+			def.Category = "Behaviour/Task";
+			def.BtRole = "task";
+			def.Pins = {
+				MakeIn("State", "State", PinType::String, true, "idle"),
+				// Seconds. <= 0 means "use the state's own transition duration", which
+				// is what TransitionTo's -1 sentinel does.
+				MakeIn("Blend", "Blend", PinType::Float, false, "0.25"),
+				MakeOut("Value", "Tree", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				std::string state = StrPinV1(ctx, "State", "idle");
+				EmitLeaf(out, ctx,
+						 "lambda ctx: _set_animation_state(ctx.entity, \"" + state +
+							 "\", " + ctx.InFloat("Blend") + ")");
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// SetTrigger -- fire a state-machine trigger.
+			//
+			// Triggers are how a machine leaves a state without a transition being
+			// authored for every cause: one transition per trigger name, fired from
+			// gameplay. Without this node the only way to fire one is a Python script,
+			// which makes a designer-built behavior tree unable to drive its own
+			// animation.
+			NodeDef def;
+			def.TypeId = "SetTrigger";
+			def.Category = "Behaviour/Task";
+			def.BtRole = "task";
+			def.Pins = {
+				MakeIn("Trigger", "Trigger", PinType::String, true, "hit"),
+				MakeOut("Value", "Tree", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				std::string trigger = StrPinV1(ctx, "Trigger", "hit");
+				EmitLeaf(out, ctx,
+						 "lambda ctx: _set_trigger(ctx.entity, \"" + trigger + "\")");
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
 			// CallPython -- the hot-loop escape hatch.
 			//
 			// Calls a method on the agent's ScriptComponent. If there is no

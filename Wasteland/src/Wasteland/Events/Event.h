@@ -13,6 +13,9 @@
 
 #pragma once
 
+#include <string>
+#include <functional>
+
 #include "wlpch.h"
 
 #include "Wasteland/Core/Core.h"

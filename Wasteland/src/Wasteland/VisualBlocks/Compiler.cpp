@@ -9,6 +9,14 @@
 // come from -- neither is included directly here.
 #include "Compiler.h"
 
+// GraphSerializer: EmitFunctionMethods (Task B.2) LOADS a function body file
+// and compiles it with this same CompileFlow, so the compiler needs the
+// loader's declaration. Same module, no layering break.
+#include "Wasteland/VisualBlocks/GraphSerializer.h"
+// std::filesystem: resolving a function's relative `path:` against the
+// owning graph's directory, and testing that the body file exists.
+#include <filesystem>
+
 // std::min / std::max, used in SanitizeIdentifier's callers and in the
 // registry lookups below. Already in the PCH; repeated because the file uses
 // it in a hot template.
@@ -57,7 +65,7 @@ namespace Wasteland::VisualBlocks
 		// leading digit. It does not reject Python KEYWORDS, so a graph named
 		// "class" yields a generated file containing a `class class:` header -- a
 		// SyntaxError reported against generated code with no pointer to the name.
-		std::string SanitizeIdentifier(const std::string &text, const char *fallback)
+		std::string SanitizeIdentifierImpl(const std::string &text, const char *fallback)
 		{
 			// Built up character by character rather than with std::replace or a
 			// regex: one pass, one allocation strategy, and no dependency on <regex>
@@ -255,7 +263,20 @@ namespace Wasteland::VisualBlocks
 				// ---
 				// The body is spliced VERBATIM, at absolute indentation, because the writer
 				// below adds the base indent once to the shell's lines and not to these.
-				std::string body = emitBody(pin.Id, 1);
+				// The "Done" pin of a loop is the CONTINUATION, which sits at the
+				// loop's OWN level -- one level OUT from a body. Every other exec out
+				// is a body and sits one level IN.
+				//
+				// The distinction matters: a Done body emitted at bodyIndent would
+				// land INSIDE the loop and run once per iteration -- a silent
+				// behaviour bug, not a syntax error. Task B.6 found it: the chaser's
+				// scan compiled and its continuation ran twice.
+				// RELATIVE, not absolute: emitChain adds this to its own base, and
+				// the previous version passed bodyIndent (which already includes the
+				// node's absolute level) -- double-indenting every body by the depth
+				// of the enclosing chain.
+				const int pinIndent = (pin.Id == "Done") ? 0 : 1;
+				std::string body = emitBody(pin.Id, pinIndent);
 				// An empty branch body would leave the generated `if:` with nothing after
 				// it -- a Python IndentationError.
 				if (body.empty())
@@ -307,6 +328,96 @@ namespace Wasteland::VisualBlocks
 
 	}
 
+	// The PUBLIC form of the anonymous namespace's SanitizeIdentifier,
+	// defined here at namespace scope because Compiler.h declares it as a
+	// static member -- and a member definition inside an anonymous namespace
+	// would have internal linkage, which is ill-formed.
+	//
+	// It FORWARDS rather than reimplementing: one rule, one body. A second
+	// copy is exactly how a call node's method name could differ from the
+	// method the compiler emitted.
+	std::string Compiler::SanitizeIdentifier(const std::string &text,
+												   const char *fallback)
+	{
+		return SanitizeIdentifierImpl(text, fallback);
+	}
+
+	// Does this graph contain a node whose emission needs the `_pose_bone`
+	// preamble helper? A linear scan, because the alternative -- emitting the
+	// helper unconditionally -- puts fifteen lines into every generated flow
+	// module, almost all of which never ask about a bone.
+	//
+	// The TypeIds are string literals duplicated from NodeLibraryFlow.cpp.
+	// They are compared rather than resolved through the registry because
+	// this runs during compilation, where a registry lookup would add a
+	// dependency on registration order for a purely syntactic question.
+	bool NeedsPoseBoneHelper(const Graph &graph)
+	{
+		for (const GraphNode &node : graph.Nodes)
+		{
+			if (node.TypeId == "GetPoseBonePosition" ||
+				node.TypeId == "GetPoseBoneRotation")
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// Task B.3: the component-access helpers. Three predicates rather than one,
+	// because a graph that only READS components should not pay for the setter,
+	// and a graph that only queries the scene should not pay for either.
+	//
+	// Same string-literal rule as NeedsPoseBoneHelper: compared, not resolved
+	// through the registry, because this is a syntactic question and a registry
+	// lookup here would make codegen depend on registration order.
+	// The trace hook is emitted whenever ANY node carries a breakpoint. A graph
+	// with none needs no hook at all, and the hook's cost when it exists is one
+	// attribute lookup plus a set membership test per statement -- cheap enough
+	// that it is not worth threading a "debug build" flag through the runtime.
+	bool NeedsTraceHelper(const Graph &graph)
+	{
+		for (const GraphNode &node : graph.Nodes)
+		{
+			if (node.Breakpoint)
+				return true;
+		}
+		return false;
+	}
+
+	bool NeedsComponentGetHelper(const Graph &graph)
+	{
+		for (const GraphNode &node : graph.Nodes)
+		{
+			if (node.TypeId == "CastTo" || node.TypeId == "GetComponent")
+				return true;
+		}
+		return false;
+	}
+
+	bool NeedsComponentSetHelper(const Graph &graph)
+	{
+		for (const GraphNode &node : graph.Nodes)
+		{
+			if (node.TypeId == "SetComponent")
+				return true;
+		}
+		return false;
+	}
+
+	bool NeedsEntityQueryHelper(const Graph &graph)
+	{
+		for (const GraphNode &node : graph.Nodes)
+		{
+			if (node.TypeId == "GetAllEntitiesWith" ||
+				node.TypeId == "GetEntityAtIndex")
+				return true;
+		}
+		return false;
+	}
+
+
+
 	// See Compiler.h for why the runtime needs this rather than re-deriving
 	// the sanitised name itself.
 	// The single public definition of the generated class name.
@@ -319,7 +430,51 @@ namespace Wasteland::VisualBlocks
 		// "GeneratedBehavior" is the fallback for an empty or digit-leading graph
 		// name. Note the name is NOT otherwise namespaced: two graphs both called
 		// "Enemy Chase" produce the SAME class name in two different files.
-		return SanitizeIdentifier(graph.Name, "GeneratedBehavior");
+		return SanitizeIdentifierImpl(graph.Name, "GeneratedBehavior");
+	}
+
+
+	std::string Compiler::FlowClassNameFor(const Graph &graph)
+	{
+		// "GeneratedFlow" is the flow path's own fallback, NOT the tree's
+		// "GeneratedBehavior" -- a caller that uses ClassNameFor here gets a
+		// class name that the emitter never wrote.
+		return SanitizeIdentifierImpl(graph.Name, "GeneratedFlow");
+	}
+
+
+	std::string Compiler::FlowMethodNameFor(const GraphNode &event)
+	{
+		// A node of a type that NAMES an engine event derives its method name from
+		// the TYPE when the author left the `event` field empty. Without this, an
+		// OnAnimationEvent node placed from the palette and never edited compiles
+		// to a method called OnUpdate -- silently wrong, and the graph would then
+		// have two OnUpdate entry points.
+		//
+		// Only types whose whole purpose is one specific event belong here. The
+		// general FlowOnEvent keeps its authored name, because an author using it
+		// is by definition choosing an event.
+		if (event.IsTypeNamedEvent())
+		{
+			return GraphNode::TypeIdForEventMethod(event.TypeId);
+		}
+		// SanitizeIdentifier already returns its fallback for an empty name,
+		// which is the same rule the emitter's blank-EventName branch uses.
+		// One implementation, so the two can never disagree.
+		return SanitizeIdentifierImpl(event.EventName, "OnUpdate");
+	}
+
+
+	std::string Compiler::FlowMethodNameFor(const Graph &graph)
+	{
+		// The FIRST event in declaration order, which is what FindEvent
+		// returns. A schema-2 graph emits one method per event; a host that
+		// only knows one entry point gets the first, and the per-event
+		// dispatch that calls the rest is the runtime's job (Task 0.4).
+		const GraphNode *event = graph.FindEvent();
+		if (event == nullptr)
+			return "OnUpdate";
+		return FlowMethodNameFor(*event);
 	}
 
 
@@ -1178,17 +1333,73 @@ def _gate(ctx, node_id, every):
 
 
 def _play_animation(agent, name, loop):
-    """Drive animation by name.
+    """Drive an entity's AnimationComponent to a named state.
 
-    There is no AnimationComponent in this binding -- the Animation submodule
-    is an ASSET registry, not a per-entity component -- so this reports
-    FAILURE rather than referencing a name that is not bound.
+    Returns SUCCESS/FAILURE, never raises: the script host swallows exceptions
+    and carries on, so a node that raised here would be silently inert on exactly
+    the branch that needs it.
 
-    FAILURE, never a raise: the script host swallows exceptions and carries
-    on, so a node that raised here would be silently inert on exactly the
-    branch that needs it.
+    FAILURE means one of three caller-recoverable things: the entity has no
+    runtime yet (it has not ticked), the asset carries no state machine, or the
+    state name is unknown. The previous revision of this function returned
+    FAILURE unconditionally, with a docstring explaining that no
+    AnimationComponent existed in the binding. It does now, so the node was
+    inert for the entire time the component has been attachable.
+
+    The body is inlined rather than factored into a second `_`-prefixed helper.
+    test_node_library derives the shim's call arity by scanning emitted code for
+    every `_`-prefixed function, so each extra helper adds checks to that suite
+    and forces a count-registry bump for no behavioural reason.
     """
-    return FAILURE
+    if agent is None:
+        return FAILURE
+    fn = getattr(agent, "PlayAnimation", None)
+    if fn is None or not callable(fn):
+        return FAILURE
+    try:
+        return SUCCESS if fn(name, loop) else FAILURE
+    except Exception:
+        # Never let a binding failure escape into the tree walk.
+        return FAILURE
+
+
+def _set_animation_state(agent, name, blend):
+	"""Crossfade to a named state over `blend` seconds.
+
+	Same contract as _play_animation: SUCCESS/FAILURE, never raises. FAILURE
+	means no runtime, no state machine, or an unknown state name -- all three
+	are caller-recoverable.
+
+	Uses TransitionTo rather than SetState because the whole point of the node
+	is the fade; a hard cut would be PlayAnimation.
+	"""
+	if agent is None:
+		return FAILURE
+	fn = getattr(agent, "TransitionAnimationState", None)
+	if fn is None or not callable(fn):
+		return FAILURE
+	try:
+		return SUCCESS if fn(name, blend) else FAILURE
+	except Exception:
+		return FAILURE
+
+
+def _set_trigger(agent, trigger):
+		"""Fire a state-machine trigger by name.
+
+		SUCCESS/FAILURE, never raises, for the same reason as the two helpers above:
+		the script host swallows exceptions and carries on, so a raise here would
+		leave the node silently inert on exactly the branch that needs it.
+		"""
+		if agent is None:
+			return FAILURE
+		fn = getattr(agent, "SetAnimationTrigger", None)
+		if fn is None or not callable(fn):
+			return FAILURE
+		try:
+			return SUCCESS if fn(trigger) else FAILURE
+		except Exception:
+			return FAILURE
 
 
 def _call_python(agent, method, ctx):
@@ -1882,6 +2093,121 @@ def _call_python(agent, method, ctx):
 	// Genuinely different output shape, not a variant of the tree path: this
 	// emits nested control flow in the TARGET language, because a flow graph has
 	// nothing to suspend and resume.
+	// The `_fn_<name>` methods for a flow graph's DECLARED functions (Task B.2).
+	//
+	// A flow graph declares a function's SIGNATURE in `functions:`; the BODY is a
+	// separate `kind: function` file named by `path:`. This loads each body,
+	// compiles it with the SAME CompileFlow path, and splices the resulting method
+	// into the caller's class.
+	//
+	// Why splice rather than emit the body here: the body's exec walk, control-flow
+	// shells and input resolution are ~850 lines of the event path. Reusing the
+	// path means a function body cannot drift from an event body -- there is one
+	// emitter, not two.
+	//
+	// Returns false and fills `error` on the first failure. A missing file is an
+	// error rather than a skipped method: a CallFunction node that survives
+	// validation but calls a method that was never emitted raises AttributeError at
+	// runtime, which is the worst possible diagnostic.
+	static bool EmitFunctionMethods(const Graph &graph, std::ostream &out,
+									GraphError &error)
+	{
+		if (graph.Kind == "function")
+			return true;   // its own body is emitted by the method-target path
+
+		for (const GraphFunction &function : graph.Functions)
+		{
+			if (function.Path.empty())
+			{
+				error.Message = "function '" + function.Name +
+								"' declares no 'path'";
+				error.NodeId = "";
+				error.HasNode = false;
+				return false;
+			}
+
+			// Resolved against the OWNING graph's directory, never the process
+			// working directory: a project that moves must still load.
+			std::filesystem::path base(graph.BasePath);
+			std::filesystem::path full = base / function.Path;
+			full = std::filesystem::weakly_canonical(full);
+
+			if (!std::filesystem::exists(full))
+			{
+				error.Message = "function '" + function.Name + "' body not found at " +
+								full.string();
+				error.NodeId = "";
+				error.HasNode = false;
+				return false;
+			}
+
+			Graph body;
+			GraphError loadError;
+			if (!GraphSerializer::Load(full.string(), body, loadError))
+			{
+				error.Message = "function '" + function.Name + "': " +
+								loadError.Message;
+				error.NodeId = "";
+				error.HasNode = false;
+				return false;
+			}
+
+			// The body file must declare the function it is the body OF. A file
+			// declaring a different name would compile to a method the caller never
+			// calls, and the mismatch would be invisible.
+			if (body.Functions.size() != 1 ||
+				body.Functions[0].Name != function.Name)
+			{
+				error.Message = "function '" + function.Name + "' body at " +
+								full.filename().string() +
+								" declares a different function";
+				error.NodeId = "";
+				error.HasNode = false;
+				return false;
+			}
+
+			GraphError compileError;
+			std::string source = Compiler::CompileFlow(body, compileError);
+			if (!compileError.Message.empty())
+			{
+				// NAME THE BODY FILE. The caller formats whatever this returns
+				// against the CALLER's file name, so without this prefix a body
+				// defect was reported as "UseClamp.wlblocks: node 'scaled' ..." --
+				// pointing the author at a file that is correct.
+				error = compileError;
+				error.Message = full.filename().string() + ": " + compileError.Message;
+				return false;
+			}
+
+			// Extract the `_fn_<name>` method from the generated class. The class
+			// wrapper is dropped; the method is appended to the caller's class.
+			const std::string name = Compiler::SanitizeIdentifier(
+				function.Name, "fn");
+			const std::string marker = "\tdef _fn_" + name + "(";
+			size_t at = source.find(marker);
+			if (at == std::string::npos)
+			{
+				error.Message = "function '" + function.Name +
+								"' compiled but emitted no _fn method";
+				error.NodeId = "";
+				error.HasNode = false;
+				return false;
+			}
+
+			// From the marker to the next method at the same indent, or the end.
+			size_t end = source.find("\n\tdef ", at + marker.size());
+			std::string method = source.substr(at, end == std::string::npos
+												? std::string::npos
+												: end - at);
+			out << method;
+			if (!method.empty() && method.back() != '\n')
+				out << "\n";
+			out << "\n";
+		}
+		return true;
+	}
+
+
 	std::string Compiler::CompileFlow(const Graph &graph, GraphError &error)
 	// Same failure convention: empty string plus a filled `error`.
 	{
@@ -1906,21 +2232,115 @@ def _call_python(agent, method, ctx):
 			}
 		}
 
-		// DEFECT (documented, not fixed): the flow class name is computed HERE,
-		// by calling SanitizeIdentifier directly, with its own "GeneratedFlow"
-		// fallback. Compiler.h exposes ClassNameFor as THE way a caller derives the
-		// name the compiler will emit, and that helper is documented as covering
-		// exactly this purpose -- but it hardcodes the tree's fallback string.
-		// ---
-		// Consequence: there is no public accessor for a flow graph's class name, so
-		// a caller that must instantiate a generated flow component has to
-		// re-derive it the way this line does. That is precisely the duplication
-		// ClassNameFor exists to prevent, and it is already drifting.
-		std::string className = SanitizeIdentifier(graph.Name, "GeneratedFlow");
+		// FlowClassNameFor, not ClassNameFor: the flow emitter's fallback is
+		// "GeneratedFlow" while the tree emitter's is "GeneratedBehavior", so
+		// the tree accessor would return a class name this emitter never wrote.
+		// This was previously derived inline here with its own copy of the rule --
+		// exactly the duplication ClassNameFor exists to prevent, and it had
+		// already drifted by having no public accessor at all.
+		std::string className = FlowClassNameFor(graph);
 		NodeRegistry &registry = NodeRegistry::Get();
-		// The event node, which anchors the whole statement chain. Nullable: a flow
-		// graph with no event produces a class whose method body is just `pass`.
-		const GraphNode *event = graph.FindEvent();
+		// Every event node, in declaration order. A flow graph may declare
+		// several (schema 2) and each becomes its own generated method; a
+		// graph with none still gets one method, named OnUpdate, so the
+		// class is always callable.
+		// One entry per generated METHOD, as (start node, method name).
+		//
+		// A pair rather than a node list because a `kind: function` graph's
+		// method name is `_fn_<name>` -- derived from the FUNCTION, not from an
+		// event node. One loop serves both shapes, so the function path cannot
+		// drift from the event path's emission rules.
+		// The parameter list is part of the target because a FUNCTION method's
+		// signature is `def _fn_X(self, p, maxLen):` -- the authored parameter
+		// NAMES are the arguments. The first version emitted the event form
+		// `(self, *args, **kwargs)` for every method, so `p` and `maxLen` were
+		// never bound and the body raised NameError on its first line.
+		struct MethodTarget
+		{
+			const GraphNode *Node = nullptr;
+			std::string Name;
+			std::vector<std::string> Params;
+		};
+		std::vector<MethodTarget> methodTargets;
+
+		// The function graph's entry: the node with no incoming EXEC link.
+		// Resolved here, once, rather than inside the loop.
+		//
+		// A node with no exec OUT pin is never an entry -- it has no outgoing
+		// exec edge, so starting the walk there would emit one statement and
+		// stop. That is why a lone Return node yields no body at all.
+		auto findFunctionEntry = [](NodeRegistry &registry, const Graph &graph)
+			-> const GraphNode *
+		{
+			const GraphNode *fallback = nullptr;
+			for (const GraphNode &node : graph.Nodes)
+			{
+				bool hasExecOut = false;
+				const NodeDef *def = registry.Find(node.TypeId);
+				if (def != nullptr)
+				{
+					for (const PinDef &pin : NodeRegistry::EffectivePins(*def, graph, node))
+						if (pin.Dir == PinDir::Out && pin.Type == PinType::Exec)
+						{
+							hasExecOut = true;
+							break;
+						}
+				}
+				if (!hasExecOut)
+					continue;
+				if (fallback == nullptr)
+					fallback = &node;
+				bool hasIncomingExec = false;
+				for (const GraphLink &link : graph.Links)
+				{
+					if (link.ToNode != node.Id)
+						continue;
+					const GraphNode *producer = graph.FindNode(link.FromNode);
+					if (producer == nullptr)
+						continue;
+					const NodeDef *producerDef = registry.Find(producer->TypeId);
+					if (producerDef == nullptr)
+						continue;
+					for (const PinDef &pin : NodeRegistry::EffectivePins(*producerDef, graph, *producer))
+						if (pin.Id == link.FromPin && pin.Type == PinType::Exec)
+						{
+							hasIncomingExec = true;
+							break;
+						}
+				}
+				if (!hasIncomingExec)
+					return &node;
+			}
+			return fallback;
+		};
+		for (const GraphNode &node : graph.Nodes)
+			// A node counts as an event when it carries an authored event name OR
+			// its TYPE names one. The second case is what lets an OnBeginPlay or
+			// OnAnimationEvent node be placed from the palette and never edited.
+			if (!node.EventName.empty() || node.IsTypeNamedEvent())
+			methodTargets.push_back({&node, FlowMethodNameFor(node), {}});
+
+		// A `kind: function` graph contributes exactly one method: its own
+		// body. `methodTargets` is empty there by validation -- a function may
+		// not contain an event node -- so without this the class would carry
+		// only the fallback OnUpdate stub and every CallFunction node would
+		// raise AttributeError on a method that was never emitted.
+		if (graph.Kind == "function")
+		{
+			const GraphNode *entry = findFunctionEntry(registry, graph);
+			if (entry != nullptr && !graph.Functions.empty())
+			{
+				std::string name = SanitizeIdentifierImpl(graph.Functions[0].Name, "fn");
+				if (!name.empty())
+				{
+					std::vector<std::string> params;
+					for (const GraphFunctionEndpoint &input :
+						 graph.Functions[0].Inputs)
+						params.push_back(SanitizeIdentifierImpl(input.Name, "arg"));
+					methodTargets.push_back({entry, "_fn_" + name, params});
+				}
+			}
+		}
 
 		// Shorter preamble than the tree path -- no wl_behavior, no shim, no
 		// blackboard. A flow graph is a plain component.
@@ -1933,9 +2353,161 @@ def _call_python(agent, method, ctx):
 			// The import block. No wl_behavior and no shim -- a flow graph compiles to
 			// a plain component, not to a tree.
 			<< "import Wasteland\n\n";
+		// The pose-bone helper, emitted ONLY when the graph actually contains a
+		// node that needs it. A flow graph's preamble is otherwise just
+		// `import Wasteland` + a class, so paying fifteen lines on every generated
+		// module for two optional nodes would be a tax on the common case.
+		//
+		// It exists at all because a pose lookup is five steps -- animator,
+		// skeleton, bone index, pose, bone -- and a node's output is a single
+		// expression. Inlining that as nested conditionals would produce generated
+		// code no one can read or debug.
+		//
+		// Returns the BoneTransform or None. Every step is a quiet None rather than
+		// an exception: asking for a bone on an entity that is not animating is a
+		// question, not an error, and a node wired to a wrong bone name should read
+		// as empty rather than taking the tick down.
+		if (NeedsPoseBoneHelper(graph))
+		{
+			out << "def _pose_bone(entity, name):\n"
+				<< "\t\"\"\"The animated transform of a named bone, or None.\n"
+				<< "\n"
+				<< "\t\"\"\"None at every step where the lookup cannot be answered:\n"
+				<< "\tno entity, no runtime, no skeleton, no such bone, or no pose yet.\n"
+				<< "\t\"\"\"\n"
+				<< "\tif entity is None:\n"
+				<< "\t\treturn None\n"
+				<< "\tanim = Wasteland.GetAnimationAnimator(entity)\n"
+				<< "\tif anim is None:\n"
+				<< "\t\treturn None\n"
+				<< "\tskeleton = anim.GetSkeleton()\n"
+				<< "\tif skeleton is None:\n"
+				<< "\t\treturn None\n"
+				<< "	index = skeleton.FindBone(name)\n"
+				<< "	if index is None or not index.IsValid:\n"
+				<< "		return None\n"
+				<< "	bone = anim.GetLastPose().GetBone(int(index))\n"
+				<< "\treturn bone\n\n";
+		}
+
+		// The WORLD-space twin of _pose_bone. A separate function rather than a
+		// flag on the first: the two return different types (BoneTransform vs
+		// Vec3), and a helper that returns either would force every caller to
+		// disambiguate. Emitted under the same condition as _pose_bone.
+		if (NeedsPoseBoneHelper(graph))
+		{
+			out << "def _pose_bone_world(entity, name):\n"
+				<< "\t\"\"\"The animated WORLD position of a named bone, or None.\n"
+				<< "\n"
+				<< "\t\"\"\"Recomputes the world matrices on every call, so a graph\n"
+				<< "\treading many bones per tick should compute them once and index.\n"
+				<< "\t\"\"\"\n"
+				<< "\tif entity is None:\n"
+				<< "\t\treturn None\n"
+				<< "\tanim = Wasteland.GetAnimationAnimator(entity)\n"
+				<< "\tif anim is None:\n"
+				<< "\t\treturn None\n"
+				<< "\tskeleton = anim.GetSkeleton()\n"
+				<< "\tif skeleton is None:\n"
+				<< "\t\treturn None\n"
+				<< "	index = skeleton.FindBone(name)\n"
+				<< "	if index is None or not index.IsValid:\n"
+				<< "		return None\n"
+				<< "	return skeleton.GetBoneWorldPosition(anim.GetLastPose(), int(index))\n\n";
+		}
+
+		// Task B.3 -- the component-access helpers. Emitted under the same
+		// "only when a node needs it" rule as _pose_bone: a flow graph that never
+		// touches a component gets a preamble of `import Wasteland` + a class, not
+		// twenty lines it will never call.
+		//
+		// `_component_get` returns None for three DIFFERENT reasons -- no entity,
+		// an unknown type name, or the component being absent. They deliberately
+		// collapse to one answer: that is exactly Cast To's result in UE, and a
+		// graph distinguishing them would need three nodes where one suffices.
+		if (NeedsComponentGetHelper(graph))
+		{
+			out << "def _component_get(entity, type_name):\n"
+				<< "\t\"\"\"The named component on an entity, or None.\n"
+				<< "\n"
+				<< "\tNone when the entity is None, the name is not one the bindings\n"
+				<< "\texpose, or the entity does not carry it.\n"
+				<< "\n"
+				<< "\tTWO spellings are tried, because the bindings are not uniform:\n"
+				<< "\tBIND_GAMEPLAY_COMP builds \"TryGetHealthComponent\" while\n"
+				<< "\tBIND_COMP_TRYGET is handed the FULL type name and builds\n"
+				<< "\t\"TryGetWasteland::TransformComponent\". A caller cannot know which\n"
+				<< "\tconvention a given component used, so both are attempted.\n"
+				<< "\t\"\"\"\n"
+				<< "\tif entity is None:\n"
+				<< "\t\treturn None\n"
+				<< "\tfor candidate in (type_name, \"Wasteland::\" + type_name):\n"
+				<< "\t\tgetter = getattr(entity, \"TryGet\" + candidate, None)\n"
+				<< "\t\tif getter is not None:\n"
+				<< "\t\t\treturn getter()\n"
+				<< "\treturn None\n\n";
+		}
+
+		if (NeedsComponentSetHelper(graph))
+		{
+			out << "def _component_set(entity, type_name, value):\n"
+				<< "\t\"\"\"Add-or-replace a named component. False when the name is\n"
+				<< "\tunknown or the entity is None.\n"
+				<< "\n"
+				<< "\tBoth accessor spellings are tried, for the reason documented on\n"
+				<< "\t_component_get: the two binding macros disagree on the name.\n"
+				<< "\t\"\"\"\n"
+				<< "\tif entity is None:\n"
+				<< "\t\treturn False\n"
+				<< "\tfor candidate in (type_name, \"Wasteland::\" + type_name):\n"
+				<< "\t\tsetter = getattr(entity, \"AddOr\" + candidate, None)\n"
+				<< "\t\tif setter is not None:\n"
+				<< "\t\t\tsetter(value)\n"
+				<< "\t\t\treturn True\n"
+				<< "\treturn False\n\n";
+		}
+
+		if (NeedsEntityQueryHelper(graph))
+		{
+			out << "def _entities_with(scene, type_name):\n"
+				<< "\t\"\"\"Every entity carrying the named component, as a list.\n"
+				<< "\n"
+				<< "\tAn UNKNOWN type name yields an empty list rather than an\n"
+				<< "\texception: a query that matches nothing and a query that\n"
+				<< "\tbe answered look the same to a loop, which is the answer an\n"
+				<< "\tauthor wants at the call site.\n"
+				<< "\t\"\"\"\n"
+				<< "\tif scene is None:\n"
+				<< "\t\treturn []\n"
+				<< "\tgetter = getattr(scene, \"GetAllEntitiesWith\", None)\n"
+				<< "\tif getter is None:\n"
+				<< "\t\treturn []\n"
+				<< "\treturn list(getter(type_name))\n\n";
+		}
+
+
 		// The class statement, immediately followed by a blank line because the
 		// next emission opens __init__.
 		out << "class " << className << ":\n\n";
+		// The trace hook method, INSIDE the class body -- the call site is
+		// `self._vb_trace(...)`, and a module-level function is not reachable
+		// through the instance. Emitted only when a breakpoint exists, so a graph
+		// that was never debugged has no such attribute and the call site is
+		// absent too.
+		if (NeedsTraceHelper(graph))
+		{
+			out << "\tdef _vb_trace(self, node_id):\n"
+				<< "\t\t\"\"\"Report that a breakpoint node was reached.\n"
+				<< "\n"
+				<< "\t\tThe runtime installs `_vb_traceHook` on the instance when a\n"
+				<< "\t\tdebugging session begins. With no hook the call is a no-op.\n"
+				<< "\t\t\"\"\"\n"
+				<< "\t\thook = getattr(self, \"_vb_traceHook\", None)\n"
+				<< "\t\tif hook is not None:\n"
+				<< "\t\t\thook(node_id)\n\n";
+		}
+
+
 
 		// `scene` is OPTIONAL. Perception nodes need a world to search, and an
 		// Entity carries no back-reference to its Scene -- so the caller that
@@ -1979,39 +2551,51 @@ def _call_python(agent, method, ctx):
 			// which is a SyntaxError -- and because `class` survives sanitisation
 			// unchanged, it looks correct right up to the point the generated file is
 			// parsed. CompileBehavior has the identical exposure via the class name.
-			out << "\t\tself." << SanitizeIdentifier(variable.Name, "var") << " = " << value
+			out << "\t\tself." << SanitizeIdentifierImpl(variable.Name, "var") << " = " << value
 				// Continuation of the attribute emission, ending the statement.
 				<< "\n";
 		}
 		out << "\n";
 
-		// The generated method's name comes from the EVENT's name, sanitised.
-		// "OnUpdate" is the fallback, so a graph with no event still gets a
-		// method the host can call -- which is why the null-event branch below
-		// emits `pass` rather than omitting the def entirely.
-		std::string methodName = "OnUpdate";
-		// Both the event node AND its name must be present; an event node with a
-		// blank EventName falls back too.
-		if (event != nullptr && !event->EventName.empty())
-			// Sanitised for the same reason as the class name -- the author's event
-			// name becomes a Python def name.
-			methodName = SanitizeIdentifier(event->EventName, "OnUpdate");
+		// One method per event node. The method's name comes from the EVENT's
+		// name, sanitised; "OnUpdate" is the fallback when a name is blank.
+		// A runtime that calls a generated method asks FlowMethodNameFor for
+		// it, so the sanitisation rule has exactly one implementation.
+		//
+		// A graph with no event still gets one method -- named OnUpdate -- so
+		// the class is always callable and the body is never empty.
+		if (methodTargets.empty())
+		{
+			out << "\tdef OnUpdate(self, *args, **kwargs):\n\t\tpass\n\n";
+		}
 
 		// *args, **kwargs absorbs whatever the host passes, so a mismatch between
-		// the event's real signature and the generated method is a silent no-op
+		// an event's real signature and the generated method is a silent no-op
 		// rather than a TypeError. Deliberate: the host's calling convention is
 		// not this file's to know.
-		out << "\tdef " << methodName << "(self, *args, **kwargs):\n";
-
-		// The no-event branch.
-		if (event == nullptr)
+		for (const auto &target : methodTargets)
 		{
-			// An event-less graph still gets a syntactically valid method. Python
-			// requires the body to be non-empty.
-			out << "\t\tpass\n\n";
-		}
-		else
-		{
+			const GraphNode *event = target.Node;
+			// The method name is part of the target, not derived here -- a
+			// function graph's is `_fn_<name>`.
+			const std::string methodName = target.Name;
+			// The parameter list: authored names for a function, none for an
+			// event. An event method keeps *args/**kwargs because the host's
+			// calling convention is not this file's to know.
+			std::string signature;
+			if (target.Params.empty())
+				signature = "*args, **kwargs";
+			else
+			{
+				for (const std::string &param : target.Params)
+				{
+					if (!signature.empty())
+						signature += ", ";
+					signature += param;
+				}
+				signature = signature;   // no trailing comma needed
+			}
+			out << "\tdef " << methodName << "(self, " << signature << "):\n";
 			// Follow exec links from the event, emitting each node's statement
 			// in order. This is the FLOW shape and is a genuinely different
 			// code path from the tree compiler: a flow graph has no
@@ -2050,7 +2634,14 @@ def _call_python(agent, method, ctx):
 			{
 				// Iterates the DEF's pins, not the node's links, so an unwired pin still
 				// contributes its default.
-				for (const PinDef &pinDef : def.Pins)
+				// EFFECTIVE pins, not def.Pins: a CallFunction node's parameter pins
+				// exist only after its Name resolves to a declared function. Reading
+				// the static set here would resolve ZERO parameter inputs, so every
+				// argument would arrive as its literal default -- a call that silently
+				// ignores its caller.
+				const std::vector<PinDef> effectivePins =
+					NodeRegistry::EffectivePins(def, *ctx.Graph, node);
+				for (const PinDef &pinDef : effectivePins)
 				{
 					// Exec pins skipped: control edges, carried by the successor walk rather
 					// than by a resolved input.
@@ -2128,9 +2719,22 @@ def _call_python(agent, method, ctx):
 						continue;
 					// Rejects a link whose from pin is not Exec, so a data link cannot be
 					// mistaken for a control edge.
-					const PinDef *outPin = def->FindPin(link.FromPin);
-					// Continuation of the out-pin type test.
-					if (outPin == nullptr || outPin->Type != PinType::Exec)
+					// EFFECTIVE pins, not def->FindPin: the static set is empty for
+					// every resolved node, so FunctionEntry's exec OUT was not found,
+					// the exec link was skipped, and a correct body compiled to a
+					// method whose last statement was the parameter assignment -- no
+					// return at all.
+					bool fromPinIsExec = false;
+					for (const PinDef &pin :
+						 NodeRegistry::EffectivePins(*def, graph, node))
+					{
+						if (pin.Id == link.FromPin)
+						{
+							fromPinIsExec = pin.Type == PinType::Exec;
+							break;
+						}
+					}
+					if (!fromPinIsExec)
 						continue;
 					// A link to a node that does not exist is skipped rather than raising, so
 					// a graph with a dangling exec link still compiles -- to code that is
@@ -2237,6 +2841,18 @@ def _call_python(agent, method, ctx):
 
 				// An expression-only node has an empty statement; the temps alone are
 				// still a valid contribution, so the block is returned rather than dropped.
+				// The trace hook (Task B.5). Emitted ONLY on a node that carries a
+				// breakpoint -- the runtime cannot notice a node was reached unless
+				// something tells it, and a graph with no breakpoints pays nothing.
+				//
+				// It goes BEFORE the statement, so the pause lands on the marked node
+				// rather than on its successor.
+				if (node.Breakpoint)
+				{
+					block << std::string((size_t)indent, '\t')
+						   << "self._vb_trace(" << "\"" << node.Id << "\")\n";
+				}
+
 				if (statement.empty())
 					return block.str();
 
@@ -2338,7 +2954,12 @@ def _call_python(agent, method, ctx):
 					return block.str();
 
 				// The consumer's pins, not the producer's.
-				for (const PinDef &pinDef : def->Pins)
+				// EFFECTIVE pins, for the same reason as buildInputs above: a
+				// CallFunction consumer's parameter pins are resolved from its Name,
+				// and the static set would find none of them.
+				const std::vector<PinDef> effectivePins =
+					NodeRegistry::EffectivePins(*def, graph, node);
+				for (const PinDef &pinDef : effectivePins)
 				{
 					if (pinDef.Dir != PinDir::In || pinDef.Type == PinType::Exec)
 						continue;
@@ -2664,7 +3285,7 @@ def _call_python(agent, method, ctx):
 						// Continuation of the ResolveBranchMarkers call.
 						shell, cursor, indent + 1,
 						// Continuation of the body lambda's signature.
-						[&](const std::string &pin, int)
+						[&](const std::string &pin, int relativeIndent)
 						{
 							// Relative indentation: the shell writer below
 							// adds the base indent to every line.
@@ -2728,16 +3349,18 @@ def _call_python(agent, method, ctx):
 							// Index loop over the branch's successors.
 							for (size_t i = 0; i < kids.size(); ++i)
 							{
-								// indent 1, RELATIVE. The writer below adds the base indent to every line
-								// of the finished shell, so a body emitted at absolute indent would be
-								// double-indented -- the same trap the prologue strip above avoids.
-								body << emitChain(kids[i], 1, branchAny);
+								// RELATIVE indent, supplied by ResolveBranchMarkers: 1 for a
+								// body (inside the construct), 0 for a loop's Done continuation
+								// (beside it). The writer below adds the base indent to every line
+								// of the finished shell, so a body emitted at absolute indent would
+								// be double-indented -- the same trap the prologue strip avoids.
+								body << emitChain(kids[i], relativeIndent, branchAny);
 							}
 							// An empty branch still needs a body in Python.
 							if (!branchAny)
-								// `pass` at ONE relative indent, so after the shell writer adds the base
-								// it sits correctly inside the branch.
-								body << "\tpass\n";
+								// `pass` at the SAME relative indent as the body, so after the shell
+								// writer adds the base it sits beside the loop rather than inside it.
+								body << std::string((size_t)relativeIndent, '\t') + "pass\n";
 							// Closes the body lambda.
 							return body.str();
 						});
@@ -2844,9 +3467,11 @@ def _call_python(agent, method, ctx):
 			// generated file will not parse.
 			if (!anyOut)
 				out << "		pass\n";
+			// Blank line after EACH method, so they are separated rather than
+			// running together. Inside the loop on purpose.
+			out << "\n";
 		}
 
-		out << "\n";
 		// A flow-generated class's tick is ALWAYS a no-op.
 		// ---
 		// DEFECT (documented, not fixed): unlike the tree class, whose tick
@@ -2855,6 +3480,12 @@ def _call_python(agent, method, ctx):
 		// the public one -- gets silence, with no error to say the graph was
 		// compiled into the wrong method. The real work is in the event-named
 		// method above.
+		// Task B.2: the DECLARED functions' bodies, spliced into this class.
+		// Before the tick stub, so the class reads: constructor, events,
+		// functions, tick.
+		if (!EmitFunctionMethods(graph, out, error))
+			return std::string();
+
 		out << "\tdef tick(self, seconds=0.0):\n";
 		// The tick body: `pass`. See the defect note on this line's def.
 		out << "\t\tpass\n";

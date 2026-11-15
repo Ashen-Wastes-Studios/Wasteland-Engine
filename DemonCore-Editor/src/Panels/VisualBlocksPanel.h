@@ -23,6 +23,9 @@
 // Validation, so the panel can show findings without reimplementing any of
 // the rules.
 #include "Wasteland/VisualBlocks/Validator.h"
+// UUID, for m_PausedEntity. Included explicitly rather than relied on
+// transitively -- a member declared by value needs the complete type.
+#include "Wasteland/Core/UUID.h"
 
 namespace Wasteland
 {
@@ -121,6 +124,17 @@ namespace Wasteland
 		// Inline visibility toggle. Note OpenGraph sets this too, so visibility is
 		// reachable from two places.
 		void SetVisible(bool visible) { m_Visible = visible; }
+
+		// ---- Per-node debugging (Task B.5) -------------------------------
+		//
+		// DrawDebugToolbar: the pause/resume/step controls, enabled from the
+		// runtime's pause state rather than from a panel-local flag -- so the
+		// buttons reflect what the ENGINE is doing, not what the panel thinks.
+		//
+		// DrawGenerated: extended to highlight the line the paused node maps to.
+		void DrawDebugToolbar();
+		void RefreshPauseState();
+		int FindGeneratedLineForNode(const std::string &nodeId) const;
 
 	private:
 		// ---- sections ----
@@ -314,6 +328,23 @@ namespace Wasteland
 		std::unordered_map<std::string, std::vector<char>> m_LiteralBuffers;
 		// The last generated Python, displayed by DrawGenerated so the author can
 		// see what their graph compiled to.
+		// ---- Per-node debugging (Task B.5) -------------------------------
+		//
+		// The panel does not pause anything itself. A breakpoint is authoring
+		// state on a node; the RUNTIME is what stops an entity and reports which
+		// node it stopped on. The panel only reflects that and offers the two
+		// controls that release it.
+		//
+		// m_PausedEntity is a UUID, not an Entity handle: the paused entity may
+		// not be the one selected, and a handle would go stale on a scene reload.
+		UUID m_PausedEntity;
+		std::string m_PausedNode;
+
+		// The generated line to highlight, as a 1-based line number. Zero means
+		// "nothing to highlight". Computed by matching the paused node's id
+		// against the trace calls the compiler emitted.
+		int m_HighlightLine = 0;
+
 		std::string m_Generated;
 		// The compile result text. Empty when the last compile succeeded, per the
 		// contract in CompileAndWrite's comment -- so a caller must treat empty as

@@ -81,6 +81,10 @@ class DX11Nova {
     // one of the ping-pong targets the t64..t71 snapshots address, and keeping
     // it a distinct member makes the read in Dispatch legible.
     Image moments;
+    // img_Mask at u14 (RGBA8), written by RunReactiveMask (pass 24).
+    // Moved from the u8 hole to u14 because u8+0 collides with NovaConstants
+    // at binding 8 under Vulkan's b-shift 7. See compile_nova_slang.py.
+    Image mask;
     // Three structured input buffers, bound at t1..t3 by the Dispatch loop.
     // The pairing with scene[] below is by index, and the shader's register
     // layout is what fixes which slot means what.
@@ -185,35 +189,29 @@ public:
         device=d; context=c;
         // The compiled bytecode and the compiler's diagnostics. ComPtr rather than
         // a raw blob so both are released on any throw below.
-        Com<ID3DBlob> code,error;
-        // Resolved through Project so the compute shader comes from the active
-        // project's assets rather than the process working directory.
-        // The shader path, resolved through Project so it comes from the ACTIVE
-        // PROJECT's assets rather than the process working directory.
-        //
-        // Widened to std::wstring and back to .c_str() on the next line because
-        // D3DCompileFromFile takes a wide path while GetAssetPath returns a
-        // std::filesystem::path. Two conversions per compile, which happens once.
-        const std::wstring novaShaderPath =
-            Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.hlsl").wstring();
-        // HLSL compile, targeting cs_5_0 -- compute shader model 5, which is what
-        // gives D3D11 its UAV support.
-        //
-        // Entry point "main" and D3DCOMPILE_ENABLE_STRICTNESS: strictness means the
-        // compile fails on legacy syntax rather than silently accepting it, which is
-        // the right default for a file a studio may edit.
-        //
-        // Optimization flags are 0, so this is an unoptimised compile. Fine -- it
-        // runs once per device, not per frame.
-        HRESULT hr=D3DCompileFromFile(novaShaderPath.c_str(),nullptr,D3D_COMPILE_STANDARD_FILE_INCLUDE,"main","cs_5_0",D3DCOMPILE_ENABLE_STRICTNESS,0,&code,&error);
-        // The compile error blob is turned into the exception message, which is why
-        // the diagnostic actually reaches the log -- Check() on this line alone
-        // would only have produced a hex HRESULT.
-        //
-        // The ternary guards against a null error blob. Note the HRESULT itself is
-        // NOT in this message, so a compile failure reports the HLSL diagnostics
-        // without the reason D3DCompileFromFile gave.
-        if(FAILED(hr)) throw std::runtime_error(error ? (const char*)error->GetBufferPointer() : "Nova shader compile failed");
+        Com<ID3DBlob> code;
+        // The shader is pre-compiled offline by Slang (tools/compile_nova_slang.py)
+        // to Renderer3D_NovaRenderer.cs.cso (standard DxilContainer in a DXBC wrapper).
+        // D3D11 with the Agility SDK loads this DXIL blob directly via
+        // CreateComputeShader -- no runtime compiler needed.
+        const std::wstring novaCSOPath =
+            Project::Get().GetAssetPath("shaders/Renderer3D_NovaRenderer.cs.cso").wstring();
+        HANDLE hFile = CreateFileW(novaCSOPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            throw std::runtime_error("Nova .cso not found: run tools/compile_nova_slang.py --deploy first");
+        }
+        LARGE_INTEGER fileSize; GetFileSizeEx(hFile, &fileSize);
+        std::vector<uint8_t> bytecode((size_t)fileSize.QuadPart);
+        DWORD bytesRead = 0;
+        ReadFile(hFile, bytecode.data(), (DWORD)fileSize.QuadPart, &bytesRead, nullptr);
+        CloseHandle(hFile);
+        if (bytesRead != (DWORD)fileSize.QuadPart)
+            throw std::runtime_error("Nova .cso read failed (short read)");
+        HRESULT hr = D3DCreateBlob(fileSize.QuadPart, &code);
+        if (FAILED(hr)) throw std::runtime_error("Nova .cso: D3DCreateBlob failed");
+        memcpy(code->GetBufferPointer(), bytecode.data(), (size_t)fileSize.QuadPart);
+        // D3D11 with the Agility SDK loads DXIL blobs (cs_6_0 profile) via
         Check(device->CreateComputeShader(code->GetBufferPointer(),code->GetBufferSize(),nullptr,&shader));
         // Reflection, used for exactly one purpose: discovering the constant
         // buffer's layout so Set() can write by name.
@@ -287,6 +285,7 @@ public:
         // matters because dispatches read snapshots.
         history=CreateImage(w,h,DXGI_FORMAT_R32G32B32A32_FLOAT);
         moments=CreateImage(w,h,DXGI_FORMAT_R32G32_FLOAT);
+        mask=CreateImage(w,h,DXGI_FORMAT_R8G8B8A8_UNORM);
         CreateReservoir(w,h);
         reservoirReadFlip=false;
         Clear();
@@ -424,7 +423,7 @@ public:
     // Called at the start and end of Dispatch, and again by Clear and the
     // Commit methods -- which is why the `if(!context)return` guard exists, for
     // calls before Init.
-    void Unbind() { if(!context)return; ID3D11ShaderResourceView* nulls[128]={};ID3D11UnorderedAccessView* uavs[11]={};context->CSSetShaderResources(0,128,nulls);context->CSSetUnorderedAccessViews(0,11,uavs,nullptr);context->CSSetShader(nullptr,nullptr,0); }
+    void Unbind() { if(!context)return; ID3D11ShaderResourceView* nulls[128]={};ID3D11UnorderedAccessView* uavs[15]={};context->CSSetShaderResources(0,128,nulls);context->CSSetUnorderedAccessViews(0,15,uavs,nullptr);context->CSSetShader(nullptr,nullptr,0); }
     // Records one compute pass.
     //
     // @param pass     Pass index, uploaded as u_PassID so the shader branches.
@@ -531,13 +530,15 @@ public:
         // no UAV at all, which is what makes the no-feedback rule structural rather
         // than a convention anyone has to remember.
         //
-        // The UAV array is zero-initialised, keeping u8 null while all used slots
-        // are assigned explicitly below.
-        // Eleven UAV slots: u0..u7 are the eight images, u8 is deliberately null,
-        // u9 is moments, and u10 is the ReSTIR reservoir working buffer. Keep the
-        // register numbers identical to HLSL and GLSL/SPIR-V (u9 moments, u10
+        // The UAV array is zero-initialised, keeping u8, u11, u12, u13 null while all
+        // used slots are assigned explicitly below.
+        // Fifteen UAV slots: u0..u7 are the eight images, u8 is deliberately null,
+        // u9 is moments, u10 is the ReSTIR reservoir working buffer, and u14 is the
+        // WLFG reactive mask (img_Mask). u11 (history) and u12 (neural globals) are
+        // bound via separate descriptor ranges. Keep the register numbers identical
+        // to HLSL and GLSL/SPIR-V (u9 moments, u10
         // reservoir); moving the reservoir to u8 collides with Vulkan's b1 offset.
-        ID3D11UnorderedAccessView* uavs[11]={};for(int i=0;i<8;++i)uavs[i]=images[i].uav.Get();uavs[9]=moments.uav.Get();uavs[10]=reservoirUAV[reservoirReadFlip?0:1].Get();context->CSSetUnorderedAccessViews(0,11,uavs,nullptr);
+        ID3D11UnorderedAccessView* uavs[15]={};for(int i=0;i<8;++i)uavs[i]=images[i].uav.Get();uavs[9]=moments.uav.Get();uavs[10]=reservoirUAV[reservoirReadFlip?0:1].Get();uavs[14]=mask.uav.Get();context->CSSetUnorderedAccessViews(0,15,uavs,nullptr);
         // Binds the compute shader and dispatches.
         //
         // (w+7)/8 rounds the pixel count up to whole 8x8 thread groups -- D3D11
@@ -557,6 +558,15 @@ public:
     // A pure GPU copy, so no CPU readback and no stall. Called once per frame
     // after the passes that write images[1].
     void CommitHistory() {Unbind();context->CopyResource(history.snapshot.Get(),images[1].texture.Get());}
+    // WLFG previous-present history. No-op on DX11: the backend has no t72
+    // texture allocated, so pass 22 has nothing to reproject from here. Declared
+    // so the shared RunNovaPassSchedule can call it on every backend.
+    void CommitWlfgHistory() {}
+    // WLRR is Vulkan-only for now: passes 20/21 live in the Nova
+    // schedule, and neither the DX11 nor the DX12 backend binds the
+    // t76/t77 payload or img_WlrrInput. The no-op keeps the shared
+    // schedule in Renderer3D.cpp compilable for every backend.
+    void CommitWlrrSnapshot() {}
     // Copies the denoise result from images[1] to images[7], so the final image
     // the UI samples is the denoised one.
     //

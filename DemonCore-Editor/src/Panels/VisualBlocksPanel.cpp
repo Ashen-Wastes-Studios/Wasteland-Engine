@@ -15,6 +15,10 @@
 
 #include "Wasteland/VisualBlocks/Compiler.h"
 #include "Wasteland/VisualBlocks/GraphSerializer.h"
+// FlowGraphSystem, for the pause state and the two controls. The panel reads
+// the engine's state rather than tracking its own -- a second source of truth
+// would drift the moment a breakpoint fired from another panel's graph.
+#include "Wasteland/Scene/FlowGraphSystem.h"
 
 namespace Wasteland
 {
@@ -795,6 +799,99 @@ namespace Wasteland
 	}
 
 	// The node palette: every flow node, grouped by category.
+	// The pause/resume/step controls (Task B.5).
+	//
+	// Every control's enabled state comes from FlowGraphSystem, never from a
+	// panel-local flag. A panel that tracked "am I paused" itself would drift
+	// from the engine the moment a breakpoint fired from a graph the panel did
+	// not author -- and the buttons would lie.
+	void VisualBlocksPanel::DrawDebugToolbar()
+	{
+		ImGui::PushID("vb_debug");
+
+		ImGui::Separator();
+		ImGui::TextUnformatted("Debug");
+
+		// No graph loaded means no breakpoints to speak of.
+		if (m_Graph.Nodes.empty())
+		{
+			ImGui::TextDisabled("no graph");
+			ImGui::PopID();
+			return;
+		}
+
+		// The paused NODE, which is the whole point of the display: an author
+		// needs to know where the graph stopped, not merely that it stopped.
+		if (FlowGraphSystem::IsPaused(m_PausedEntity))
+		{
+			ImGui::Text("PAUSED on node: %s",
+					m_PausedNode.empty() ? "(unknown)"
+										  : m_PausedNode.c_str());
+		}
+		else
+		{
+			ImGui::TextDisabled("not paused");
+		}
+
+		const bool paused = FlowGraphSystem::IsPaused(m_PausedEntity);
+		ImGui::BeginDisabled(!paused);
+		if (ImGui::Button("Resume"))
+		{
+			FlowGraphSystem::Resume(m_PausedEntity);
+			RefreshPauseState();
+		}
+		ImGui::EndDisabled();
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!paused);
+		if (ImGui::Button("Step"))
+		{
+			FlowGraphSystem::Step(m_PausedEntity);
+			RefreshPauseState();
+		}
+		ImGui::EndDisabled();
+
+		ImGui::PopID();
+	}
+
+	// Read the pause state back from the engine.
+	//
+	// Called on the frame the panel renders and after either control is used.
+	// The node id comes from the engine rather than from the graph so the
+	// display cannot disagree with what actually stopped.
+	void VisualBlocksPanel::RefreshPauseState()
+	{
+		m_PausedNode = FlowGraphSystem::GetPausedNode(m_PausedEntity);
+		m_HighlightLine = m_PausedNode.empty()
+							  ? 0
+							  : FindGeneratedLineForNode(m_PausedNode);
+	}
+
+	// Which generated line belongs to a node: the line carrying its trace call.
+	//
+	// The compiler emits `self._vb_trace("<id>")` immediately before the node's
+	// own statement, so the trace call's line IS the line to highlight -- it is
+	// the line that was about to execute when the graph stopped.
+	int VisualBlocksPanel::FindGeneratedLineForNode(const std::string &nodeId) const
+	{
+		if (m_Generated.empty() || nodeId.empty())
+			return 0;
+		const std::string needle = "self._vb_trace(\"" + nodeId + "\")";
+		int line = 1;
+		size_t at = 0;
+		while (at <= m_Generated.size())
+		{
+			if (m_Generated.compare(at, needle.size(), needle) == 0)
+				return line;
+			size_t next = m_Generated.find('\n', at);
+			if (next == std::string::npos)
+				break;
+			// A line containing the needle was already checked above; advance.
+			at = next + 1;
+			++line;
+		}
+		return 0;
+	}
+
 	void VisualBlocksPanel::DrawPalette()
 	{
 		if (!m_ShowPalette)
@@ -1136,6 +1233,27 @@ namespace Wasteland
 			ImGui::TextDisabled("showing type: %s", node->TypeId.c_str());
 		ImGui::TextDisabled("id: %s", node->Id.c_str());
 
+		// The BREAKPOINT toggle (Task B.5) -- the Blueprint per-node circle.
+		//
+		// It writes straight to the node and brackets itself with BeginEdit/
+		// CommitEdit like every other mutation here, so toggling a breakpoint is
+		// undoable rather than an unrecorded side effect.
+		//
+		// A checkbox rather than a toolbar command: the toggle belongs to the
+		// NODE, not to the graph, and the inspector is where per-node properties
+		// live.
+		bool breakpoint = node->Breakpoint;
+		if (ImGui::Checkbox("Breakpoint", &breakpoint))
+		{
+			BeginEdit();
+			node->Breakpoint = breakpoint;
+			CommitEdit();
+		}
+		if (ImGui::IsItemHovered())
+		{
+			ImGui::SetTooltip("Pause the entity when this node is reached");
+		}
+
 		const NodeDef *def = NodeRegistry::Get().Find(node->TypeId);
 		if (def == nullptr)
 		{
@@ -1438,7 +1556,62 @@ namespace Wasteland
 		// the thing an author actually reads when a graph misbehaves.
 		if (ImGui::BeginChild("vb_generated", ImVec2(0.0f, 220.0f), true))
 		{
-			ImGui::TextUnformatted(m_Generated.c_str());
+			// The paused line, highlighted (Task B.5).
+			//
+			// Rendered line by line rather than as one TextUnformatted blob,
+			// because ImGui has no per-line styling inside a single call. The
+			// line number comes from FindGeneratedLineForNode, which matches the
+			// trace call the compiler emitted -- so the highlighted line is the
+			// one that was about to execute.
+			//
+			// Only the highlighted line pays for a Selectable; the rest are drawn
+			// with TextUnformatted, so a large graph does not allocate a widget
+			// per line.
+			if (m_HighlightLine <= 0)
+			{
+				ImGui::TextUnformatted(m_Generated.c_str());
+			}
+			else
+			{
+				int line = 1;
+				size_t at = 0;
+				bool highlighted = false;
+				while (at < m_Generated.size())
+				{
+					size_t next = m_Generated.find('\n', at);
+					const bool last = next == std::string::npos;
+					const std::string text =
+						m_Generated.substr(at, last ? std::string::npos
+													: next - at);
+					if (line == m_HighlightLine)
+					{
+						// A background mark plus the line number, so the pause is
+						// visible without relying on colour alone.
+						ImGui::PushStyleColor(ImGuiCol_Text,
+							ImVec4{1.0f, 0.72f, 0.28f, 1.0f});
+						ImGui::Text(">> %s", text.c_str());
+						ImGui::PopStyleColor();
+						highlighted = true;
+					}
+					else
+					{
+						ImGui::TextUnformatted(text.c_str());
+					}
+					if (last)
+						break;
+					at = next + 1;
+					++line;
+				}
+				if (!highlighted)
+				{
+					// The trace call is not in the generated source -- a graph
+					// compiled without breakpoints has none. Say so rather than
+					// silently showing nothing.
+					ImGui::TextDisabled(
+						"paused node has no generated line (no breakpoint was "
+						"compiled into this source)");
+				}
+			}
 		}
 		ImGui::EndChild();
 	}
@@ -1488,6 +1661,12 @@ namespace Wasteland
 		ImGui::Begin("Visual Blocks");
 
 		DrawToolbar();
+		// The pause state is read from the ENGINE every frame, so a breakpoint
+		// that fires from a graph this panel did not author still shows up here.
+		// The panel does not track pause itself; that would be a second source of
+		// truth that drifts.
+		RefreshPauseState();
+		DrawDebugToolbar();
 		DrawPalette();
 
 		// Canvas and inspector SIDE BY SIDE.

@@ -160,9 +160,9 @@ This is the part most likely to be misread, so it is stated as plainly as possib
 | backend | shader | stage present | gate readback | actually rendered |
 |---|---|---|---|---|
 | **OpenGL** | GLSL | yes | yes | **yes — verified** |
-| DX11 | HLSL twin | yes (by contract) | no | no |
-| DX12 | HLSL twin | yes (by contract) | no | no |
-| Vulkan | HLSL -> SPIR-V | yes (`OpName` check) | no | no |
+| DX11 | Slang (DXBC output) | yes (by contract) | no | no |
+| DX12 | Slang (DXIL output) | yes (by contract) | no | no |
+| Vulkan | Slang → SPIR-V | yes (`OpName` check) | no | no |
 
 ### OpenGL — verified
 
@@ -183,11 +183,11 @@ Measured, not asserted:
 
 ### DX11, DX12, Vulkan — contract-verified only
 
-The HLSL twin carries the identical stage: `RWStructuredBuffer<uint> NeuralGlobals :
+The Slang source carries the identical stage: `RWStructuredBuffer<uint> NeuralGlobals :
 register(u12)`, `StructuredBuffer<float> NeuralWeights : register(t74)`, the same
 three passes, the same constants. `tools/verify_neural_stage_parity.py` asserts
 statement-level parity between the GLSL and the HLSL, and the SPIR-V built by
-`tools/compile_nova_spirv.py` contains `NeuralWeights`, `NeuralGlobals` and the
+`tools/compile_nova_slang.py` contains `NeuralWeights`, `NeuralGlobals` and the
 `gs_neural_*` arrays as `OpName`s.
 
 That is a **contract**, not a rendering. Specifically:

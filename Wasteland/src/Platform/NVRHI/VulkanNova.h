@@ -159,7 +159,13 @@ namespace Wasteland
         // With the old 1744 the buffer was too small for every field past ~u_ALightCount
         // and SetBytes refused to write them, so the shader read garbage -- or nothing --
         // for lights, fog, clouds and the analytic light arrays.
-        static constexpr uint32_t kConstantBufferSize = 3712;
+        // 3716 since 2026-11-14: the effects register u_EffectsFlags was appended last
+        // (offset 3712, 4 bytes) to the same cbuffer. Keeping the size at 3712 made
+        // VulkanNova's SetBytes bounds check reject the flag write ("writes past
+        // NovaConstants (3712+4 > 3712)") -- the flag then stayed 0 in the shader and
+        // every gated effect silently no-op'd. This MUST track the cbuffer end; every
+        // new appended member bumps it by that member's padded size.
+        static constexpr uint32_t kConstantBufferSize = 4496;
 
         // Active read_* SRVs. ReSTIR adds AlbedoHit (t68) and TraceGBuffer
         // (t70); MaterialPacked's t67 alias remains unused. Moments is t73 and

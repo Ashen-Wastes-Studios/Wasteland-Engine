@@ -1,0 +1,265 @@
+kind: flow
+schema: 3
+name: EnemyChase
+variables:
+  - name: i
+    type: int
+    default: "0"
+  - name: bestIndex
+    type: int
+    default: "-1"
+  - name: bestDist
+    type: float
+    default: "1000000.0"
+  - name: target
+    type: entity
+    default: "None"
+  - name: attackTimer
+    type: float
+    default: "0.0"
+  - name: loseRange
+    type: float
+    default: "30.0"
+  - name: attackRange
+    type: float
+    default: "1.6"
+  - name: speed
+    type: float
+    default: "3.0"
+  - name: damage
+    type: float
+    default: "12.0"
+  - name: cooldown
+    type: float
+    default: "1.0"
+  - name: dt
+    type: float
+    default: "0.016667"
+nodes:
+  - id: update
+    type: FlowOnEvent
+    event: OnUpdate
+  - id: selfEnt
+    type: GetOwner
+  - id: resetBest
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "bestIndex" }
+      - { pin: Value, value: "-1" }
+  - id: resetDist
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "bestDist" }
+      - { pin: Value, value: "1000000.0" }
+  - id: candidates
+    type: GetAllEntitiesWith
+    pins:
+      - { pin: Type, value: "HealthComponent" }
+  - id: loop
+    type: ForEach
+    pins:
+      - { pin: IndexVar, value: "i" }
+  - id: getI
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "i" }
+  - id: at
+    type: GetEntityAtIndex
+    pins:
+      - { pin: List, value: "None" }
+  - id: notSelf
+    type: NotEqual
+  - id: targetHealth
+    type: GetHealth
+  - id: alive
+    type: CompareValue
+    pins:
+      - { pin: B, value: "0.0" }
+      - { pin: Op, value: ">" }
+  - id: posOther
+    type: GetPosition
+  - id: posSelf
+    type: GetPosition
+  - id: negSelf
+    type: Vec3Scale
+    pins:
+      - { pin: Scale, value: "-1" }
+  - id: delta
+    type: Vec3Add
+  - id: dist
+    type: Vec3Length
+  - id: getBestDist
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "bestDist" }
+  - id: closer
+    type: CompareValue
+    pins:
+      - { pin: Op, value: "<" }
+  - id: and1
+    type: And
+  - id: cond
+    type: And
+  - id: branchKeep
+    type: Branch
+  - id: setBest
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "bestIndex" }
+  - id: setBestDist
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "bestDist" }
+  - id: getBest
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "bestIndex" }
+  - id: hasTarget
+    type: CompareValue
+    pins:
+      - { pin: B, value: "-1" }
+      - { pin: Op, value: ">" }
+  - id: branchMove
+    type: Branch
+  - id: targetAt
+    type: GetEntityAtIndex
+    pins:
+      - { pin: List, value: "None" }
+  - id: storeTarget
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "target" }
+  - id: getTarget
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "target" }
+  - id: posTarget
+    type: GetPosition
+  - id: posMe
+    type: GetPosition
+  - id: negMe
+    type: Vec3Scale
+    pins:
+      - { pin: Scale, value: "-1" }
+  - id: toTarget
+    type: Vec3Add
+  - id: distToTarget
+    type: Vec3Length
+  - id: inRange
+    type: CompareValue
+    pins:
+      - { pin: B, value: "1.6" }
+      - { pin: Op, value: "<=" }
+  - id: branchAttack
+    type: Branch
+  - id: getTimer
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "attackTimer" }
+  - id: rested
+    type: CompareValue
+    pins:
+      - { pin: B, value: "0.0" }
+      - { pin: Op, value: "<=" }
+  - id: branchFire
+    type: Branch
+  - id: fire
+    type: DamageEntity
+    pins:
+      - { pin: Amount, value: "12.0" }
+  - id: resetTimer
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "attackTimer" }
+      - { pin: Value, value: "1.0" }
+  - id: dir
+    type: Vec3Normalize
+  - id: getSpeed
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "speed" }
+  - id: getDt
+    type: GetVariable
+    pins:
+      - { pin: Name, value: "dt" }
+  - id: stepDist
+    type: Multiply
+  - id: step
+    type: Vec3Scale
+  - id: newPos
+    type: Vec3Add
+  - id: move
+    type: SetTransform
+    pins:
+      - { pin: Rotation, value: "(0, 0, 0)" }
+      - { pin: Scale, value: "(1, 1, 1)" }
+  - id: decayTimer
+    type: SetVariable
+    pins:
+      - { pin: Name, value: "attackTimer" }
+  - id: subtractDt
+    type: Subtract
+    pins:
+      - { pin: B, value: "0.000000" }
+links:
+  - { from: { node: update, pin: Out }, to: { node: resetBest, pin: In } }
+  - { from: { node: resetBest, pin: Out }, to: { node: resetDist, pin: In } }
+  - { from: { node: resetDist, pin: Out }, to: { node: loop, pin: In } }
+  - { from: { node: candidates, pin: Count }, to: { node: loop, pin: Count } }
+  - { from: { node: loop, pin: Body }, to: { node: branchKeep, pin: In } }
+  - { from: { node: candidates, pin: Entities }, to: { node: at, pin: List } }
+  - { from: { node: getI, pin: Value }, to: { node: at, pin: Index } }
+  - { from: { node: at, pin: Entity }, to: { node: notSelf, pin: A } }
+  - { from: { node: selfEnt, pin: Owner }, to: { node: notSelf, pin: B } }
+  - { from: { node: at, pin: Entity }, to: { node: targetHealth, pin: Target } }
+  - { from: { node: targetHealth, pin: Value }, to: { node: alive, pin: A } }
+  - { from: { node: at, pin: Entity }, to: { node: posOther, pin: Target } }
+  - { from: { node: posOther, pin: Position }, to: { node: delta, pin: A } }
+  - { from: { node: posSelf, pin: Position }, to: { node: negSelf, pin: Vector } }
+  - { from: { node: negSelf, pin: Value }, to: { node: delta, pin: B } }
+  - { from: { node: delta, pin: Value }, to: { node: dist, pin: Value } }
+  - { from: { node: dist, pin: Length }, to: { node: closer, pin: A } }
+  - { from: { node: getBestDist, pin: Value }, to: { node: closer, pin: B } }
+  - { from: { node: notSelf, pin: Value }, to: { node: and1, pin: A } }
+  - { from: { node: alive, pin: Value }, to: { node: and1, pin: B } }
+  - { from: { node: and1, pin: Value }, to: { node: cond, pin: A } }
+  - { from: { node: closer, pin: Value }, to: { node: cond, pin: B } }
+  - { from: { node: cond, pin: Value }, to: { node: branchKeep, pin: Condition } }
+  - { from: { node: branchKeep, pin: True }, to: { node: setBest, pin: In } }
+  - { from: { node: setBest, pin: Out }, to: { node: setBestDist, pin: In } }
+  - { from: { node: getI, pin: Value }, to: { node: setBest, pin: Value } }
+  - { from: { node: dist, pin: Length }, to: { node: setBestDist, pin: Value } }
+  - { from: { node: loop, pin: Done }, to: { node: decayTimer, pin: In } }
+  - { from: { node: getTimer, pin: Value }, to: { node: subtractDt, pin: A } }
+  - { from: { node: getDt, pin: Value }, to: { node: subtractDt, pin: B } }
+  - { from: { node: subtractDt, pin: Value }, to: { node: decayTimer, pin: Value } }
+  - { from: { node: decayTimer, pin: Out }, to: { node: branchMove, pin: In } }
+  - { from: { node: getBest, pin: Value }, to: { node: hasTarget, pin: A } }
+  - { from: { node: hasTarget, pin: Value }, to: { node: branchMove, pin: Condition } }
+  - { from: { node: branchMove, pin: True }, to: { node: storeTarget, pin: In } }
+  - { from: { node: candidates, pin: Entities }, to: { node: targetAt, pin: List } }
+  - { from: { node: getBest, pin: Value }, to: { node: targetAt, pin: Index } }
+  - { from: { node: targetAt, pin: Entity }, to: { node: storeTarget, pin: Value } }
+  - { from: { node: storeTarget, pin: Out }, to: { node: branchAttack, pin: In } }
+  - { from: { node: getTarget, pin: Value }, to: { node: posTarget, pin: Target } }
+  - { from: { node: posTarget, pin: Position }, to: { node: toTarget, pin: A } }
+  - { from: { node: posMe, pin: Position }, to: { node: negMe, pin: Vector } }
+  - { from: { node: negMe, pin: Value }, to: { node: toTarget, pin: B } }
+  - { from: { node: toTarget, pin: Value }, to: { node: distToTarget, pin: Value } }
+  - { from: { node: distToTarget, pin: Length }, to: { node: inRange, pin: A } }
+  - { from: { node: inRange, pin: Value }, to: { node: branchAttack, pin: Condition } }
+  - { from: { node: branchAttack, pin: True }, to: { node: branchFire, pin: In } }
+  - { from: { node: getTimer, pin: Value }, to: { node: rested, pin: A } }
+  - { from: { node: rested, pin: Value }, to: { node: branchFire, pin: Condition } }
+  - { from: { node: branchFire, pin: True }, to: { node: fire, pin: In } }
+  - { from: { node: getTarget, pin: Value }, to: { node: fire, pin: Target } }
+  - { from: { node: fire, pin: Out }, to: { node: resetTimer, pin: In } }
+  - { from: { node: branchAttack, pin: False }, to: { node: move, pin: In } }
+  - { from: { node: toTarget, pin: Value }, to: { node: dir, pin: Vector } }
+  - { from: { node: dir, pin: Value }, to: { node: step, pin: Vector } }
+  - { from: { node: getSpeed, pin: Value }, to: { node: stepDist, pin: A } }
+  - { from: { node: getDt, pin: Value }, to: { node: stepDist, pin: B } }
+  - { from: { node: stepDist, pin: Value }, to: { node: step, pin: Scale } }
+  - { from: { node: step, pin: Value }, to: { node: newPos, pin: B } }
+  - { from: { node: posMe, pin: Position }, to: { node: newPos, pin: A } }
+  - { from: { node: newPos, pin: Value }, to: { node: move, pin: Translation } }

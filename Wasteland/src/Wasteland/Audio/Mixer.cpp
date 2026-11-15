@@ -415,38 +415,11 @@ namespace Wasteland::Audio
 			return -1;
 		}
 
-		// Free or newly grown slot, or -1 at the cap. This is the common path: most Play
-		// calls never reach the steal logic below.
-		int slot = AllocateVoiceSlot();
-
-		// At the cap. Only now is the expensive/controversial steal path considered.
+		// Free or newly grown slot, or -1 at the cap. Shared with PlayProcedural
+		// so the steal policy cannot drift between the two voice kinds.
+		const int slot = ReserveVoiceSlot(request.Priority);
 		if (slot < 0)
-		{
-			// At the cap. Try to make room before giving up.
-			int candidate = FindStealCandidate(request.Priority);
-			if (candidate < 0)
-			{
-				m_DroppedVoices++;
-				return -1;
-			}
-			// The stolen slot is reused directly rather than freed and reallocated. The old
-			// voice's data is overwritten wholesale by the `voice = Voice()` line below,
-			// which is what makes the steal silent rather than a click.
-			slot = candidate;
-			// Counted separately from drops so a debugger can tell "we were too busy" from
-			// "the sound was missing".
-			m_StealedVoices++;
-		}
-		// DEFECT: unreachable. AllocateVoiceSlot returns either -1 (handled above) or an
-		// index < m_Voices.size() <= m_MaxVoices, and FindStealCandidate only returns
-		// indices below m_Voices.size(). So `slot >= m_MaxVoices` can never be true and
-		// this defensive branch can never drop a voice.
-		else if ((int)m_Voices.size() >= m_MaxVoices && slot >= m_MaxVoices)
-		{
-			// Defensive: a slot past the cap should be impossible.
-			m_DroppedVoices++;
 			return -1;
-		}
 
 		// Reference into the vector. Nothing below resizes m_Voices, so this stays valid.
 		Voice &voice = m_Voices[slot];
@@ -495,6 +468,94 @@ namespace Wasteland::Audio
 		// The new id, NOT the slot index. Callers must use this -- Stop(voiceId) and
 		// SetVoiceVolume look up by id, and the two differ once stealing reorders slots.
 		return voice.VoiceId;
+	}
+
+	// Pick a slot for a new voice, stealing when the cap is reached, or -1 to
+	// drop. Shared by Play and PlayProcedural.
+	//
+	// The steal is silent by construction: the slot is reused in place and the
+	// caller overwrites it wholesale with `voice = Voice()`, so the stolen sound
+	// is REPLACED rather than crossfaded out. That is the right behaviour for a
+	// voice cap (the newcomer is the one the player cares about) but it does mean
+	// a stolen sound clicks; a fade on steal would cost a field on every voice
+	// for the rare case.
+	int Mixer::ReserveVoiceSlot(int priority)
+	{
+		int slot = AllocateVoiceSlot();
+
+		// At the cap. Only now is the expensive/controversial steal path considered.
+		if (slot < 0)
+		{
+			const int candidate = FindStealCandidate(priority);
+			if (candidate < 0)
+			{
+				m_DroppedVoices++;
+				return -1;
+			}
+			slot = candidate;
+			// Counted separately from drops so a debugger can tell "we were too
+			// busy" from "the sound was missing".
+			m_StealedVoices++;
+		}
+		return slot;
+	}
+
+	// Start a procedural voice. The mirror of Play for a callback-backed source.
+	int Mixer::PlayProcedural(const PlayRequest &request,
+							  std::shared_ptr<ProceduralVoice> procedural)
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+		// Same accounting as a missing clip: a content bug, and the dropped
+		// counter is what surfaces it. A generator that is present but empty
+		// would produce a voice that is permanently silent while holding a slot.
+		if (!procedural || !procedural->Generate)
+		{
+			m_DroppedVoices++;
+			return -1;
+		}
+
+		const int slot = ReserveVoiceSlot(request.Priority);
+		if (slot < 0)
+			return -1;
+
+		Voice &voice = m_Voices[slot];
+		// Full reset to defaults, which clears a stolen voice's Procedural,
+		// ProceduralBlock, FadeRemaining and Volume in one assignment.
+		voice = Voice();
+		voice.Procedural = std::move(procedural);
+		voice.VoiceId = m_NextVoiceId++;
+		if (m_NextVoiceId <= 0)
+			m_NextVoiceId = 1;  // wrapped; keep ids positive
+		// A procedural voice has no clip and no meaningful pitch: its generator
+		// produces exactly `frames` samples per call, so the read step is 1 by
+		// construction. Pitch is clamped to 1 rather than stored, so SetVoicePitch
+		// on a graph voice is a no-op instead of a promise the mixer cannot keep.
+		voice.Pitch = 1.0f;
+		voice.Volume = std::max(0.0f, request.Volume);
+		voice.Priority = request.Priority;
+		voice.Spatial = request.Spatial;
+		voice.Position = request.Position;
+		voice.MinDistance = request.MinDistance;
+		voice.MaxDistance = request.MaxDistance;
+		voice.FadeRemaining = 0.0f;
+		voice.FadeDuration = 0.0f;
+		voice.FramePosition = 0.0;
+
+		return voice.VoiceId;
+	}
+
+	// Move a playing voice. Returns false if the voice has already finished.
+	bool Mixer::SetVoicePosition(int voiceId, const glm::vec3 &position)
+	{
+		std::lock_guard<std::recursive_mutex> lock(m_Mutex);
+		for (Voice &voice : m_Voices)
+		{
+			if (voice.VoiceId != voiceId || !voice.IsPlaying())
+				continue;
+			voice.Position = position;
+			return true;
+		}
+		return false;
 	}
 
 	// FadeSeconds == 0 (the default) cuts immediately. Both paths below leave the
@@ -662,7 +723,21 @@ namespace Wasteland::Audio
 	{
 		// Defensive: Update already checks IsPlaying, but a Stop between the two calls
 		// would leave a retired voice with a null clip.
-		if (!voice.IsPlaying() || !voice.Clip)
+		if (!voice.IsPlaying())
+			return false;
+
+		// A procedural voice has no clip and no position to advance: its lifetime
+		// belongs to its generator, which retires the voice itself by returning
+		// false from MixProceduralVoice. Returning false here would retire a live
+		// graph voice on the FIRST Update, before a single block was rendered --
+		// which looks exactly like "the audio graph never plays".
+		if (voice.Procedural)
+		{
+			voice.FramePosition += frames;
+			return true;
+		}
+
+		if (!voice.Clip)
 			return false;
 
 		// `frames` is already seconds * sample rate, so multiplying by Pitch here gives
@@ -761,10 +836,77 @@ namespace Wasteland::Audio
 	// several mixers or several voices can sum into one buffer.
 	// ---- Mixing ----
 
+	// Mix one procedural voice. Called from MixVoice, which holds the mixer lock.
+	void Mixer::MixProceduralVoice(Voice &voice, float *output, int frameCount,
+								   float masterGain)
+	{
+		if (!voice.Procedural || !voice.Procedural->Generate)
+			return;
+
+		// Per voice per call, exactly as for a clip voice: the listener's basis is
+		// cached but the dot product is not.
+		const SpatialGains gains = ComputeSpatial(voice.Position, voice.Spatial,
+												  voice.MinDistance, voice.MaxDistance);
+		float baseVolume = voice.Volume * masterGain * gains.Attenuation;
+		if (voice.FadeRemaining > 0.0f && voice.FadeDuration > 0.0f)
+			baseVolume *= (voice.FadeRemaining / voice.FadeDuration);
+
+        // The generator ALWAYS runs for a muted VOICE, even when that voice
+        // writes nothing: a graph's own state (phase, envelope, delay lines) must
+        // advance on the same clock it would have at full volume, or unmuting it
+        // resumes from where it was muted instead of where the music is. This is
+        // the same reason a muted clip voice still advances its read position
+        // rather than freezing.
+        //
+        // Scope note: this is per-VOICE muting. Mixer::Mix itself early-returns
+        // when the MASTER volume is zero, so muting the whole mixer does freeze
+        // every generator -- that is a deliberate whole-mixer optimisation, and a
+        // graph's internal clock is not a reason to give it up.
+		voice.ProceduralBlock.resize((size_t)frameCount);
+		const bool keepPlaying =
+			voice.Procedural->Generate(voice.ProceduralBlock.data(), frameCount);
+
+		// A muted voice writes nothing but has still consumed generator time.
+		if (baseVolume > 0.0f)
+		{
+			// Per-side gains resolved once so the inner loop is two multiply-adds.
+			const float leftGain = baseVolume * gains.Left;
+			const float rightGain = baseVolume * gains.Right;
+			for (int frame = 0; frame < frameCount; ++frame)
+			{
+				const float value = voice.ProceduralBlock[(size_t)frame];
+				// += , never = : two voices writing the same frame must SUM.
+				float *out = output + (size_t)frame * 2;
+				out[0] += value * leftGain;
+				out[1] += value * rightGain;
+			}
+		}
+
+		// The mixer's clock for this voice. A generator owns its own time; this
+		// exists so "how long has this voice been playing" stays answerable.
+		voice.FramePosition += (double)frameCount;
+
+		if (!keepPlaying)
+		{
+			// Retire in place: VoiceId = -1 is the sentinel everything tests, and
+			// the slot is kept so the next Play can reuse it.
+			voice.VoiceId = -1;
+		}
+	}
+
 	// Writes ONE voice's contribution. Accumulation into `output` is the caller's
 	// contract; this function never reads what it writes.
 	void Mixer::MixVoice(Voice &voice, float *output, int frameCount, float masterGain)
 	{
+		// A procedural voice has a null Clip by construction, so it must be tested
+		// FIRST: the clip guard below would otherwise drop every graph voice as
+		// "no clip" before a single block was rendered.
+		if (voice.Procedural)
+		{
+			MixProceduralVoice(voice, output, frameCount, masterGain);
+			return;
+		}
+
 		// Same guard as AdvanceVoice: Mix can be called with a different voice set than
 		// the last Update, because the two are driven independently.
 		if (!voice.IsPlaying() || !voice.Clip)

@@ -78,6 +78,28 @@ namespace Wasteland {
 		// current directory, so a caller cannot direct it elsewhere.
 		bool CreateDirectory(const std::string &name);
 
+		// Writes a NEW flow graph (.wlblocks) and asks EditorLayer to open
+		// it. Returns false and leaves the tree untouched if the name is
+		// unusable or a graph of that name already exists.
+		//
+		// This is the Content Browser half of "New Visual Script" -- the
+		// Blueprints-analogous asset creation. The graph body comes from
+		// GraphSerializer::NewFlowGraphText rather than a literal here, so
+		// the template a designer creates with cannot drift from the one
+		// the loader must read back.
+		//
+		// The destination is ALWAYS the project's `graphs/` directory, not
+		// the directory being browsed. A visual script is a project asset
+		// with a conventional home -- the same place the shipped graphs
+		// live -- so creating one inside a random folder would make it
+		// unfindable by anything that looks there.
+		//
+		// On success m_OpenRequested is set, so EditorLayer drains it and
+		// routes the .wlblocks to the Visual Blocks panel. The browser does
+		// not know which editor owns the extension -- same hand-off as the
+		// Open button.
+		bool CreateVisualScript(const std::string &name);
+
 		// Deletes a project file or directory. Refuses anything that
 		// resolves outside the active project.
 		// Takes an ABSOLUTE path, unlike CreateDirectory, and has to
@@ -183,6 +205,14 @@ namespace Wasteland {
 		// C-string buffer correctly (it is a member array) so this one is
 		// actually safe, unlike ScriptEditorPanel's raw-pointer member.
 		char m_NewFolderBuffer[128] = {0};
+
+		// The "New Visual Script" inline field. Same shape and same toggle
+		// semantics as m_ShowNewFolderInput above: false until the button is
+		// pressed, cleared on every toggle so reopening it never shows the
+		// previously typed name.
+		bool m_ShowNewScriptInput = false;
+		// Same 128-byte capacity and same zero-init as m_NewFolderBuffer.
+		char m_NewScriptBuffer[128] = {0};
 	};
 
 }

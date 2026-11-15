@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Renderer3D_NovaRenderer.glsl after an edit, the way the engine uses it.
+"""Validate Renderer3D_NovaRenderer.glsl (the GLSL twin) and compare against\nRenderer3D_NovaRenderer.slang (the single Slang source) to catch GLSL-specific drift.
 
 WHY THIS EXISTS
 The engine does not currently link (Scene.cpp fails on an in-flight
@@ -53,8 +53,9 @@ import tempfile
 from pathlib import Path
 
 SHADER_DIR = Path(__file__).resolve().parent.parent / "DemonCore-Editor" / "assets" / "shaders"
-GLSL = SHADER_DIR / "Renderer3D_NovaRenderer.glsl"
-HLSL = SHADER_DIR / "Renderer3D_NovaRenderer.hlsl"
+GLSL = SHADER_DIR / "Renderer3D_NovaRenderer.glsl"  # Hand-authored GLSL twin (OpenGL-specific adaptations)
+HLSL = SHADER_DIR / "Renderer3D_NovaRenderer.slang"
+SLANG_GLSL = SHADER_DIR / "Renderer3D_NovaRenderer.slang.glsl"  # Slang-generated GLSL (reference only)
 
 # Shared algorithm sources that Renderer3D_NovaRenderer.glsl #includes. The
 # compile happens in a temp dir, so these are copied in beside it (see main()).
@@ -114,6 +115,37 @@ def check_getjitter(path, rettype):
               f"-- the blue noise is being ignored")
         return False
     print(f"PASS {path.name}: GetJitter reads u_Jitter, no Halton")
+    return True
+
+
+def check_slang_glsl_image_budget():
+    """Validate the Slang-generated GLSL stays within GL_MAX_IMAGE_UNITS=8.
+
+    The .slang file declares 10 image UAVs (u0..u7, u9, u14). Under GLSL, the
+    img_Mask and img_Moments declarations are excluded via #ifndef WASTELAND_GLSL,
+    and the moments write is redirected to img_TraceGBuffer. The resulting GLSL
+    must have exactly 8 image2D declarations (the minimum over all consumer GPUs).
+
+    This check prevents a regression that would silently break the Slang GLSL
+    output for future single-source GLSL adoption.
+    """
+    if not SLANG_GLSL.exists():
+        print("SKIP Slang GLSL not found (run tools/compile_nova_slang.py)")
+        return True
+    src = SLANG_GLSL.read_text(encoding="utf-8", errors="replace")
+    image_count = len(re.findall(r'\buniform\s+image2D\b', src))
+    if image_count > 8:
+        print(f"FAIL {SLANG_GLSL.name}: {image_count} image2D declarations exceed "
+              f"GL_MAX_IMAGE_UNITS=8 (expected ≤8)")
+        return False
+    if "image2D img_Mask_0" in src:
+        print(f"FAIL {SLANG_GLSL.name}: img_Mask_0 still present (--D WASTELAND_GLSL not applied)")
+        return False
+    if "image2D img_Moments_0" in src:
+        print(f"FAIL {SLANG_GLSL.name}: img_Moments_0 still present (--D WASTELAND_GLSL not applied)")
+        return False
+    print(f"PASS {SLANG_GLSL.name}: {image_count} image2D declarations (≤8), "
+          f"img_Mask/img_Moments excluded via WASTELAND_GLSL")
     return True
 
 
@@ -391,6 +423,11 @@ def main():
         GLSL.read_text(encoding="utf-8", errors="replace"),
         HLSL.read_text(encoding="utf-8", errors="replace"),
     )
+
+    # Validate the Slang-generated GLSL image-unit budget (GL_MAX_IMAGE_UNITS=8).
+    slang_ok = check_slang_glsl_image_budget()
+    ok = ok and slang_ok
+
     print()
     print("RESULT: PASS" if ok else "RESULT: FAIL")
     return 0 if ok else 1

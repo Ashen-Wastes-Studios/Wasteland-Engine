@@ -109,7 +109,16 @@ namespace Wasteland {
 		//
 		// The Ref<> is by const reference and shared: DrawIndexed does not mutate the
 		// vertex array, but NVRHI's implementation does Bind()-style work on it.
-		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0) = 0;
+		// instanceCount defaults to 1, which is the non-instanced draw every existing
+		// caller makes. firstInstance defaults to 0.
+		//
+		// nvrhi already carried both (`DrawArguments::instanceCount`,
+		// `::startInstanceLocation`, nvrhi.h:2811-2815) and this engine simply never set
+		// them, so every draw has been single-instance since the API was written. The
+		// Nova visibility pass needs one instanced draw for the whole scene rather than
+		// 6000+ single-instance calls, which is why these parameters exist.
+		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0,
+		                         uint32_t instanceCount = 1, uint32_t firstInstance = 0) = 0;
 		// Non-indexed path: a vertexCount, interpreted as vertices, drawn as a line
 		// list. Renderer2D's debug lines use this.
 		// DEFECT: NVRHIRendererAPI::DrawLines is a stub -- it only logs

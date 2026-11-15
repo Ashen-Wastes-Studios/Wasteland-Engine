@@ -7,12 +7,25 @@
 
 #include "Wasteland/Audio/AudioDevice.h"
 #include "Wasteland/Audio/Mixer.h"
+#include "Wasteland/Avb/Graph/ProjectRuntime.h"
+
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace Wasteland
 {
 
 	class Entity;
 	class Scene;
+
+	// Forward-declared rather than included: Components.h is a large header and
+	// AudioSystem only ever holds a REFERENCE to this component. A forward
+	// declaration is enough for that, and it keeps the include graph acyclic.
+	struct AudioGraphComponent;
 
 	namespace Audio
 	{
@@ -89,6 +102,72 @@ namespace Wasteland
 			// when the runtime starts, not per frame.
 			void PlayAutoStartSources();
 
+			// ---- Audio graphs ----
+			//
+			// A .wlavb attached to an entity. The component is DATA; this is the
+			// runtime it describes, keyed by entity id because a runtime is neither
+			// copyable nor serializable and the chunk store copies components.
+
+			struct GraphInstance
+			{
+				std::unique_ptr<Avb::AvbProjectRuntime> Runtime;
+				std::shared_ptr<ProceduralVoice> Voice;
+				int MixerVoiceId = -1;
+				UUID EntityId;
+				std::string GraphPath;
+				std::string Error;
+
+				// The instance's own clock, advanced by the mixer block that drives
+				// its voice. A graph is a continuous source, so a one-shot trigger
+				// needs a limit or it holds a voice forever.
+				float Elapsed = 0.0f;
+				float DurationSeconds = 0.0f;
+
+				bool Spatial = false;
+				float MinDistance = 1.0f;
+				float MaxDistance = 30.0f;
+				int Priority = 0;
+				float Volume = 1.0f;
+
+				// Triggers queued from gameplay, drained at the next block boundary.
+				std::vector<std::pair<std::string, std::string>> Pending;
+			};
+
+			// Copy the entity-facing fields onto the instance. Static because it reads
+		// no AudioSystem state; split out because AttachGraph runs it on both the
+		// reload and the already-loaded path and the two must not drift.
+		static void SyncInstanceFromComponent(GraphInstance &instance,
+											  const AudioGraphComponent &component);
+
+		// Start the instance's mixer voice if it does not already have a live one.
+		void StartGraphVoice(GraphInstance &instance, Entity entity,
+							 const AudioGraphComponent &component);
+
+		// Load (or reload) the graph named by the entity's AudioGraphComponent.
+			// A failed load leaves any previous runtime live and reports the reason;
+			// a graph that cannot compile is an authoring error, not a crash.
+			bool AttachGraph(Entity entity, std::string *error = nullptr);
+
+			// Drop the runtime and retire its voice. Called when the component is
+			// removed or the entity destroyed.
+			void DetachGraph(Entity entity);
+
+			// E.2: map a gameplay event to a graph trigger. Returns true when the
+			// event reached a running graph. An event with no matching Trigger entry
+			// is a quiet no-op -- the same convention ScriptEventDispatcher uses for
+			// a missing Python method, so a game can fire an event at every entity
+			// without checking which ones listen.
+			bool TriggerGraph(Entity entity, const std::string &event,
+							  const std::string &arg = {});
+
+			// Diagnostics. GetGraphVoiceCount is the number the plan's verification
+			// reads: it rises when a graph starts and falls when it ends, which is
+			// the difference between "the graph is attached" and "the graph is
+			// making a sound".
+			int GetGraphVoiceCount() const;
+			bool IsGraphAttached(Entity entity) const;
+			std::string GetGraphError(Entity entity) const;
+
 			// Per-frame work: advance voice time and follow the listener.
 			//
 			// The listener is the entity carrying AudioListenerComponent, or
@@ -123,6 +202,16 @@ namespace Wasteland
 			// Remembered so a per-clip volume survives the clip being
 			// re-registered; the Mixer stores volumes on voices, not clips.
 			std::string m_LastListenerName;
+
+			// Per-frame graph work: prune instances whose component is gone, and
+		// follow the emitter for a spatial graph voice.
+		void UpdateGraphs();
+
+		// One entry per entity carrying an AudioGraphComponent. Pruned in Update
+			// against the scene rather than on component removal: there is no
+			// OnComponentRemoved hook in Scene, so a component removed without an
+			// explicit DetachGraph would otherwise leak a runtime and hold a voice.
+			std::unordered_map<UUID, GraphInstance> m_Graphs;
 		};
 
 	}

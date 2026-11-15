@@ -23,8 +23,11 @@
 // workflow is the only consumer of any of them, and a barrel would imply the
 // other workflows use them too.
 #include "Panels/AudioClipPanel.h"
+#include "Panels/AnimationTimelinePanel.h"
+#include "Panels/AnimatorPanel.h"
 #include "Panels/AudioMixerPanel.h"
 #include "Panels/AudioScenePanel.h"
+#include "Panels/MeshEditorPanel.h"
 
 // Renderer-owned types used by value or by Ref<> below. These are the
 // engine's public renderer interface, so the editor compiles against
@@ -51,6 +54,7 @@ namespace Wasteland
 		Scripting, // Hand-written Python and its inspector.
 		Visual,    // Visual Blocks graphs and behaviour trees.
 		Audio,     // Sound: clips, the live mixer, and the scene's sources.
+		Animation, // Keyframe authoring: the timeline dominant, viewport under it.
 		Review,    // AI chat and inspection; no big viewport to steal space.
 	};
 
@@ -414,8 +418,12 @@ namespace Wasteland
 		// what lets a panel keep state (the selected clip, the retired-slot
 		// toggle) across a layout switch rather than resetting.
 		AudioClipPanel m_AudioClipPanel;
+		AnimationTimelinePanel m_AnimationTimelinePanel;
+		AnimatorPanel m_AnimatorPanel;
 		AudioMixerPanel m_AudioMixerPanel;
 		AudioScenePanel m_AudioScenePanel;
+
+		MeshEditorPanel m_MeshEditorPanel;
 
 		// Play mode has three states rather than a bool because Simulate is a
 		// third thing, not a variant of Play: it advances the simulation without

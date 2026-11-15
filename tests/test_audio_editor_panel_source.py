@@ -161,7 +161,11 @@ class AudioWorkflowWiringTests(unittest.TestCase):
             'dock("Audio Sources", audioSourcesNode);',
             'dock("AVB Graph", avbNode);',
             'dock("Viewport", viewportNode);',
-            "if (workflow != Workflow::Audio)\n\t\t\tdock(primary, top);",
+            # Audio is no longer the only workflow that docks its centre pair
+            # explicitly: Animation does too (timeline over viewport). The guard
+            # grew a second clause rather than being duplicated, because a
+            # second `if` would have to restate the same reason.
+            "if (workflow != Workflow::Audio && workflow != Workflow::Animation)\n\t\t\tdock(primary, top);",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, layout)

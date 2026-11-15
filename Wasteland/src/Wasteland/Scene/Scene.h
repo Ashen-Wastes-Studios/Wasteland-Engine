@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <unordered_set>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -13,6 +14,13 @@
 #include "Wasteland/Core/UUID.h"
 #include "Wasteland/Navigation/NavMesh.h"
 #include "Wasteland/Terrain/TerrainRuntime.h"
+// MeshAssetCache: turns a MeshComponent's asset path into the mesh the
+// renderer draws, once per path. Scene.h needs the full type because
+// the cache is held by value, not behind a pointer.
+#include "Wasteland/Renderer/MeshLoader.h"
+// MaterialAssetCache + MaterialSerializer: MeshComponent::MaterialPath
+// points at a .wlmaterial asset, loaded on demand.
+#include "Wasteland/Scene/MaterialSerializer.h"
 
 #include <box3d/id.h>
 
@@ -56,6 +64,28 @@ namespace Wasteland
 
 		void OnRuntimeStart();
 		void OnRuntimeStop();
+
+		// Has OnRuntimeStart run and OnRuntimeStop not yet?
+		//
+		// There was no play-state flag at all before B.1, so an entity spawned
+		// AFTER runtime start could not tell whether it should receive the
+		// BeginPlay dispatch -- it would either miss it or fire it twice.
+		//
+		// This answers the MID-PLAY question only. BeginPlay fires again on a
+		// second play session, which is the UE-consistent meaning of the event:
+		// a new play is a new beginning. Making it once per scene LIFETIME would
+		// need a per-entity "already began" flag, and nothing in the plan asks
+		// for that.
+		bool IsRuntimeActive() const { return m_RuntimeStarted; }
+
+		// The BeginPlay dispatch, in the two shapes that need it.
+		//
+		// Private because neither is a public API: OnRuntimeStart and
+		// CreateEntityWithUUID decide WHEN, and ScriptEventDispatcher decides HOW.
+		// Exposing them would let a caller fire BeginPlay a second time, which is
+		// the one thing the "once per play session" contract forbids.
+		void DispatchBeginPlay();
+		void DispatchBeginPlay(Entity entity);
 
 		void OnSimulationStart();
 		void OnSimulationStop();
@@ -508,6 +538,10 @@ namespace Wasteland
 		Ref<Audio::AudioSystem> m_AudioSystem;
 		entt::registry m_Registry;
 
+		// See IsRuntimeActive(). Declared next to the registry because both are
+		// scene-lifetime state rather than per-entity state.
+		bool m_RuntimeStarted = false;
+
 		// Elapsed in-game time in seconds, advanced by the runtime and
 		// persisted by the save system. Separate from any physics
 		// accumulator on purpose: world time is game state the player would
@@ -527,6 +561,24 @@ namespace Wasteland
 		std::unique_ptr<Navigation::NavMesh> m_NavMesh;
 		Terrain::TerrainRuntime m_TerrainRuntime;
 		std::string m_TerrainAssetReference;
+
+		// Runtime meshes for MeshComponent, keyed by the path as written in
+		// the scene. Lives on the Scene rather than in Renderer3D because the
+		// renderer is a stateless static facade (every Draw* is a static
+		// function over a single shared batch) and has nowhere to keep a
+		// per-scene cache -- adding one there would leak across scenes.
+		MeshAssetCache m_MeshCache;
+		// Paths whose mesh failed to load, so the error is logged once per
+		// scene instead of once per frame. Cleared with the cache.
+		std::unordered_set<std::string> m_ReportedMeshErrors;
+
+		// Material overrides for MeshComponent::MaterialPath. Same shape and
+		// same reason as m_MeshCache: an override is read every frame for
+		// every mesh entity, so it is loaded once per path.
+		MaterialAssetCache m_MaterialCache;
+		// Material paths whose .wlmaterial failed to load, so the error is
+		// logged once per scene instead of once per frame.
+		std::unordered_set<std::string> m_ReportedMaterialErrors;
 		bool m_NeuralStageEnabled = true;
 
 		friend class Entity;

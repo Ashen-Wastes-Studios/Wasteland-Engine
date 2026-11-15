@@ -11,6 +11,7 @@
 #pragma once
 
 #include "wlpch.h"
+#include <sstream>
 
 #include "Event.h"
 

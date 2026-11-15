@@ -98,6 +98,7 @@ namespace Wasteland::VisualBlocks
 	struct GraphVariable;
 	struct BlackboardKey;
 	struct PinLiteral;
+	struct GraphFunction;
 
 	// The alias exists for a pybind11 reason, documented at length in the
 	// block comment above: making these opaque is what stops
@@ -111,6 +112,7 @@ namespace Wasteland::VisualBlocks
 	using GraphNodeList = std::vector<GraphNode>;
 	using GraphLinkList = std::vector<GraphLink>;
 	using GraphVariableList = std::vector<GraphVariable>;
+	using GraphFunctionList = std::vector<GraphFunction>;
 	using BlackboardKeyList = std::vector<BlackboardKey>;
 	using PinLiteralList = std::vector<PinLiteral>;
 
@@ -247,6 +249,16 @@ namespace Wasteland::VisualBlocks
 		float X = 0.0f;              // canvas position; authoring metadata,
 		float Y = 0.0f;              // NOT semantic
 
+		// A BREAKPOINT on this node (Task B.5). The Blueprint debugger's
+		// per-node toggle: when the trace hook reaches this node and the flag is
+		// set, the runtime pauses the entity and reports this node.
+		//
+		// It is authoring state, so it IS serialized -- a breakpoint that did not
+		// survive a save/load would be silently cleared on the next edit, which
+		// is the worst possible outcome for a debugging session. Emitted only
+		// when true, so every existing .wlblocks file stays byte-identical.
+		bool Breakpoint = false;
+
 		// Event graphs name the engine hook they hang off ("OnUpdate",
 		// "OnInteract"). Only one node per event may exist per graph.
 		// Only meaningful for a flow graph; empty for a tree node.
@@ -257,6 +269,28 @@ namespace Wasteland::VisualBlocks
 		// produces a node that is simply not found by FindEvent rather than a
 		// diagnostic.
 		std::string EventName;
+
+		// Does this node's TYPE name an engine event, with no authored EventName?
+		//
+		// A palette-placed node whose whole purpose is one event (OnBeginPlay,
+		// OnAnimationEvent) has nothing to type into `event:` -- the type IS the
+		// event. Every consumer that decides "is this an event node?" must agree
+		// on that, and the three that did (Compiler::CompileFlow, Graph::FindEvent,
+		// the validator) each carried their own copy of the comparison. They
+		// drifted once already: FindEvent stopped recognising OnAnimationEvent, so
+		// FlowMethodNameFor answered OnUpdate and the runtime raised AttributeError
+		// on every tick.
+		//
+		// One predicate, so they cannot drift again.
+		bool IsTypeNamedEvent() const;
+
+		// The generated METHOD name for a type-named event node. Only called when
+		// IsTypeNamedEvent() is true.
+		//
+		// Separate from the predicate because the name is what the runtime caches
+		// and calls (FlowGraphSystem::s_Methods), so a wrong answer here is a
+		// silent failure -- the graph compiles, attaches, and never runs.
+		static std::string TypeIdForEventMethod(const std::string &typeId);
 
 		// Behaviour-tree nodes (NB): whether the leaf may return RUNNING.
 		// Declared, never inferred.
@@ -351,6 +385,50 @@ namespace Wasteland::VisualBlocks
 		// it would have to come from a PinTypeFromName failure.
 		PinType Type = PinType::Float;
 		std::string DefaultLiteral;
+
+		// Blueprint's "Editable" checkbox. An EXPOSED variable shows up in the
+		// hierarchy inspector when the entity is selected, and its value is stored
+		// per ENTITY (in VisualBlocksComponent::VariableOverrides) rather than
+		// inherited from the graph.
+		//
+		// A non-exposed variable is graph-level state: one value shared by every
+		// instance, seeded from DefaultLiteral at attach.
+		bool Exposed = false;
+
+		// Blueprint's "Replicated" checkbox. It is an AUTHORING flag for now --
+		// the engine has no replication layer -- but it is round-tripped so a
+		// graph authored against this schema keeps the declaration, and so the
+		// day replication exists the flag is already where the code will look.
+		bool Replicated = false;
+	};
+
+	// A named typed endpoint of a function: one declared input or output.
+	//
+	// A separate struct rather than reusing GraphVariable because a variable has
+	// a DEFAULT (instance state) and a parameter has none -- conflating them is
+	// how a function silently gains state it should not have.
+	struct GraphFunctionEndpoint
+	{
+		std::string Name;
+		PinType Type = PinType::Float;
+	};
+
+	// A function declared at the graph root (Task B.2).
+	//
+	// The SIGNATURE lives here; the BODY is a separate `kind: function` graph.
+	// Splitting them is what lets one function be called from many graphs without
+	// duplicating its body, and it is why the validator can type-check a call
+	// without loading the body.
+	//
+	// `Path` is relative to the owning graph's directory, so a function library
+	// travels with the project. Empty means "declared but not found", which the
+	// validator reports rather than the loader silently skipping.
+	struct GraphFunction
+	{
+		std::string Name;
+		std::vector<GraphFunctionEndpoint> Inputs;
+		std::vector<GraphFunctionEndpoint> Outputs;
+		std::string Path;
 	};
 
 	// The compiled-to-be blackboard key, for behaviour trees. Declared and
@@ -387,7 +465,8 @@ namespace Wasteland::VisualBlocks
 		// that does not match the data model.
 		// The comment above explains why flow graphs and behaviour trees
 		// share a type at all, which is the more interesting design note.
-		std::string Kind = "flow";     // "flow" | "tree"
+		// "flow" | "tree" | "function"
+		std::string Kind = "flow";
 
 		// The format version, and the ONLY integer that is persisted as an
 		// integer in this format.
@@ -403,6 +482,19 @@ namespace Wasteland::VisualBlocks
 		std::string Name;
 
 		GraphVariableList Variables;
+		// Task B.2. Only meaningful on a `kind: flow` graph: the functions its
+		// CallFunction nodes may reference. A `kind: function` graph declares
+		// exactly one function and carries its body instead.
+		GraphFunctionList Functions;
+
+		// The DIRECTORY of the file this graph was loaded from.
+		//
+		// Task B.2: a function's `path:` is relative to the OWNING graph, so
+		// resolving it needs the owner's location. Not persisted -- it is
+		// load-time context, and a graph copied to another directory must
+		// resolve its functions there rather than where it was authored.
+		std::string BasePath;
+
 		BlackboardKeyList Blackboard;
 		GraphNodeList Nodes;
 		GraphLinkList Links;
@@ -460,6 +552,19 @@ namespace Wasteland::VisualBlocks
 	// comparison is case-sensitive. If it is, a saved graph authored with
 	// "float" loads and one authored with "Float" does not, which is a
 	// silent file-format incompatibility.
+	// The inverse of what ParseLiteral produces for a STRING pin.
+	//
+	// ParseLiteral's output is a PYTHON LITERAL -- quoted -- because it feeds
+	// generated code. Every caller that wants the raw authored TEXT (a function
+	// name, a variable name, a node title) has to strip those quotes, and each
+	// of them was doing it by hand or, worse, not at all: the CallFunction
+	// resolver compared a quoted name against an unquoted one, so it NEVER
+	// matched and the node exposed only its base pins.
+	//
+	// Returns the input unchanged when it is not a quoted literal, so a caller
+	// can apply it unconditionally.
+	std::string UnquotePyLiteral(const std::string &text);
+
 	bool PinTypeFromName(const std::string &name, PinType &out);
 
 	// Is `from` assignable to `to`? Equal types always are; `int` promotes to

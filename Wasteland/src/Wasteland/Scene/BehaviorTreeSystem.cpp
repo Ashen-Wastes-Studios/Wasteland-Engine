@@ -50,6 +50,12 @@ namespace Wasteland
 	// Holding the object is what keeps the Python instance, and everything it
 	// references, alive for as long as the entity exists.
 	std::unordered_map<UUID, py::object> BehaviorTreeSystem::s_Instances;
+
+	py::object *BehaviorTreeSystem::GetInstance(UUID id)
+	{
+		auto found = s_Instances.find(id);
+		return found == s_Instances.end() ? nullptr : &found->second;
+	}
 	std::unordered_set<UUID> BehaviorTreeSystem::s_TraceEnabled;
 	std::unordered_map<UUID, std::vector<BehaviorTreeTraceEntry>>
 		BehaviorTreeSystem::s_TraceLogs;

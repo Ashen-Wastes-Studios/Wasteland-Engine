@@ -23,7 +23,7 @@ namespace Wasteland {
 	// first allocation is orphaned -- harmless in practice, and left as found.
 #if defined(WL_PLATFORM_WINDOWS)
 	RendererAPI* RenderCommand::s_RendererAPI =
-		new NVRHIRendererAPI(RendererAPI::API::NVRHI_DX12);
+		new OpenGLRendererAPI;
 #else
 	RendererAPI* RenderCommand::s_RendererAPI = new OpenGLRendererAPI;
 #endif

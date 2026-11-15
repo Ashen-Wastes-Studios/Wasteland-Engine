@@ -37,12 +37,27 @@
 // fails registry.valid() rather than silently addressing a new entity.
 #include <entt/entt.hpp>
 
+// For Entity::DispatchEvent's argument pack. ScriptEventDispatcher.h cannot
+// be included here -- it includes Entity.h, so that would be a cycle -- which
+// is why the enum is forward-declared and these two appear for the signature
+// alone. pybind11 is already in the PCH, so this is a no-op include in practice.
+#include <vector>
+#include <pybind11/pybind11.h>
+
+// The alias every other translation unit in the project already has. Needed
+// because DispatchEvent's signature names py::object.
+namespace py = pybind11;
+
 // For the UUID return type of GetUUID below. Needed at header scope because
 // that method is inline in this file.
 #include "Wasteland/Core/UUID.h"
 
 namespace Wasteland
 {
+	// Forward-declared: ScriptEventDispatcher.h includes Entity.h, so the
+	// full definition cannot appear here. Entity::DispatchEvent only needs
+	// to name the enum, and its definition lives in Entity.cpp.
+	enum class ScriptEventId;
 
 	// A value type with no destructor, no allocation and no ownership. Copying an
 	// Entity copies a reference; it does not copy the entity or its components.
@@ -423,6 +438,17 @@ namespace Wasteland
 			// not-un-equal, and cross-scene handle collisions are not-un-equal.
 			return !(*this == other);
 		}
+
+	// Fire an engine event at this entity, reaching every attached system --
+	// script, flow graph and behaviour tree alike.
+	//
+	// Convenience for a caller already holding an Entity. Defined in Entity.cpp
+	// because ScriptEventDispatcher.h includes Entity.h, so including it here
+	// would be a cycle; the enum is forward-declared instead.
+	//
+	// Quiet no-op on an entity with no attached system that implements the
+	// event, and never throws across the frame loop.
+	void DispatchEvent(ScriptEventId id, const std::vector<py::object> &args = {});
 
 	// Private with no accessors beyond the conversion operators, so the two fields
 	// are only reachable through this class's API. The one exception is the implicit

@@ -90,6 +90,84 @@ namespace Wasteland {
 			m_Transitions.push_back(transition);
 		}
 
+		// Removes a state by name. Transitions naming it are left in place on
+		// purpose -- see the header.
+		bool AnimationStateMachine::RemoveState(const std::string &stateName)
+		{
+			return m_States.erase(stateName) > 0;
+		}
+
+		bool AnimationStateMachine::RemoveTransition(const std::string &fromState,
+														  const std::string &toState,
+														  const std::string &trigger)
+		{
+			for (auto it = m_Transitions.begin(); it != m_Transitions.end(); ++it)
+			{
+				if (it->FromState == fromState && it->ToState == toState &&
+					it->Trigger == trigger)
+				{
+					m_Transitions.erase(it);
+					return true;
+				}
+			}
+			return false;
+		}
+
+		bool AnimationStateMachine::SetStateClip(const std::string &stateName,
+													   const std::shared_ptr<AnimationClip> &clip)
+		{
+			auto it = m_States.find(stateName);
+			if (it == m_States.end())
+				return false;
+			it->second.Clip = clip;
+			return true;
+		}
+
+		bool AnimationStateMachine::SetStateSpeed(const std::string &stateName, float speed)
+		{
+			auto it = m_States.find(stateName);
+			if (it == m_States.end())
+				return false;
+			it->second.Speed = speed;
+			return true;
+		}
+
+		bool AnimationStateMachine::SetStateLooping(const std::string &stateName, bool looping)
+		{
+			auto it = m_States.find(stateName);
+			if (it == m_States.end())
+				return false;
+			it->second.Looping = looping;
+			return true;
+		}
+
+		bool AnimationStateMachine::SetStateTransitionDuration(const std::string &stateName,
+															   float duration)
+		{
+			auto it = m_States.find(stateName);
+			if (it == m_States.end())
+				return false;
+			it->second.TransitionDuration = duration;
+			return true;
+		}
+
+		bool AnimationStateMachine::SetTransitionTrigger(std::size_t index,
+														  const std::string &trigger)
+		{
+			if (index >= m_Transitions.size())
+				return false;
+			m_Transitions[index].Trigger = trigger;
+			return true;
+		}
+
+		bool AnimationStateMachine::SetTransitionDuration(std::size_t index, float duration)
+		{
+			if (index >= m_Transitions.size())
+				return false;
+			m_Transitions[index].Duration = duration;
+			return true;
+		}
+
 				// Arms a trigger for the next Update. Stores true rather than a count, so
 				// arming the same trigger twice in one frame is idempotent.
 		void AnimationStateMachine::SetTrigger(const std::string &trigger)

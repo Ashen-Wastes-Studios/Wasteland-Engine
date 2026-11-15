@@ -74,6 +74,31 @@ def run_module(module_name: str, *, verbose: bool = False) -> tuple[int, int, li
     names = sorted(n for n in dir(module) if n.startswith("test_"))
 
     if not names:
+        # A module may be a SCRIPT rather than a test_* collection: the feature
+        # coverage, pickup raycast and play/copy suites expose main() and return
+        # 0/1. Without this fallback runner.py found no tests, printed no
+        # per-suite count, and the aggregate reported the suite UNCOUNTED -- so a
+        # real failure in it (AudioListenerComponent had none) was invisible.
+        main = getattr(module, "main", None)
+        if callable(main):
+            try:
+                code = main()
+            except Exception:  # noqa: BLE001 — a crash is a failure to report
+                tb = traceback.format_exc()
+                print(f"    {RED}ERROR{RESET} main")
+                for line in tb.strip().splitlines()[-6:]:
+                    print(f"      {DIM}{line}{RESET}")
+                print(f"  {RED}0/1 passed{RESET}  {DIM}{module_name}{RESET}")
+                return 0, 1, [f"{module_name}.main\n{tb}"]
+
+            failed = 0 if code == 0 else 1
+            passed = 1 - failed
+            colour = GREEN if not failed else RED
+            print(f"  {colour}{passed}/1 passed{RESET}  {DIM}{module_name}{RESET}")
+            if failed:
+                return 0, 1, [f"{module_name}.main returned {code}"]
+            return 1, 0, []
+
         print(f"{YELLOW}  (no tests found in {module_name}){RESET}")
         return 0, 0, []
 

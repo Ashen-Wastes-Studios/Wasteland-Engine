@@ -417,3 +417,28 @@ tools/train_neural/__pycache__/
 # They carry no information the YAML does not, are invalidated automatically when the
 # YAML changes, and are safe to delete at any time -- so they must never be committed.
 *.wlbin
+
+# Secrets. Phase H's AI assistance reads its keys from a local .env, and a key that
+# reaches a commit is a key that has to be ROTATED -- deleting it from history does
+# not revoke it. There was no .env rule here at all, so the first key added for the
+# AI feature would have been committable by default. `.env.example` stays tracked
+# on purpose: it is the documented shape of the file, with no values in it.
+# Secrets. Phase H's AI assistance reads its keys from a local .env, and a key that
+# reaches a commit is a key that has to be ROTATED -- deleting it from history does
+# not revoke it. There was no .env rule here at all, so the first key added for the
+# AI feature would have been committable by default. `.env.example` stays tracked
+# on purpose: it is the documented shape of the file, with no values in it.
+.env
+.env.*
+!.env.example
+
+# Stray placeholder files named after Windows device names (e.g. `nul`), which Git
+# cannot index. Left in the tree but never staged.
+nul
+
+# --- Agent scratch (ignored for the time being) ---
+# Hermes agent plans/scratch directory
+.hermes/
+
+# Documentation (ignored for the time being)
+docs/

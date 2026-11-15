@@ -1,5 +1,6 @@
 #include "wlpch.h"
 #include "NVRHITexture.h"
+#include "NVRHIHandleRetire.h"
 #include "NVRHIContext.h"
 #include "NVRHIRendererAPI.h"
 #include "Wasteland/Core/Log.h"
@@ -158,12 +159,12 @@ namespace Wasteland {
 		// Dropping the last ref releases the NVRHI sampler, then the texture on
 		// the next line. Explicit rather than incidental because release order
 		// is visible to the device: the sampler goes while its texture is alive.
-		m_Sampler = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Sampler, m_Generation);
 		// Drops the old handle explicitly before CreateTexture. Redundant -- the
 		// assignment inside CreateTexture releases it anyway -- but it makes
 		// destroy-before-create ordering explicit at the cost of one Ref round
 		// trip.
-		m_Texture = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Texture, m_Generation);
 	}
 
 	// Called from two constructors and from Resize. Every failure path logs
@@ -215,9 +216,13 @@ namespace Wasteland {
 		// base colour -- for every distance-blended sample, not merely a sharp one.
 		desc.mipLevels = ComputeMipLevels(width, height);
 
-		// The Ref assignment releases the previous handle, so calling this twice
-		// does not leak -- though it does destroy whatever was there.
+		// Release the previous handle explicitly rather than relying on the Ref
+		// assignment: that release must go through the retirement check, since a
+		// handle from a destroyed backend cannot be released at all.
+		WastelandHandleRetire::ReleaseOrAbandon(m_Texture, m_Generation);
 		m_Texture = device->createTexture(desc);
+		// Everything below belongs to the live context.
+		m_Generation = NVRHIContext::GetCurrentGeneration();
 		// Log-only. No fallback, no throw: an out-of-memory texture becomes a
 		// null Ref that every later call must survive.
 		if (!m_Texture)
@@ -262,6 +267,7 @@ namespace Wasteland {
 		// hardware supporting fewer clamps silently.
 		desc.maxAnisotropy = 16.0f;
 
+		WastelandHandleRetire::ReleaseOrAbandon(m_Sampler, m_Generation);
 		m_Sampler = device->createSampler(desc);
 		if (!m_Sampler)
 		{
@@ -458,7 +464,7 @@ namespace Wasteland {
 		m_Height = height;
 
 		// Recreate texture with new size
-		m_Texture = nullptr;
+		WastelandHandleRetire::ReleaseOrAbandon(m_Texture, m_Generation);
 		CreateTexture(width, height);
 	}
 

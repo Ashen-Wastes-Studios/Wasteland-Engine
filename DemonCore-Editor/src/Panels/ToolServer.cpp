@@ -22,12 +22,23 @@
 // Project is the single source of truth for the open project, its root, and the
 // path containment test every file tool depends on.
 #include "Wasteland/Project/Project.h"
+#include "../AI/MemoryStore.h"
 // Graph-file tools use the same Graph loaded by GraphSerializer and validated by
 // Validator; Graph must precede GraphSerializer's forward declaration.
 #include "Wasteland/VisualBlocks/Graph.h"
 #include "Wasteland/VisualBlocks/GraphSerializer.h"
 #include "Wasteland/VisualBlocks/NodeRegistry.h"
 #include "Wasteland/VisualBlocks/Validator.h"
+
+// HttpClient is the transport for the web_search tool. WinHTTP-backed and already
+// part of the editor, so search adds no dependency; UrlEncode is reused rather than
+// writing a second encoder for the query string.
+#include "HttpClient.h"
+
+// py::exec and py::eval live in eval.h, which pybind11.h does NOT pull in. The
+// python_exec tool needs exec; without this include the only way to run a string
+// would be the raw C API.
+#include <pybind11/eval.h>
 
 // py::object, py::list and error_already_set for the script-state tool. The
 // interpreter is already running by the time a tool call arrives.
@@ -41,6 +52,16 @@
 #include <sstream>
 // Standard string helpers.
 #include <algorithm>
+// tolower for the case-insensitive fallback in symbol lookup, and isspace for
+// stripping a line's trailing whitespace in search output.
+#include <cctype>
+// The directory walk in the codebase tools accumulates directory names in a set
+// so the engine tree is emitted in sorted order without a second sort pass.
+#include <set>
+// strtol, for the percent-decoding of DuckDuckGo's redirect URLs, and strchr for
+// the base64 alphabet lookup in the Bing redirect unwrapper.
+#include <cstdlib>
+#include <cstring>
 
 // Short alias, so the script-state code below reads as py:: rather than
 // pybind11:: on every line.
@@ -419,7 +440,7 @@ namespace Wasteland
         // The first contained file tool. Every file tool's description ends with
         // rootNote, so the containment rule is repeated to the model at each point where
         // it could be tempted to ignore it.
-        json += "{\"name\":\"read_file\",\"description\":\"Read the full contents of a file. " + rootNote + "\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path relative to the project root\"}},\"required\":[\"path\"]}},";
+        json += "{\"name\":\"read_file\",\"description\":\"Read the full contents of a file. " + rootNote + " Engine source files are read-only and addressed repo-relative: prefix the path with Wasteland/ or DemonCore-Editor/ (for example Wasteland/src/Wasteland/Scene/Scene.h).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\", \"description\":\"Path relative to the project root, or a repo-relative engine path starting with Wasteland/ or DemonCore-Editor/\"}},\"required\":[\"path\"]}},";
         // write_file is the tool that makes the rule load-bearing: it is the one that can
         // destroy work, so its description spells out that paths outside the project are
         // rejected rather than merely discouraged.
@@ -443,6 +464,9 @@ namespace Wasteland
         // memory_append, the only write that is NOT contained in the project: it goes to
         // the engine-level memory file, which no path check applies to.
         json += "{\"name\":\"memory_append\",\"description\":\"Append a note to persistent memory for future sessions.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"The note to append to memory\"}},\"required\":[\"text\"]}},";
+        json += "{\"name\":\"memory_search\",\"description\":\"Search persistent memory for a query string.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}},";
+        json += "{\"name\":\"memory_record_tool\",\"description\":\"Record tool usage telemetry to memory.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"tool\":{\"type\":\"string\",\"description\":\"Tool name\"},\"status\":{\"type\":\"string\",\"description\":\"Tool status\"},\"duration_ms\":{\"type\":\"integer\",\"description\":\"Duration in milliseconds\"}},\"required\":[\"tool\"]}},";
+        json += "{\"name\":\"memory_forget\",\"description\":\"Delete a memory entry by key.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory entry key\"}},\"required\":[\"key\"]}},";
         // DEFECT, and a functional one rather than a documentation one: the handler
         // views the scene as IDComponent AND TagComponent, so an entity with no tag is
         // not merely unnamed here, it is absent. In a scene where nothing is tagged this
@@ -454,7 +478,22 @@ namespace Wasteland
         json += "{\"name\":\"get_entity_info\",\"description\":\"Get detailed info about an entity: transform, tag, and all components.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"The entity UUID from list_entities\"}},\"required\":[\"id\"]}},";
         // get_script_state, the only tool that reads live interpreter state and
         // therefore the only one that can raise rather than return an error string.
-        json += "{\"name\":\"get_script_state\",\"description\":\"Get the live state of a script instance variables.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"The entity UUID\"}},\"required\":[\"id\"]}}";
+        json += "{\"name\":\"get_script_state\", \"description\":\"Get the live state of a script instance variables.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\", \"description\":\"The entity UUID\"}},\"required\":[\"id\"]}},";
+        // get_component_info. The per-component inspector the header has declared
+        // since the capability flags were written; it complements get_entity_info,
+        // which reports the components it happens to know about and omits the rest.
+        json += "{\"name\":\"get_component_info\", \"description\":\"Get one component's fields for an entity. Use after get_entity_info to inspect a component that get_entity_info does not report (SpriteRenderer, Rigidbody2D, BoxCollider2D, Camera, Script).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\", \"description\":\"The entity UUID from list_entities\"},\"component\":{\"type\":\"string\", \"description\":\"Component type name, e.g. Transform, SpriteRenderer, Rigidbody2D, BoxCollider2D, Camera, Script\"}},\"required\":[\"id\",\"component\"]}},";
+        // The codebase tools. They read the engine source tree, which is why they
+        // resolve against the repo root rather than the open project; a model asked
+        // to explain the renderer has to be able to open Renderer3D.cpp.
+        json += "{\"name\":\"search_files\", \"description\":\"Search file contents for a literal string across the engine source tree (or a subdirectory of it). Returns matching lines as path:line: text. Paths in results are repo-relative and can be fed straight to read_file.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\", \"description\":\"Literal text to find (case-sensitive)\"},\"dir\":{\"type\":\"string\", \"description\":\"Optional directory to search: repo-relative like Wasteland/src, DemonCore-Editor/src, or a project-relative path. Defaults to the whole repo\"}},\"required\":[\"query\"]}},";
+        json += "{\"name\":\"list_dir\", \"description\":\"List the entries of a directory. Accepts a repo-relative path (Wasteland/src, DemonCore-Editor/src/Panels) or a project-relative path. Non-recursive.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"dir\":{\"type\":\"string\", \"description\":\"Directory to list, e.g. Wasteland/src/Wasteland/Scene\"}},\"required\":[\"dir\"]}},";
+        json += "{\"name\":\"get_symbol_info\", \"description\":\"Find where a C++ symbol (class, struct, function, method) is declared or defined. Returns the file, line number and the declaration text.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"symbol\":{\"type\":\"string\", \"description\":\"Symbol name, e.g. ScriptEngine, TransformComponent, ResolveProjectPath\"}},\"required\":[\"symbol\"]}},";
+        json += "{\"name\":\"get_engine_tree\", \"description\":\"Print the engine source tree: every directory under Wasteland/src and DemonCore-Editor/src with its file count. Use to discover where a subsystem lives before reading it.\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},";
+        // python_exec. Runs in the embedded interpreter with stdout/stderr captured.
+        json += "{\"name\":\"python_exec\", \"description\":\"Execute Python code in the engine's embedded interpreter and return its stdout and stderr. Use for arithmetic, formatting, data transformation and inspecting the Python side of the engine. The code runs with the engine modules already imported.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"string\", \"description\":\"Python source to execute\"}},\"required\":[\"code\"]}},";
+        // web_search. The last entry: no trailing comma after it.
+        json += "{\"name\":\"web_search\", \"description\":\"Search the web and return the top results as markdown (title, URL, snippet). Use for anything that needs current information: release dates, API changes, documentation. No API key required.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\", \"description\":\"Search query\"},\"max_results\":{\"type\":\"integer\", \"description\":\"Maximum number of results to return (default 8, max 20)\"}},\"required\":[\"query\"]}}";
         // Closes the array. There is no trailing-comma problem because the last entry
         // was closed by its own literal.
         json += "]";
@@ -613,6 +652,31 @@ namespace Wasteland
                 return "Error: memory_append requires 'text' argument";
             return AppendMemory(text);
         }
+        else if (name == "memory_search")
+        {
+            std::string query;
+            if (!JsonMini::ExtractString(argsJson, "query", query))
+                return "Error: memory_search requires 'query' argument";
+            return SearchMemory(query);
+        }
+        else if (name == "memory_record_tool")
+        {
+            std::string toolName;
+            std::string status = "success";
+            int64_t durationMs = 0;
+            if (!JsonMini::ExtractString(argsJson, "tool", toolName))
+                return "Error: memory_record_tool requires 'tool' argument";
+            JsonMini::ExtractString(argsJson, "status", status);
+            JsonMini::ExtractInt64(argsJson, "duration_ms", durationMs);
+            return RecordToolTelemetry(toolName, status, (int)durationMs);
+        }
+        else if (name == "memory_forget")
+        {
+            std::string key;
+            if (!JsonMini::ExtractString(argsJson, "key", key))
+                return "Error: memory_forget requires 'key' argument";
+            return ForgetMemory(key);
+        }
         // No arguments, so nothing is extracted and the branch is a single call.
         else if (name == "list_entities")
         {
@@ -627,8 +691,8 @@ namespace Wasteland
                 return "Error: get_entity_info requires 'id' argument";
             return GetEntityInfo(id);
         }
-        // The last tool. Both entity-detail tools reject a missing id up front, because
-        // neither has a sensible default to fall back to.
+        // The entity-detail tools reject a missing id up front, because neither has a
+        // sensible default to fall back to.
         else if (name == "get_script_state")
         {
             std::string id;
@@ -636,6 +700,68 @@ namespace Wasteland
                 return "Error: get_script_state requires 'id' argument";
             // The only call in this chain that can raise rather than return.
             return GetEntityScriptState(id);
+        }
+        // get_component_info takes a second required argument, which is what makes it
+        // narrower than get_entity_info rather than a subset of it.
+        else if (name == "get_component_info")
+        {
+            std::string id;
+            std::string component;
+            if (!JsonMini::ExtractString(argsJson, "id", id))
+                return "Error: get_component_info requires 'id' argument";
+            if (!JsonMini::ExtractString(argsJson, "component", component))
+                return "Error: get_component_info requires 'component' argument";
+            return GetComponentInfo(id, component);
+        }
+        // The codebase tools. search_files takes an optional dir, the other three a
+        // required one, so the optional/required split is visible in the argument
+        // handling rather than only in the schema.
+        else if (name == "search_files")
+        {
+            std::string query;
+            // Optional: an empty dir means the whole repository.
+            std::string dir;
+            if (!JsonMini::ExtractString(argsJson, "query", query))
+                return "Error: search_files requires 'query' argument";
+            JsonMini::ExtractString(argsJson, "dir", dir);
+            return SearchFiles(query, dir);
+        }
+        else if (name == "list_dir")
+        {
+            std::string dir;
+            if (!JsonMini::ExtractString(argsJson, "dir", dir))
+                return "Error: list_dir requires 'dir' argument";
+            return ListDir(dir);
+        }
+        else if (name == "get_symbol_info")
+        {
+            std::string symbol;
+            if (!JsonMini::ExtractString(argsJson, "symbol", symbol))
+                return "Error: get_symbol_info requires 'symbol' argument";
+            return GetSymbolInfo(symbol);
+        }
+        // No arguments, so the branch is a single call.
+        else if (name == "get_engine_tree")
+        {
+            return GetEngineTree();
+        }
+        else if (name == "python_exec")
+        {
+            std::string code;
+            if (!JsonMini::ExtractString(argsJson, "code", code))
+                return "Error: python_exec requires 'code' argument";
+            return PythonExec(code);
+        }
+        else if (name == "web_search")
+        {
+            std::string query;
+            if (!JsonMini::ExtractString(argsJson, "query", query))
+                return "Error: web_search requires 'query' argument";
+            // Optional, clamped in the handler rather than here: the clamp is a
+            // property of the search, not of the argument's presence.
+            int64_t maxResults = 8;
+            JsonMini::ExtractInt64(argsJson, "max_results", maxResults);
+            return WebSearch(query, (int)maxResults);
         }
         // Unknown names land here rather than throwing. This is also where a schema or
         // dispatch mismatch shows up, which is why the two hand-maintained lists in this
@@ -649,8 +775,14 @@ namespace Wasteland
     {
         std::string error;
         // Contained first. Nothing is opened until the path has been proven to be
-        // inside the project, so the refusal is a decision rather than a failed open.
-        const std::filesystem::path fullPath = ResolveProjectPath(path, error);
+        // readable, so the refusal is a decision rather than a failed open.
+        //
+        // This is the one file tool that resolves engine paths as well as project
+        // ones: read_file is how a model reads the engine's own source when it is
+        // asked about the renderer or the scripting API, and no project root
+        // contains those files. WriteFile and EditFile deliberately keep the
+        // project-only resolver, so the widened read path is not a widened write path.
+        const std::filesystem::path fullPath = ResolveProjectOrEnginePath(path, error);
         // The universal refusal signal.
         if (fullPath.empty())
             // The containment failure message, verbatim.
@@ -855,7 +987,7 @@ namespace Wasteland
     // narrower assets-root boundary to the symlink-resolved target. Pass that
     // canonical target to GraphSerializer so the checked link path is not reopened.
     std::filesystem::path ToolServer::ResolveGraphAssetPath(const std::string &path,
-                                                             std::string &error)
+                                                            std::string &error)
     {
         const std::filesystem::path projectPath = ResolveProjectPath(path, error);
         if (projectPath.empty())
@@ -1010,73 +1142,80 @@ namespace Wasteland
     // The persistent memory the editor's AI panel shows and the model reads back.
     std::string ToolServer::ReadMemory()
     {
-        // Engine-level, so this works with no project open at all.
-        std::filesystem::path memPath = GetMemoryPath();
-        std::ifstream file(memPath);
-        // A missing file is not an error: a first run has no memory yet.
-        if (!file.is_open())
-            // Reported as empty rather than as a failure, so the tool never fails on a fresh
-            // install.
+        MemoryStore::Initialize();
+        if (!MemoryStore::IsAvailable())
             return "(memory is empty)";
-        std::stringstream ss;
-        ss << file.rdbuf();
-        // Held as a string so the empty case can be distinguished from the open failure
-        // above, even though both report the same text.
-        std::string content = ss.str();
-        // A file that exists but holds nothing is also empty as far as the model is
-        // concerned, which is deliberate.
-        if (content.empty())
+
+        auto entries = MemoryStore::ProjectRead("");
+        if (entries.empty())
             return "(memory is empty)";
-        // The whole memory as one string. There is no way to read a single note.
-        return content;
+
+        std::string result = "## Persistent Memory\n\n";
+        for (const auto &entry : entries)
+        {
+            char timeBuf[64] = {};
+            tm timeInfo = {};
+            localtime_s(&timeInfo, &entry.Timestamp);
+            std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M", &timeInfo);
+            result += "- [" + entry.Category + "] " + entry.Text + "\n";
+        }
+        return result;
     }
 
     // Append-only. There is no edit or delete tool for memory, so a wrong note can
     // only be corrected by editing the file by hand.
     std::string ToolServer::AppendMemory(const std::string &text)
     {
-        std::filesystem::path memPath = GetMemoryPath();
-        // DEFECT: the THROWING overload, unlike the one in WriteFile which passes an
-        // error_code. If the config directory cannot be created -- a read-only profile,
-        // a locked-down sandbox -- std::filesystem::filesystem_error escapes straight
-        // out of ExecuteTool, which has no handler for it.
-        std::filesystem::create_directories(memPath.parent_path());
+        MemoryStore::Initialize();
+        if (!MemoryStore::IsAvailable())
+            return "Error: memory is not available";
 
-        // Append mode, so a note can never truncate what is already there.
-        std::ofstream file(memPath, std::ios::app);
-        // The one failure here that IS reported, which makes the throwing call above look
-        // inconsistent rather than deliberate.
-        if (!file.is_open())
-            return "Error: cannot write to memory file";
-        // Wall-clock time, used only for the note's prefix.
-        auto now = std::chrono::system_clock::now();
-        // Converted to the C time type localtime_s expects.
-        auto time = std::chrono::system_clock::to_time_t(now);
-        // 64 bytes for a 16-character format. Ample, and the size is passed to
-        // strftime, so the bound is real rather than assumed.
-        char timeBuf[64];
-        // Deliberately uninitialised: localtime_s fills the fields it uses, and
-        // initialising it here would only suppress a compiler warning.
-        tm timeInfo;
-        // DEFECT (portability): this is the Microsoft argument order. C11 and POSIX both
-        // declare localtime_s(const time_t*, struct tm*), so this call does not compile
-        // on a conforming non-Microsoft toolchain. Its return value is also ignored, so
-        // a failed conversion leaves timeInfo as localtime_s left it.
-        localtime_s(&timeInfo, &time);
-        // Minute resolution, in local time. There is no seconds field, so two appends in
-        // the same minute carry identical prefixes.
-        std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M", &timeInfo);
-        // The timestamp is a PREFIX in square brackets rather than a separate column, so
-        // a note can contain anything. The text is written raw: there is no escaping, so
-        // a note containing a newline produces a second line with no timestamp at all.
-        file << "[" << timeBuf << "] " << text << "\n";
-        // Closed before the success message, so the data is flushed. The result is
-        // discarded, so a failed flush is reported as success.
-        file.close();
-
-        // Confirms the append without echoing the note or the timestamp, so the model
-        // cannot tell from the reply which entry was written.
+        MemoryStore::ProjectAppend(text, "lesson", "");
         return "Memory updated. Note saved.";
+    }
+
+    std::string ToolServer::SearchMemory(const std::string &query)
+    {
+        MemoryStore::Initialize();
+        if (!MemoryStore::IsAvailable())
+            return "(memory is empty)";
+
+        std::vector<MemoryEntry> results;
+        MemoryStore::ProjectSearch(query, results);
+        if (results.empty())
+            return "(no memory matches for: " + query + ")";
+
+        std::string out = "## Memory Search Results\n\n";
+        for (const auto &entry : results)
+        {
+            char timeBuf[64] = {};
+            tm timeInfo = {};
+            localtime_s(&timeInfo, &entry.Timestamp);
+            std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M", &timeInfo);
+            out += "- [" + entry.Category + "] " + entry.Text + "\n";
+        }
+        return out;
+    }
+
+    std::string ToolServer::RecordToolTelemetry(const std::string &toolName, const std::string &status, int durationMs)
+    {
+        MemoryStore::Initialize();
+        if (!MemoryStore::IsAvailable())
+            return "Error: memory is not available";
+
+        std::string json = "{\"tool\":\"" + toolName + "\",\"status\":\"" + status + "\",\"duration_ms\":" + std::to_string(durationMs) + "}";
+        MemoryStore::ProjectAppend(json, "tool_telemetry", toolName);
+        return "Tool telemetry recorded.";
+    }
+
+    std::string ToolServer::ForgetMemory(const std::string &key)
+    {
+        MemoryStore::Initialize();
+        if (!MemoryStore::IsAvailable())
+            return "Error: memory is not available";
+
+        MemoryStore::ProjectForget(key);
+        return "Memory entry forgotten.";
     }
 
     std::string ToolServer::ListEntities()
@@ -1364,15 +1503,1073 @@ namespace Wasteland
 
         // Reached when the loop ends without a match. Two different situations collapse
         // into this one message: an id that names no entity, and an entity with no
-        // ScriptComponent at all. DEFECT, and the one that ties this file together:
-        // ToolServer.h declares GetComponentInfo(const std::string&, const
-        // std::string&), which has no definition anywhere in this file, no dispatch entry
-        // in ExecuteTool and no schema entry above. It links only because it is private
-        // and never called -- a per-component inspector was evidently planned, and the
-        // capability flags further up this file are what it would have replaced. Its
-        // disappearance is also why the three entity tools disagree about which entities
-        // exist.
+        // ScriptComponent at all. GetComponentInfo, which the header declares and this
+        // file previously did not define, now exists below; it is a narrower inspector
+        // than this one rather than a replacement, because it reports one component's
+        // fields while this reports the ones it happens to know about.
         return "Error: entity with UUID " + id + " not found or has no script";
+    }
+
+    // ---- Repository root and engine-path resolution ---------------------
+    //
+    // The codebase tools read the engine source tree, which is not inside any open
+    // project: a model asked to explain the renderer has to be able to open
+    // Renderer3D.cpp, and no project root contains it. These two functions are the
+    // whole mechanism, and both are read-only -- nothing here can be reached by a
+    // write tool.
+
+    std::filesystem::path ToolServer::FindRepoRoot()
+    {
+        std::error_code ec;
+        std::filesystem::path dir = std::filesystem::current_path(ec);
+        if (ec || dir.empty())
+            return {};
+
+        // Walk up looking for a repository marker. Eight levels is far past any
+        // sane checkout depth while still bounded, so a checkout on a deep path
+        // cannot walk to the filesystem root and stop there.
+        for (int depth = 0; depth < 8; ++depth)
+        {
+            // Separate error codes per probe: exists() sets its code on failure, and
+            // reusing one across the two calls would carry a stale failure into the
+            // second.
+            std::error_code probe;
+            const bool hasMakefile = std::filesystem::exists(dir / "Makefile", probe);
+            probe.clear();
+            const bool hasSolution = std::filesystem::exists(dir / "Wasteland.sln", probe);
+            if (hasMakefile || hasSolution)
+                return dir;
+
+            const std::filesystem::path parent = dir.parent_path();
+            // parent_path of a root path returns empty, and of a drive root returns
+            // the drive itself; both mean "no further up".
+            if (parent.empty() || parent == dir)
+                break;
+            dir = parent;
+        }
+
+        // No marker. Falling back to the CWD rather than failing: every caller is
+        // read-only, so a wrong root produces a "not found" the model can act on
+        // rather than a wrong answer.
+        return std::filesystem::current_path(ec);
+    }
+
+    std::filesystem::path ToolServer::ResolveProjectOrEnginePath(const std::string &path, std::string &error)
+    {
+        // Engine source is addressed repo-relative, with the leading directory naming
+        // which half of the repository is meant. The prefix test is what keeps an
+        // absolute path or a "../" escape from being reinterpreted as a repo path.
+        const bool isEnginePath = path.rfind("Wasteland/", 0) == 0 ||
+                                  path.rfind("DemonCore-Editor/", 0) == 0;
+        if (!isEnginePath)
+            return ResolveProjectPath(path, error);
+
+        const std::filesystem::path root = FindRepoRoot();
+        if (root.empty())
+        {
+            error = "cannot locate the repository root";
+            return {};
+        }
+
+        std::error_code ec;
+        const std::filesystem::path abs = std::filesystem::absolute(root / path, ec);
+        if (ec)
+        {
+            error = "cannot resolve path '" + path + "'";
+            return {};
+        }
+
+        // Containment, by the same relative-path trick ResolveProjectPath uses: a
+        // path that climbs out of the root cannot be expressed relative to it.
+        std::error_code relEc;
+        const std::filesystem::path rel = std::filesystem::relative(abs, root, relEc);
+        if (relEc || rel.empty() || *rel.begin() == "..")
+        {
+            error = "path '" + path + "' is outside the repository";
+            return {};
+        }
+        return abs;
+    }
+
+    // ---- Codebase tools -------------------------------------------------
+
+    std::string ToolServer::SearchFiles(const std::string &query, const std::string &dir)
+    {
+        // An empty query would match every line of every file.
+        if (query.empty())
+            return "Error: search_files requires a non-empty 'query'";
+
+        std::error_code ec;
+        std::filesystem::path root;
+        if (dir.empty())
+        {
+            root = FindRepoRoot();
+            if (root.empty())
+                return "Error: cannot locate the repository root";
+        }
+        else
+        {
+            std::string error;
+            root = ResolveProjectOrEnginePath(dir, error);
+            if (root.empty())
+                return "Error: " + error;
+        }
+
+        if (!std::filesystem::is_directory(root, ec))
+            return "Error: '" + (dir.empty() ? std::string("<repository root>") : dir) + "' is not a directory";
+
+        // The base for repo-relative output. When the search is scoped to a project
+        // subdirectory this is still the repository, so a result's path is stable
+        // regardless of how the search was narrowed.
+        const std::filesystem::path repoRoot = FindRepoRoot();
+
+        std::string result;
+        int hits = 0;
+        // A cap, because an unbounded search over the whole repository can produce
+        // more text than the context window holds.
+        const int kMaxHits = 200;
+
+        for (auto it = std::filesystem::recursive_directory_iterator(root, ec);
+             it != std::filesystem::recursive_directory_iterator() && hits < kMaxHits;
+             it.increment(ec))
+        {
+            if (ec)
+                break;
+            const std::filesystem::path &entry = it->path();
+            const std::string name = entry.filename().string();
+            // VCS metadata, build output and vendored third-party code. None of them
+            // is engine source the model can act on, and bin-int alone is tens of
+            // thousands of files that would dominate the walk.
+            if (name == ".git" || name == "bin" || name == "bin-int" ||
+                name == ".buildlogs" || name == "vendor")
+            {
+                it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_regular_file(ec))
+                continue;
+
+            // Extension filter. Without it the search would match byte sequences in
+            // binary and asset files and report them as text.
+            const std::string ext = entry.extension().string();
+            const bool isText = ext == ".h" || ext == ".hpp" || ext == ".cpp" || ext == ".c" ||
+                                ext == ".cc" || ext == ".inl" || ext == ".md" || ext == ".txt" ||
+                                ext == ".py" || ext == ".cmake" || ext == ".json" || ext == ".yml" ||
+                                ext == ".yaml" || ext == ".ini" || ext == ".cfg" || ext == ".slang" ||
+                                ext == ".hlsl" || ext == ".bat" || ext == ".ps1" || ext == ".sh";
+            if (!isText)
+                continue;
+
+            std::ifstream file(entry);
+            if (!file.is_open())
+                continue;
+
+            std::string line;
+            int lineNo = 0;
+            while (std::getline(file, line) && hits < kMaxHits)
+            {
+                ++lineNo;
+                if (line.find(query) == std::string::npos)
+                    continue;
+
+                // Repo-relative, so the model can feed it straight back into
+                // read_file; the fallback keeps a usable path if the relative
+                // computation fails.
+                std::string display = entry.string();
+                std::error_code relEc;
+                const std::filesystem::path rel = std::filesystem::relative(entry, repoRoot, relEc);
+                if (!relEc && !rel.empty())
+                    display = rel.string();
+                std::replace(display.begin(), display.end(), '\\', '/');
+                result += display + ":" + std::to_string(lineNo) + ": " + line + "\n";
+                ++hits;
+            }
+        }
+
+        if (result.empty())
+            return "No matches for '" + query + "'";
+        // The cap is reported rather than silently applied: a model that needs more
+        // has to know the answer is incomplete.
+        if (hits >= kMaxHits)
+            result += "... (truncated at " + std::to_string(kMaxHits) + " matches)\n";
+        return result;
+    }
+
+    std::string ToolServer::ListDir(const std::string &dir)
+    {
+        std::string error;
+        const std::filesystem::path fullPath = ResolveProjectOrEnginePath(dir, error);
+        if (fullPath.empty())
+            return "Error: " + error;
+
+        std::error_code ec;
+        if (!std::filesystem::is_directory(fullPath, ec))
+            return "Error: '" + dir + "' is not a directory";
+
+        const std::filesystem::path repoRoot = FindRepoRoot();
+        std::vector<std::string> entries;
+        std::error_code iterEc;
+        for (auto it = std::filesystem::directory_iterator(fullPath, iterEc);
+             it != std::filesystem::directory_iterator(); it.increment(iterEc))
+        {
+            if (iterEc)
+                break;
+            const std::filesystem::path &entry = it->path();
+            std::string display = entry.string();
+            std::error_code relEc;
+            const std::filesystem::path rel = std::filesystem::relative(entry, repoRoot, relEc);
+            if (!relEc && !rel.empty())
+                display = rel.string();
+            std::replace(display.begin(), display.end(), '\\', '/');
+            // A trailing slash marks directories, which is the only way to tell them
+            // from files in a flat listing.
+            std::error_code typeEc;
+            if (it->is_directory(typeEc))
+                display += "/";
+            entries.push_back(display);
+        }
+        // The filesystem's order is unspecified; sorted output is what makes two
+        // consecutive calls comparable.
+        std::sort(entries.begin(), entries.end());
+
+        if (entries.empty())
+            return "(empty directory)";
+        std::string result;
+        for (const std::string &entry : entries)
+            result += entry + "\n";
+        return result;
+    }
+
+    std::string ToolServer::GetSymbolInfo(const std::string &symbol)
+    {
+        if (symbol.empty())
+            return "Error: get_symbol_info requires a non-empty 'symbol'";
+
+        const std::filesystem::path root = FindRepoRoot();
+        if (root.empty())
+            return "Error: cannot locate the repository root";
+
+        // Headers first: a symbol's declaration is what the model needs, and the
+        // header set is a small fraction of the file count.
+        const char *searchRoots[] = {"Wasteland/src", "DemonCore-Editor/src"};
+        std::string result;
+        int hits = 0;
+        const int kMaxHits = 20;
+        std::error_code ec;
+
+        for (const char *sub : searchRoots)
+        {
+            const std::filesystem::path searchRoot = root / sub;
+            if (!std::filesystem::is_directory(searchRoot, ec))
+                continue;
+
+            for (auto it = std::filesystem::recursive_directory_iterator(searchRoot, ec);
+                 it != std::filesystem::recursive_directory_iterator() && hits < kMaxHits;
+                 it.increment(ec))
+            {
+                if (ec)
+                    break;
+                const std::filesystem::path &entry = it->path();
+                const std::string name = entry.filename().string();
+                if (name == ".git" || name == "bin" || name == "bin-int" || name == "vendor")
+                {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                if (!it->is_regular_file(ec))
+                    continue;
+                const std::string ext = entry.extension().string();
+                if (ext != ".h" && ext != ".hpp" && ext != ".inl")
+                    continue;
+
+                std::ifstream file(entry);
+                if (!file.is_open())
+                    continue;
+
+                std::string line;
+                int lineNo = 0;
+                while (std::getline(file, line) && hits < kMaxHits)
+                {
+                    ++lineNo;
+                    // An identifier-boundary match, not a substring match: a bare
+                    // find would also hit comments, call sites and unrelated
+                    // identifiers that merely contain the name.
+                    size_t pos = line.find(symbol);
+                    while (pos != std::string::npos)
+                    {
+                        const char before = pos > 0 ? line[pos - 1] : '\0';
+                        const bool boundaryBefore =
+                            (pos == 0) || !(std::isalnum((unsigned char)before) || before == '_');
+                        const size_t end = pos + symbol.size();
+                        const char after = end < line.size() ? line[end] : '\0';
+                        const bool boundaryAfter =
+                            (end >= line.size()) || !(std::isalnum((unsigned char)after) || after == '_');
+                        if (boundaryBefore && boundaryAfter)
+                            break;
+                        pos = line.find(symbol, pos + 1);
+                    }
+                    if (pos == std::string::npos)
+                        continue;
+
+                    std::string trimmed = line;
+                    while (!trimmed.empty() && std::isspace((unsigned char)trimmed.back()))
+                        trimmed.pop_back();
+                    std::string display = entry.string();
+                    std::error_code relEc;
+                    const std::filesystem::path rel = std::filesystem::relative(entry, root, relEc);
+                    if (!relEc && !rel.empty())
+                        display = rel.string();
+                    std::replace(display.begin(), display.end(), '\\', '/');
+                    result += display + ":" + std::to_string(lineNo) + ": " + trimmed + "\n";
+                    ++hits;
+                }
+            }
+        }
+
+        if (result.empty())
+            return "No declaration found for '" + symbol + "' in headers under Wasteland/src and DemonCore-Editor/src";
+        if (hits >= kMaxHits)
+            result += "... (truncated at " + std::to_string(kMaxHits) + " declarations)\n";
+        return result;
+    }
+
+    std::string ToolServer::GetEngineTree()
+    {
+        const std::filesystem::path root = FindRepoRoot();
+        if (root.empty())
+            return "Error: cannot locate the repository root";
+
+        std::string result;
+        std::error_code ec;
+        const char *searchRoots[] = {"Wasteland/src", "DemonCore-Editor/src"};
+
+        for (const char *sub : searchRoots)
+        {
+            const std::filesystem::path searchRoot = root / sub;
+            if (!std::filesystem::is_directory(searchRoot, ec))
+            {
+                result += std::string(sub) + ": (not found)\n";
+                continue;
+            }
+            result += std::string(sub) + ":\n";
+
+            // Collected then sorted: the walk order is unspecified, and an
+            // alphabetical tree is the one a model can scan for a subsystem name.
+            std::vector<std::pair<std::string, int>> rows;
+            for (auto it = std::filesystem::recursive_directory_iterator(searchRoot, ec);
+                 it != std::filesystem::recursive_directory_iterator(); it.increment(ec))
+            {
+                if (ec)
+                    break;
+                const std::filesystem::path &entry = it->path();
+                const std::string name = entry.filename().string();
+                if (name == ".git" || name == "bin" || name == "bin-int" || name == "vendor")
+                {
+                    it.disable_recursion_pending();
+                    continue;
+                }
+                std::error_code typeEc;
+                if (!it->is_directory(typeEc))
+                    continue;
+
+                // Files directly inside this directory, not recursively: the
+                // recursive total would be dominated by a handful of deep
+                // directories and say nothing about where a file lives.
+                int files = 0;
+                std::error_code innerEc;
+                for (auto inner = std::filesystem::directory_iterator(entry, innerEc);
+                     inner != std::filesystem::directory_iterator(); inner.increment(innerEc))
+                {
+                    if (innerEc)
+                        break;
+                    std::error_code fileEc;
+                    if (inner->is_regular_file(fileEc))
+                        ++files;
+                }
+
+                std::string display = entry.string();
+                std::error_code relEc;
+                const std::filesystem::path rel = std::filesystem::relative(entry, root, relEc);
+                if (!relEc && !rel.empty())
+                    display = rel.string();
+                std::replace(display.begin(), display.end(), '\\', '/');
+                rows.emplace_back(display, files);
+            }
+            std::sort(rows.begin(), rows.end());
+            for (const auto &row : rows)
+                result += "  " + row.first + " (" + std::to_string(row.second) + " files)\n";
+        }
+        return result;
+    }
+
+    // ---- Python execution ----------------------------------------------
+
+    std::string ToolServer::PythonExec(const std::string &code)
+    {
+        if (code.empty())
+            return "Error: python_exec requires a non-empty 'code'";
+        // The interpreter is started by the engine, not by this tool. Before it is,
+        // there is nothing to run in.
+        if (!Py_IsInitialized())
+            return "Error: the Python interpreter is not initialised";
+
+        // Tool calls run on the AI worker thread; the interpreter belongs to the
+        // engine thread. Every entry into Python from here has to take the GIL
+        // first, and gil_scoped_acquire is RAII, so the release happens even when
+        // the code raises.
+        py::gil_scoped_acquire gil;
+
+        py::module_ sys = py::module_::import("sys");
+        py::module_ io = py::module_::import("io");
+        // Both saved before either is replaced, and restored before the buffers are
+        // read back -- reading them through the redirected stream would append the
+        // getvalue() call's own output to the buffer it reads.
+        py::object oldStdout = sys.attr("stdout");
+        py::object oldStderr = sys.attr("stderr");
+        py::object out = io.attr("StringIO")();
+        py::object err = io.attr("StringIO")();
+
+        std::string error;
+        bool ran = false;
+        sys.attr("stdout") = out;
+        sys.attr("stderr") = err;
+        try
+        {
+            // A fresh globals dict per call: a model that assigns x = 1 in one call
+            // must not have that x leak into the next. builtins is put in
+            // explicitly because CPython only auto-inserts it for exec(), and this
+            // interpreter may be embedded in a host that does not.
+            py::dict globals;
+            globals["__builtins__"] = py::module_::import("builtins");
+            py::exec(code, globals);
+            ran = true;
+        }
+        catch (py::error_already_set &e)
+        {
+            // e.what() carries Python's own message plus traceback text, which is
+            // the most useful diagnostic this tool produces.
+            error = e.what();
+            // The error indicator is cleared so a later Python call from another
+            // tool does not inherit it.
+            PyErr_Clear();
+        }
+        catch (std::exception &e)
+        {
+            error = e.what();
+        }
+        sys.attr("stdout") = oldStdout;
+        sys.attr("stderr") = oldStderr;
+
+        const std::string outText = py::str(out.attr("getvalue")());
+        const std::string errText = py::str(err.attr("getvalue")());
+
+        std::string result;
+        if (!outText.empty())
+            result += outText;
+        if (!errText.empty())
+        {
+            if (!result.empty())
+                result += "\n";
+            result += "[stderr]\n" + errText;
+        }
+        if (!error.empty())
+        {
+            if (!result.empty())
+                result += "\n";
+            result += "[error]\n" + error;
+        }
+        // Distinguishes "ran and printed nothing" from "did not run", which an
+        // empty string would collapse.
+        if (result.empty())
+            return ran ? "(executed, no output)" : "Error: python_exec produced no result";
+        return result;
+    }
+
+    // ---- Component inspection ------------------------------------------
+
+    std::string ToolServer::GetComponentInfo(const std::string &id, const std::string &component)
+    {
+        if (!m_Screen)
+            return "Error: no active scene";
+
+        // stoull is wrapped, unlike GetEntityInfo: this tool is reached by the same
+        // model output, and a hallucinated id should come back as a message rather
+        // than unwind through ExecuteTool.
+        uint64_t entityId;
+        try
+        {
+            entityId = std::stoull(id);
+        }
+        catch (...)
+        {
+            return "Error: invalid entity id '" + id + "'";
+        }
+
+        // The same view pair as GetEntityInfo, so the two tools agree on which
+        // entities exist -- the disagreement GetEntityScriptState has with them is
+        // noted at its own site.
+        auto view = m_Screen->GetAllEntitiesWith<IDComponent, TagComponent>();
+        for (auto entityHandle : view)
+        {
+            Entity entity(entityHandle, m_Screen);
+            auto &compId = entity.GetComponent<IDComponent>();
+            if ((uint64_t)compId.ID != entityId)
+                continue;
+
+            const std::string name = entity.GetComponent<TagComponent>().Tag;
+            std::string result = "Entity: " + name + " (UUID: " + id + ")\n";
+
+            // The supported set is the components a scene inspector actually needs.
+            // Everything else falls through to the presence report below rather
+            // than being silently omitted.
+            if (component == "Transform")
+            {
+                if (!entity.HasComponent<TransformComponent>())
+                    return "Error: entity '" + name + "' has no TransformComponent";
+                auto &tc = entity.GetComponent<TransformComponent>();
+                result += "  Translation: (" + std::to_string(tc.Translation.x) + ", " + std::to_string(tc.Translation.y) + ", " + std::to_string(tc.Translation.z) + ")\n";
+                // Radians, as stored. Nothing converts to degrees here, and the
+                // unit is stated so the model does not have to guess.
+                result += "  Rotation (radians): (" + std::to_string(tc.Rotation.x) + ", " + std::to_string(tc.Rotation.y) + ", " + std::to_string(tc.Rotation.z) + ")\n";
+                result += "  Scale: (" + std::to_string(tc.Scale.x) + ", " + std::to_string(tc.Scale.y) + ", " + std::to_string(tc.Scale.z) + ")\n";
+                return result;
+            }
+            if (component == "SpriteRenderer")
+            {
+                if (!entity.HasComponent<SpriteRendererComponent>())
+                    return "Error: entity '" + name + "' has no SpriteRendererComponent";
+                auto &sc = entity.GetComponent<SpriteRendererComponent>();
+                result += "  Color: (" + std::to_string(sc.Color.r) + ", " + std::to_string(sc.Color.g) + ", " + std::to_string(sc.Color.b) + ", " + std::to_string(sc.Color.a) + ")\n";
+                result += "  TilingFactor: " + std::to_string(sc.TilingFactor) + "\n";
+                result += std::string("  Texture: ") + (sc.Texture ? "bound" : "none") + "\n";
+                return result;
+            }
+            if (component == "CircleRenderer")
+            {
+                if (!entity.HasComponent<CircleRendererComponent>())
+                    return "Error: entity '" + name + "' has no CircleRendererComponent";
+                auto &cc = entity.GetComponent<CircleRendererComponent>();
+                result += "  Color: (" + std::to_string(cc.Color.r) + ", " + std::to_string(cc.Color.g) + ", " + std::to_string(cc.Color.b) + ", " + std::to_string(cc.Color.a) + ")\n";
+                result += "  Thickness: " + std::to_string(cc.Thickness) + "\n";
+                result += "  Fade: " + std::to_string(cc.Fade) + "\n";
+                return result;
+            }
+            if (component == "Rigidbody2D")
+            {
+                if (!entity.HasComponent<Rigidbody2DComponent>())
+                    return "Error: entity '" + name + "' has no Rigidbody2DComponent";
+                auto &rb = entity.GetComponent<Rigidbody2DComponent>();
+                const char *typeName = rb.Type == Rigidbody2DComponent::BodyType::Static ? "Static"
+                                    : rb.Type == Rigidbody2DComponent::BodyType::Dynamic ? "Dynamic" : "Kinematic";
+                result += std::string("  Type: ") + typeName + "\n";
+                result += std::string("  FixedRotation: ") + (rb.FixedRotation ? "true" : "false") + "\n";
+                result += std::string("  Simulated: ") + (rb.RuntimeBody ? "yes" : "no") + "\n";
+                return result;
+            }
+            if (component == "BoxCollider2D")
+            {
+                if (!entity.HasComponent<BoxCollider2DComponent>())
+                    return "Error: entity '" + name + "' has no BoxCollider2DComponent";
+                auto &bc = entity.GetComponent<BoxCollider2DComponent>();
+                result += "  Offset: (" + std::to_string(bc.Offset.x) + ", " + std::to_string(bc.Offset.y) + ")\n";
+                result += "  Size: (" + std::to_string(bc.Size.x) + ", " + std::to_string(bc.Size.y) + ")\n";
+                result += "  Density: " + std::to_string(bc.Density) + "\n";
+                result += "  Friction: " + std::to_string(bc.Friction) + "\n";
+                result += "  Restitution: " + std::to_string(bc.Restitution) + "\n";
+                return result;
+            }
+            if (component == "CircleCollider2D")
+            {
+                if (!entity.HasComponent<CircleCollider2DComponent>())
+                    return "Error: entity '" + name + "' has no CircleCollider2DComponent";
+                auto &cc = entity.GetComponent<CircleCollider2DComponent>();
+                result += "  Offset: (" + std::to_string(cc.Offset.x) + ", " + std::to_string(cc.Offset.y) + ")\n";
+                result += "  Radius: " + std::to_string(cc.Radius) + "\n";
+                result += "  Density: " + std::to_string(cc.Density) + "\n";
+                result += "  Friction: " + std::to_string(cc.Friction) + "\n";
+                return result;
+            }
+            if (component == "Camera")
+            {
+                if (!entity.HasComponent<CameraComponent>())
+                    return "Error: entity '" + name + "' has no CameraComponent";
+                auto &cam = entity.GetComponent<CameraComponent>();
+                const char *projection = cam.Camera.GetProjectionType() == SceneCamera::ProjectionType::Perspective
+                                             ? "Perspective" : "Orthographic";
+                result += std::string("  Projection: ") + projection + "\n";
+                result += "  PerspectiveFOV (radians): " + std::to_string(cam.Camera.GetPerspectiveVerticalFOV()) + "\n";
+                result += "  OrthographicSize: " + std::to_string(cam.Camera.GetOrthographicSize()) + "\n";
+                result += std::string("  Primary: ") + (cam.Primary ? "true" : "false") + "\n";
+                result += std::string("  FixedAspectRatio: ") + (cam.FixedAspectRatio ? "true" : "false") + "\n";
+                return result;
+            }
+            if (component == "Script")
+            {
+                if (!entity.HasComponent<ScriptComponent>())
+                    return "Error: entity '" + name + "' has no ScriptComponent";
+                auto &sc = entity.GetComponent<ScriptComponent>();
+                result += "  ScriptName: " + sc.ScriptName + "\n";
+                result += "  ScriptPath: " + sc.ScriptPath + "\n";
+                return result;
+            }
+            if (component == "Material")
+            {
+                if (!entity.HasComponent<MaterialComponent>())
+                    return "Error: entity '" + name + "' has no MaterialComponent";
+                auto &mat = entity.GetComponent<MaterialComponent>();
+                result += "  Albedo: (" + std::to_string(mat.Albedo.r) + ", " + std::to_string(mat.Albedo.g) + ", " + std::to_string(mat.Albedo.b) + ", " + std::to_string(mat.Albedo.a) + ")\n";
+                result += "  Metallic: " + std::to_string(mat.Metallic) + "\n";
+                result += "  Roughness: " + std::to_string(mat.Roughness) + "\n";
+                result += "  NormalStrength: " + std::to_string(mat.NormalStrength) + "\n";
+                result += "  EmissionIntensity: " + std::to_string(mat.EmissionIntensity) + "\n";
+                return result;
+            }
+
+            // The fallback: list the inspectable components the entity carries, so
+            // an unsupported name still tells the model something it can act on
+            // instead of only reporting a refusal.
+            std::string list;
+            if (entity.HasComponent<TransformComponent>()) list += "Transform ";
+            if (entity.HasComponent<SpriteRendererComponent>()) list += "SpriteRenderer ";
+            if (entity.HasComponent<CircleRendererComponent>()) list += "CircleRenderer ";
+            if (entity.HasComponent<Rigidbody2DComponent>()) list += "Rigidbody2D ";
+            if (entity.HasComponent<BoxCollider2DComponent>()) list += "BoxCollider2D ";
+            if (entity.HasComponent<CircleCollider2DComponent>()) list += "CircleCollider2D ";
+            if (entity.HasComponent<CameraComponent>()) list += "Camera ";
+            if (entity.HasComponent<ScriptComponent>()) list += "Script ";
+            if (entity.HasComponent<MaterialComponent>()) list += "Material ";
+
+            result += "  Components present: " +
+                      (list.empty() ? std::string("(none of the inspected types)") : list) + "\n";
+            result += "  '" + component + "' is not one of the inspectable types: Transform, SpriteRenderer, "
+                      "CircleRenderer, Rigidbody2D, BoxCollider2D, CircleCollider2D, Camera, Script, Material.\n";
+            return result;
+        }
+
+        return "Error: entity with UUID " + id + " not found";
+    }
+
+    // ---- Web search -----------------------------------------------------
+
+    // File-local helpers. Static rather than members: they are implementation
+    // details of WebSearch and need no per-instance state.
+
+    static std::string HtmlDecode(const std::string &text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        for (size_t i = 0; i < text.size(); ++i)
+        {
+            if (text[i] != '&')
+            {
+                out += text[i];
+                continue;
+            }
+            // The entities DuckDuckGo emits in result titles and snippets. Anything
+            // else is left as a literal '&': dropping it would corrupt text that
+            // merely contains an ampersand.
+            if (text.compare(i, 5, "&amp;") == 0) { out += '&'; i += 4; }
+            else if (text.compare(i, 4, "&lt;") == 0) { out += '<'; i += 3; }
+            else if (text.compare(i, 4, "&gt;") == 0) { out += '>'; i += 3; }
+            else if (text.compare(i, 6, "&quot;") == 0) { out += '"'; i += 5; }
+            else if (text.compare(i, 5, "&#39;") == 0) { out += '\''; i += 4; }
+            else out += '&';
+        }
+        return out;
+    }
+
+    static std::string StripHtml(const std::string &text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        bool inTag = false;
+        for (char c : text)
+        {
+            if (c == '<') { inTag = true; continue; }
+            if (c == '>') { inTag = false; continue; }
+            if (!inTag)
+                out += c;
+        }
+        return HtmlDecode(out);
+    }
+
+    // Pulls the href and the anchor text out of the <a ...>...</a> at or after
+    // `from`. Returns false when there is no further anchor.
+    static bool NextAnchor(const std::string &html, size_t from, std::string &href, std::string &text, size_t &end)
+    {
+        const size_t open = html.find("<a ", from);
+        if (open == std::string::npos)
+            return false;
+        const size_t close = html.find("</a>", open);
+        if (close == std::string::npos)
+            return false;
+
+        const size_t hrefPos = html.find("href=\"", open);
+        if (hrefPos != std::string::npos && hrefPos < close)
+        {
+            const size_t start = hrefPos + 6;
+            const size_t stop = html.find('"', start);
+            if (stop != std::string::npos && stop < close)
+                href = html.substr(start, stop - start);
+        }
+        const size_t textStart = html.find('>', open);
+        if (textStart != std::string::npos && textStart < close)
+            text = html.substr(textStart + 1, close - textStart - 1);
+        end = close + 4;
+        return true;
+    }
+
+    // DuckDuckGo's html endpoint wraps outbound links in a redirect whose uddg
+    // parameter is the real target. The lite endpoint does not, so this is a
+    // no-op there -- which is why it is applied unconditionally.
+    static std::string UnwrapDuckDuckGoRedirect(const std::string &href)
+    {
+        const size_t uddg = href.find("uddg=");
+        if (uddg == std::string::npos)
+            return href;
+        const size_t start = uddg + 5;
+        const size_t stop = href.find('&', start);
+        const std::string encoded = href.substr(start, (stop == std::string::npos ? href.size() : stop) - start);
+
+        std::string decoded;
+        decoded.reserve(encoded.size());
+        for (size_t i = 0; i < encoded.size(); ++i)
+        {
+            if (encoded[i] == '%' && i + 2 < encoded.size())
+            {
+                const std::string hex = encoded.substr(i + 1, 2);
+                const char *c = hex.c_str();
+                char *end = nullptr;
+                const long value = std::strtol(c, &end, 16);
+                if (end && *end == '\0' && value > 0 && value < 256)
+                {
+                    decoded += static_cast<char>(value);
+                    i += 2;
+                    continue;
+                }
+            }
+            decoded += encoded[i];
+        }
+        return decoded;
+    }
+
+    // DuckDuckGo's result markup. Each result title is an <a> carrying the
+    // endpoint's title class; the snippet is the element carrying the snippet
+    // class that follows it.
+    static std::string ParseSearchResults(const std::string &html, const std::string &anchorClass,
+                                          const std::string &snippetClass, int maxResults)
+    {
+        std::string out;
+        int count = 0;
+        size_t pos = 0;
+
+        while (count < maxResults)
+        {
+            // The result anchor carries a class unique to result titles, which is
+            // what separates them from navigation and ads.
+            const std::string classAttr = "class=\"" + anchorClass + "\"";
+            const size_t classPos = html.find(classAttr, pos);
+            if (classPos == std::string::npos)
+                break;
+
+            // The class attribute sits inside the <a> tag, so rewind to the tag's
+            // start rather than parsing from the attribute.
+            const size_t tagStart = html.rfind("<a ", classPos);
+            if (tagStart == std::string::npos)
+            {
+                pos = classPos + classAttr.size();
+                continue;
+            }
+
+            std::string href, text;
+            size_t end = 0;
+            if (!NextAnchor(html, tagStart, href, text, end))
+                break;
+
+            const std::string title = StripHtml(text);
+            // An anchor with no text is a layout artifact, not a result.
+            if (title.empty())
+            {
+                pos = end;
+                continue;
+            }
+
+            // The snippet follows the anchor inside an element carrying the snippet
+            // class. The distance bound keeps a missing snippet from attaching the
+            // next result's text to this one.
+            std::string snippet;
+            const std::string snippetAttr = "class=\"" + snippetClass + "\"";
+            const size_t snippetPos = html.find(snippetAttr, end);
+            if (snippetPos != std::string::npos && snippetPos - end < 2000)
+            {
+                const size_t textStart = html.find('>', snippetPos);
+                if (textStart != std::string::npos)
+                {
+                    const size_t textEnd = html.find('<', textStart);
+                    if (textEnd != std::string::npos)
+                        snippet = StripHtml(html.substr(textStart + 1, textEnd - textStart - 1));
+                }
+            }
+
+            out += "## " + std::to_string(count + 1) + ". " + title + "\n";
+            out += UnwrapDuckDuckGoRedirect(href) + "\n";
+            if (!snippet.empty())
+                out += snippet + "\n";
+            out += "\n";
+            ++count;
+            pos = end;
+        }
+        return out;
+    }
+
+    // DuckDuckGo's two HTML shapes. The full endpoint wraps every outbound link
+    // in a redirect and uses <a> for snippets; the lite endpoint is a bare table
+    // with no redirect.
+    static std::string TryDuckDuckGo(const std::string &encodedQuery, int maxResults)
+    {
+        struct Endpoint
+        {
+            const char *url;
+            const char *anchorClass;
+            const char *snippetClass;
+        };
+        const Endpoint endpoints[] = {
+            {"https://html.duckduckgo.com/html/?q=", "result__a", "result__snippet"},
+            {"https://lite.duckduckgo.com/lite/?q=", "result-link", "result-snippet"},
+        };
+
+        // A browser-like User-Agent: the HTML endpoints answer a bare WinHTTP
+        // client with a challenge page, and this header is what avoids it.
+        const HttpHeaders headers = {
+            {"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"},
+            {"Accept", "text/html,application/xhtml+xml"},
+        };
+
+        for (const Endpoint &ep : endpoints)
+        {
+            const HttpResult res = HttpClient::Get(std::string(ep.url) + encodedQuery, headers);
+            // A transport failure, an empty body and a challenge page all move on
+            // to the next endpoint; the parse simply yields nothing for them.
+            if (!res.Succeeded || res.Body.empty())
+                continue;
+            const std::string parsed = ParseSearchResults(res.Body, ep.anchorClass, ep.snippetClass, maxResults);
+            if (!parsed.empty())
+                return parsed;
+        }
+        return {};
+    }
+
+    // Bing wraps outbound links in https://www.bing.com/ck/a?...&u=a1<base64url>.
+    // The real target is that parameter, base64url-encoded behind a leading "a1".
+    static std::string UnwrapBingRedirect(const std::string &href)
+    {
+        const size_t param = href.find("u=a1");
+        if (param == std::string::npos)
+            return href;
+
+        // "u=a1" is a four-character prefix: the parameter name, '=', and a
+        // two-character version tag. The base64url payload starts after it, and
+        // including the tag in the decode corrupts every URL.
+        std::string b64;
+        b64.reserve(href.size() - param);
+        for (size_t i = param + 4; i < href.size(); ++i)
+        {
+            const char c = href[i];
+            // The value runs to the next separator. Bing emits it unpadded, so a
+            // '=' inside it is padding and marks the end of the value.
+            if (c == '&' || c == '=')
+                break;
+            // base64url to base64.
+            b64 += (c == '-') ? '+' : (c == '_') ? '/' : c;
+        }
+        while (b64.size() % 4 != 0)
+            b64 += '=';
+
+        static const char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string decoded;
+        decoded.reserve(b64.size());
+        int buffer = 0;
+        int bits = 0;
+        for (char c : b64)
+        {
+            const char *found = std::strchr(kAlphabet, c);
+            if (!found)
+                continue;
+            buffer = (buffer << 6) + static_cast<int>(found - kAlphabet);
+            bits += 6;
+            if (bits >= 8)
+            {
+                bits -= 8;
+                decoded += static_cast<char>((buffer >> bits) & 0xFF);
+            }
+        }
+        // An empty decode means the parameter was not a URL; the original redirect
+        // is more useful to the model than nothing.
+        return decoded.empty() ? href : decoded;
+    }
+
+    // Bing's result list. Each result is an <li class="b_algo"> whose <h2> holds
+    // the title link, and whose snippet is the first <p> after it.
+    static std::string TryBing(const std::string &encodedQuery, int maxResults)
+    {
+        const HttpHeaders headers = {
+            {"User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"},
+            {"Accept", "text/html,application/xhtml+xml"},
+        };
+        const HttpResult res = HttpClient::Get("https://www.bing.com/search?q=" + encodedQuery, headers);
+        if (!res.Succeeded || res.Body.empty())
+            return {};
+
+        std::string out;
+        int count = 0;
+        size_t pos = 0;
+        while (count < maxResults)
+        {
+            const size_t blockPos = res.Body.find("class=\"b_algo\"", pos);
+            if (blockPos == std::string::npos)
+                break;
+            // The next block bounds this one, so a missing snippet cannot run on
+            // into the following result.
+            const size_t nextBlock = res.Body.find("class=\"b_algo\"", blockPos + 1);
+            const size_t limit = (nextBlock == std::string::npos) ? res.Body.size() : nextBlock;
+
+            const size_t h2 = res.Body.find("<h2", blockPos);
+            if (h2 == std::string::npos || h2 >= limit)
+            {
+                pos = blockPos + 11;
+                continue;
+            }
+            std::string href, text;
+            size_t end = 0;
+            if (!NextAnchor(res.Body, h2, href, text, end) || end > limit)
+            {
+                pos = blockPos + 11;
+                continue;
+            }
+            const std::string title = StripHtml(text);
+            if (title.empty())
+            {
+                pos = blockPos + 11;
+                continue;
+            }
+
+            std::string snippet;
+            const size_t p = res.Body.find("<p", end);
+            if (p != std::string::npos && p < limit)
+            {
+                const size_t textStart = res.Body.find('>', p);
+                if (textStart != std::string::npos)
+                {
+                    const size_t textEnd = res.Body.find('<', textStart);
+                    if (textEnd != std::string::npos && textEnd < limit)
+                        snippet = StripHtml(res.Body.substr(textStart + 1, textEnd - textStart - 1));
+                }
+            }
+
+            out += "## " + std::to_string(count + 1) + ". " + title + "\n";
+            out += UnwrapBingRedirect(href) + "\n";
+            if (!snippet.empty())
+                out += snippet + "\n";
+            out += "\n";
+            ++count;
+            pos = limit;
+        }
+        return out;
+    }
+
+    // Wikipedia's search API: JSON rather than HTML, so there is no layout to parse
+    // and no redirect to unwrap. Encyclopedic rather than general web, which is why
+    // it is the last resort rather than the primary.
+    static std::string TryWikipedia(const std::string &query, int maxResults)
+    {
+        const HttpHeaders headers = {
+            {"User-Agent", "WastelandEngine/1.0 (built-in web search)"},
+        };
+        const std::string url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
+                                HttpClient::UrlEncode(query) +
+                                "&format=json&srlimit=" + std::to_string(maxResults);
+        const HttpResult res = HttpClient::Get(url, headers);
+        if (!res.Succeeded || res.Body.empty())
+            return {};
+
+        std::string out;
+        int count = 0;
+        size_t pos = 0;
+        while (count < maxResults)
+        {
+            const size_t item = res.Body.find("\"title\":", pos);
+            if (item == std::string::npos)
+                break;
+            const size_t titleStart = res.Body.find('"', item + 8);
+            if (titleStart == std::string::npos)
+                break;
+            const size_t titleEnd = res.Body.find('"', titleStart + 1);
+            if (titleEnd == std::string::npos)
+                break;
+            const std::string title = res.Body.substr(titleStart + 1, titleEnd - titleStart - 1);
+
+            // The snippet is the next "snippet" key after the title, and the API
+            // wraps matches in <span class="searchmatch">, which StripHtml removes.
+            std::string snippet;
+            const size_t snippetKey = res.Body.find("\"snippet\":", titleEnd);
+            if (snippetKey != std::string::npos && snippetKey - titleEnd < 2000)
+            {
+                const size_t snippetStart = res.Body.find('"', snippetKey + 10);
+                if (snippetStart != std::string::npos)
+                {
+                    const size_t snippetEnd = res.Body.find('"', snippetStart + 1);
+                    if (snippetEnd != std::string::npos)
+                        snippet = StripHtml(res.Body.substr(snippetStart + 1, snippetEnd - snippetStart - 1));
+                }
+            }
+
+            // The article URL is the title with spaces replaced by underscores.
+            std::string path = title;
+            std::replace(path.begin(), path.end(), ' ', '_');
+
+            out += "## " + std::to_string(count + 1) + ". " + title + "\n";
+            out += "https://en.wikipedia.org/wiki/" + path + "\n";
+            if (!snippet.empty())
+                out += snippet + "\n";
+            out += "\n";
+            ++count;
+            pos = titleEnd;
+        }
+        return out;
+    }
+
+    std::string ToolServer::WebSearch(const std::string &query, int maxResults)
+    {
+        if (query.empty())
+            return "Error: web_search requires a non-empty 'query'";
+
+        // Clamped here rather than at the call site: the model can send any integer,
+        // and the tool's own bound is the only place that can enforce it.
+        if (maxResults <= 0)
+            maxResults = 8;
+        if (maxResults > 20)
+            maxResults = 20;
+
+        const std::string encoded = HttpClient::UrlEncode(query);
+
+        // DuckDuckGo first: it is the endpoint this tool is specified to use, and
+        // its HTML needs no key. It is also the provider most likely to answer a
+        // datacentre IP with a challenge page, which is why it is not the only one.
+        const std::string ddg = TryDuckDuckGo(encoded, maxResults);
+        if (!ddg.empty())
+            return ddg;
+
+        // Bing: a general-web fallback over the same transport, same no-key rule.
+        const std::string bing = TryBing(encoded, maxResults);
+        if (!bing.empty())
+            return bing;
+
+        // Wikipedia last: no HTML to parse, but encyclopedic in scope.
+        const std::string wiki = TryWikipedia(query, maxResults);
+        if (!wiki.empty())
+            return wiki;
+
+        return "Error: web search returned no results (DuckDuckGo, Bing and Wikipedia all failed or were blocked)";
     }
 
 }

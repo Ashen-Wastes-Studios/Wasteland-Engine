@@ -23,12 +23,16 @@ namespace Wasteland {
 		// just suppresses an out-of-line definition requirement in a header.
 		inline static void Init()
 		{
-			// ARROW, not dot: s_RendererAPI is a POINTER to the abstraction.
-			// DEFECT (null dereference, documented not fixed): no null check on
-			// s_RendererAPI. Every one of these stubs dereferences it
-			// unconditionally, so calling anything before SetAPI has run is an
-			// immediate crash rather than a diagnosable error. SetAPI below is
-			// the only thing that installs it.
+			// The NVRHI context is created and initialized in
+			// WindowsWindow::CreateContexts/SwitchRendererAPI after the window
+			// exists. NVRHIRendererAPI only stores the context pointer, so this
+			// no longer calls Init() here. Removing it avoids re-entering
+			// device/swapchain creation, which was causing a D3D12 hang on
+			// second init during first frame.
+			if (!s_RendererAPI)
+			{
+				return;
+			}
 			s_RendererAPI->Init();
 		}
 
@@ -59,9 +63,10 @@ namespace Wasteland {
 		// or "draw nothing" is decided in the backend, and neither is stated
 		// in this header. Getting it backwards turns a deliberate partial
 		// draw into an empty one. Worth confirming in RendererAPI.
-		inline static void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0)
+		inline static void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0,
+		                               uint32_t instanceCount = 1, uint32_t firstInstance = 0)
 		{
-			s_RendererAPI->DrawIndexed(vertexArray, indexCount);
+			s_RendererAPI->DrawIndexed(vertexArray, indexCount, instanceCount, firstInstance);
 		}
 
 		// vertexCount is NOT defaulted, unlike indexCount above: line drawing has

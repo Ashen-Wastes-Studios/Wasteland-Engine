@@ -12,6 +12,14 @@
 #include <Wasteland/Renderer/Texture.h>
 #include <Wasteland/Renderer/Renderer3D.h>
 #include <Wasteland/Project/Project.h>
+// For FlowGraphSystem::CompileGraph, the inspector's compile-on-demand.
+#include <Wasteland/Scene/FlowGraphSystem.h>
+
+// Exposed variables. The inspector has to know which variables a graph
+// declares EDITABLE, and that declaration lives in the .wlblocks file -- so
+// the panel reads it rather than keeping a parallel list that would drift.
+#include <Wasteland/VisualBlocks/Graph.h>
+#include <Wasteland/VisualBlocks/GraphSerializer.h>
 
 /* The Microsoft C++ compiler is not-compatible with the C++ standard and needs
 the following definition to disable a security warning on std::strncpy().
@@ -426,6 +434,15 @@ namespace Wasteland
 					}
 				}
 
+				if (!m_SelectionContext.HasComponent<DecalComponent>())
+				{
+					if (ImGui::MenuItem("Decal"))
+					{
+						m_SelectionContext.AddComponent<DecalComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
 				if (!m_SelectionContext.HasComponent<DirectionalLightComponent>())
 				{
 					if (ImGui::MenuItem("Directional Light"))
@@ -476,6 +493,18 @@ namespace Wasteland
 					if (ImGui::MenuItem("Script Component"))
 					{
 						m_SelectionContext.AddComponent<ScriptComponent>();
+						ImGui::CloseCurrentPopup();
+					}
+				}
+
+				// Visual Blocks is the flow-graph attachment, and it sits next to
+				// Script Component deliberately: they are the two ways to give an
+				// entity behaviour, and a designer should see both in one place.
+				if (!m_SelectionContext.HasComponent<VisualBlocksComponent>())
+				{
+					if (ImGui::MenuItem("Visual Blocks Component"))
+					{
+						m_SelectionContext.AddComponent<VisualBlocksComponent>();
 						ImGui::CloseCurrentPopup();
 					}
 				}
@@ -2214,6 +2243,45 @@ namespace Wasteland
 				entity.RemoveComponent<VolumetricCloudsComponent>();
 		}
 
+		if (entity.HasComponent<DecalComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx((void *)typeid(DecalComponent).hash_code(), treeNodeFlags, "Decal");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+			{
+				ImGui::OpenPopup("ComponentSettings");
+			}
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &decal = entity.GetComponent<DecalComponent>();
+
+				ImGui::Checkbox("Enabled", &decal.Enabled);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("Per-entity switch. The global 'Effects: Decals' bit in Settings must also be on for any decal to render.");
+				ImGui::ColorEdit4("Color", glm::value_ptr(decal.Color));
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("RGB: the mark's colour. Alpha: overlay strength.");
+				ImGui::SliderFloat("Softness", &decal.Softness, 0.0f, 1.0f);
+				if (ImGui::IsItemHovered())
+					ImGui::SetTooltip("0 = hard footprint edge .. 1 = fully feathered.\nPlacement comes from the Transform:\nTranslation = projector centre\nRotation     = orientation (casts along local +Z)\nScale.X/.Y   = footprint half-extents\nScale.Z      = forward cast length");
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<DecalComponent>();
+		}
+
 		if (entity.HasComponent<DirectionalLightComponent>())
 		{
 			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
@@ -2733,6 +2801,250 @@ namespace Wasteland
 
 			if (removeComponent)
 				entity.RemoveComponent<ScriptComponent>();
+		}
+
+		// VISUAL BLOCKS -- the flow-graph attachment.
+		//
+		// THE COMPILE ERROR IS DRAWN IN RED. A graph that fails to compile is
+		// otherwise a silent stand-still: the entity sits there, nothing happens,
+		// and the only clue is a log line nobody is reading. Making it visible
+		// here is the point of the block.
+		//
+		// Unlike ScriptComponent there is no class name to derive -- the PATH is
+		// the identity, and the emitter derives the Python class name from the
+		// graph's own `name` field. So there is one field, not two.
+		if (entity.HasComponent<VisualBlocksComponent>())
+		{
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2{4, 4});
+			bool open = ImGui::TreeNodeEx(
+				(void *)typeid(VisualBlocksComponent).hash_code(), treeNodeFlags,
+				"Visual Blocks Component");
+			ImGui::SameLine(ImGui::GetWindowWidth() - 25.0f);
+			if (ImGui::Button("+", ImVec2{20, 20}))
+				ImGui::OpenPopup("ComponentSettings");
+			ImGui::PopStyleVar();
+
+			bool removeComponent = false;
+			if (ImGui::BeginPopup("ComponentSettings"))
+			{
+				if (ImGui::MenuItem("Remove Component"))
+					removeComponent = true;
+				ImGui::EndPopup();
+			}
+
+			if (open)
+			{
+				auto &blocks = entity.GetComponent<VisualBlocksComponent>();
+
+				// Path, round-tripped through a local buffer for the same reason the
+				// script name above is: ImGui::InputText needs mutable storage while
+				// the component holds a std::string.
+				//
+				// THE LIMIT IS 511 CHARACTERS. The script block above has the
+				// identical shape and documents its own overflow abort; this one uses
+				// strncpy_s with _TRUNCATE, which clamps instead of aborting. A path
+				// that long is not a real case, but a crash is worse than a clamp.
+				char pathBuffer[512];
+				memset(pathBuffer, 0, sizeof(pathBuffer));
+				strncpy_s(pathBuffer, sizeof(pathBuffer), blocks.GraphPath.c_str(),
+						_TRUNCATE);
+
+				if (ImGui::InputText("Graph Path", pathBuffer, sizeof(pathBuffer)))
+				{
+					blocks.GraphPath = std::string(pathBuffer);
+					// A stale error from the previous path must not survive the edit.
+					blocks.CompileError.clear();
+				}
+
+				// Drag a .wlblocks straight out of the Content Browser. The payload
+				// is a project-relative path, resolved to an asset path and then made
+				// project-relative again for storage -- the same round trip the Script
+				// block above performs, because ScriptEngine and the serializer both
+				// expect the asset-root-relative form ("graphs/Mover.wlblocks").
+				//
+				// "assets/" is stripped CONDITIONALLY, matching the script block. A
+				// graph dropped from outside the assets directory keeps its full
+				// project-relative path and will not resolve at load time, with no
+				// feedback here -- the compile error below is where that surfaces.
+				if (ImGui::BeginDragDropTarget())
+				{
+					if (const ImGuiPayload *payload =
+						ImGui::AcceptDragDropPayload("CONTENT_BROWSER_ITEM"))
+					{
+						const std::filesystem::path dropPath =
+							ResolveContentBrowserDrop(payload);
+
+						std::string pathStr =
+							Project::Get().MakeProjectRelative(dropPath);
+						const std::string prefix = "assets/";
+						if (pathStr.compare(0, prefix.size(), prefix) == 0)
+							pathStr = pathStr.substr(prefix.size());
+
+						blocks.GraphPath = pathStr;
+						blocks.CompileError.clear();
+					}
+					ImGui::EndDragDropTarget();
+				}
+
+				// COMPILE ON DEMAND. The runtime only compiles on the first tick, so
+				// without this a typo surfaces at run time -- or not at all, if the
+				// graph is never ticked. This is the same CompileGraph the runtime
+				// uses, so the error shown here is the error the runtime would log.
+				if (ImGui::Button("Compile Graph", ImVec2{120.0f, 0.0f}))
+				{
+					std::string python, error;
+					if (FlowGraphSystem::CompileGraph(blocks.GraphPath, python, error))
+						blocks.CompileError.clear();
+					else
+						blocks.CompileError = error;
+				}
+
+				if (!blocks.CompileError.empty())
+				{
+					// RED, and WRAPPED so a long error does not push the rest of the
+					// inspector off the panel.
+					ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{1.0f, 0.28f, 0.28f, 1.0f});
+					ImGui::TextWrapped("%s", blocks.CompileError.c_str());
+					ImGui::PopStyleColor();
+				}
+				else if (!blocks.GraphPath.empty())
+				{
+					// Attached is set by the RUNTIME on the first tick, so outside Play
+					// it reads false even for a perfectly good graph. Say what that means
+					// rather than printing a bare false the user would read as broken.
+					ImGui::TextDisabled("not attached -- compiles on first tick");
+				}
+
+				// EXPOSED VARIABLES -- the Blueprint "Editable" checkbox, made real.
+				//
+				// The graph file declares which variables are editable; the COMPONENT
+				// holds this entity's values. Neither is enough alone: a variable is
+					// only editable if the graph says so, and its value is only this
+				// entity's if the component stores it.
+				//
+				// The declaration is loaded from the asset each time the selection
+				// changes, so editing a graph and reselecting the entity shows the new
+				// set without a restart.
+				if (!blocks.GraphPath.empty())
+				{
+					VisualBlocks::Graph graph;
+					VisualBlocks::GraphError gerror;
+					std::string assetPath =
+						Project::Get().GetAssetPath(blocks.GraphPath).string();
+					if (VisualBlocks::GraphSerializer::Load(assetPath, graph, gerror))
+					{
+						bool anyExposed = false;
+						for (const auto &variable : graph.Variables)
+							if (variable.Exposed)
+							{
+								anyExposed = true;
+								break;
+							}
+
+						if (anyExposed)
+						{
+							ImGui::Separator();
+							ImGui::TextDisabled("Exposed Variables");
+							ImGui::Indent(12.0f);
+
+							for (const auto &variable : graph.Variables)
+							{
+								if (!variable.Exposed)
+									continue;
+
+								// The current value: the entity's override if it has one,
+								// otherwise the graph's default. Both are authored literals.
+								// The component's override, or the graph's default when there is
+								// none. Empty means "no override", which is the same answer as the
+								// default -- so the fallback is unconditional.
+								const std::string override =
+									blocks.GetVariableOverride(variable.Name);
+								const std::string current =
+									override.empty() ? variable.DefaultLiteral : override;
+
+								const std::string label =
+									variable.Name + "##" + variable.Name;
+								switch (variable.Type)
+								{
+								case VisualBlocks::PinType::Float:
+								{
+									float value = 0.0f;
+									try
+									{
+										value = std::stof(current);
+									}
+									catch (const std::exception &)
+									{
+									}
+									if (ImGui::InputFloat(label.c_str(), &value, 0.0f, 0.0f,
+											"%.3f"))
+								{
+										blocks.SetVariableOverride(variable.Name,
+											std::to_string(value));
+									}
+									break;
+								}
+								case VisualBlocks::PinType::Int:
+								{
+									int value = 0;
+									try
+									{
+										value = std::stoi(current);
+									}
+									catch (const std::exception &)
+									{
+									}
+									if (ImGui::InputInt(label.c_str(), &value))
+									{
+										blocks.SetVariableOverride(variable.Name,
+											std::to_string(value));
+									}
+									break;
+								}
+								case VisualBlocks::PinType::Bool:
+								{
+									// Authored as a Python literal: "True" / "False".
+									// NOT const: ImGui::Checkbox takes a bool*, so a const
+									// local would not compile.
+									bool value =
+										current == "True" || current == "true" || current == "1";
+									if (ImGui::Checkbox(label.c_str(), &value))
+									{
+										blocks.SetVariableOverride(variable.Name,
+											value ? "True" : "False");
+									}
+									break;
+								}
+								default:
+								{
+									// String, Vec2/3/4, Entity and Any: edited as the literal
+									// they are. A typed editor for a vector would be nicer, but
+									// the value must round-trip as authored text either way, and
+									// a text field makes the stored form visible.
+									char buffer[256];
+									memset(buffer, 0, sizeof(buffer));
+									strncpy_s(buffer, sizeof(buffer), current.c_str(),
+											_TRUNCATE);
+									if (ImGui::InputText(label.c_str(), buffer, sizeof(buffer)))
+									{
+										blocks.SetVariableOverride(variable.Name,
+											std::string(buffer));
+									}
+									break;
+								}
+								}
+							}
+
+							ImGui::Unindent(12.0f);
+						}
+					}
+				}
+
+				ImGui::TreePop();
+			}
+
+			if (removeComponent)
+				entity.RemoveComponent<VisualBlocksComponent>();
 		}
 	}
 

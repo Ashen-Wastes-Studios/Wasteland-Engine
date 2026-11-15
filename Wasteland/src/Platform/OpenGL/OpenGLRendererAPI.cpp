@@ -58,7 +58,8 @@ namespace Wasteland {
 	}
 
 	// An INDEX count, matching Renderer2D::Flush's QuadIndexCount.
-	void OpenGLRendererAPI::DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount)
+	void OpenGLRendererAPI::DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount,
+	                                    uint32_t instanceCount, uint32_t firstInstance)
 	{
 		// DEFECT (ignored parameter): the ternary resolves to indexCount
 		// whenever it is non-zero -- which is every real call, since Flush
@@ -73,7 +74,15 @@ namespace Wasteland {
 		// bound element buffer. That is only correct because every batch
 		// shares ONE static index buffer and relies on the vertex count to
 		// limit the draw -- which the bug above defeats.
-		glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT, nullptr);
+		// glDrawElementsInstanced, not glDrawElements: instanceCount is what makes the
+		// Nova visibility pass one draw instead of one per instance.
+		//
+		// firstInstance is deliberately unused here. Core OpenGL has no base-instance
+		// form of this entry point -- glDrawElementsInstancedBaseInstance is GL 4.2,
+		// and this engine targets 4.5 only where it must. Every current caller passes
+		// the default 0, so nothing is lost; a non-zero firstInstance would need the
+		// BaseInstance entry point resolved and guarded.
+		glDrawElementsInstanced(GL_TRIANGLES, count, GL_UNSIGNED_INT, nullptr, instanceCount);
 	}
 
 	// Non-indexed: vertices are consumed in order, two per line. So the

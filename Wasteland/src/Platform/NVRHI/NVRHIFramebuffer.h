@@ -143,6 +143,15 @@ namespace Wasteland {
 		// There is exactly one ctor which creates all of them, so this is
 		// currently correct -- but adding a defaulted ctor, or a creation path
 		// that fails partway, would leave the dtor releasing indeterminate handles.
+		// Releases (or abandons, if the device is gone) the framebuffer and its
+		// attachments. Shared by Invalidate's resize path and the destructor.
+		void ReleaseAttachments();
+
+		// Generation of the NVRHIContext whose device created the handles above.
+		// A backend switch destroys that device, and releasing a handle afterwards
+		// calls into freed driver objects -- see NVRHIContext::IsGenerationRetired.
+		uint32_t m_Generation = 0;
+
 		nvrhi::FramebufferHandle m_Framebuffer;
 		// Colour attachments, one per non-depth format in the spec, mirroring the
 		// spec order so index i pairs with colour attachment slot i.

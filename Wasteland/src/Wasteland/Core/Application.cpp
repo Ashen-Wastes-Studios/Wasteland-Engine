@@ -4,8 +4,12 @@
 #include "Wasteland/Core/Log.h"
 
 #include "Wasteland/Renderer/Renderer.h"
+#include "Wasteland/Renderer/Renderer2D.h"
+#include "Wasteland/Renderer/Renderer3D.h"
 #include "Wasteland/Renderer/RendererAPI.h"
 #include "Wasteland/Scene/BehaviorTreeSystem.h"
+#include "Wasteland/Scene/AnimationSystem.h"
+#include "Wasteland/Scene/FlowGraphSystem.h"
 #include "Wasteland/Scripting/ScriptEngine.h"
 #include "Platform/NVRHI/NVRHIContext.h"
 
@@ -14,6 +18,8 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdlib>   // std::getenv, for the WL_FRAME_TIMING harness hook
+#include <thread>    // std::this_thread::sleep_for, the WLFG frame cap
+#include <chrono>    // std::chrono::duration, the WLFG frame cap
 
 #include <pybind11/pybind11.h>
 #include <Python.h>
@@ -246,9 +252,12 @@ Application::~Application()
 
 	if (Py_IsInitialized())
 	{
-		// Active behavior-tree instances hold py::object handles in a static cache;
+		// Active graph instances hold py::object handles in a static cache;
 		// release them before Py_Finalize rather than from static destruction.
 		BehaviorTreeSystem::Shutdown();
+		// Flow graphs follow the same lifetime rule.
+		FlowGraphSystem::Shutdown();
+		AnimationSystem::Shutdown();
 		// Scripted entity instances use the same lifetime rule. The module's
 		// atexit hook covers Python-hosted tests; this handles the embedded app.
 		ScriptEngine::Shutdown();
@@ -404,12 +413,41 @@ void Application::Run()
 	const bool ftOn = (std::getenv("WL_FRAME_TIMING") != nullptr);
 	double ftT0 = glfwGetTime();
 
+	// WLFG synthetic frame cap (Step 1): an optional present interval, read from
+	// WL_FRAME_CAP (frames per second; 0 or absent = uncapped). It is
+	// INDEPENDENT of vsync -- a sleep-until-target at the end of the loop, not a
+	// swapchain change. m_NextFrameTime is the next present's target time,
+	// seeded to now so the first frame is never throttled.
+	if (const char *fps = std::getenv("WL_FRAME_CAP"))
+		SetFrameInterval(1.0 / std::atof(fps));
+	m_NextFrameTime = glfwGetTime();
+
+	// INSTRUMENTATION ONLY -- sim-clock scale, for verifying the WLFG drift
+	// column below. The plan's Step 2 asks for timescale = 1/factor; that is
+	// deliberately NOT wired (the premise is disproved by measurement -- see the
+	// comment at the timestep, and the WLFG clock note in the task8 acceptance
+	// doc). This override exists so the drift column can be SHOWN to work: set
+	// WL_SIM_TIMESCALE=0.5 and the simDrift reading must go non-zero, which is
+	// the failure the column exists to catch. It is not a feature and must not be
+	// used to drive the sim in normal operation.
+	if (const char *ts = std::getenv("WL_SIM_TIMESCALE"))
+		SetSimTimescale((float)std::atof(ts));
+	// Separate from ftLogTime: the WLFG timing line has its own 1-second cadence
+	// and must not depend on WL_FRAME_TIMING being on.
+	double wlfgLogTime = glfwGetTime();
+
 	// Condition re-tested every iteration, and it is what Close() and
 	// OnWindowClose clear.
 	while (m_Running)
 	{
 		// Names the whole iteration in the profiler.
 		WL_PROFILE_SCOPE("RunLoop");
+		static bool s_FirstFrameLogged = false;
+		if (!s_FirstFrameLogged)
+		{
+			s_FirstFrameLogged = true;
+			WL_CORE_INFO("Application RunLoop: FIRST FRAME START");
+		}
 
 		// Seconds since GLFW was initialized. Cast to float because Timestep
 		// holds a float; a long-running session loses precision here, but the
@@ -421,8 +459,65 @@ void Application::Run()
 		// long asset load produces an arbitrarily large value, which every layer
 		// then integrates. m_LastFrameTime starts at 0.0f, so the first frame's
 		// delta is the entire time since process start.
-		Timestep timestep = time - m_LastFrameTime;
+		//
+		// WLFG (Step 2): the sim clock is rawDelta * m_SimTimescale. The plan
+		// specifies m_SimTimescale = 1/factor at a factor of N, on the reasoning
+		// that N presents per real frame each advance the sim 1/N of the real
+		// time, so the interpolated presents show the game at the correct speed.
+		//
+		// THAT REASONING DOES NOT HOLD, and SetSimTimescale is deliberately left
+		// uncalled by C++ (it is exposed to Python only, for scripts that want
+		// slow-motion). Measured on this machine, in BOTH pacing regimes:
+		//
+		//   uncapped:  WL_WLFG=1 -> 62.6 presents/s, WL_WLFG=6 -> 153.1  (2.45x)
+		//   WL_FRAME_CAP=60:  both -> 60.6 presents/s                    (1.00x)
+		//
+		// So the factor does NOT multiply the present rate: uncapped the traced
+		// presents still dominate the frame cost, and paced the cap holds both
+		// factors to the same rate. The 6x claim is about the present/render
+		// RATIO, not the absolute present rate, and this step conflates the two.
+		//
+		// Applying 1/factor would therefore advance the sim at 25.5 sim-steps/s
+		// against 62.6 at factor 1 uncapped (~41% of real speed), or at 10.1
+		// against 60.6 when paced (~17%, i.e. 1/6). Both are wrong.
+		//
+		// With timescale 1.0 the invariant that actually matters holds exactly:
+		// the timestep is rawDelta * 1.0, and sum(rawDelta) over any wall-clock
+		// window IS that window, so simulated time tracks real time at every
+		// factor and every pacing setting. Do NOT "fix" this by wiring 1/factor --
+		// see the WLFG clock note in
+		// docs/CLEANROOM_RECONSTRUCTION_EVIDENCE/task8/TASK8_ACCEPTANCE.md.
+		Timestep timestep = (time - m_LastFrameTime) * m_SimTimescale;
+		// rawDelta is the same expression the timestep is built from, before the
+		// scale. Read it BEFORE m_LastFrameTime is advanced, or the drift measures
+		// zero against itself.
+		const double rawDelta = (double)(time - m_LastFrameTime);
 		m_LastFrameTime = time;
+
+		// WLFG drift (Step 3). The accumulated difference between simulated and
+		// real time, which is what the `simDrift` column on the WLFG timing line
+		// reports.
+		//
+		// This is computed here rather than left at its 0.0 default: nothing used
+		// to write it (SetWlfgStats only writes when handed driftMs >= 0, and no
+		// caller ever passed one), so the column printed 0.0ms on every line of
+		// every run and the plan's "the drift must stay bounded" had no
+		// measurement behind it. A default that happens to be the expected answer
+		// is not evidence.
+		//
+		// At m_SimTimescale == 1.0 the term is identically zero, and that IS the
+		// correct reading: simulated time tracks real time. It only goes non-zero
+		// if something scales the clock -- which is the case this column exists to
+		// catch, since a wrong scale is otherwise invisible.
+		//
+		// VERIFIED: with the shipped timescale the column reads 0.0ms on every
+		// line; with WL_SIM_TIMESCALE=0.5 (instrumentation override, above) it
+		// reads -3149.5ms growing to -6665.0ms across a run. Read the TREND, not
+		// the absolute: m_LastFrameTime starts at 0.0, so the first frame's
+		// rawDelta is the whole time since process start and contributes a large
+		// one-off term whenever the scale is not 1.0. At the shipped 1.0 that
+		// artifact cancels exactly, which is why 0.0 there is clean.
+		m_SimDriftMs += ((double)timestep.GetSeconds() - rawDelta) * 1000.0;
 
 		// A minimized window has a zero-sized drawable, so the whole update and
 		// render body is skipped. The loop still spins below, which keeps
@@ -490,7 +585,8 @@ void Application::Run()
 			// Open the ImGui frame. Must follow the scene submission above so
 			// the UI composites on top of the already-rendered scene.
 			m_ImGuiLayer->Begin();
-		if (ftOn) { ftImGuiBegin += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
+			if (std::getenv("WL_FRAME_TRACE")) { fprintf(stderr, "FRAMETRACE imgui-begin-done\n"); fflush(stderr); }
+			if (ftOn) { ftImGuiBegin += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			// Draw pass, gated on a backend actually existing. A headless or
 			// backend-less build can construct the ImGuiLayer without one, and
@@ -504,6 +600,7 @@ void Application::Run()
 				for (Layer *layer : m_LayerStack)
 					layer->OnImGuiRender();
 			}
+			if (std::getenv("WL_FRAME_TRACE")) { fprintf(stderr, "FRAMETRACE layerstack-imgui-done\n"); fflush(stderr); }
 			if (ftOn) { ftImGuiDraw += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 			// Renders and presents. For the NVRHI backends this is where the
@@ -511,6 +608,7 @@ void Application::Run()
 			// where the scene is drawn, which is why the NVRHI branch above
 			// submits separately.
 			m_ImGuiLayer->End();
+			if (std::getenv("WL_FRAME_TRACE")) { fprintf(stderr, "FRAMETRACE imgui-end-done\n"); fflush(stderr); }
 			if (ftOn) { ftImGuiEnd += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 			ftImGui = ftImGuiBegin + ftImGuiDraw + ftImGuiEnd;
 		}
@@ -521,6 +619,7 @@ void Application::Run()
 		// Deliberately OUTSIDE the minimized guard -- this must run every frame
 		// or a minimized window stops responding to being restored.
 		m_Window->OnUpdate();
+		if (std::getenv("WL_FRAME_TRACE")) { fprintf(stderr, "FRAMETRACE window-update-done\n"); fflush(stderr); }
 		if (ftOn) { ftWindow += glfwGetTime() - ftT0; ftT0 = glfwGetTime(); }
 
 		// Report the split. Averaged over the last 100 frames so a single slow
@@ -543,7 +642,114 @@ void Application::Run()
 			ftLogTime = glfwGetTime();
 		}
 		(void)ftLogTime;
+
+		// WLFG real-frame accounting (Step 3). This used to be a blind increment:
+		// Task 6 had no renderer wiring, so "one present == one real frame" was the
+		// only available reading. It is NOT true once the factor-gated schedule
+		// exists -- a generated present does not trace -- and leaving it here would
+		// add 1 per present on top of the renderer's own count, so the ratio the
+		// Step 6 acceptance is built on would be wrong by exactly one frame per
+		// present.
+		//
+		// The renderer now owns BOTH counts (it is the only component that knows
+		// whether the trace actually ran) and pushes them through SetWlfgStats()
+		// each frame. At factor 1 this still yields realFrames == presents and
+		// warps == 0, i.e. the same inert baseline the bench tool used to see.
+		//
+		// On a backend with no WLFG wiring (the OpenGL path never calls
+		// SetWlfgStats) the counts stay 0, which is the honest reading: there is no
+		// WLFG there, and WlfgMaxFactor() already forces the factor to 0.
+
+		// WLFG timing line. Gated on WL_WLFG_TIMING so it is inert unless the
+		// bench harness asks for it; its own 1-second cadence is independent of
+		// WL_FRAME_TIMING. Reports the factor in force, the generated-present
+		// count, the traced-present count, and the accumulated sim-vs-real drift
+		// in ms. The renderer pushes factor/warps/realFrames through
+		// SetWlfgStats() every frame; simDrift is the Application's own reading.
+		//
+		// These two counts are what the Step 6 acceptance is computed from:
+		// present rate / render rate == realFrames / (realFrames - warps).
+		if ((std::getenv("WL_WLFG_TIMING") != nullptr) && (glfwGetTime() - wlfgLogTime) >= 1.0)
+		{
+			WL_CORE_INFO("WLFG timing: factor {0} warps {1} realFrames {2} simDrift {3:.1f}ms",
+			             m_WlfgFactor, m_WlfgWarps, m_WlfgRealFrames, m_SimDriftMs);
+			wlfgLogTime = glfwGetTime();
+		}
+
+		// WLFG synthetic frame cap (Step 1). Sleeps until the next target present
+		// when a cap is set; uncapped (m_FrameInterval <= 0) leaves the loop
+		// running unthrottled, exactly as before. Independent of vsync. If the
+		// loop fell behind the schedule, the target resets to now so a stall does
+		// not leave a backlog of catch-up sleeps.
+		if (m_FrameInterval > 0.0)
+		{
+			double now = glfwGetTime();
+			if (now < m_NextFrameTime)
+				std::this_thread::sleep_for(std::chrono::duration<double>(m_NextFrameTime - now));
+			else
+				m_NextFrameTime = now;
+			m_NextFrameTime += m_FrameInterval;
+		}
 	}
+
+	// RELEASE THE RENDERER BEFORE THE WINDOW AND ITS GRAPHICS CONTEXT DIE.
+	//
+	// Nothing used to tear the renderer down here, so the Nova backends -- file-scope
+	// statics in Renderer3D.cpp -- were destroyed by the C runtime at process exit,
+	// long after the NVRHI device had gone. On Vulkan that is fatal: destroying a
+	// nvrhi::vulkan::BindingSet calls into the destroyed device's dispatch table and
+	// faults inside nvoglv64.dll, so every clean run of the editor ended in an access
+	// violation after the last frame. Shutdown releases those objects while the device
+	// is still alive, which is the only order in which they can be released.
+	Renderer3D::Shutdown();
+	Renderer2D::Shutdown();
+}
+
+// WLFG sim clock (Step 2). Clamps a non-positive scale back to 1.0 so a bad
+// value cannot freeze the simulation; the render loop is unaffected either way.
+void Application::SetSimTimescale(float scale)
+{
+	m_SimTimescale = (scale > 0.0f) ? scale : 1.0f;
+}
+
+// WLFG synthetic frame cap (Step 1). <= 0 disables it (uncapped).
+void Application::SetFrameInterval(double seconds)
+{
+	m_FrameInterval = (seconds > 0.0) ? seconds : 0.0;
+}
+
+// WLFG accounting (Step 3). The renderer calls this every frame with the factor
+// in force and the two counts; the drift stays the Application's to own.
+void Application::SetWlfgStats(int factor, std::uint64_t warps,
+                               std::uint64_t realFrames, double driftMs)
+{
+	m_WlfgFactor = factor;
+	m_WlfgWarps = warps;
+	m_WlfgRealFrames = realFrames;
+	// A negative drift means "not reported" -- the renderer has no sim clock, so
+	// writing it here would reset the Application's own reading to zero every
+	// frame and the drift column would always print 0.0.
+	if (driftMs >= 0.0)
+		m_SimDriftMs = driftMs;
+}
+
+// WLFG interpolation-factor ceiling (Step 4). The factor is a function of the
+// accumulation state, not a constant: Wasteland's history IS its quality, so
+// re-projecting a converged frame is nearly free and re-projecting a 1-sample
+// frame multiplies noise.
+//
+//   converged (alpha at its 0.02 floor) + static camera + Nova backend -> 6x
+//   partially converged -> 2x
+//   camera moved / scene changed, or a non-Nova backend -> off (0)
+int Application::WlfgMaxFactor(bool cameraMoved, float accumAlpha, bool novaBackend) const
+{
+	if (!novaBackend)   // no velocity buffer the warp can reproject against
+		return 0;
+	if (cameraMoved)    // reprojection is undefined; the incumbent is the truth
+		return 0;
+	if (accumAlpha <= 0.02f)  // the accumulation's floor marks a converged history
+		return 6;
+	return 2;           // still accumulating
 }
 
 // Handles a close request by stopping the frame loop.

@@ -9,13 +9,23 @@
 // else is STL or ImGui.
 #include "Wasteland/Project/Project.h"
 
+// The new-graph template. CreateVisualScript writes the text this function
+// returns, so the template a designer creates with and the template the
+// loader must read back are the SAME literal -- one that drifted would
+// produce graphs the editor can no longer open.
+#include "Wasteland/VisualBlocks/GraphSerializer.h"
+
 // std::sort for the entry listing below. The sort is not cosmetic --
 // an unsorted directory_iterator reshuffles on every refresh.
 #include <algorithm>
 // strlen, for the "did the user type anything" check on the new-folder
 // buffer. C-style on purpose: the buffer is a char[] because that is
 // what ImGui::InputText writes into.
+#include <cctype>
 #include <cstring>
+// std::ofstream for CreateVisualScript. Not pulled in by wlpch reliably
+// enough to rely on, and this file is the only one here that writes.
+#include <fstream>
 #include <vector>
 
 // ImGui last, after the project headers: it is the heaviest and least
@@ -171,6 +181,115 @@ namespace Wasteland
         // the offending path, so a user who wonders why their folder did not
         // appear has a trail to follow.
         WL_CORE_INFO("ContentBrowser: created folder {0}", dir.string());
+        return true;
+    }
+
+    // New flow graph, reached only from the inline "New Visual Script" input.
+    //
+    // The name the user types is the graph's DISPLAY name, and the file is
+    // named after it -- so "My Script" becomes graphs/My Script.wlblocks with
+    // `name: "My Script"` inside. The compiler sanitises the name when it
+    // derives the Python class, so neither has to be an identifier.
+    bool ContentBrowserPanel::CreateVisualScript(const std::string &name)
+    {
+        // SanitizeName is the security-relevant step, exactly as in
+        // CreateDirectory: it strips separators and the Windows-illegal
+        // character set, so a name of "../../etc" cannot escape the graphs
+        // directory.
+        std::string safeName = Project::SanitizeName(name);
+        // Same sentinel rule as CreateDirectory: SanitizeName returns
+        // "Untitled" when nothing usable survives, so that sentinel -- not
+        // emptiness -- is the real reject condition.
+        if (safeName.empty() || safeName == "Untitled")
+        {
+            WL_CORE_ERROR("ContentBrowser: '{0}' is not a usable graph name", name);
+            return false;
+        }
+
+        // A trailing extension is stripped rather than doubled: a user who
+        // types "Mover.wlblocks" means the graph Mover, and writing
+        // "Mover.wlblocks.wlblocks" would be a name they never typed.
+        const std::string kExt = ".wlblocks";
+        // Lower-cased copy of the tail, so the test below does not care
+        // which case the user typed the extension in. A suffix test would
+        // need a lower-cased copy anyway, so the copy IS the test.
+        if (safeName.size() >= kExt.size())
+        {
+            std::string tail = safeName.substr(safeName.size() - kExt.size());
+            for (char &c : tail)
+                c = (char)std::tolower((unsigned char)c);
+            if (tail == kExt)
+            {
+                safeName.erase(safeName.size() - kExt.size());
+                // "_wlblocks" sanitises to "_wlblocks", so erasing can leave
+                // a usable name; but ".wlblocks" alone sanitises to
+                // "wlblocks" -- the erase is still worth the guard, because
+                // a name can become empty if it was exactly the extension
+                // after SanitizeName's stripping.
+                if (safeName.empty())
+                {
+                    WL_CORE_ERROR("ContentBrowser: '{0}' is not a usable graph name", name);
+                    return false;
+                }
+            }
+        }
+
+        // ALWAYS the project's graphs/ directory, never the browsed one. See
+        // the header comment: a visual script is a project asset with a
+        // conventional home, and the shipped graphs live there.
+        std::error_code ec;
+        const std::filesystem::path graphsDir =
+            Project::Get().GetAssetPath("graphs");
+        // create_directories rather than create_directory: the asset root
+        // itself may not exist yet in a freshly-created project.
+        std::filesystem::create_directories(graphsDir, ec);
+        if (ec)
+        {
+            WL_CORE_ERROR("ContentBrowser: could not create '{0}': {1}",
+                          graphsDir.string(), ec.message());
+            return false;
+        }
+
+        const std::filesystem::path file = graphsDir / (safeName + kExt);
+        // Refuses rather than overwriting, matching CreateDirectory. A
+        // visual script is authored work; silently replacing it on a
+        // repeated name would destroy the previous graph.
+        if (std::filesystem::exists(file, ec))
+        {
+            WL_CORE_ERROR("ContentBrowser: '{0}' already exists", file.string());
+            return false;
+        }
+
+        // The template, from the serializer that will read it back. One
+        // literal, so a graph created here cannot fail to load.
+        const std::string text =
+            VisualBlocks::GraphSerializer::NewFlowGraphText(safeName);
+
+        // Binary, so the LF line endings the template contains are not
+        // rewritten to CRLF on Windows -- which would make the file differ
+        // from what the engine's own Save writes.
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+        {
+            WL_CORE_ERROR("ContentBrowser: could not open '{0}' for writing", file.string());
+            return false;
+        }
+        out.write(text.data(), (std::streamsize)text.size());
+        // close() before the good() check, so a flush failure is caught --
+        // the same defect GraphSerializer::Save documents and does not fix.
+        out.close();
+        if (!out.good())
+        {
+            WL_CORE_ERROR("ContentBrowser: failed while writing '{0}'", file.string());
+            return false;
+        }
+
+        WL_CORE_INFO("ContentBrowser: created graph {0}", file.string());
+
+        // Hand the new file to EditorLayer through the SAME slot the Open
+        // button uses. The browser does not know which panel owns
+        // .wlblocks; EditorLayer drains this and dispatches by extension.
+        m_OpenRequested = Project::Get().MakeProjectRelative(file);
         return true;
     }
 
@@ -423,6 +542,53 @@ namespace Wasteland
             {
                 m_ShowNewFolderInput = false;
                 m_NewFolderBuffer[0] = '\0';
+            }
+        }
+
+        ImGui::SameLine();
+        // "New Visual Script" -- the Blueprints-analogous asset creation.
+        // A toolbar button rather than a context-menu entry because the
+        // browser has no background context menu yet; this is where "New
+        // Folder" already lives, so the two creation paths are discoverable
+        // together.
+        //
+        // The label says what it makes, not "New Blueprint": the asset is a
+        // .wlblocks visual script, and a user who has never seen UE should
+        // still know what they are creating.
+        if (ImGui::Button("New Visual Script"))
+        {
+            m_ShowNewScriptInput = !m_ShowNewScriptInput;
+            // Cleared on every toggle, so reopening the input never shows the
+            // previously typed name -- same rule as the folder input.
+            m_NewScriptBuffer[0] = '\0';
+        }
+
+        // Inline row, only present while m_ShowNewScriptInput is set.
+        if (m_ShowNewScriptInput)
+        {
+            // "##NewScript" is an ImGui ID with no visible label; the visible
+            // label is the Create button beside it.
+            ImGui::InputText("##NewScript", m_NewScriptBuffer, IM_ARRAYSIZE(m_NewScriptBuffer));
+            ImGui::SameLine();
+            if (ImGui::Button("Create##CreateScript", ImVec2(70, 0)))
+            {
+                // strlen guard, for the reason the folder path gives: an
+                // empty buffer would otherwise reach SanitizeName, which
+                // turns it into "Untitled" and logs an error for what was
+                // really just an empty field.
+                if (strlen(m_NewScriptBuffer) > 0)
+                    // Return value ignored: CreateVisualScript has already
+                    // logged at ERROR on every failure path, and this handler
+                    // has nothing to add -- the graph simply will not appear.
+                    CreateVisualScript(m_NewScriptBuffer);
+                m_ShowNewScriptInput = false;
+                m_NewScriptBuffer[0] = '\0';
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel##CancelScript", ImVec2(70, 0)))
+            {
+                m_ShowNewScriptInput = false;
+                m_NewScriptBuffer[0] = '\0';
             }
         }
 

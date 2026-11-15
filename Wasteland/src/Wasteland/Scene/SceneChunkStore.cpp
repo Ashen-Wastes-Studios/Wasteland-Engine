@@ -141,6 +141,7 @@ namespace Wasteland
 		{
 			return registry.any_of<
 				AreaLightComponent,
+				AudioGraphComponent,
 				AudioListenerComponent,
 				AudioSourceComponent,
 				BehaviorTreeComponent,
@@ -161,10 +162,22 @@ namespace Wasteland
 				InteractableComponent,
 				InventoryComponent,
 				ItemDefinitionComponent,
+				// MeshComponent holds an asset PATH, not numbers. The Record is a
+				// fixed 260-byte blob memcpy'd verbatim, so carrying a path needs a
+				// fixed-size field and a size bump -- which invalidates every
+				// existing .wlbin and requires a version change.
+				//
+				// Until that is worth doing, an entity with a mesh takes the
+				// fragment path: its YAML is stored verbatim and replayed through
+				// the normal reader. That is slow but TOTAL -- rule 1 of this file
+				// is that a sidecar is written only when the scene is fully
+				// representable in it, and this is exactly that case.
+				MeshComponent,
 				NativeScriptComponent,
 				PersistentComponent,
 				PlaneRendererComponent,
 				QuestFlagsComponent,
+				AnimationComponent,
 				RaycastIgnoreComponent,
 				Rigidbody2DComponent,
 				RigidBody3DComponent,
@@ -174,6 +187,7 @@ namespace Wasteland
 				SpriteRendererComponent,
 				TorusRendererComponent,
 				ViewStateComponent,
+				VisualBlocksComponent,
 				VolumetricCloudsComponent,
 				VolumetricFogComponent,
 				WaterComponent,

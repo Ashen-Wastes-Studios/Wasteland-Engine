@@ -147,6 +147,14 @@ namespace Wasteland
         // Phase 1 hybrid path. Vulkan has no raster visibility pass, so this is
         // always 0 here and the shader never reads the t78..t81 SRVs.
         {"u_UseRasterVisibility", 3708, 0},
+        {"u_EffectsFlags", 3712, 0},
+        {"u_DecalCount", 3716, 0},
+        {"u_DecalPos", 3728, 0},
+        {"u_DecalRight", 3856, 0},
+        {"u_DecalUp", 3984, 0},
+        {"u_DecalDir", 4112, 0},
+        {"u_DecalSize", 4240, 0},
+        {"u_DecalColor", 4368, 0},
     };
     static constexpr uint32_t kConstantFieldCount =
         sizeof(kConstantFields) / sizeof(kConstantFields[0]);

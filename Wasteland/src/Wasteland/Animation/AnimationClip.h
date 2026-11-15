@@ -117,6 +117,18 @@ namespace Wasteland {
 
 			void RemoveAllKeys() { m_Keys.clear(); }
 
+			// Removes the key at `time`, returning how many went (0 or 1 in
+			// practice, since AddKey replaces rather than duplicates). The same
+			// 1e-6 tolerance as AnimationCurve::RemoveKeyAtTime -- the two tracks
+			// must agree, or a right-click that removes a position key leaves its
+			// rotation twin behind.
+			int RemoveKeyAtTime(float time);
+
+			// Moves the key at `fromTime` to `toTime`. See
+			// AnimationCurve::MoveKey for the tolerance and tangent reasoning;
+			// this is the quaternion-channel equivalent.
+			bool MoveKey(float fromTime, float toTime);
+
 			// One of three inline predicates here (IsEmpty, GetKeyCount, and
 			// RemoveAllKeys above) that keep the trivial accessors out of the
 			// .cpp.

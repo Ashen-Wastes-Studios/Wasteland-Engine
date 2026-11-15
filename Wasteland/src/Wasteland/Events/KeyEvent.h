@@ -17,6 +17,7 @@
 // actually needs for ToString() and should be included directly; if wlpch is
 // force-included the compiler will not need the include at all.
 #include "wlpch.h"
+#include <sstream>
 
 // The Event base, for the category/type macros and the ToString interface.
 #include "Event.h"

@@ -125,6 +125,37 @@ namespace Wasteland {
 			return removed;
 		}
 
+		// Moves a key in time. See the header for why the tolerance matters.
+		//
+		// Erase-then-insert rather than an in-place Time write plus a re-sort:
+		// the insert path is the same one AddKey uses, so the ordering invariant
+		// is maintained by code that already maintains it, and the replace-at-the-
+		// same-time rule cannot produce a duplicate.
+		bool AnimationCurve::MoveKey(float fromTime, float toTime)
+		{
+			if (m_Keys.empty() || fromTime == toTime)
+				return false;
+
+			const float kTimeTolerance = 1e-6f;
+			auto it = std::find_if(m_Keys.begin(), m_Keys.end(),
+								   [fromTime, kTimeTolerance](const Keyframe &k)
+								   { return std::abs(k.Time - fromTime) <= kTimeTolerance; });
+			if (it == m_Keys.end())
+				return false;
+
+			Keyframe moved = *it;
+			m_Keys.erase(it);
+			moved.Time = toTime;
+
+			// Lower_bound on the Time field: the list is sorted by Time, and
+			// this is the same insertion point AddKey computes.
+			auto at = std::lower_bound(m_Keys.begin(), m_Keys.end(), moved.Time,
+									   [](const Keyframe &k, float t) { return k.Time < t; });
+			m_Keys.insert(at, moved);
+			InvalidateCache();
+			return true;
+		}
+
 		// Recomputes every key's tangents from its neighbours -- the "auto" in auto
 		// tangents, as against hand-authored slopes.
 

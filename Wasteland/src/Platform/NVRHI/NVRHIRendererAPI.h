@@ -106,7 +106,8 @@ namespace Wasteland {
 		// Batched by default: commands are recorded onto the context's open command
 		// list rather than submitted immediately. Only when no list is open does it
 		// fall back to a transient open/record/close/execute.
-		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0) override;
+		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0,
+		                         uint32_t instanceCount = 1, uint32_t firstInstance = 0) override;
 		// UNIMPLEMENTED. The .cpp only logs WL_CORE_WARN and returns, so both
 		// parameters are unused and line geometry never appears under DX11/DX12/Vulkan.
 		// Only OpenGL draws lines (glDrawArrays).

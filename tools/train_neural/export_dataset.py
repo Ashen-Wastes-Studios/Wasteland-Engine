@@ -165,6 +165,14 @@ CONVERGED_FRAME = 400
 # brightness difference that the renderer no longer has.
 NOISY_FRAME = CONVERGED_FRAME
 
+# A PARTIALLY converged frame index, for the WLRR arms. Past the settled-size point
+# (frame 6 is the first 2332x1451 frame, so anything earlier is a resize artefact)
+# but far short of convergence, so the accumulation still holds real noise while
+# also having real temporal history. That combination is the only regime in which a
+# spatiotemporal filter has both something to remove and the information to remove
+# it with -- see the WLRR PASSES entries below and tools/verify_wlrr_incumbent.py.
+PARTIAL_FRAME = 10
+
 # Passes. `gt` is the reconstruction target; `input` is what the network sees.
 # Both are converged by default so the pair differs ONLY in render scale --
 # the cleanest possible pairing, and the one whose alignment is easiest to
@@ -174,6 +182,59 @@ PASSES = {
     "gt": dict(scale=1.0, accumulate=True, frame=CONVERGED_FRAME, neural=1),
     "input": dict(scale=0.5, accumulate=True, frame=CONVERGED_FRAME, neural=1),
     "noisy": dict(scale=0.5, accumulate=False, frame=NOISY_FRAME, neural=1),
+    # The WLRR arms (Task 10). NOTE the accumulation state: these are accum ON at
+    # a PARTIALLY converged frame, NOT accum-off single frames, and that is a
+    # deliberate departure from the plan's Step 1 wording. It is forced by
+    # measurement, not preference.
+    #
+    # The plan specifies input = single-frame (accum off, scale 0.5) because that
+    # is where the render-stage neural work found its headroom (+2.042 dB vs
+    # +0.084 dB). But WLRR's anchor is the INCUMBENT DENOISER, and SVGF only acts
+    # with temporal history: its A-Trous weights are driven by the temporal
+    # moments, so with no history it has no variance to guide it. Measured, that
+    # makes the anchor degenerate -- `incumbent` lands 0.038-0.062/255 from
+    # `noisy`, and against `gt` the two arms score 39.184 vs 39.180 dB, i.e. the
+    # anchor carries the same information as the input. A head trained on that
+    # pair learns to denoise the raw input, which is passes 17/18/19's job, not
+    # `out = incumbent + gate * residual`.
+    #
+    # At partial convergence both properties hold at once: real history, so the
+    # incumbent actually denoises (measured mean|d| 0.84/255 between the arms,
+    # 67x the no-history figure), AND real noise left to remove. That is also the
+    # realistic deployment point -- a game frame is never 1 spp with no history.
+    #
+    # `wlrr_input`/`wlrr_incumbent` are NEW passes rather than changes to `noisy`,
+    # because `noisy` is the neural stage's existing training input and moving it
+    # would silently invalidate that dataset.
+    # `image=1` is load-bearing. Pass 21 reads img_Accumulation (the linear,
+    # pre-composite buffer) for BOTH of its arms: `inc` is img_Accumulation
+    # after the a-trous filter and `inp` is the pre-filter copy pass 20 takes.
+    # Capturing these arms from the default image 0 (img_Output, the tonemapped
+    # present) trains the head on a different signal than the one it runs on --
+    # measured: the composite's within-scene std is ~1.9 against ~15.1 for the
+    # accumulation, and the runtime correction came out ~60x the trained one.
+    # `wlrr_gt` is a separate pass because `gt` is shared with the WLFG dataset,
+    # which IS a composite-space target and must not be moved.
+    # BOTH arms come from ONE denoise-on run with the zero blob, and the input
+    # arm is read from the pass-20 SNAPSHOT (image 10), not from a separate
+    # denoise-off run. Measured why: a denoise-off run accumulates a DIFFERENT
+    # temporal chain (raw traces), so its separation from the incumbent arm is
+    # 0.94, while the runtime head sees same-run pre-vs-post-SVGF at 1.53 -- the
+    # dataset was training on the wrong quantity. With WL_WLRR=1 and a zero blob
+    # the chain is the plain incumbent chain (pass 21 writes the anchor = inc
+    # back), so one run yields both arms: image 10 = pre-SVGF, image 1 = post.
+    # `wlrr_gt` stays a converged read of image 1 in the same chain.
+    "wlrr_input": dict(scale=0.5, accumulate=True, frame=PARTIAL_FRAME, neural=1,
+                       denoise=1, wlrr=1, image=10),
+    "wlrr_incumbent": dict(scale=0.5, accumulate=True, frame=PARTIAL_FRAME, neural=1,
+                           denoise=1, wlrr=1, image=1),
+    "wlrr_gt": dict(scale=0.5, accumulate=True, frame=CONVERGED_FRAME, neural=1,
+                    denoise=1, wlrr=1, image=1),
+    # Kept as the degenerate arm the measurement above describes, so the finding
+    # stays reproducible rather than becoming a claim in a comment. NOT a training
+    # arm.
+    "incumbent": dict(scale=0.5, accumulate=False, frame=NOISY_FRAME, neural=1,
+                      denoise=1),
 }
 
 MANIFEST_VERSION = 1
@@ -350,9 +411,64 @@ def sha256_file(path: Path) -> str:
 # --------------------------------------------------------------------------
 
 
+# Provenance for the WLRR fail-closed contract (tools/train_wlrr/data_contract.py).
+#
+# Emitted ONLY when a run exports the WLRR arm set, and derived from the pass list
+# rather than hardcoded into the manifest. A run that exports a different arm set
+# must not inherit this run's claim: a provenance block that describes arms which
+# are not present is worse than no block, because it passes the contract check
+# while asserting something untrue.
+# `wlrr_gt`, NOT `gt`: the shared `gt` arm is img_Output (composite) and
+# is a different colour domain from what pass 21 samples. See
+# tools/train_wlrr/data_contract.py.
+WLRR_ARMS = {"wlrr_input", "wlrr_incumbent", "wlrr_gt"}
+
+
+def wlrr_provenance(passes_used) -> dict:
+    """The WLRR contract fields, or {} if this run did not export the WLRR arms."""
+    if not WLRR_ARMS.issubset(set(passes_used)):
+        return {}
+    return dict(
+        dataset_status="verified_denoise_arms",
+        factor_axis="render_scale_and_convergence",
+        # The arms are PNGs, not the lossless float32 .npy the WLFG set uses.
+        # Stated because it is a real limitation: the arm separation is ~1.0-1.24
+        # /255 against a +/-0.5 quantisation floor. See the WLRR data_contract.
+        state_encoding="png8",
+        # Which buffer the readback came from. Must match what pass 21 samples
+        # (img_Accumulation, set via WL_NOVA_CAPTURE_IMAGE=1 in PASSES above).
+        color_domain="img_Accumulation_linear_pre_composite",
+        spatial_alignment="verified",
+    )
+
+
+def _zero_blob_path(out_dir: Path) -> Path:
+    """Write the WLRR identity payload next to the dataset and return its path.
+
+    524 zero weights, mean 0, std 1, alpha 0. With this blob pass 21 writes the
+    anchor (= the incumbent) back, so the capture chain is the plain incumbent
+    chain while passes 20/21 still run -- which is what makes image 10 a real
+    pre-SVGF read of the SAME run rather than a different run's buffer. The
+    layout must stay in sync with the shader's payload offsets.
+    """
+    import struct, zlib
+    payload = bytearray(545 * 4)
+    struct.pack_into("<9f", payload, 533 * 4, *([1.0] * 9))   # std = 1
+    raw = bytes(payload)
+    crc = zlib.crc32(raw) & 0xFFFFFFFF
+    blob = (b"WLRR" + struct.pack("<I", 1) + struct.pack("<I", len(raw)) +
+            struct.pack("<I", 10) + struct.pack("<I", len(raw)) +
+            struct.pack("<I", crc)) + raw
+    q = out_dir / "wlrr_zero.bin"
+    q.parent.mkdir(parents=True, exist_ok=True)
+    q.write_bytes(blob)
+    return q
+
+
 def build_env(scene: str, camera: tuple, pass_name: str, out_path: Path) -> dict:
     name, focal, distance, pitch, yaw = camera
     spec = PASSES[pass_name]
+    zero_blob = _zero_blob_path(out_path.parent)
     env = dict(os.environ)
     env.update(
         {
@@ -362,15 +478,44 @@ def build_env(scene: str, camera: tuple, pass_name: str, out_path: Path) -> dict
             "WL_CAPTURE_PRESET": "3",
             "WL_CAPTURE_SCALE": repr(spec["scale"]),
             "WL_CAPTURE_NEURAL": str(spec["neural"]),
+            # Which Nova image the readback returns. Default 0 = img_Output (the
+            # present). The WLRR arms set 1 = img_Accumulation because that is
+            # the buffer pass 21 actually samples.
+            "WL_NOVA_CAPTURE_IMAGE": os.environ.get("WL_NOVA_CAPTURE_IMAGE_FORCE", str(spec.get("image", 0))),
+            # WLRR arms run WITH the passes active and the identity blob, so the
+            # pass-20 snapshot exists and the chain matches the zero-blob runtime.
+            # WL_WLRR_WEIGHTS_FORCE lets a diagnostic pick a real blob; the plain
+            # variable is overwritten here, which silently forced the zero blob in
+            # every capture (the whole v7-era "no effect" mystery).
+            ** ({"WL_WLRR": "1",
+                 "WL_WLRR_WEIGHTS": os.environ.get("WL_WLRR_WEIGHTS_FORCE", str(zero_blob))}
+                if spec.get("wlrr") else {}),
+            # WL_NOVA_CAPTURE_IMAGE_FORCE lets a diagnostic read any image; plain
+            # WL_NOVA_CAPTURE_IMAGE is overwritten here, which silently made an
+            # 'image 10' probe read image 1.
             "WL_CAPTURE_ACCUM": "1" if spec["accumulate"] else "0",
             "WL_DRS_OFF": "1",
             "WL_SCREENSHOT": str(out_path),
-            "WL_SCREENSHOT_FRAME": str(spec["frame"]),
+            "WL_SCREENSHOT_FRAME": os.environ.get("WL_SCREENSHOT_FRAME_FORCE", str(spec["frame"])),
             # Long enough for the shot to land inside the retry window, short
             # enough not to sit there after it has. The process closes itself.
             "WL_SCREENSHOT_LINGER": "6",
         }
     )
+    # The WLRR arm turns the incumbent denoiser on. Set explicitly rather than
+    # left to the project/UI default, because "the incumbent is on" is the whole
+    # difference between this pass and `noisy` -- inheriting the default would
+    # make the arm depend on editor state the dataset cannot record.
+    #
+    # 11 is ReconstructionFilter::SpatialDenoise, the value the SVGF gate at
+    # Renderer3D.cpp:3930 accepts.
+    if spec.get("denoise"):
+        env["WL_AA_FILTER"] = "11"
+    else:
+        # Do not let a denoise setting in the ambient environment leak into the
+        # arms that must NOT have it -- that would silently turn `noisy` into a
+        # second `incumbent` and make the pair a no-op.
+        env.pop("WL_AA_FILTER", None)
     return env
 
 
@@ -633,9 +778,11 @@ def export(args) -> int:
     passes = list(args.passes) if args.passes else ["gt", "input"]
 
     out_root = Path(args.out).resolve()
-    (out_root / "gt").mkdir(parents=True, exist_ok=True)
-    (out_root / "input").mkdir(parents=True, exist_ok=True)
-    (out_root / "noisy").mkdir(parents=True, exist_ok=True)
+    # Derived from PASSES rather than listed, so adding a pass cannot leave its
+    # directory missing -- which would fail the capture only after the editor had
+    # already been launched for it.
+    for _p in PASSES:
+        (out_root / _p).mkdir(parents=True, exist_ok=True)
 
     # Manifest repair is a read-only pass over the PNGs; it must not also run a
     # capture plan, and it needs the same scene list the capture would use.
@@ -678,8 +825,25 @@ def export(args) -> int:
             continue
 
         stats = res["stats"]
-        blank = stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99
+        # The blank check measures LOCAL CONTRAST -- how much high-frequency detail
+        # is left. That is the right question for an arm the network must
+        # reconstruct, and the WRONG question for a denoise arm: removing
+        # high-frequency noise is precisely what the incumbent filter is for, so a
+        # correctly denoised frame has low contrast BY CONSTRUCTION.
+        #
+        # Measured on Example3D auto_y0: the incumbent arm reads contrast p99 2.0
+        # against 8.2 for its non-denoised sibling, and the run failed with "no
+        # edges, so nothing to reconstruct" -- a working denoiser reported as a
+        # blank capture.
+        #
+        # So the guard is skipped for denoise arms, and the duty moves to the
+        # sibling: if the filter genuinely had nothing to work on, the
+        # non-denoised arm of the SAME camera is blank, and that frame still fails
+        # the run. Blankness is a property of the scene, not of the filter.
+        denoise_arm = bool(PASSES[pass_name].get("denoise"))
+        blank = (not denoise_arm) and stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99
         print(f"ok {stats['mean_luma']:.1f} luma, contrast p99 {stats['contrast_p99']:.1f}"
+              f"{'  (denoise arm -- contrast floor not applied)' if denoise_arm else ''}"
               f"  ({res['elapsed']:.0f}s)")
 
         # Every capture in a run must be the same size. The pairs are compared
@@ -785,6 +949,10 @@ def export(args) -> int:
             converged_frame=CONVERGED_FRAME,
             noisy_frame=NOISY_FRAME,
             min_contrast_p99=MIN_LOCAL_CONTRAST_P99,
+            # Empty unless the WLRR arms were exported. Derived from the frames
+            # actually KEPT, not from the CLI, so the claim describes what is on
+            # disk rather than what was asked for.
+            **wlrr_provenance(f["pass_name"] for f in kept),
         ),
         frames=kept,
         failures=[dict(id=f, error=e) for f, e in failures] + still_missing,
@@ -874,7 +1042,8 @@ def rebuild_manifest(scenes: list, out_root: Path, passes: list) -> int:
                     sha256=sha256_file(path),
                     mean_luma=round(stats["mean_luma"], 4),
                     contrast_p99=round(stats["contrast_p99"], 4),
-                    blank=stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99,
+                    blank=(not PASSES[pass_name].get("denoise"))
+                          and stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99,
                 ))
     frames.sort(key=lambda e: e["id"])
 
@@ -886,6 +1055,8 @@ def rebuild_manifest(scenes: list, out_root: Path, passes: list) -> int:
             converged_frame=CONVERGED_FRAME,
             noisy_frame=NOISY_FRAME,
             min_contrast_p99=MIN_LOCAL_CONTRAST_P99,
+            # Same derivation as the capture path: from the frames on disk.
+            **wlrr_provenance(f["pass_name"] for f in frames),
         ),
         frames=frames,
         failures=[dict(id=f, error="no PNG on disk") for f in sorted(missing)],
@@ -959,18 +1130,38 @@ def validate(args) -> int:
         if stats["mean_luma"] < MIN_MEAN_LUMA:
             errors.append(f"{fid}: mean luma {stats['mean_luma']:.3f} below floor"
                          f" {MIN_MEAN_LUMA} -- image is black")
-        if stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99:
+        if stats["contrast_p99"] < MIN_LOCAL_CONTRAST_P99 and not PASSES.get(
+                frame.get("pass_name"), {}).get("denoise"):
             # An error, not a warning: a frame with no edges has nothing for the
             # network to reconstruct, so the pair is unusable however valid the
             # render is. Silently accepting it is the failure mode this gate
             # exists to prevent.
+            #
+            # NOT applied to a denoise arm: removing high-frequency noise is what
+            # the incumbent filter is FOR, so a correctly denoised frame is low
+            # contrast by construction. Measured on Example3D auto_y0, the
+            # incumbent arm reads contrast p99 2.0 against 5.9 for its
+            # non-denoised sibling -- a working denoiser reported as a blank
+            # capture. Blankness is a property of the scene, not of the filter,
+            # and the sibling arm still carries the check.
             errors.append(
                 f"{fid}: local contrast p99 {stats['contrast_p99']:.1f} below floor"
                 f" {MIN_LOCAL_CONTRAST_P99} -- no edges, so nothing to reconstruct"
                 f" (sky or a flat surface; move the camera)"
             )
 
-    # Pairing: every gt must have exactly one input with the same scene+camera.
+    # Pairing: every gt must be accompanied by at least one non-gt arm at the same
+    # scene+camera, and every arm must have its gt.
+    #
+    # This used to name `input` specifically. That was correct while the neural
+    # stage's gt/input pair was the only dataset this tool produced; it stopped
+    # being correct when the WLRR arms arrived, where gt pairs with `wlrr_input`
+    # and `wlrr_incumbent`. Naming one pass made the validator report four FALSE
+    # errors on a perfectly good WLRR dataset ("no matching input/ frame"), which
+    # is worse than no validator: it trains the reader to ignore it.
+    #
+    # The rule is stated over the passes actually present, so it holds for any arm
+    # set without the validator having to know which feature produced it.
     def key(frame, drop):
         cam = frame.get("camera", {})
         return (
@@ -983,40 +1174,44 @@ def validate(args) -> int:
         )
 
     gt_keys = {key(f, "pass_name"): f for f in frames if f.get("pass_name") == "gt"}
-    input_keys = [key(f, "pass_name") for f in frames if f.get("pass_name") == "input"]
+    arm_keys = [key(f, "pass_name") for f in frames if f.get("pass_name") != "gt"]
 
     for k, frame in gt_keys.items():
-        count = input_keys.count(k)
+        count = arm_keys.count(k)
         if count == 0:
-            errors.append(f"{frame['id']}: no matching input/ frame")
-        elif count > 1:
-            errors.append(f"{frame['id']}: {count} matching input/ frames (expected 1)")
-    for k in input_keys:
+            errors.append(f"{frame['id']}: no arm at the same scene+camera "
+                          f"(gt has nothing to be paired with)")
+    for k in arm_keys:
         if k not in gt_keys:
-            errors.append(f"input frame {k} has no matching gt/ frame")
+            errors.append(f"arm frame at {k} has no matching gt/ frame")
 
     # Pair geometry must agree: same camera, and gt is the full-res member.
+    # Checked against EVERY arm at the key, not just `input` -- see the pairing
+    # note above for why naming one pass stopped being correct.
     for frame in frames:
         if frame.get("pass_name") != "gt":
             continue
-        match = next((f for f in frames
-                      if f.get("pass_name") == "input" and key(f, "") == key(frame, "")), None)
-        if match is None:
-            continue
-        if match["render_scale"] >= frame["render_scale"]:
-            warnings.append(
-                f"{frame['id']}: input render_scale {match['render_scale']} is not below "
-                f"gt render_scale {frame['render_scale']}"
-            )
-        if (match["width"], match["height"]) != (frame["width"], frame["height"]):
-            errors.append(
-                f"{frame['id']}: input is {match['width']}x{match['height']} but gt is "
-                f"{frame['width']}x{frame['height']}"
+        for match in (f for f in frames
+                      if f.get("pass_name") != "gt" and key(f, "") == key(frame, "")):
+            if match["render_scale"] >= frame["render_scale"]:
+                warnings.append(
+                    f"{frame['id']}: {match['pass_name']} render_scale "
+                    f"{match['render_scale']} is not below "
+                    f"gt render_scale {frame['render_scale']}"
+                )
+            if (match["width"], match["height"]) != (frame["width"], frame["height"]):
+                errors.append(
+                    f"{frame['id']}: {match['pass_name']} is "
+                    f"{match['width']}x{match['height']} but gt is "
+                    f"{frame['width']}x{frame['height']}"
             )
 
     print(f"validated {len(frames)} frame(s) in {manifest_path}")
     print(f"  gt:     {len(gt_keys)}")
-    print(f"  input:  {len(input_keys)}")
+    # Per-pass counts rather than a hardcoded `input`, so a run using the WLRR arms
+    # reports the arms it actually has instead of an empty `input: 0`.
+    for _p in sorted({f.get("pass_name") for f in frames if f.get("pass_name") != "gt"}):
+        print(f"  {_p}:  {sum(1 for f in frames if f.get('pass_name') == _p)}")
     for w in warnings:
         print(f"  WARN  {w}")
     for e in errors:

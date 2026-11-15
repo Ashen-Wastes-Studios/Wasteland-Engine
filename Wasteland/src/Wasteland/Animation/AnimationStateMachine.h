@@ -135,6 +135,45 @@ namespace Wasteland {
 			// Trigger both fire. Validate() does not check for duplicates.
 			void AddTransition(const AnimationTransition &transition);
 
+			// Removes a state by name. Returns false when it did not exist.
+			//
+			// Transitions naming the removed state are deliberately NOT dropped.
+			// Validate() already reports dangling names, and silently deleting
+			// authored transitions would discard work the author can see on the
+			// canvas -- and would make the effect of a delete depend on how the
+			// machine happens to be wired.
+			bool RemoveState(const std::string &stateName);
+
+			// Removes the first transition matching all three fields. Returns false
+			// when none matched. An empty Trigger is a real value here rather than a
+			// wildcard, because unconditional transitions are a documented state.
+			bool RemoveTransition(const std::string &fromState,
+									  const std::string &toState,
+									  const std::string &trigger);
+
+			// ---- Editor property access ----
+			//
+			// Setters rather than mutable references: a reference into m_States is
+			// invalidated by the next AddState (the map can rehash), and an editor
+			// that cached one would corrupt the machine the next time a state was
+			// added.
+			//
+			// Each returns false for an unknown state, so a UI can treat "nothing
+			// happened" the same way SetState already does.
+
+			bool SetStateClip(const std::string &stateName,
+								 const std::shared_ptr<AnimationClip> &clip);
+			bool SetStateSpeed(const std::string &stateName, float speed);
+			bool SetStateLooping(const std::string &stateName, bool looping);
+			bool SetStateTransitionDuration(const std::string &stateName, float duration);
+
+			// Transition edits by INDEX into GetTransitions(). Indices are valid
+			// only until the next add/remove, so a caller must re-read the list
+			// after any mutation -- the same rule the GetTransitions comment gives
+			// for the vector itself.
+			bool SetTransitionTrigger(std::size_t index, const std::string &trigger);
+			bool SetTransitionDuration(std::size_t index, float duration);
+
 			// ---- Triggers ----
 
 			// Arms a trigger. Consumed by the next Update.
@@ -177,6 +216,12 @@ namespace Wasteland {
 			// Inline because it is read every frame by gameplay queries. Note it
 			// returns a reference to a member -- valid for the machine's lifetime.
 			const std::string &GetCurrentState() const { return m_CurrentState; }
+
+			// The clip instance the machine is currently playing, or -1 before the
+			// first SetState. Exists because SetLooping takes an INSTANCE id, and
+			// without this a caller had no way to reach the instance the machine
+			// itself created -- PlayAnimation could not honour its own loop flag.
+			int GetCurrentInstance() const { return m_CurrentInstance; }
 			const std::string &GetPreviousState() const { return m_PreviousState; }
 
 			// True while a crossfade is still running.
@@ -213,6 +258,33 @@ namespace Wasteland {
 			// size_t returned where the surrounding accessors use other widths;
 			// consistent with the container it queries.
 			size_t GetStateCount() const { return m_States.size(); }
+
+			// Read-only enumeration of the state table.
+			//
+			// Added for serialization: a .wlanim file carries the machine, and
+			// a serializer cannot write what it cannot read. The editor's state
+			// machine panel needs the same two views.
+			//
+			// A const reference to the underlying map rather than a copy: a
+			// machine can hold hundreds of states, and a serializer walks it
+			// once. The reference aliases `this`, so a caller must not hold it
+			// across an AddState -- the same rule GetAnimator above carries.
+			const std::unordered_map<std::string, AnimationState> &GetStates() const
+			{
+				return m_States;
+			}
+
+			// The transition list, in INSERTION order. Order is the priority:
+			// FindTriggeredTransition takes the first match, so the author
+			// controls priority purely by insertion order. A copy rather than
+			// a reference because it is a vector of small values and a caller
+			// that holds it across an AddTransition would see a stale list --
+			// for a container whose ORDER is load-bearing, a snapshot is the
+			// safer contract.
+			std::vector<AnimationTransition> GetTransitions() const
+			{
+				return m_Transitions;
+			}
 
 			// ---- Validation ----
 

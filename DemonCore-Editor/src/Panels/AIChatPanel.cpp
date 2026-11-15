@@ -20,6 +20,19 @@
 // Only for GetAssetPath(), so the engine reference is read from the
 // ACTIVE PROJECT rather than from a path relative to the editor.
 #include "Wasteland/Project/Project.h"
+// Provider factory for multi-provider support (OpenAI, Anthropic, Google, Hermes).
+#include "../AI/ProviderFactory.h"
+// IAIProvider types used by the provider-aware LaunchWorker.
+#include "../AI/IAIProvider.h"
+// Concrete providers so TriggerModelFetch can build one from the panel's
+// current UI buffers instead of reading stale values from ApiKeyStore.
+#include "../AI/OpenAICompatibleProvider.h"
+#include "../AI/AnthropicProvider.h"
+#include "../AI/GoogleProvider.h"
+// Skill loader for Hermes-format SKILL.md files.
+#include "../AI/SkillLoader.h"
+// MemoryStore for persistent self-improvement memory.
+#include "../AI/MemoryStore.h"
 
 // ImGui, for the whole OnImGuiRender UI.
 #include <imgui/imgui.h>
@@ -52,6 +65,8 @@ namespace Wasteland
 		// std::terminate.
 		if (m_Worker.joinable())
 			m_Worker.join();
+		if (m_ModelsWorker.joinable())
+			m_ModelsWorker.join();
 	}
 
 	// Builds the OpenAI-compatible request body by string concatenation.
@@ -360,6 +375,199 @@ namespace Wasteland
 		m_EngineContextHaveTime = true;
 	}
 
+	void AIChatPanel::LoadProviderSettings(const char *provider)
+	{
+		ApiKeyStore &store = ApiKeyStore::Instance();
+		if (strcmp(provider, "anthropic") == 0)
+		{
+			strncpy_s(m_KeyBuf, sizeof(m_KeyBuf), store.AnthropicKey.c_str(), _TRUNCATE);
+			strncpy_s(m_BaseURLBuf, sizeof(m_BaseURLBuf), store.AnthropicBaseURL.c_str(), _TRUNCATE);
+			strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), store.AnthropicModel.c_str(), _TRUNCATE);
+		}
+		else if (strcmp(provider, "google") == 0)
+		{
+			strncpy_s(m_KeyBuf, sizeof(m_KeyBuf), store.GoogleKey.c_str(), _TRUNCATE);
+			strncpy_s(m_BaseURLBuf, sizeof(m_BaseURLBuf), store.GoogleBaseURL.c_str(), _TRUNCATE);
+			strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), store.GoogleModel.c_str(), _TRUNCATE);
+		}
+		else if (strcmp(provider, "hermes") == 0)
+		{
+			strncpy_s(m_KeyBuf, sizeof(m_KeyBuf), store.HermesKey.c_str(), _TRUNCATE);
+			strncpy_s(m_BaseURLBuf, sizeof(m_BaseURLBuf), store.HermesBaseURL.c_str(), _TRUNCATE);
+			strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), store.HermesModel.c_str(), _TRUNCATE);
+		}
+		else
+		{
+			strncpy_s(m_KeyBuf, sizeof(m_KeyBuf), store.OpenAIKey.c_str(), _TRUNCATE);
+			strncpy_s(m_BaseURLBuf, sizeof(m_BaseURLBuf), store.OpenAIBaseURL.c_str(), _TRUNCATE);
+			strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), store.OpenAIModel.c_str(), _TRUNCATE);
+		}
+		strncpy_s(m_SystemBuf, sizeof(m_SystemBuf), store.SystemPrompt.c_str(), _TRUNCATE);
+		m_Temp = store.Temperature;
+		// Subagent settings are engine-wide rather than per-provider, so they
+		// are loaded here alongside the other persisted values.
+		m_AutoDelegate = store.AutoDelegate;
+		m_MaxSubagents = store.MaxSubagents;
+	}
+
+	void AIChatPanel::RefreshSkills()
+	{
+		SkillLoader::Refresh();
+		m_SkillNames.clear();
+		m_SelectedSkillIndex = 0;
+		for (const auto &skill : SkillLoader::GetAll())
+			m_SkillNames.push_back(skill.Name);
+		m_SkillsLoaded = true;
+		m_SkillsStatus = m_SkillNames.empty() ? "No skills found" : "";
+	}
+
+	// Runs a parsed <delegate> block on the worker thread. The aggregate is
+	// appended as a "tool" message so the main agent's next request sees it in
+	// the same shape as any other tool result, and the per-task results are
+	// stored for the UI's expandable list.
+	bool AIChatPanel::RunSubagentDelegation(const std::string &text, const std::string &providerName,
+											const std::string &model, float temp,
+											const std::string &systemPrompt, const std::string &toolDefs,
+											bool autoDelegate, int maxSubagents)
+	{
+		// The opt-in gate. A model that emits <delegate> while automatic
+		// delegation is off is told so rather than silently ignored, so it can
+		// fall back to doing the work itself or asking the user.
+		if (!autoDelegate)
+			return false;
+
+		std::vector<SubagentTask> tasks;
+		if (!SubagentSystem::ParseDelegateTag(text, tasks))
+			return false;
+
+		SubagentRunContext ctx;
+		ctx.ProviderName = providerName;
+		ctx.Model = model;
+		ctx.Temperature = temp;
+		ctx.SystemPrompt = systemPrompt;
+		ctx.ToolDefinitionsJson = toolDefs;
+		ctx.MaxIterations = 6;
+		ctx.MaxConcurrent = std::max(1, maxSubagents);
+
+		auto results = SubagentSystem::RunParallel(tasks, ctx);
+		std::string aggregate = SubagentSystem::Aggregate(results);
+
+		{
+			std::lock_guard<std::mutex> lock(m_Mutex);
+			m_LastSubagentResults = std::move(results);
+			m_ShowSubagentResults = true;
+			// Same shape as a tool result, so the loop can continue unchanged.
+			m_Messages.push_back({"tool", aggregate, "delegate"});
+			m_Messages.push_back({"assistant", ""});
+			m_Status = "Delegated " + std::to_string(tasks.size()) + " subagent task(s).";
+			m_ScrollToBottom = true;
+		}
+		return true;
+	}
+
+	// Manual /delegate: the user's goal becomes a single subagent task. Unlike
+	// the automatic path this bypasses m_AutoDelegate -- the user asked for it
+	// explicitly.
+	bool AIChatPanel::DelegateSingleGoal(const std::string &goal)
+	{
+		if (goal.empty())
+			return false;
+
+		SubagentTask task;
+		task.Id = "manual";
+		task.Goal = goal;
+		task.TimeoutSeconds = 120;
+
+		std::vector<SubagentTask> tasks;
+		tasks.push_back(task);
+
+		// Settings are read on the UI thread here, then copied into the run
+		// context by value -- the worker threads must not touch ApiKeyStore.
+		ApiKeyStore &store = ApiKeyStore::Instance();
+		std::string providerName = m_ProviderBuf;
+		std::string model = m_ModelBuf[0] ? m_ModelBuf : store.OpenAIModel;
+
+		SubagentRunContext ctx;
+		ctx.ProviderName = providerName;
+		ctx.Model = model;
+		ctx.Temperature = store.Temperature;
+		ctx.SystemPrompt = store.SystemPrompt;
+		ctx.ToolDefinitionsJson = ToolServer::Instance().GetToolDefinitionsJson();
+		ctx.MaxIterations = 6;
+		ctx.MaxConcurrent = std::max(1, m_MaxSubagents);
+
+		auto results = SubagentSystem::RunParallel(tasks, ctx);
+		std::string aggregate = SubagentSystem::Aggregate(results);
+
+		{
+			std::lock_guard<std::mutex> lock(m_Mutex);
+			m_LastSubagentResults = std::move(results);
+			m_ShowSubagentResults = true;
+			m_Messages.push_back({"tool", aggregate, "delegate"});
+			m_Status = "Delegated goal: " + goal;
+			m_ScrollToBottom = true;
+		}
+		return true;
+	}
+
+	void AIChatPanel::TriggerModelFetch()
+	{
+		if (m_ModelsWorker.joinable())
+			m_ModelsWorker.join();
+
+		std::string provider = m_ProviderBuf;
+		std::string key = m_KeyBuf;
+		std::string base = m_BaseURLBuf[0] ? m_BaseURLBuf : "";
+		std::string model = m_ModelBuf[0] ? m_ModelBuf : "";
+		m_ModelsStatus = "Loading models...";
+		m_AvailableModels.clear();
+		m_SelectedModelIndex = 0;
+
+		m_ModelsWorker = std::thread([this, provider, key, base, model]() {
+			std::vector<std::string> models;
+			IAIProvider *p = nullptr;
+			std::string lower = provider;
+			for (char &c : lower)
+				c = static_cast<char>(tolower(c));
+
+			if (lower == "anthropic" || lower == "claude")
+			{
+				std::string baseUrl = base.empty() ? "https://api.anthropic.com" : base;
+				std::string modelId = model.empty() ? "opus-5.5" : model;
+				p = new AnthropicProvider(baseUrl, key, modelId);
+			}
+			else if (lower == "google" || lower == "gemini")
+			{
+				std::string baseUrl = base.empty() ? "https://generativelanguage.googleapis.com/v1beta" : base;
+				std::string modelId = model.empty() ? "gemini-3.8-flash" : model;
+				p = new GoogleProvider(baseUrl, key, modelId);
+			}
+			else
+			{
+				std::string name = lower;
+				if (name == "custom") name = "Custom";
+				else if (name == "local") name = "Local";
+				else if (name == "openrouter") name = "OpenRouter";
+				else name = "OpenAI";
+
+				std::string baseUrl = base.empty() ? "https://api.openai.com/v1" : base;
+				std::string modelId = model.empty() ? "gpt-6.1-sol" : model;
+				p = new OpenAICompatibleProvider(name, baseUrl, key, modelId);
+			}
+
+			if (p)
+			{
+				models = p->GetModels();
+				delete p;
+			}
+			{
+				std::lock_guard<std::mutex> lock(m_ModelsMutex);
+				m_AvailableModels = std::move(models);
+				m_ModelsStatus = m_AvailableModels.empty() ? "No models found" : "";
+			}
+		});
+	}
+
 	// Sets up and launches the worker thread that performs the request.
 	// Everything the thread needs is copied out on THIS thread first --
 	// see the capture list at the std::thread below.
@@ -376,16 +584,40 @@ namespace Wasteland
 		// Settings are read HERE, on the UI thread, and copied into the
 		// thread by value. The worker never touches ApiKeyStore.
 		ApiKeyStore &store = ApiKeyStore::Instance();
-		// The key is copied into a local rather than captured by reference,
-		// so a settings change mid-request cannot alter the in-flight call.
-		std::string key = store.OpenAIKey;
-		// Copied out of the store one field at a time, all on the UI thread,
-		// so the worker never reads a settings object that Save() might be
-		// mutating.
-		std::string base = store.OpenAIBaseURL;
-		std::string model = store.OpenAIModel;
+		std::string providerName = m_ProviderBuf;
+		std::string key;
+		std::string base;
+		std::string model;
+		if (strcmp(providerName.c_str(), "anthropic") == 0)
+		{
+			key = store.AnthropicKey;
+			base = store.AnthropicBaseURL;
+			model = store.AnthropicModel;
+		}
+		else if (strcmp(providerName.c_str(), "google") == 0)
+		{
+			key = store.GoogleKey;
+			base = store.GoogleBaseURL;
+			model = store.GoogleModel;
+		}
+		else if (strcmp(providerName.c_str(), "hermes") == 0)
+		{
+			key = store.HermesKey;
+			base = store.HermesBaseURL;
+			model = store.HermesModel;
+		}
+		else
+		{
+			key = store.OpenAIKey;
+			base = store.OpenAIBaseURL;
+			model = store.OpenAIModel;
+		}
+		if (model.empty())
+			model = m_ModelBuf;
 		float temp = store.Temperature;
 		std::string system = store.SystemPrompt;
+		std::string effort = m_EffortPresetBuf;
+		std::string modelPreset = m_ModelPresetBuf;
 		// The transcript snapshot. Copied under the lock because the worker
 		// will keep appending to m_Messages while this runs.
 		std::vector<ChatMessage> history;
@@ -400,6 +632,12 @@ namespace Wasteland
 		}
 		// Read on the UI thread for the same reason as history.
 		bool agentic = m_AgenticMode;
+		// Subagent settings are snapshotted on the UI thread with the rest of
+		// the request state. The worker reads the copies, never the members,
+		// so a checkbox edit mid-run is a plain stale read rather than a data
+		// race.
+		bool autoDelegate = m_AutoDelegate;
+		int maxSubagents = m_MaxSubagents;
 		// Tool schemas are fetched on the UI thread, so a slow ToolServer
 		// cannot stall the worker.
 		std::string toolDefs = ToolServer::Instance().GetToolDefinitionsJson();
@@ -430,6 +668,14 @@ namespace Wasteland
 			// contribute least.
 			maxHistory = 12;
 		}
+		// Skills are injected after engine context but before tool definitions,
+		// so the model sees available skills before tool conventions.
+		if (!m_SkillNames.empty())
+		{
+			effectiveSystem += "\n\n" + SkillLoader::GetDescriptionsMarkdown();
+			// Skills add context, so reduce history slightly.
+			maxHistory = std::max(size_t(8), maxHistory - 2);
+		}
 		// Second pass over agentic, after the engine-context branch above
 		// has already lowered maxHistory. Order is significant: agentic
 		// wins.
@@ -457,251 +703,131 @@ namespace Wasteland
 			}
 		}
 
+		// Subagent delegation is advertised only when the user opted in. The
+		// tag format is documented here because SubagentSystem parses exactly
+		// this shape; the two are coupled by convention, not by a shared
+		// constant.
+		if (agentic && m_AutoDelegate)
+		{
+			effectiveSystem += "\n\n## Subagents\n";
+			effectiveSystem += "When a request contains multiple INDEPENDENT parts, you may delegate them to parallel subagents instead of doing them one at a time. ";
+			effectiveSystem += "Emit a <delegate> block listing one <task> per part. Each task runs on its own thread with its own tool access and returns a summary to you.\n";
+			effectiveSystem += "Format:\n<delegate>\n<task id=\"1\" goal=\"What the subagent should accomplish\" tools=\"tool_a,tool_b\" />\n<task id=\"2\" goal=\"Another independent goal\" />\n</delegate>\n";
+			effectiveSystem += "Rules: only delegate independent work; do not delegate when a later step depends on an earlier result; keep the number of tasks reasonable (2-6). ";
+			effectiveSystem += "After the subagent results come back, synthesize them into your final answer.";
+		}
+
+		// Apply effort preset to temperature if not custom.
+		if (effort == "low")
+			temp = 0.3f;
+		else if (effort == "high")
+			temp = 1.2f;
+
 		// Set before the thread starts, so a second Send is rejected by the
 		// m_Sending check in SendCurrentInput.
 		m_Sending.store(true);
-		// Written without the lock. It is only read by the UI thread, which
-		// is this thread, and the worker has not started yet -- but every
-		// later m_Status write DOES take the lock, so the discipline is
-		// inconsistent.
 		m_Status = "Sending...";
 
-		// The capture list is the contract with the UI thread: key, base,
-		// model, temp, the assembled prompt, the history snapshot and the
-		// limits are all COPIED. Only `this` is captured by pointer, and
-		// the destructor joins before the panel dies, so that is safe.
-		// `agentic` is captured too so the worker can skip the agent loop
-		// without asking the UI thread.
-		m_Worker = std::thread([this, key, base, model, temp, effectiveSystem, history, maxHistory, agentic]() {
-			// The endpoint is assembled on the WORKER, not the UI thread, so a
-			// second send cannot observe a half-built URL.
-			std::string endpoint = base;
-			// Trailing slashes stripped before appending, so a base URL ending
-			// in '/' does not produce a double slash.
-			while (!endpoint.empty() && endpoint.back() == '/')
-				endpoint.pop_back();
-			// The fixed path suffix. OpenAI-compatible servers expose the
-			// completion endpoint here regardless of the base URL's shape.
-			endpoint += "/chat/completions";
+		// Create the provider on the UI thread so factory errors surface immediately.
+		IAIProvider *provider = ProviderFactory_Create(providerName);
+		if (!provider)
+		{
+			std::lock_guard<std::mutex> lock(m_Mutex);
+			m_Messages.push_back({"error", "Unknown provider: " + providerName + ". Choose OpenAI, Anthropic, Google, Hermes, Local, or Custom."});
+			m_Status = "Idle.";
+			m_Sending.store(false);
+			m_ScrollToBottom = true;
+			return;
+		}
 
-			// Bearer auth added only when a key exists, which is what lets an
-			// unauthenticated local server (LM Studio, llama.cpp) work.
-			HttpHeaders headers;
-			// No key means no Authorization header at all, which is what allows
-			// an unauthenticated local server to work.
-			if (!key.empty())
-				headers.emplace_back("Authorization", "Bearer " + key);
-
-			// A placeholder assistant message is pushed BEFORE the request so
-			// the streamed deltas have somewhere to land -- the callback below
-			// appends to m_Messages.back().
-			{
+		// The capture list is the contract with the UI thread: provider pointer,
+		// settings, the assembled prompt, the history snapshot and the limits
+		// are all COPIED. Only `this` is captured by pointer.
+		// providerName and toolDefs are captured for the subagent path, which
+		// rebuilds the run context per delegation rather than reusing the main
+		// thread's provider instance.
+		m_Worker = std::thread([this, provider, providerName, model, temp, effectiveSystem, history, maxHistory, agentic, toolDefs, autoDelegate, maxSubagents]() {
+			// The streaming callback: appends text deltas to the current
+			// assistant message under the lock.
+			auto streamCallback = [this](const std::string &delta) -> bool {
 				std::lock_guard<std::mutex> lock(m_Mutex);
-				// Empty text, filled in by the stream callback. DEFECT: it is pushed
-				// under the lock here, but the request below can fail, in which case
-				// the trailing error handling has to overwrite this same message --
-				// the placeholder is doing double duty as both the streaming
-				// target and the error slot.
-				m_Messages.push_back({"assistant", ""});
-				// Status changed under the lock because the UI reads it (
-				// unsafely) from another thread.
-				m_Status = "Receiving...";
-				// Requested here and consumed by the UI's scroll logic below.
-				m_ScrollToBottom = true;
-			}
+				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
+				{
+					m_Messages.back().Text += delta;
+					m_ScrollToBottom = true;
+				}
+				return true;
+			};
 
-			// Buffers partial SSE lines across chunk boundaries. A TCP read can
-			// split a line anywhere, so the tail must survive between calls.
-			std::string parseBuf;
-			// Three separate error channels, because three different things can
-			// go wrong: the request itself (reqError), the SSE payload
-			// (streamError), and the HTTP status (status).
-			std::string streamError;
-			long status = 0;
-			// The one call whose RETURN VALUE is kept. The follow-up calls in
-			// the agent loop discard theirs (see the note there).
-			std::string reqError = HttpClient::PostStream(
-				endpoint, BuildRequestBody(model, temp, effectiveSystem, history, maxHistory, true), headers,
-				// The streaming callback, invoked on the WORKER thread as each chunk
-				// arrives. Everything it touches that the UI also touches is under
-				// the mutex -- except m_ScrollToBottom, which is a plain bool read
-				// and written by both threads.
-				[&parseBuf, this, &streamError](const char *data, size_t len) {
-					parseBuf.append(data, len);
-					// Declared outside the callback and captured by reference, so it
-					// survives across chunk invocations -- which is what lets a line
-					// split across two TCP reads still be parsed.
-					size_t pos = 0;
-					// Drain complete lines from the buffer. parseBuf keeps any trailing
-					// partial line for the next chunk.
-					while ((pos = parseBuf.find('\n')) != std::string::npos)
-					{
-						std::string line = parseBuf.substr(0, pos);
-						// Erase from the front: O(n) per line, acceptable for a chat
-						// transcript where lines are short and few.
-						parseBuf.erase(0, pos + 1);
-						// Tolerate CRLF as well as LF.
-						if (!line.empty() && line.back() == '\r')
-							line.pop_back();
-						// SSE framing: every data line starts with "data:".
-						if (line.rfind("data:", 0) != 0)
-							continue;
-						// Past the "data:" prefix. substr(5) is safe because rfind already
-						// proved the prefix is there.
-						std::string payload = line.substr(5);
-						// Strip leading whitespace after the colon; the spec allows one
-						// space and servers are inconsistent about how many.
-						size_t b = payload.find_first_not_of(" \t");
-						payload = (b == std::string::npos) ? "" : payload.substr(b);
-						// "[DONE]" is the SSE terminator, and an empty payload is a keep-
-						// alive. Neither carries content.
-						if (payload.empty() || payload == "[DONE]")
-							continue;
-						std::string delta;
-						// JsonMini::ExtractString is the return-as-condition idiom: true
-						// means a content field was found AND the value was non-empty.
-						if (JsonMini::ExtractString(payload, "content", delta))
-						{
-							std::lock_guard<std::mutex> lock(m_Mutex);
-							// Guarded by role as well as emptiness: the placeholder is the last
-							// message, but if a tool result were appended concurrently this would
-							// otherwise write into the wrong one.
-							if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
-							{
-								// Appended, not replaced -- deltas are fragments, so the transcript
-								// grows token by token.
-								m_Messages.back().Text += delta;
-								m_ScrollToBottom = true;
-							}
-						}
-						// An error can arrive mid-stream after content has already been
-						// shown, so it is recorded separately and only surfaced below if
-						// nothing was received.
-						else if (payload.find("\"error\"") != std::string::npos)
-						{
-							std::string msg;
-							if (JsonMini::ExtractString(payload, "message", msg))
-								streamError = msg;
-						}
-					}
-				},
-				// The transport-level error string, kept alongside streamError so
-				// the trailing block can pick the more informative of the two.
-				status);
+			// Helper: perform one provider call with the given history.
+			auto doCall = [this, provider, streamCallback](const std::string &model, float temp,
+				const std::string &system, const std::vector<ChatMessage> &hist, size_t maxHist) -> ProviderResult {
+				ProviderRequest request;
+				request.Model = model;
+				request.Temperature = temp;
+				request.SystemPrompt = system;
+				request.History = hist;
+				request.MaxHistory = maxHist;
+				request.Stream = true;
+				request.ToolDefinitionsJson = ToolServer::Instance().GetToolDefinitionsJson();
+
+				ProviderResult result = provider->Chat(request, streamCallback);
+				return result;
+			};
+
+			// First request.
+			ProviderResult result = doCall(model, temp, effectiveSystem, history, maxHistory);
 
 			// The agent loop. Only reached in agentic mode; otherwise the single
 			// request above is the whole exchange.
 			if (agentic)
 			{
-				// Copied OUT from under the lock into a local, so the tool-scan and
-				// the HTTP call that follows can run without holding the mutex.
 				std::string responseText;
 				{
 					std::lock_guard<std::mutex> lock(m_Mutex);
-					// The assistant text assembled so far becomes the thing scanned for a
-					// tool call. Read under the lock because the worker wrote it.
 					if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
 						responseText = m_Messages.back().Text;
 				}
 
-				// Bounded so a model that keeps requesting tools cannot loop forever
-				// (or spend the user's API credit doing it).
 				int iterations = 0;
-				// kMaxAgentIterations is 10, per the header. The counter counts
-				// ATTEMPTS, so a model gets at most ten tool round trips.
 				while (iterations++ < kMaxAgentIterations)
 				{
-					// Both out-params default-constructed empty, so a tool call with no
-					// <args> block yields an empty argsJson rather than garbage.
-					std::string toolName, argsJson;
-					// Scans the text for a tool call. An empty result means the model
-					// answered in prose, which ends the loop.
-					std::string toolCallText = ExtractToolCall(responseText, toolName, argsJson);
-					if (toolCallText.empty())
-						// The model answered in prose: the agent loop is finished.
-						break;
+					// Subagent delegation is checked BEFORE the tool-call path:
+					// a <delegate> block is not a tool call, and treating it as
+					// one would hand it to ExecuteTool as an unknown name.
+					// RunSubagentDelegation is a no-op (returns false) when
+					// auto_delegate is off or the text holds no delegate block,
+					// so the normal path below is untouched in that case.
+					bool didDelegate = RunSubagentDelegation(responseText, providerName, model, temp,
+															 effectiveSystem, toolDefs,
+															 autoDelegate, maxSubagents);
 
-					// The tool RUNS HERE, on the worker thread. ToolServer is therefore
-					// reached from a non-UI thread for the whole session, which matters
-					// for any tool that touches the filesystem.
-					std::string result = ToolServer::Instance().ExecuteTool(toolName, argsJson);
-
+					if (!didDelegate)
 					{
-						std::lock_guard<std::mutex> lock(m_Mutex);
-						// Result recorded as a tool-role message, plus a fresh empty assistant
-						// placeholder for the next round's stream to fill.
-						m_Messages.push_back({"tool", result, toolName});
-						// A new placeholder for the next round, appended right after the
-						// tool result so the pair is adjacent in the transcript.
-						m_Messages.push_back({"assistant", ""});
-						m_Status = "Tool '" + toolName + "' executed. Thinking...";
-						// The status line names the tool, so the user can see what the agent
-						// is doing without reading the transcript.
-						m_ScrollToBottom = true;
+						std::string toolName, argsJson;
+						std::string toolCallText = ExtractToolCall(responseText, toolName, argsJson);
+						if (toolCallText.empty())
+							break;
+
+						std::string toolResult = ToolServer::Instance().ExecuteTool(toolName, argsJson);
+						{
+							std::lock_guard<std::mutex> lock(m_Mutex);
+							m_Messages.push_back({"tool", toolResult, toolName});
+							m_Messages.push_back({"assistant", ""});
+							m_Status = "Tool '" + toolName + "' executed. Thinking...";
+							m_ScrollToBottom = true;
+						}
 					}
 
-					// A FRESH history snapshot for the follow-up request. This is what
-					// makes the tool result visible to the model.
 					std::vector<ChatMessage> updatedHistory;
 					{
-						// Snapshot including the tool result just pushed -- this is what
-						// makes the model aware of what its tool did.
 						std::lock_guard<std::mutex> lock(m_Mutex);
 						updatedHistory = m_Messages;
 					}
 
-					// Explicit resets between rounds. parseBuf especially: leftover
-					// bytes from the previous response would be prepended to the next
-					// one and corrupt the first line parsed.
-					parseBuf.clear();
-					streamError.clear();
-					status = 0;
-					// DEFECT: this whole callback is a VERBATIM COPY of the lambda at
-					// line 245 -- the SSE framing, the [DONE] check, the delta append,
-					// the error capture, all of it, twice in one function. Any fix to
-					// one copy (a new field, a framing change, a locking bug) will not
-					// be applied to the other, and the two have already drifted in one
-					// respect: neither resets parseBuf between the outer request and
-					// this one except at the explicit clear() above.
-					HttpClient::PostStream(
-						endpoint, BuildRequestBody(model, temp, effectiveSystem, updatedHistory, maxHistory, true), headers,
-						[&parseBuf, this, &streamError](const char *data, size_t len) {
-							parseBuf.append(data, len);
-							size_t pos = 0;
-							// The duplicated loop -- identical to the one at line 457 in every
-							// respect. See the DEFECT note at its declaration.
-							while ((pos = parseBuf.find('\n')) != std::string::npos)
-							{
-								std::string line = parseBuf.substr(0, pos);
-								parseBuf.erase(0, pos + 1);
-								if (!line.empty() && line.back() == '\r')
-									line.pop_back();
-								if (line.rfind("data:", 0) != 0)
-									continue;
-								std::string payload = line.substr(5);
-								size_t b = payload.find_first_not_of(" \t");
-								payload = (b == std::string::npos) ? "" : payload.substr(b);
-								if (payload.empty() || payload == "[DONE]")
-									continue;
-								std::string delta;
-								if (JsonMini::ExtractString(payload, "content", delta))
-								{
-									std::lock_guard<std::mutex> lock(m_Mutex);
-									if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
-									{
-										m_Messages.back().Text += delta;
-										m_ScrollToBottom = true;
-									}
-								}
-								else if (payload.find("\"error\"") != std::string::npos)
-								{
-									std::string msg;
-									if (JsonMini::ExtractString(payload, "message", msg))
-										streamError = msg;
-								}
-							}
-						},
-						status);
+					result = doCall(model, temp, effectiveSystem, updatedHistory, maxHistory);
+					if (!result.Succeeded)
+						break;
 
 					{
 						std::lock_guard<std::mutex> lock(m_Mutex);
@@ -712,64 +838,27 @@ namespace Wasteland
 			}
 
 			std::lock_guard<std::mutex> lock(m_Mutex);
-			// Note the idiom used throughout this file: a dozen separate
-			// `lock_guard<std::mutex> lock(m_Mutex)` declarations (lines 190
-			// through 588), each in its own short scope so the lock releases
-			// early. They are siblings, not nested, so nothing shadows -- but
-			// the repetition makes it easy to add one to the wrong scope.
-			//
-			// The lock above is held for the REST of the lambda, including every
-			// error decision below, since all of them mutate m_Messages.
-			//
-			// haveText distinguishes "the stream produced something" from "it
-			// did not", which decides whether an error REPLACES the message or
-			// merely annotates the status line.
-			//
-			// This is also where the accumulated reply is re-read after each
-			// agent round, which is what lets the next iteration's tool scan
-			// see the model's newest output rather than the first response.
 			bool haveText = !m_Messages.empty() && m_Messages.back().Role == "assistant" &&
 				!m_Messages.back().Text.empty();
-			// setErr overwrites the assistant placeholder when there is one, so a
-			// failure does not leave an empty bubble in the transcript.
 			auto setErr = [this](const std::string &err) {
 				if (!m_Messages.empty() && m_Messages.back().Role == "assistant")
 					m_Messages.back() = {"error", err};
 				else
 					m_Messages.push_back({"error", err});
-				// setErr overwrites the assistant placeholder when there is one, so
-				// a failure does not leave an empty bubble in the transcript;
-				// otherwise it appends a new error message.
-				//
-				// The status line mirrors the error text, so a transport or stream
-				// failure is visible without scrolling the transcript -- unlike
-				// m_EngineContextError, which is computed and never shown at all.
-				//
-				// Everything here runs under the lock taken at the top of the
-				// lambda, which is held to the very end.
 				m_Status = err;
 			};
-			// Priority: a transport error with no content at all is the message;
-			// a transport error AFTER content degrades to a status line, because
-			// throwing away a partial answer the user can see would be worse.
-			if (!reqError.empty() && !haveText)
-				setErr(reqError);
-			else if (!streamError.empty() && !haveText)
-				setErr(streamError);
-			// The partial-answer case: content kept, error demoted to the status
-			// line so the truncation is visible but not destructive.
-			else if (!reqError.empty())
-				m_Status = "Idle (stream ended early: " + reqError + ").";
+			if (!result.Succeeded && !haveText)
+				setErr(result.Error.empty() ? "Request failed." : result.Error);
+			else if (!result.Succeeded && haveText)
+				m_Status = "Idle (stream ended early: " + result.Error + ").";
 			else
-				// The ordinary success path. Note it discards any earlier streamError
-				// when content arrived.
 				m_Status = "Idle.";
-			// Cleared last, so the UI keeps showing "Receiving..." until the
-			// worker is genuinely finished writing results.
+
 			m_Sending.store(false);
 			m_ScrollToBottom = true;
-		// End of the worker lambda. m_Worker is joinable from here on, so
-		// the next LaunchWorker() or the destructor joins it.
+
+			// Clean up the provider after the call.
+			delete provider;
 		});
 	}
 
@@ -784,19 +873,205 @@ namespace Wasteland
 		std::string text = m_InputBuf;
 		// Trimmed before use, so a message that is only whitespace is
 		// discarded rather than sent as an empty turn.
-		size_t b = text.find_first_not_of(" \t\r\n");
+		size_t b = text.find_first_not_of(" 	\r\n");
 		if (b == std::string::npos)
 			// Entirely whitespace: nothing to send. This is the guard that makes
 			// the find_last_not_of below safe.
 			return;
 		// find_last_not_of gives the end index; +1 makes it a length. Safe
 		// here only because the all-whitespace case already returned above.
-		size_t e = text.find_last_not_of(" \t\r\n");
+		size_t e = text.find_last_not_of(" 	\r\n");
 		// The actual trim. Substring rather than in-place erase because `text`
 		// is a local copy and the original buffer is untouched.
 		text = text.substr(b, e - b + 1);
 		if (text.empty())
 			return;
+
+		// Slash command parser: handles commands before the normal chat send.
+		if (text.front() == '/')
+		{
+			std::string response;
+			std::istringstream iss(text);
+			std::string cmd;
+			iss >> cmd;
+
+			if (cmd == "/help")
+			{
+				response = "Available commands:\n"
+					"/help - show this list\n"
+					"/clear - clear transcript\n"
+					"/save - save settings\n"
+					"/provider <name> - switch provider (openai, anthropic, google, hermes, local, custom)\n"
+					"/model <name> - switch model\n"
+					"/effort <low|medium|high|custom> - set effort preset\n"
+					"/python <code> - execute Python code\n"
+					"/scene - list active scene entities\n"
+					"/entity <id> - show entity info\n"
+					"/memory - read persistent memory\n"
+					"/delegate <goal> - run a subagent for the given goal\n"
+					"/doctor - run diagnostics";
+			}
+			else if (cmd == "/clear")
+			{
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				m_Messages.clear();
+				response = "Transcript cleared.";
+			}
+			else if (cmd == "/save")
+			{
+				ApiKeyStore &store = ApiKeyStore::Instance();
+				store.OpenAIKey = m_KeyBuf;
+				store.OpenAIBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://api.openai.com/v1";
+				store.OpenAIModel = m_ModelBuf[0] ? m_ModelBuf : "gpt-6.1-sol";
+				store.SystemPrompt = m_SystemBuf;
+				store.Temperature = m_Temp;
+				store.EffortPreset = m_EffortPresetBuf;
+				store.ModelPreset = m_ModelPresetBuf;
+				store.Provider = m_ProviderBuf;
+				store.AutoDelegate = m_AutoDelegate;
+				store.MaxSubagents = m_MaxSubagents;
+				store.Save();
+				response = "Settings saved.";
+			}
+			else if (cmd == "/provider")
+			{
+				std::string provider;
+				iss >> provider;
+				if (provider.empty())
+					response = "Usage: /provider <openai|anthropic|google|hermes|local|custom>";
+				else
+				{
+					if (provider == "openai") m_ProviderIndex = 0;
+					else if (provider == "anthropic") m_ProviderIndex = 1;
+					else if (provider == "google") m_ProviderIndex = 2;
+					else if (provider == "hermes") m_ProviderIndex = 3;
+					else if (provider == "local") m_ProviderIndex = 4;
+					else if (provider == "custom") m_ProviderIndex = 5;
+					else
+					{
+						response = "Unknown provider: " + provider + ". Use openai, anthropic, google, hermes, local, or custom.";
+						provider.clear();
+					}
+					if (!provider.empty())
+					{
+						strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), provider.c_str(), _TRUNCATE);
+						LoadProviderSettings(m_ProviderBuf);
+						TriggerModelFetch();
+						response = "Provider switched to " + provider + ".";
+					}
+				}
+			}
+			else if (cmd == "/model")
+			{
+				std::string model;
+				std::getline(iss, model);
+				b = model.find_first_not_of(" 	");
+				if (b != std::string::npos)
+					model = model.substr(b);
+				if (model.empty())
+					response = "Usage: /model <model_id>";
+				else
+				{
+					strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), model.c_str(), _TRUNCATE);
+					response = "Model switched to " + model + ".";
+				}
+			}
+			else if (cmd == "/effort")
+			{
+				std::string effort;
+				iss >> effort;
+				if (effort.empty())
+					response = "Usage: /effort <low|medium|high|custom>";
+				else if (effort == "low") m_EffortPresetIndex = 0;
+				else if (effort == "medium") m_EffortPresetIndex = 1;
+				else if (effort == "high") m_EffortPresetIndex = 2;
+				else if (effort == "custom") m_EffortPresetIndex = 3;
+				else
+					response = "Unknown effort: " + effort + ". Use low, medium, high, or custom.";
+				if (effort == "low" || effort == "medium" || effort == "high" || effort == "custom")
+				{
+					strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), effort.c_str(), _TRUNCATE);
+					response = "Effort set to " + effort + ".";
+				}
+			}
+			else if (cmd == "/python")
+			{
+				std::string code;
+				std::getline(iss, code);
+				b = code.find_first_not_of(" 	");
+				if (b != std::string::npos)
+					code = code.substr(b);
+				if (code.empty())
+					response = "Usage: /python <code>";
+				else
+					response = ToolServer::Instance().ExecuteTool("python_exec", "{\"code\":\"" + code + "\"}");
+			}
+			else if (cmd == "/scene")
+			{
+				response = ToolServer::Instance().ExecuteTool("list_entities", "{}");
+			}
+			else if (cmd == "/entity")
+			{
+				std::string id;
+				iss >> id;
+				if (id.empty())
+					response = "Usage: /entity <uuid>";
+				else
+					response = ToolServer::Instance().ExecuteTool("get_entity_info", "{\"id\":\"" + id + "\"}");
+			}
+			else if (cmd == "/memory")
+			{
+				response = ToolServer::Instance().ExecuteTool("memory_read", "{}");
+			}
+			else if (cmd == "/delegate")
+			{
+				std::string goal;
+				std::getline(iss, goal);
+				b = goal.find_first_not_of(" 	");
+				if (b != std::string::npos)
+					goal = goal.substr(b);
+				if (goal.empty())
+					response = "Usage: /delegate <goal>";
+				else if (DelegateSingleGoal(goal))
+					response = "Subagent dispatched for: " + goal;
+				else
+					response = "Subagent dispatch failed (provider unavailable?).";
+			}
+			else if (cmd == "/doctor")
+			{
+				response = "Diagnostics:\n";
+				response += "Provider: " + std::string(m_ProviderBuf) + "\n";
+				response += "Model: " + std::string(m_ModelBuf) + "\n";
+				response += "Base URL: " + std::string(m_BaseURLBuf) + "\n";
+				response += "Key: " + std::string(m_KeyBuf[0] ? "set" : "not set") + "\n";
+				response += "Temperature: " + std::to_string(m_Temp) + "\n";
+				response += "Effort: " + std::string(m_EffortPresetBuf) + "\n";
+				response += "Model preset: " + std::string(m_ModelPresetBuf) + "\n";
+				response += "Subagents: " + std::string(m_AutoDelegate ? "auto-delegate ON" : "auto-delegate OFF") + "\n";
+				response += "Max subagents: " + std::to_string(m_MaxSubagents) + "\n";
+				// The advertised tool count, counted out of the schema rather than
+				// from a second list: the schema is what the model is told it can
+				// call, so its size is the number that matters for a mismatch
+				// between what is advertised and what ExecuteTool dispatches.
+				const std::string toolDefs = ToolServer::Instance().GetToolDefinitionsJson();
+				int toolCount = 0;
+				for (size_t p = toolDefs.find("\"name\":"); p != std::string::npos;
+					 p = toolDefs.find("\"name\":", p + 7))
+					++toolCount;
+				response += "Tools advertised: " + std::to_string(toolCount) + "\n";
+			}
+			else
+			{
+				response = "Unknown command: " + cmd + ". Type /help for available commands.";
+			}
+
+			{
+				std::lock_guard<std::mutex> lock(m_Mutex);
+				m_Messages.push_back({"assistant", response});
+			}
+			m_ScrollToBottom = true;
+			return;
+		}
 
 		{
 			// Locked because the worker may be appending deltas while this
@@ -928,17 +1203,27 @@ namespace Wasteland
 		if (!m_SettingsLoaded)
 		{
 			ApiKeyStore &store = ApiKeyStore::Instance();
-			// _TRUNCATE rather than an explicit length check: a key longer than
-			// the buffer is silently cut rather than rejected. For the key
-			// field that means a pasted 600-character key is accepted and then
-			// fails authentication.
-			strncpy_s(m_KeyBuf, sizeof(m_KeyBuf), store.OpenAIKey.c_str(), _TRUNCATE);
-			strncpy_s(m_BaseURLBuf, sizeof(m_BaseURLBuf), store.OpenAIBaseURL.c_str(), _TRUNCATE);
-			strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), store.OpenAIModel.c_str(), _TRUNCATE);
-			strncpy_s(m_SystemBuf, sizeof(m_SystemBuf), store.SystemPrompt.c_str(), _TRUNCATE);
-			m_Temp = store.Temperature;
-			// Set last, after every field is copied -- so a partial copy can
-			// never mark the settings as loaded.
+			// Restore the last selected provider.
+			strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), store.Provider.c_str(), _TRUNCATE);
+			if (strcmp(m_ProviderBuf, "anthropic") == 0) m_ProviderIndex = 1;
+			else if (strcmp(m_ProviderBuf, "google") == 0) m_ProviderIndex = 2;
+			else if (strcmp(m_ProviderBuf, "hermes") == 0) m_ProviderIndex = 3;
+			else if (strcmp(m_ProviderBuf, "local") == 0) m_ProviderIndex = 4;
+			else if (strcmp(m_ProviderBuf, "custom") == 0) m_ProviderIndex = 5;
+			else { strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "openai", _TRUNCATE); m_ProviderIndex = 0; }
+
+			LoadProviderSettings(m_ProviderBuf);
+
+			RefreshSkills();
+			TriggerModelFetch();
+
+			strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), store.EffortPreset.c_str(), _TRUNCATE);
+			if (strcmp(m_EffortPresetBuf, "low") == 0) m_EffortPresetIndex = 0;
+			else if (strcmp(m_EffortPresetBuf, "medium") == 0) m_EffortPresetIndex = 1;
+			else if (strcmp(m_EffortPresetBuf, "high") == 0) m_EffortPresetIndex = 2;
+			else m_EffortPresetIndex = 3;
+			strncpy_s(m_ModelPresetBuf, sizeof(m_ModelPresetBuf), store.ModelPreset.c_str(), _TRUNCATE);
+			m_ModelPresetIndex = 0;
 			m_SettingsLoaded = true;
 		}
 
@@ -983,6 +1268,99 @@ namespace Wasteland
 				}
 			}
 
+			// Skills selection dropdown.
+			if (ImGui::CollapsingHeader("Skills"))
+			{
+				if (m_SkillsStatus.empty())
+					ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "%zu skills loaded", m_SkillNames.size());
+				else
+					ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.6f, 1.0f), "%s", m_SkillsStatus.c_str());
+
+				if (!m_SkillNames.empty())
+				{
+					if (ImGui::Combo("Active Skill", &m_SelectedSkillIndex, [](void *vec, int idx, const char **out_text) -> bool
+						{
+							const std::vector<std::string> *skills = (const std::vector<std::string> *)vec;
+							if (idx < 0 || idx >= (int)skills->size())
+								return false;
+							*out_text = (*skills)[idx].c_str();
+							return true;
+						}, &m_SkillNames, (int)m_SkillNames.size()))
+					{
+						m_SkillsStatus.clear();
+					}
+
+					if (m_SelectedSkillIndex >= 0 && m_SelectedSkillIndex < (int)m_SkillNames.size())
+					{
+						const SkillInfo *skill = SkillLoader::FindByName(m_SkillNames[m_SelectedSkillIndex]);
+						if (skill)
+						{
+							ImGui::TextWrapped("Description: %s", skill->Description.c_str());
+							if (!skill->Version.empty())
+								ImGui::Text("Version: %s", skill->Version.c_str());
+							if (!skill->Platforms.empty())
+							{
+								ImGui::Text("Platforms: %s", skill->Platforms[0].c_str());
+								for (size_t i = 1; i < skill->Platforms.size(); ++i)
+									ImGui::SameLine(), ImGui::Text(", %s", skill->Platforms[i].c_str());
+							}
+						}
+					}
+				}
+			}
+
+			// Subagent delegation settings. Off by default: the model cannot
+			// spawn threads unless the user opts in, and /delegate remains
+			// available as an explicit per-request override.
+			if (ImGui::CollapsingHeader("Subagents"))
+			{
+				if (ImGui::Checkbox("Auto-delegate parallel work", &m_AutoDelegate))
+				{
+					if (m_AutoDelegate)
+						m_Status = "Auto-delegate ON. The AI can spawn subagents for independent tasks.";
+					else
+						m_Status = "Auto-delegate OFF. /delegate still works on request.";
+				}
+				// Clamped on change so a zero or negative value cannot
+				// produce an empty worker pool (which RunParallel would
+				// silently treat as "run everything at once").
+				if (ImGui::InputInt("Max concurrent subagents", &m_MaxSubagents))
+					m_MaxSubagents = std::max(1, std::min(16, m_MaxSubagents));
+				// The setting is persisted by /save, like the other
+				// ApiKeyStore fields; nothing writes it here.
+				if (!m_AutoDelegate)
+				ImGui::TextWrapped("Off: the AI will not spawn subagents on its own. Use /delegate <goal> to run one explicitly.");
+			}
+
+			// Provider selection dropdown.
+			if (ImGui::Combo("Provider", &m_ProviderIndex, "OpenAI\0Anthropic\0Google\0Hermes\0Local\0Custom\0"))
+			{
+				if (m_ProviderIndex == 0) strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "openai", _TRUNCATE);
+				else if (m_ProviderIndex == 1) strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "anthropic", _TRUNCATE);
+				else if (m_ProviderIndex == 2) strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "google", _TRUNCATE);
+				else if (m_ProviderIndex == 3) strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "hermes", _TRUNCATE);
+				else if (m_ProviderIndex == 4) strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "local", _TRUNCATE);
+				else strncpy_s(m_ProviderBuf, sizeof(m_ProviderBuf), "custom", _TRUNCATE);
+				LoadProviderSettings(m_ProviderBuf);
+				TriggerModelFetch();
+			}
+
+			// Effort + model preset dropdowns.
+			if (ImGui::Combo("Effort", &m_EffortPresetIndex, "Low\0Medium\0High\0Custom\0"))
+			{
+				if (m_EffortPresetIndex == 0) strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), "low", _TRUNCATE);
+				else if (m_EffortPresetIndex == 1) strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), "medium", _TRUNCATE);
+				else if (m_EffortPresetIndex == 2) strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), "high", _TRUNCATE);
+				else strncpy_s(m_EffortPresetBuf, sizeof(m_EffortPresetBuf), "custom", _TRUNCATE);
+			}
+			if (ImGui::Combo("Model preset", &m_ModelPresetIndex, "Default\0Fast\0Smart\0Custom\0"))
+			{
+				if (m_ModelPresetIndex == 0) strncpy_s(m_ModelPresetBuf, sizeof(m_ModelPresetBuf), "default", _TRUNCATE);
+				else if (m_ModelPresetIndex == 1) strncpy_s(m_ModelPresetBuf, sizeof(m_ModelPresetBuf), "fast", _TRUNCATE);
+				else if (m_ModelPresetIndex == 2) strncpy_s(m_ModelPresetBuf, sizeof(m_ModelPresetBuf), "smart", _TRUNCATE);
+				else strncpy_s(m_ModelPresetBuf, sizeof(m_ModelPresetBuf), "custom", _TRUNCATE);
+			}
+
 			// DEFECT: this and the five InputText/SliderFloat blocks below all
 			// have empty if-bodies. The widgets still work -- ImGui writes
 			// through the pointers passed to it, so no return-value handling is
@@ -994,8 +1372,34 @@ namespace Wasteland
 			// Empty bodies throughout this block: ImGui writes through the
 			// pointers, so the widgets work without any return-value handling.
 			// The braces are still misleading.
-			if (ImGui::InputText("Model", m_ModelBuf, sizeof(m_ModelBuf)))
 			{
+				std::vector<std::string> models;
+				{
+					std::lock_guard<std::mutex> lock(m_ModelsMutex);
+					models = m_AvailableModels;
+				}
+				if (models.empty())
+					models.push_back(m_ModelBuf[0] ? m_ModelBuf : "(enter model)");
+
+				auto itemsGetter = [](void *data, int idx, const char **out_text) -> bool {
+					const auto *vec = static_cast<const std::vector<std::string> *>(data);
+					if (idx < 0 || idx >= (int)vec->size())
+						return false;
+					*out_text = vec->at(idx).c_str();
+					return true;
+				};
+
+				int currentIdx = m_SelectedModelIndex;
+				if (currentIdx < 0 || currentIdx >= (int)models.size())
+					currentIdx = 0;
+				if (ImGui::Combo("Model", &currentIdx, itemsGetter, (void *)&models, (int)models.size()))
+				{
+					if (currentIdx >= 0 && currentIdx < (int)models.size())
+					{
+						strncpy_s(m_ModelBuf, sizeof(m_ModelBuf), models[currentIdx].c_str(), _TRUNCATE);
+						m_SelectedModelIndex = currentIdx;
+					}
+				}
 			}
 			if (ImGui::SliderFloat("Temperature", &m_Temp, 0.0f, 2.0f))
 			{
@@ -1019,29 +1423,175 @@ namespace Wasteland
 			if (ImGui::Button("Save settings"))
 			{
 				ApiKeyStore &store = ApiKeyStore::Instance();
-				store.OpenAIKey = m_KeyBuf;
-				// A blank base URL falls back to LM Studio's default port, which is
-				// why a user who types nothing still gets a working local model.
-				store.OpenAIBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "http://localhost:1234/v1";
-				// Same fallback idea for the model name.
-				store.OpenAIModel = m_ModelBuf[0] ? m_ModelBuf : "local-model";
+				if (strcmp(m_ProviderBuf, "anthropic") == 0)
+				{
+					store.AnthropicKey = m_KeyBuf;
+					store.AnthropicBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://api.anthropic.com";
+					store.AnthropicModel = m_ModelBuf[0] ? m_ModelBuf : "opus-5.5";
+				}
+				else if (strcmp(m_ProviderBuf, "google") == 0)
+				{
+					store.GoogleKey = m_KeyBuf;
+					store.GoogleBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://generativelanguage.googleapis.com/v1beta";
+					store.GoogleModel = m_ModelBuf[0] ? m_ModelBuf : "gemini-3.8-flash";
+				}
+				else if (strcmp(m_ProviderBuf, "hermes") == 0)
+				{
+					store.HermesKey = m_KeyBuf;
+					store.HermesBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://inference-api.nousresearch.com/v1";
+					store.HermesModel = m_ModelBuf[0] ? m_ModelBuf : "step-3.7-flash";
+				}
+				else
+				{
+					store.OpenAIKey = m_KeyBuf;
+					store.OpenAIBaseURL = m_BaseURLBuf[0] ? m_BaseURLBuf : "https://api.openai.com/v1";
+					store.OpenAIModel = m_ModelBuf[0] ? m_ModelBuf : "gpt-6.1-sol";
+				}
 				store.SystemPrompt = m_SystemBuf;
 				store.Temperature = m_Temp;
-				// Save writes to disk before the status line updates, so a failure
-				// -- reported by Save() -- cannot be announced as success here.
+				store.EffortPreset = m_EffortPresetBuf;
+				store.ModelPreset = m_ModelPresetBuf;
+				store.Provider = m_ProviderBuf;
+				store.AutoDelegate = m_AutoDelegate;
+				store.MaxSubagents = m_MaxSubagents;
 				store.Save();
 				m_Status = "Settings saved.";
-			}
-			// Clear key wipes both the buffer and the store, then saves -- so the
-			// key is removed from disk too, not just from the UI.
-			if (ImGui::SameLine(); ImGui::Button("Clear key"))
-			{
-				// Buffer cleared first, then the store, then a save. Three steps so
-				// the key is gone from memory, from the store, and from disk.
+				}
+				// Clear key wipes both the buffer and the store, then saves -- so the
+				// key is removed from disk too, not just from the UI.
+				if (ImGui::SameLine(); ImGui::Button("Clear key"))
+				{
 				m_KeyBuf[0] = '\0';
-				ApiKeyStore::Instance().OpenAIKey.clear();
-				ApiKeyStore::Instance().Save();
+				ApiKeyStore &store = ApiKeyStore::Instance();
+				if (strcmp(m_ProviderBuf, "anthropic") == 0)
+					store.AnthropicKey.clear();
+				else if (strcmp(m_ProviderBuf, "google") == 0)
+					store.GoogleKey.clear();
+				else if (strcmp(m_ProviderBuf, "hermes") == 0)
+					store.HermesKey.clear();
+				else
+					store.OpenAIKey.clear();
+				store.Save();
 				m_Status = "API key cleared.";
+				}
+
+				// Memory inspector: shows project memory entries and allows forgetting.
+			if (ImGui::CollapsingHeader("Memory Inspector"))
+			{
+				MemoryStore::Initialize();
+				if (!MemoryStore::IsAvailable())
+				{
+					ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.6f, 1.0f), "No project open for memory");
+				}
+				else
+				{
+					auto stats = MemoryStore::ProjectStats();
+					ImGui::Text("Total entries: %zu", stats.TotalEntries);
+					ImGui::Text("Lessons: %zu | Preferences: %zu | Corrections: %zu | Snippets: %zu | Tool telemetry: %zu",
+						stats.Lessons, stats.Preferences, stats.Corrections, stats.Snippets, stats.ToolTelemetry);
+
+					static char memQuery[128] = {};
+					if (ImGui::InputText("Search memory", memQuery, sizeof(memQuery)))
+					{
+						m_MemorySearchResults.clear();
+						if (memQuery[0])
+							MemoryStore::ProjectSearch(memQuery, m_MemorySearchResults);
+					}
+
+					std::vector<MemoryEntry> displayEntries;
+					if (memQuery[0])
+						displayEntries = m_MemorySearchResults;
+					else
+						displayEntries = MemoryStore::ProjectRead("");
+
+					for (size_t i = 0; i < displayEntries.size(); ++i)
+					{
+						const auto &entry = displayEntries[i];
+						char timeBuf[64] = {};
+						tm timeInfo = {};
+						localtime_s(&timeInfo, &entry.Timestamp);
+						std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M", &timeInfo);
+
+						if (ImGui::TreeNode(("##mem_" + std::to_string(i)).c_str()))
+						{
+							ImGui::Text("[%s] [%s]", timeBuf, entry.Category.c_str());
+							ImGui::TextWrapped("%s", entry.Text.c_str());
+							ImGui::TreePop();
+						}
+						if (ImGui::SameLine(); ImGui::SmallButton(("Forget##" + std::to_string(i)).c_str()))
+						{
+							MemoryStore::ProjectForget(entry.Key);
+							m_MemorySearchResults.clear();
+						}
+					}
+				}
+			}
+
+			// Subagent results: shown only after a delegation has run, so the
+			// section is absent from a fresh panel rather than empty.
+			if (m_ShowSubagentResults)
+			{
+				if (ImGui::CollapsingHeader("Subagent Results"))
+				{
+					std::vector<SubagentResult> results;
+					{
+						// Copied under the lock because the worker fills the list
+						// while the UI renders.
+						std::lock_guard<std::mutex> lock(m_Mutex);
+						results = m_LastSubagentResults;
+					}
+
+					if (results.empty())
+					{
+					 ImGui::Text("No subagent results yet.");
+					}
+
+					for (size_t i = 0; i < results.size(); ++i)
+					{
+						const auto &r = results[i];
+						// Success/failure is colour-coded, because a failed
+						// subagent is easy to miss in a wall of text.
+						ImVec4 colour = r.Success ? ImVec4(0.6f, 0.8f, 0.6f, 1.0f)
+												 : ImVec4(0.8f, 0.6f, 0.6f, 1.0f);
+						std::string label = "Task " + r.TaskId + (r.Success ? " (done)" : " (failed)");
+						if (ImGui::TreeNode(("##sub_" + std::to_string(i)).c_str()))
+						{
+							if (!r.Success)
+							 ImGui::TextColored(colour, "Error: %s", r.Error.c_str());
+							// The summary is the part the main agent consumed; it
+							// is shown in full because it is usually a paragraph.
+							if (!r.Summary.empty())
+							 ImGui::TextWrapped("%s", r.Summary.c_str());
+							if (!r.FullOutput.empty() && r.FullOutput != r.Summary)
+							{
+								if (ImGui::TreeNode("Full output"))
+								{
+								 ImGui::TextWrapped("%s", r.FullOutput.c_str());
+									// TreePop() returns void; a stray `== false` here was a
+									// no-op comparison that did not compile.
+									(void)ImGui::TreePop();
+								}
+							}
+						}
+						else
+						{
+							// One-line preview so a collapsed task is still
+							// identifiable without opening it.
+							std::string preview = r.Success ? r.Summary : r.Error;
+							if (preview.size() > 80)
+								preview = preview.substr(0, 77) + "...";
+							if (!preview.empty())
+							ImGui::SameLine(), ImGui::TextColored(colour, "%s", preview.c_str());
+						}
+					}
+
+					if (ImGui::Button("Clear results"))
+					{
+						std::lock_guard<std::mutex> lock(m_Mutex);
+						m_LastSubagentResults.clear();
+						m_ShowSubagentResults = false;
+					}
+				}
 			}
 		}
 		// Collapsed state: two one-click agent toggles instead of the whole

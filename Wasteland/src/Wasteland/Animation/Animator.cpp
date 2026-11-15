@@ -609,7 +609,7 @@ namespace Wasteland {
 				// Guarded by the m_Skeleton test on the line above -- Evaluate already
 				// handles a null skeleton by clearing the pose, and this is the only
 				// other place m_Skeleton is dereferenced.
-				m_Skeleton->ComputeWorldMatrices(outPose, m_LastWorld, glm::mat4(1.0f), false);
+				m_Skeleton->ComputeWorldMatrices(outPose, m_LastWorld, glm::mat4(1.0f));
 		}
 
 		// Blends src into dst, scaled by weight. Static and private: it is
@@ -1058,27 +1058,15 @@ namespace Wasteland {
 				const AnimationInstance &instance = entry.second;
 				if (!instance.IsValid())
 					continue;
-				// DEFECT (documented, not fixed): m_BlendMode has NO SETTER anywhere
-				// -- grep for it finds exactly two occurrences in the codebase, this
-				// read and the declaration in the header, where it is initialised to
-				// BlendMode::Interpolate and never assigned. So this test is ALWAYS
-				// true, the loop below NEVER runs, and the additive path of BlendPose
-				// -- including the base-lookup defect documented there -- is
-				// unreachable dead code in the current build. SetAdditiveBase has the
-				// same problem: it stores a base nothing can consume.
-
-				// This is a wiring gap rather than a logic error: the additive blending
-				// is implemented and, as far as the source shows, correct; there is
-				// simply no way to select it.
-				// (the continue below is unconditional in practice, for the reason
-				//  just described)
+				// Reachable since SetBlendMode was added. While this is not Additive
+				// every instance takes this path and the additive pass is skipped --
+				// correct for the default Interpolate mode, and what a plain crossfade
+				// wants. The additive blending itself (and the base-lookup defect
+				// documented on BlendPose) is now reachable rather than dead code.
 				if (m_BlendMode != BlendMode::Additive)
 					// Skips the instance. Placed after the IsValid check so an invalid
 					// instance is skipped for the ordinary reason before the blend-mode
 					// test is even consulted.
-
-					// Because m_BlendMode is hard-wired to Interpolate, EVERY instance takes
-					// this path and the additive pass never executes.
 					continue;
 
 				// A second Sample call for the same instance and time as the average

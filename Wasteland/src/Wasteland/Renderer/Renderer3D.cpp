@@ -257,6 +257,20 @@ namespace Wasteland
         bool Enabled = true;
     };
 
+    // CPU-side projected decal (world-space projector). Filled per-frame by
+    // SubmitDecal from DecalComponents. Right/Up span the footprint plane, Dir
+    // is the cast axis (transform local +Z), Size = (halfW, halfH, castLen,
+    // enabled). Kept as vec4s because that is exactly how they are uploaded.
+    struct DecalData
+    {
+        glm::vec4 Pos   = {0.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec4 Right = {1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec4 Up    = {0.0f, 1.0f, 0.0f, 0.0f};
+        glm::vec4 Dir   = {0.0f, 0.0f, 1.0f, 0.0f};
+        glm::vec4 Size  = {0.5f, 0.5f, 2.0f, 1.0f}; // halfW, halfH, castLen, enabled
+        glm::vec4 Color = {0.05f, 0.04f, 0.035f, 0.85f};
+    };
+
     // CPU-side analytic light (world space). Type: 0=dir, 1=point, 2=spot, 3=area.
     // Direction = travel direction (dir/spot) or rect normal facing the scene (area).
     // Type is a float rather than an enum because it is uploaded inside a packed
@@ -1694,6 +1708,7 @@ namespace Wasteland
         float VolStepScale = 1.0f;                                     // global quality multiplier for march steps
         std::vector<FogVolumeData> FogVolumes;
         std::vector<CloudVolumeData> CloudVolumes;
+        std::vector<DecalData> Decals;
 
         // Effective sun for volumetrics/god-rays: first submitted directional
         // light wins, else the global SunDirection with a neutral warm color.
@@ -1716,6 +1731,10 @@ namespace Wasteland
 
         // Screen-space god rays (radial blur from sun)
         bool GodRaysEnabled = false;
+        // Effects register bitmask (see WL_EFLAGS_* in the Nova shader). Flipped
+        // by the A/B harness (WL_EFFECTS env) and later the editor panel; pushed
+        // to u_EffectsFlags on every backend from the three NVRHI flushes + GL.
+        int EffectsFlags = 0;
         float GodRayIntensity = 0.5f;
         float GodRayDecay = 0.95f;
         int GodRaySamples = 24;
@@ -1740,6 +1759,21 @@ namespace Wasteland
         int Loc_GlobalFogBaseHeight;
         int Loc_GlobalFogDistAtten;
         int Loc_GodRaysEnabled;
+        // Effects-register uniform (NovaConstants_0.u_EffectsFlags_0). Resolved
+        // and uploaded for the OpenGL inline Nova path in Flush(); the NVRHI
+        // flushes push the same value through n.Set(). Must be declared in the
+        // shader and READ, or glGetUniformLocation silently returns -1.
+        int Loc_EffectsFlags;
+        // GL locations for the Nova projected-decal uniforms (u_Decal*). Resolved
+        // once per program compile against the `NovaConstants_0.u_*_0` names; each
+        // -1 until then, and each guarded at upload.
+        int Loc_DecalCount = -1;
+        int Loc_DecalPos = -1;
+        int Loc_DecalRight = -1;
+        int Loc_DecalUp = -1;
+        int Loc_DecalDir = -1;
+        int Loc_DecalSize = -1;
+        int Loc_DecalColor = -1;
         // The projected sun position as a VEC2, uploaded with glUniform2f. Paired with
         // Loc_GodSunValid, since a stale screen position must never be read when the
         // validity flag is zero.
@@ -2294,11 +2328,41 @@ namespace Wasteland
     {
         // Read the class instances, not file-scope copies: the file-scope set was
         // a decoy pair that Init() never assigned, so these clears were no-ops.
-        if(DX11Nova* n11 = Renderer3D::GetNovaDX11()) n11->Clear();
+        //
+        // Every Nova clear is guarded. Clear() is maintenance, not correctness --
+        // and this runs from ApplyRenderSettings during OnAttach, so an escaping
+        // C++ exception is an UNHANDLED exception in main: the editor dies with a
+        // stack trace instead of reporting a lost device. DX12Nova::Clear throws
+        // on any HRESULT failure (DX12Nova.h:450), including device removal.
+        if (DX11Nova* n11 = Renderer3D::GetNovaDX11())
+        {
+            try { n11->Clear(); }
+            catch (const std::exception& error)
+            {
+                WL_CORE_ERROR("Renderer3D: DX11 Nova clear failed, continuing: {0}",
+                              error.what());
+            }
+        }
         // Each Nova backend clears its own history alongside the GL targets below.
         // The active instance receives the clear before the GL-only resources are checked.
-        if(DX12Nova* n12 = Renderer3D::GetNovaDX12()) n12->Clear();
-        if(VulkanNova* nvk = Renderer3D::GetNovaVulkan()) nvk->Clear();
+        if (DX12Nova* n12 = Renderer3D::GetNovaDX12())
+        {
+            try { n12->Clear(); }
+            catch (const std::exception& error)
+            {
+                WL_CORE_ERROR("Renderer3D: DX12 Nova clear failed, continuing: {0}",
+                              error.what());
+            }
+        }
+        if (VulkanNova* nvk = Renderer3D::GetNovaVulkan())
+        {
+            try { nvk->Clear(); }
+            catch (const std::exception& error)
+            {
+                WL_CORE_ERROR("Renderer3D: Vulkan Nova clear failed, continuing: {0}",
+                              error.what());
+            }
+        }
         // The GL half is a no-op on NVRHI: every texture below is unallocated there,
         // so clearing them would be clearing names that were never created.
         if (!Renderer3DGLAvailable())
@@ -2880,6 +2944,20 @@ namespace Wasteland
                 WL_CORE_INFO("Reconstruction filter override: WL_AA_FILTER={} -> {}", v, filterName);
             }
         }
+        // Effects-register override, for the A/B harness: WL_EFFECTS=<bitmask>
+        // where bit 0 = WL_EFLAGS_DEBUG_TINT (a whole-frame magenta cast proving
+        // the u_EffectsFlags plumbing reaches every backend). Accepts 0x-hex
+        // (flags are conventionally written hex) or decimal. Pronounced in the
+        // log so a no-op override is detectable rather than silent.
+        const char *fxEnv = std::getenv("WL_EFFECTS");
+        if (fxEnv != nullptr && fxEnv[0] != '\0')
+        {
+            int flags = (fxEnv[0] == '0' && (fxEnv[1] == 'x' || fxEnv[1] == 'X'))
+                ? (int)strtoul(fxEnv + 2, nullptr, 16)
+                : std::atoi(fxEnv);
+            s_Data.EffectsFlags = flags;
+            WL_CORE_INFO("Effects-register override: WL_EFFECTS={} -> 0x{:X}", fxEnv, flags);
+        }
         if (s_Data.ScreenCullPixels > 0.0f)
             WL_CORE_INFO("Screen-space instance cull enabled: {} trace px", s_Data.ScreenCullPixels);
         WL_CORE_INFO("CPU instance cull: {}", s_Data.CpuCullEnabled ? "on" : "OFF (WASTELAND_CPU_CULL=0)");
@@ -3332,6 +3410,14 @@ namespace Wasteland
         s_Data.Loc_GlobalFogBaseHeight = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogBaseHeight_0");
         s_Data.Loc_GlobalFogDistAtten = glGetUniformLocation(rtProg, "NovaConstants_0.u_GlobalFogDistAtten_0");
         s_Data.Loc_GodRaysEnabled = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRaysEnabled_0");
+        s_Data.Loc_EffectsFlags = glGetUniformLocation(rtProg, "NovaConstants_0.u_EffectsFlags_0");
+        s_Data.Loc_DecalCount = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalCount_0");
+        s_Data.Loc_DecalPos = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalPos_0");
+        s_Data.Loc_DecalRight = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalRight_0");
+        s_Data.Loc_DecalUp = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalUp_0");
+        s_Data.Loc_DecalDir = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalDir_0");
+        s_Data.Loc_DecalSize = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalSize_0");
+        s_Data.Loc_DecalColor = glGetUniformLocation(rtProg, "NovaConstants_0.u_DecalColor_0");
         s_Data.Loc_GodSunScreenPos = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodSunScreenPos_0");
         s_Data.Loc_GodSunValid = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodSunValid_0");
         s_Data.Loc_GodRayIntensity = glGetUniformLocation(rtProg, "NovaConstants_0.u_GodRayIntensity_0");
@@ -3636,6 +3722,7 @@ namespace Wasteland
         ReportAnalyticLightOverflow();
         s_Data.FogVolumes.clear();
         s_Data.CloudVolumes.clear();
+        s_Data.Decals.clear();
         s_Data.AnalyticLights.clear();
         // The ray-traced instance list is cleared with the batches. That is safe for a
         // mid-frame overflow because the overflow Flush has already built the BVH and
@@ -3752,6 +3839,7 @@ namespace Wasteland
         ReportAnalyticLightOverflow();
         s_Data.FogVolumes.clear();
         s_Data.CloudVolumes.clear();
+        s_Data.Decals.clear();
         s_Data.AnalyticLights.clear();
         s_Data.m_SceneInstances.clear();
         s_Data.m_TerrainVertices.clear();
@@ -4239,6 +4327,7 @@ namespace Wasteland
         n.Set("u_NeuralEnabled",(int)s_Data.NeuralEnabled);
         n.Set("u_GlobalFogEnabled",(int)s_Data.GlobalFogEnabled);
         n.Set("u_GodRaysEnabled",(int)s_Data.GodRaysEnabled);
+        n.Set("u_EffectsFlags",(int)s_Data.EffectsFlags);
         n.Set("u_FogEnabled",(int)s_Data.VolFogEnabled);
         n.Set("u_CloudEnabled",(int)s_Data.VolCloudsEnabled);
         // The effective sun is recomputed here in the flush, rather than in
@@ -4270,6 +4359,12 @@ namespace Wasteland
             n.Set("u_CloudData",glm::vec4(v.Coverage,v.Density,v.NoiseScale,v.Detail),i);
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
+        }
+        // Projected decals (fixed capacity -- MaxDecals caps the list at Submit).
+        int dc=(int)glm::min(s_Data.Decals.size(),(size_t)Renderer3D::MaxDecals);n.Set("u_DecalCount",dc);
+        for(int i=0;i<dc;++i) {const auto& d=s_Data.Decals[i];
+            n.Set("u_DecalPos",d.Pos,i);n.Set("u_DecalRight",d.Right,i);n.Set("u_DecalUp",d.Up,i);
+            n.Set("u_DecalDir",d.Dir,i);n.Set("u_DecalSize",d.Size,i);n.Set("u_DecalColor",d.Color,i);
         }
         // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
         // (the distance-selected set) rather than AnalyticLights (submission order).
@@ -4381,6 +4476,31 @@ namespace Wasteland
             n.Upload(0,s_Data.m_ReorderedInstances.data(),(UINT)s_Data.m_ReorderedInstances.size(),sizeof(RayTracingInstance));
             if (std::getenv("WL_NOVA_DIAGNOSTICS"))
                 WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(0) done");
+            // TEMP DIAGNOSTIC: the reordered instances' shape discriminators.
+            {
+                std::string shapes, pos;
+                for (size_t i = 0; i < s_Data.m_ReorderedInstances.size() && i < 8; i++)
+                {
+                    shapes += std::to_string((int)(s_Data.m_ReorderedInstances[i].MaterialParams.z + 0.5f)) + ",";
+                    const auto& w = s_Data.m_ReorderedInstances[i].WorldTransform;
+                    pos += "[" + std::to_string(w[3][0]) + "," + std::to_string(w[3][1]) + "," + std::to_string(w[3][2]) + "]";
+                    if (i == 3)
+                    {
+                        std::string m;
+                        for (int c = 0; c < 4; c++)
+                            m += "[" + std::to_string(w[c][0]) + "," + std::to_string(w[c][1]) + ","
+                               + std::to_string(w[c][2]) + "," + std::to_string(w[c][3]) + "]";
+                        WL_CORE_WARN("[meshdata] instance3 world {}", m);
+                    }
+                }
+                WL_CORE_WARN("[meshdata] reordered instances {} shapes[{}] worlds[{}]", s_Data.m_ReorderedInstances.size(), shapes, pos);
+                if (const char* dd = std::getenv("WASTELAND_VIS_MESH_DUMP"))
+                {
+                    FILE* f = fopen((std::string(dd) + "/instances.bin").c_str(), "wb");
+                    if (f) { fwrite(s_Data.m_ReorderedInstances.data(), sizeof(RayTracingInstance),
+                                    s_Data.m_ReorderedInstances.size(), f); fclose(f); }
+                }
+            }
             n.Upload(1,s_Data.m_BVHNodes.data(),(UINT)s_Data.m_BVHNodes.size(),sizeof(BVHNodeGPU));
             if (std::getenv("WL_NOVA_DIAGNOSTICS"))
                 WL_CORE_INFO("DEBUG NOVA: FlushDX12Nova Upload(1) done");
@@ -4513,6 +4633,7 @@ namespace Wasteland
         n.Set("u_NeuralEnabled",(int)s_Data.NeuralEnabled);
         n.Set("u_GlobalFogEnabled",(int)s_Data.GlobalFogEnabled);
         n.Set("u_GodRaysEnabled",(int)s_Data.GodRaysEnabled);
+        n.Set("u_EffectsFlags",(int)s_Data.EffectsFlags);
         // The global volumetric toggle, uploaded next to the per-volume FogCount. Both
         // are needed: a count with the flag off must still render nothing.
         n.Set("u_FogEnabled",(int)s_Data.VolFogEnabled);
@@ -4557,6 +4678,12 @@ namespace Wasteland
             n.Set("u_CloudData",glm::vec4(v.Coverage,v.Density,v.NoiseScale,v.Detail),i);
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
+        }
+        // Projected decals (fixed capacity -- MaxDecals caps the list at Submit).
+        int dc=(int)glm::min(s_Data.Decals.size(),(size_t)Renderer3D::MaxDecals);n.Set("u_DecalCount",dc);
+        for(int i=0;i<dc;++i) {const auto& d=s_Data.Decals[i];
+            n.Set("u_DecalPos",d.Pos,i);n.Set("u_DecalRight",d.Right,i);n.Set("u_DecalUp",d.Up,i);
+            n.Set("u_DecalDir",d.Dir,i);n.Set("u_DecalSize",d.Size,i);n.Set("u_DecalColor",d.Color,i);
         }
         // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
         // (the distance-selected set) rather than AnalyticLights (submission order).
@@ -4790,6 +4917,7 @@ namespace Wasteland
         n.Set("u_NeuralEnabled",(int)s_Data.NeuralEnabled);
         n.Set("u_GlobalFogEnabled",(int)s_Data.GlobalFogEnabled);
         n.Set("u_GodRaysEnabled",(int)s_Data.GodRaysEnabled);
+        n.Set("u_EffectsFlags",(int)s_Data.EffectsFlags);
         // The global volumetric toggle, uploaded next to the per-volume FogCount. Both
         // are needed: a count with the flag off must still render nothing.
         n.Set("u_FogEnabled",(int)s_Data.VolFogEnabled);
@@ -4834,6 +4962,12 @@ namespace Wasteland
             n.Set("u_CloudData",glm::vec4(v.Coverage,v.Density,v.NoiseScale,v.Detail),i);
             n.Set("u_CloudData2",glm::vec4(v.WindSpeed,v.WindDir.x,v.WindDir.y,glm::clamp(float(v.Steps)*s_Data.VolStepScale*stepFactor,1.0f,32.0f)),i);
             n.Set("u_CloudData3",glm::vec4(v.SilverLining,v.ShadowStrength,v.Enabled?1.0f:0.0f,0),i);
+        }
+        // Projected decals (fixed capacity -- MaxDecals caps the list at Submit).
+        int dc=(int)glm::min(s_Data.Decals.size(),(size_t)Renderer3D::MaxDecals);n.Set("u_DecalCount",dc);
+        for(int i=0;i<dc;++i) {const auto& d=s_Data.Decals[i];
+            n.Set("u_DecalPos",d.Pos,i);n.Set("u_DecalRight",d.Right,i);n.Set("u_DecalUp",d.Up,i);
+            n.Set("u_DecalDir",d.Dir,i);n.Set("u_DecalSize",d.Size,i);n.Set("u_DecalColor",d.Color,i);
         }
         // MaxRenderedLights, not the literal 8 this used to be, and RenderedLights
         // (the distance-selected set) rather than AnalyticLights (submission order).
@@ -5660,6 +5794,33 @@ void Renderer3D::Flush()
             // absent. This guard is the one that makes an older shader keep working.
             if (s_Data.Loc_GodRaysEnabled >= 0)
                 glUniform1i(s_Data.Loc_GodRaysEnabled, s_Data.GodRaysEnabled ? 1 : 0);
+            if (s_Data.Loc_EffectsFlags >= 0)
+                glUniform1i(s_Data.Loc_EffectsFlags, s_Data.EffectsFlags);
+            // Projected decals: element-0 location + count uploads the whole list
+            // (std140 vec4 arrays are contiguous), mirroring the EffectFlags guard.
+            {
+                int dc = (int)glm::min(s_Data.Decals.size(), (size_t)Renderer3D::MaxDecals);
+                if (s_Data.Loc_DecalCount >= 0)
+                    glUniform1i(s_Data.Loc_DecalCount, dc);
+                if (dc > 0)
+                {
+                    glm::vec4 pos[Renderer3D::MaxDecals], rgt[Renderer3D::MaxDecals],
+                             upv[Renderer3D::MaxDecals], dirv[Renderer3D::MaxDecals],
+                             siz[Renderer3D::MaxDecals], col[Renderer3D::MaxDecals];
+                    for (int i = 0; i < dc; i++)
+                    {
+                        const DecalData &d = s_Data.Decals[(size_t)i];
+                        pos[i] = d.Pos; rgt[i] = d.Right; upv[i] = d.Up;
+                        dirv[i] = d.Dir; siz[i] = d.Size; col[i] = d.Color;
+                    }
+                    if (s_Data.Loc_DecalPos >= 0)    glUniform4fv(s_Data.Loc_DecalPos, dc, glm::value_ptr(pos[0]));
+                    if (s_Data.Loc_DecalRight >= 0)  glUniform4fv(s_Data.Loc_DecalRight, dc, glm::value_ptr(rgt[0]));
+                    if (s_Data.Loc_DecalUp >= 0)     glUniform4fv(s_Data.Loc_DecalUp, dc, glm::value_ptr(upv[0]));
+                    if (s_Data.Loc_DecalDir >= 0)    glUniform4fv(s_Data.Loc_DecalDir, dc, glm::value_ptr(dirv[0]));
+                    if (s_Data.Loc_DecalSize >= 0)   glUniform4fv(s_Data.Loc_DecalSize, dc, glm::value_ptr(siz[0]));
+                    if (s_Data.Loc_DecalColor >= 0)  glUniform4fv(s_Data.Loc_DecalColor, dc, glm::value_ptr(col[0]));
+                }
+            }
             if (s_Data.Loc_GodSunScreenPos >= 0)
                 glUniform2f(s_Data.Loc_GodSunScreenPos, s_Data.GodSunScreenPos.x, s_Data.GodSunScreenPos.y);
             if (s_Data.Loc_GodSunValid >= 0)
@@ -7241,7 +7402,7 @@ void Renderer3D::Flush()
     // supplies the shape id and the local bounds, and everything else -- vertex
     // generation, the analytic instance, material packing -- happens here.
     void Renderer3D::DrawProceduralPrimitive(const glm::mat4 &transform, const ProceduralMesh &mesh,
-                                             const glm::vec4 &color, MaterialComponent &material,
+                                             const glm::vec4 &color, const MaterialComponent &material,
                                              int shape, const glm::vec3 &localMin, const glm::vec3 &localMax,
                                              float shapeParam, float shapeParam2, int entityID)
     {
@@ -7350,7 +7511,12 @@ void Renderer3D::Flush()
         // Vertex generation happens regardless of backend, but the analytic instance is
         // only built when the tracer is live. The seven shapes therefore cost CPU
         // tessellation even on a raster-only run, where they are not drawn.
-        if (!s_Data.RayTracingEnabled)
+        //
+        // A negative shape is the RASTER-ONLY sentinel used by DrawSkinnedMesh: a
+        // deformed character has no analytic primitive to hand the tracer, and
+        // submitting one (any PrimitiveShape) would put a phantom cube at the
+        // character's origin. Skinned meshes are out of scope for Nova.
+        if (!s_Data.RayTracingEnabled || shape < 0)
             return;
 
         RayTracingInstance instance = {};
@@ -7421,10 +7587,31 @@ void Renderer3D::Flush()
         }
         s_Data.m_SceneDirty = true;
     }
+    // Draws CPU-skinned geometry (Animation::SkinnedMesh output) through the shared
+    // dynamic batch. The mesh is already deformed, in the entity's local space; the
+    // transform places it in the world. Raster only -- see the negative-shape note
+    // in DrawProceduralPrimitive.
+    void Renderer3D::DrawSkinnedMesh(const glm::mat4 &transform, const ProceduralMesh &mesh,
+                                     const MaterialComponent &material, int entityID)
+    {
+        DrawMesh(transform, mesh, material, entityID);
+    }
+
+    // One body for both names. The shape id is -1, the RASTER-ONLY sentinel:
+    // an imported mesh has no analytic primitive, so the Nova tracer has
+    // nothing to intersect and pushing an instance for it would produce a
+    // phantom hit. See the comment block above DrawProceduralPrimitive.
+    void Renderer3D::DrawMesh(const glm::mat4 &transform, const ProceduralMesh &mesh,
+                              const MaterialComponent &material, int entityID)
+    {
+        DrawProceduralPrimitive(transform, mesh, material.Albedo, material, -1,
+                                glm::vec3(0.0f), glm::vec3(0.0f), 0.0f, 0.0f, entityID);
+    }
+
     // A thin wrapper: shape id, local bounds and the two shape parameters. The
     // `color` parameter is accepted and IGNORED by DrawProceduralPrimitive, which
     // takes the albedo from material.Albedo instead.
-    void Renderer3D::DrawPlane(const glm::mat4 &transform, const glm::vec4 &color, int subdivisions, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawPlane(const glm::mat4 &transform, const glm::vec4 &color, int subdivisions, const MaterialComponent &material, int entityID)
     {
         DrawProceduralPrimitive(transform, ProceduralMeshes::Plane(subdivisions), color, material,
                                  (int)PrimitiveShape::Plane,
@@ -7434,7 +7621,7 @@ void Renderer3D::Flush()
 
     // radius is passed as BOTH shapeParam (to MaterialParams.w, the analytic radius)
     // and used to build the local bounds, so the shader and the bounding box agree.
-    void Renderer3D::DrawCircle(const glm::mat4 &transform, const glm::vec4 &color, float radius, int segments, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawCircle(const glm::mat4 &transform, const glm::vec4 &color, float radius, int segments, const MaterialComponent &material, int entityID)
     {
         DrawProceduralPrimitive(transform, ProceduralMeshes::Circle(segments), color, material,
                                  (int)PrimitiveShape::Circle,
@@ -7442,7 +7629,7 @@ void Renderer3D::Flush()
                                  radius, 1.0f, entityID);
     }
 
-    void Renderer3D::DrawGrid(const glm::mat4 &transform, const glm::vec4 &color, int xSubdivisions, int ySubdivisions, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawGrid(const glm::mat4 &transform, const glm::vec4 &color, int xSubdivisions, int ySubdivisions, const MaterialComponent &material, int entityID)
     {
         DrawProceduralPrimitive(transform, ProceduralMeshes::Grid(xSubdivisions, ySubdivisions), color, material,
                                  (int)PrimitiveShape::Grid,
@@ -7452,7 +7639,7 @@ void Renderer3D::Flush()
 
     // Height is a FULL height, unlike BoxCollider3DComponent's half-extents, so the
     // local bounds halve it while the shader receives the full value in Min.w.
-    void Renderer3D::DrawCylinder(const glm::mat4 &transform, const glm::vec4 &color, float radius, float height, int segments, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawCylinder(const glm::mat4 &transform, const glm::vec4 &color, float radius, float height, int segments, const MaterialComponent &material, int entityID)
     {
         // Height is a FULL height here (unlike BoxCollider3DComponent's
         // half-extents), so the local bounds use height * 0.5 while the shader
@@ -7464,7 +7651,7 @@ void Renderer3D::Flush()
                                  radius, height, entityID);
     }
 
-    void Renderer3D::DrawCone(const glm::mat4 &transform, const glm::vec4 &color, float radius, float height, int segments, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawCone(const glm::mat4 &transform, const glm::vec4 &color, float radius, float height, int segments, const MaterialComponent &material, int entityID)
     {
         DrawProceduralPrimitive(transform, ProceduralMeshes::Cone(segments), color, material,
                                  (int)PrimitiveShape::Cone,
@@ -7476,7 +7663,7 @@ void Renderer3D::Flush()
     // HitTorus reads the major radius from MaterialParams.w, the minor radius from
     // Min.w, and the tube extent from the local AABB. The outer radius is precomputed
     // so the bounds enclose the whole ring.
-    void Renderer3D::DrawTorus(const glm::mat4 &transform, const glm::vec4 &color, float majorRadius, float minorRadius, int majorSegments, int minorSegments, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawTorus(const glm::mat4 &transform, const glm::vec4 &color, float majorRadius, float minorRadius, int majorSegments, int minorSegments, const MaterialComponent &material, int entityID)
     {
         // HitTorus reads major radius from MaterialParams.w, minor radius from
         // Min.w, and the tube extent from the local AABB vectors.
@@ -7490,7 +7677,7 @@ void Renderer3D::Flush()
     // The raster mesh is the tessellated icosphere, but the ray-traced form stays the
     // exact analytic sphere (shape 1) -- a tessellated mesh would only approximate
     // what HitSphere computes exactly.
-    void Renderer3D::DrawIcoSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int subdivisions, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawIcoSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int subdivisions, const MaterialComponent &material, int entityID)
     {
         // Raster form is the icosphere; the ray-traced form stays the exact
         // analytic sphere (shape 1), which a tessellated mesh would only
@@ -7828,6 +8015,36 @@ void Renderer3D::Flush()
         s_Data.CloudVolumes.push_back(v);
     }
 
+    // One entry per projected decal into a fixed-capacity list uploaded whole each
+    // frame. The projector is built from the TRS matrix columns: position from the
+    // translation column, an orthonormal basis (Right/Up/Dir) from the normalized
+    // rotation columns, and the footprint (halfW, halfH, castLen) from the column
+    // lengths -- so the entity Scale directly sizes the decal and non-uniform scale
+    // works.
+    void Renderer3D::SubmitDecal(const glm::mat4 &transform, const DecalComponent &decal)
+    {
+        if (!decal.Enabled)
+            return;
+        if (s_Data.Decals.size() >= (size_t)MaxDecals)
+            return;
+        DecalData d;
+        d.Pos = glm::vec4(transform[3][0], transform[3][1], transform[3][2], 0.0f);
+        glm::vec3 right(transform[0][0], transform[0][1], transform[0][2]);
+        glm::vec3 up(transform[1][0], transform[1][1], transform[1][2]);
+        glm::vec3 fwd(transform[2][0], transform[2][1], transform[2][2]);
+        // Column length is the applied scale. A zero axis (a decal on a flattened
+        // entity) would normalize to NaN, so fall back to an identity basis entry.
+        float halfW = glm::length(right);
+        float halfH = glm::length(up);
+        float castLen = glm::length(fwd);
+        d.Right = glm::vec4(halfW < 1e-6f ? glm::vec3(1, 0, 0) : glm::normalize(right), 0.0f);
+        d.Up    = glm::vec4(halfH < 1e-6f ? glm::vec3(0, 1, 0) : glm::normalize(up), 0.0f);
+        d.Dir   = glm::vec4(castLen < 1e-6f ? glm::vec3(0, 0, 1) : glm::normalize(fwd), 0.0f);
+        d.Size  = glm::vec4(halfW, halfH, castLen, 1.0f);
+        d.Color = decal.Color;
+        s_Data.Decals.push_back(d);
+    }
+
     bool Renderer3D::IsVolumetricFogEnabled() { return s_Data.VolFogEnabled; }
     void Renderer3D::SetVolumetricFogEnabled(bool enabled)
     {
@@ -7898,6 +8115,13 @@ void Renderer3D::Flush()
     void Renderer3D::SetGodRayDensity(float density) { s_Data.GodRayDensity = glm::max(density, 0.0f); }
     glm::vec3 Renderer3D::GetGodRayColor() { return s_Data.GodRayColor; }
     void Renderer3D::SetGodRayColor(const glm::vec3 &color) { s_Data.GodRayColor = color; }
+
+    bool Renderer3D::IsEffectsFlagSet(uint32_t bit) { return (s_Data.EffectsFlags & (int)bit) != 0; }
+    void Renderer3D::SetEffectsFlag(uint32_t bit, bool enable)
+    {
+        if (enable) s_Data.EffectsFlags |= (int)bit;
+        else        s_Data.EffectsFlags &= ~(int)bit;
+    }
 
     // Camera-relative importance for one candidate, used only to break ties WITHIN a
     // light type (see PushAnalyticLight). Squared distance, so no sqrt, and no
@@ -8438,7 +8662,7 @@ void Renderer3D::Flush()
     // The most heavily used primitive: 24 vertices and 36 indices from static tables,
     // with a subdivided fallback when displacement is enabled. `color` is unused
     // here too -- the albedo comes from material.Albedo.
-    void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, const MaterialComponent &material, int entityID)
     {
         // BOTH limits must be tested. The classic path draws 36 indices from the STATIC
         // cube index buffer but writes 24 vertices into the cube vertex array, so an
@@ -8745,7 +8969,7 @@ void Renderer3D::Flush()
 
     // The only procedurally tessellated primitive. Unlike the cube there are no
     // static tables, so sector and stack counts are chosen at draw time.
-    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, MaterialComponent &material, int entityID)
+    void Renderer3D::DrawSphere(const glm::mat4 &transform, const glm::vec4 &color, float radius, int sectors, int stacks, const MaterialComponent &material, int entityID)
     {
         // Hard clamp on user-editable tessellation. Without this, large Sectors/Stacks
         // from the editor UI overflow the staging buffers even after a mid-frame flush.

@@ -14,9 +14,15 @@ A row is only a baseline if the GPU was quiet while it ran. This machine often
 has background GPU work; the harness records the measured utilisation alongside
 every run so a later reader can judge the number instead of trusting it.
 
-`gpu` is the honest signal: if it reads 0.0 the GL timer produced nothing and
-the row is INVALID, not fast. The harness fails such a row rather than
-averaging it.
+`gpu` is the honest signal on OpenGL: if it reads 0.0 the GL timer produced
+nothing and the row is INVALID, not fast. The harness fails such a row rather
+than averaging it.
+
+That rule is backend-specific. `gpu` comes from GL_TIME_ELAPSED queries, which
+only exist on the OpenGL path -- on DX11/DX12/Vulkan the field is 0.0 by
+construction, because there is no timer to fail. The harness reads the backend
+from the run's own log and applies the rule only where it means something; on
+the NVRHI backends `app` is the only frame-time signal and is real.
 
 USAGE
     python tools/bench_nova_phase.py --counts 10000,100000 --presets 3
@@ -58,6 +64,47 @@ FRAME_RE = re.compile(
 )
 
 
+def detect_backend() -> str:
+    """Return the backend the measured run used, read from its own log.
+
+    `Frame time:`'s `gpu` field is produced by GL_TIME_ELAPSED queries, which only
+    exist on the OpenGL path. On DX11/DX12/Vulkan it is 0.0 by construction -- not
+    because a timer failed, but because there is no timer. The validity rule in
+    main() has to know which of those two situations it is looking at, and the log
+    is the only place the run states it.
+
+    Returns "unknown" when the log cannot be read, so the caller keeps the strict
+    rule rather than assuming a backend it cannot prove.
+    """
+    try:
+        text = LOG.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unknown"
+    backend = "unknown"
+    for line in text.splitlines():
+        if "Renderer API initialized:" in line:
+            backend = line.rsplit(":", 1)[-1].strip()
+    # Vulkan never prints the line above -- it announces itself with these instead,
+    # and a project that pins RendererAPI: 4 will switch to it several seconds into
+    # the run, after the DX12 line has already been written. Checked separately so
+    # the result does not depend on which line happens to come last.
+    if ("NVRHI Vulkan device created successfully" in text
+            or "Selected Vulkan GPU:" in text):
+        backend = "Vulkan"
+    return backend
+# WLFG accounting line (Application.cpp, gated on WL_WLFG_TIMING):
+#   WLFG timing: factor 1 warps 0 realFrames 1234 simDrift 0.0ms
+WLFG_RE = re.compile(
+    r"WLFG timing: factor (\d+) warps (\d+) realFrames (\d+) simDrift ([\d.]+)ms"
+)
+
+
+def wlfg_last(text: str):
+    """The last WLFG accounting line's fields, or None if the log has none."""
+    m = WLFG_RE.findall(text)
+    return m[-1] if m else None
+
+
 def gpu_util() -> str:
     """Current GPU utilisation, for labelling the row. 'n/a' if nvidia-smi is absent."""
     try:
@@ -72,7 +119,8 @@ def gpu_util() -> str:
 
 def run_one(count: int, preset: int, frames: int, spacing: float,
             timeout: int, scale: float = 1.0, drs: bool = False,
-            eye: bool = False, eye_dist: float = EYE_DISTANCE) -> dict:
+            eye: bool = False, eye_dist: float = EYE_DISTANCE,
+            viewport: str = "") -> dict:
     scene = ensure_scene(count, spacing)
     dist = _dist_for(count, spacing)
 
@@ -81,7 +129,7 @@ def run_one(count: int, preset: int, frames: int, spacing: float,
     # WL_DRS_DEBUG is an allowlisted EXCEPTION -- it only turns on the GL query
     # diagnostics and does not select a renderer, and without it the timer
     # read-back cannot be diagnosed at all.
-    _PASSTHROUGH = {"WL_DRS_DEBUG", "WL_FRAME_TIMING", "WASTELAND_NOVA_PROFILE", "WL_GL_FINISH", "WL_MAX_INSTANCES"}
+    _PASSTHROUGH = {"WL_DRS_DEBUG", "WL_FRAME_TIMING", "WL_WLFG_TIMING", "WASTELAND_NOVA_PROFILE", "WL_GL_FINISH", "WL_MAX_INSTANCES"}
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("WL_", "WASTELAND_")) or k in _PASSTHROUGH}
     # WL_DRS_OFF is set by default: it removes the scaler as a confound so the reading is
@@ -100,6 +148,15 @@ def run_one(count: int, preset: int, frames: int, spacing: float,
     })
     if not drs:
         env["WL_DRS_OFF"] = "1"
+
+    # The viewport PANEL, not the window, is what m_ViewportSize -- and therefore the
+    # editor framebuffer and the Nova render target -- follows (EditorLayer.cpp:2515,
+    # :1167, :1169). In the default bench layout that panel is 1280x720, so without
+    # this override a 4K target cannot be measured at all. This must be a flag rather
+    # than a shell env var: the sanitising filter above strips every WL_* name that is
+    # not allowlisted, so an inherited WL_CAPTURE_VIEWPORT would never arrive.
+    if viewport:
+        env["WL_CAPTURE_VIEWPORT"] = viewport
 
     before = gpu_util()
     t0 = time.perf_counter()
@@ -125,6 +182,9 @@ def run_one(count: int, preset: int, frames: int, spacing: float,
         "cpu": float(cpu), "scale": float(scale), "preset_read": int(pres),
         "instances": int(inst), "culled": int(culled),
         "wall": elapsed, "gpu_before": before, "gpu_after": after,
+        # WLFG accounting (Step 3): factor/warps/realFrames/simDrift, or None if
+        # WL_WLFG_TIMING was not set for this run.
+        "wlfg": wlfg_last(text),
     }
 
 
@@ -145,6 +205,9 @@ def main() -> int:
                     help="leave the dynamic resolution scaler enabled")
     ap.add_argument("--scale", type=float, default=1.0,
                     help="render scale; cpuSubmit that falls with scale is GPU wait, not CPU work")
+    ap.add_argument("--viewport", default="",
+                    help="force the editor viewport / Nova target, e.g. 3840x2160 "
+                         "(default: the docked panel, 1280x720 in the bench layout)")
     args = ap.parse_args()
 
     if not EXE.exists():
@@ -161,7 +224,7 @@ def main() -> int:
         for preset in presets:
             r = run_one(count, preset, args.frames, args.spacing, args.timeout,
                         args.scale, drs=args.drs_on, eye=args.eye_level,
-                        eye_dist=args.eye_distance)
+                        eye_dist=args.eye_distance, viewport=args.viewport)
             rows.append(r)
             print(f"{r['count']:>8} {r['preset_read']:>7} {r['app']:>8.1f} "
                   f"{r['fps']:>6.1f} {r['gpu']:>7.1f} {r['cpu']:>7.1f} "
@@ -169,13 +232,33 @@ def main() -> int:
             time.sleep(1.0)
 
     print()
-    invalid = [r for r in rows if r["gpu"] <= 0.0]
-    if invalid:
-        print(f"INVALID ROWS: {len(invalid)} run(s) reported gpu 0.0 -- the GL timer "
-              f"yielded nothing, so those rows are not measurements.")
+    # The gpu-validity rule only means something where a GL timer exists. On the
+    # NVRHI backends `gpu` is 0.0 by construction, so failing those rows would
+    # discard the only measurement the plan has on the backends it targets.
+    backend = detect_backend()
+    if backend == "OpenGL":
+        invalid = [r for r in rows if r["gpu"] <= 0.0]
+        if invalid:
+            print(f"INVALID ROWS: {len(invalid)} run(s) reported gpu 0.0 -- the GL timer "
+                  f"yielded nothing, so those rows are not measurements.")
+    else:
+        invalid = []
+        print(f"BACKEND: {backend} -- no GL timer exists on this backend, so `gpu` reads "
+              f"0.0 by construction. `app` is the only frame-time signal and is real; "
+              f"`gpu`/`cpuSubmit` are not applicable on this backend.")
     for r in rows:
         print(f"  {r['count']:>7}/{r['preset_read']}  GPU during run: "
               f"{r['gpu_before']} -> {r['gpu_after']}")
+    print()
+    wlfg_rows = [r for r in rows if r.get("wlfg")]
+    if wlfg_rows:
+        print("WLFG accounting (factor / warps / realFrames / simDrift ms):")
+        for r in wlfg_rows:
+            f, w, rf, drift = r["wlfg"]
+            print(f"  {r['count']:>7}/{r['preset_read']}  factor {f}  warps {w}  "
+                  f"realFrames {rf}  simDrift {drift}")
+    else:
+        print("WLFG accounting: none (set WL_WLFG_TIMING=1 to report it)")
     print()
     print("A row is only a BASELINE if the GPU line above shows a quiet card.")
     print("Contended rows are still valid for instance counts (CPU-side), never for ms.")

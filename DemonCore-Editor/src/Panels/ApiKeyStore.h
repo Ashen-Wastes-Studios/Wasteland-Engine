@@ -107,65 +107,38 @@ namespace Wasteland
 
 		// No initialiser, so it defaults to an empty string -- which is the correct
 		// "not configured" value and needs no explicit `= ""`.
-		//
-		// The only member WITHOUT an initialiser in this block, and the difference is
-		// invisible.
-		//
-		// Serialised as `openai_api_key=`. Written to disk in plain text; see the
-		// security note at the top of this header.
 		std::string OpenAIKey;
-		// An OpenAI-COMPATIBLE endpoint, defaulting to LM Studio's port -- so with no
-		// configuration at all the editor talks to a locally running model server
-		// rather than to the public OpenAI API. That is the privacy-preserving default:
-		// no key is needed and no prompt leaves the machine.
-		//
-		// http, not https, because it is localhost.
-		//
-		// A user pointing this at api.openai.com must remember to change the scheme
-		// to https; nothing validates or warns about a plaintext URL carrying an API
-		// key to a remote host.
-		std::string OpenAIBaseURL = "http://localhost:1234/v1";
-		// The model identifier sent in the request. The default is a placeholder that
-		// matches no real model on any server, so an unconfigured setup fails at the
-		// first request rather than silently picking something -- arguably the right
-		// default, since silently choosing a model would be worse.
-		//
-		// Serialised as `openai_model=`.
-		std::string OpenAIModel = "local-model";
-		// Sampling temperature, passed straight through to the chat-completions
-		// request. 0.7 is a middling default: high enough to vary, low enough to stay
-		// on task for an in-editor assistant.
-		//
-		// The only non-string scalar, and the only member parsed rather than copied on
-		// load: Load() runs std::stof inside a try/catch, so a malformed value leaves
-		// the default in place instead of setting 0.
-		//
-		// No range validation. A stored 5.0 or a negative value is forwarded to the
-		// server unchanged, which will either clamp or error.
+		std::string OpenAIBaseURL = "https://api.openai.com/v1";
+		std::string OpenAIModel = "gpt-6.1-sol";
 		float Temperature = 0.7f;
-		// The instruction prepended to every AI request. Names the product so the
-		// model has context without the caller having to restate it.
-		//
-		// DEFECT (serialisation, and it is not hypothetical): this is written to a
-		// line-oriented `key=value` file, and a multi-line prompt -- which is exactly
-		// what a system prompt tends to become -- is written across several lines.
-		// Load() then reads only the FIRST line and discards the rest, so a multi-line
-		// prompt is silently truncated on the next load.
-		//
-		// The same defect applies to any value containing a newline, and to any value
-		// containing `=` -- Load() splits on the FIRST `=`, so a base URL with a query
-		// string would lose everything after it.
 		std::string SystemPrompt = "You are a helpful assistant inside the Wasteland game engine editor.";
-		// The Hugging Face access token, for model downloads through the editor's
-		// downloader panel.
-		//
-		// Same plain-text treatment as OpenAIKey, and the same exposure: any process as
-		// this user can read it. The class comment's "values are never written to the
-		// log" applies to this field too.
-		//
-		// Serialised as `hf_token=`, NOT as `huggingface_token=` -- the short form is
-		// the wire name and Save/Load must agree on it. They do.
 		std::string HuggingFaceToken;
+
+		// Anthropic (Claude) credentials.
+		std::string AnthropicKey;
+		std::string AnthropicBaseURL = "https://api.anthropic.com";
+		std::string AnthropicModel = "opus-5.5";
+
+		// Google (Gemini) credentials.
+		std::string GoogleKey;
+		std::string GoogleBaseURL = "https://generativelanguage.googleapis.com/v1beta";
+		std::string GoogleModel = "gemini-3.8-flash";
+
+		// Hermes / Nous credentials.
+		std::string HermesKey;
+		std::string HermesBaseURL = "https://inference-api.nousresearch.com/v1";
+		std::string HermesModel = "step-3.7-flash";
+
+		// Effort + model presets per provider (for the dropdown UI).
+		std::string EffortPreset = "medium";
+		std::string ModelPreset = "";
+
+		// Last selected provider in the AI Chat panel.
+		std::string Provider = "openai";
+
+		// Subagent settings.
+		bool AutoDelegate = false;
+		int MaxSubagents = 4;
 
 	// Private with a single defaulted constructor, so the only way to obtain one is
 	// Instance().

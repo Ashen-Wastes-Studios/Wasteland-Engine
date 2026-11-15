@@ -28,7 +28,8 @@ namespace Wasteland {
 		// bug in the .cpp reachable in a second way: a caller that omits the
 		// argument gets count 0, and the .cpp's ternary then substitutes
 		// the index buffer's full count instead of drawing nothing.
-		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0) override;
+		virtual void DrawIndexed(const Ref<VertexArray>& vertexArray, uint32_t indexCount = 0,
+		                         uint32_t instanceCount = 1, uint32_t firstInstance = 0) override;
 		// A VERTEX count, deliberately not defaulted. Contrast with
 		// DrawIndexed above: the two counts are different units and the
 		// asymmetry in the defaults is what stops them being confused at a

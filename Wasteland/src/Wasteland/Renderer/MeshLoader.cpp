@@ -4,8 +4,20 @@
 // precompiled header, and MSVC errors on a source file that omits it.
 #include "MeshLoader.h"
 
+// GltfImporter: the asset cache loads .gltf/.glb through the clean-room
+// importer rather than a second parser, so a glTF error message is the
+// importer's, not a re-implementation's.
+#include "Wasteland/Mesh/GltfImporter.h"
+
+// MeshSerializer: the authored .wlmesh format, loaded by the asset cache so
+// a MeshComponent can point at an edited mesh as easily as at a glTF.
+#include "Wasteland/Mesh/MeshSerializer.h"
+
 // std::min / std::max, used in RecomputeBounds and nowhere else.
 #include <algorithm>
+// std::tolower, for the extension match in MeshAssetCache::Get. Cast through
+// unsigned char first: tolower's behaviour on a negative char is undefined.
+#include <cctype>
 // std::array<float,3> is the working type for positions, normals and
 // generated normals throughout this file. Chosen over a bare float[3]
 // so it can be passed by const reference into the keying lambda and
@@ -121,31 +133,29 @@ namespace Wasteland {
 				// A second slash means the 3-field form v/vt/vn. Absent means the
 				// 2-field form, whose one remaining field is taken as the normal.
 				size_t secondSlash = token.find('/', firstSlash + 1);
-				// DEFECT (documented, not fixed): this substring is the field
-				// BETWEEN the two slashes. In the OBJ format that position holds the
-				// TEXTURE index -- the normal is the THIRD field, after the second
-				// slash. Verified by tracing the arithmetic above on a real token:
-				// "12/40/6" gives firstSlash=2, secondSlash=5, so the extracted text
-				// is "40" (the vt index) and the true normal index 6 is never read.
-				// Consequences, in order of severity:
-				//  - For the standard v/vt/vn form the normal index is wrong. If the
-				//    vt index happens to fall within normals.size() the WRONG normal
-				//    is applied silently; otherwise the face falls to the generated
-				//    path. Neither is diagnosable from the outside.
-				//  - For v//vn the middle field is empty, so this branch is skipped
-				//    entirely and the face is generated-normal. That is why the bug
-				//    is invisible on v//vn assets and on 2-field v/vn assets, where
-				//    the single remaining field really is the normal.
-				//  - The comment above this line claims the texture index is
-				//    "parsed and discarded"; in the 3-field form it is parsed and
-				//    MISUSED. The stale comment and the code disagree.
+				// The normal is the field AFTER the second slash, or after the
+				// first when there is no second.
+				//
+				// This was previously the field BETWEEN the two slashes -- the
+				// TEXTURE index. On the standard v/vt/vn form that read the vt
+				// index as a normal index: "12/40/6" gave firstSlash=2,
+				// secondSlash=5, and the extracted text was "40". If 40 fell
+				// within normals.size() the WRONG normal was applied silently;
+				// otherwise the face fell through to the generated-normal path.
+				// Both are invisible from outside, and both scramble the
+				// shading of a DCC export -- which is the entire point of C.3.
+				//
+				// The v//vn form (empty texture index) now works too: the
+				// second slash is still found, so the third field is read.
 				std::string normPart =
 					(secondSlash == std::string::npos)
 						? token.substr(firstSlash + 1)
-						: token.substr(firstSlash + 1, secondSlash - firstSlash - 1);
-				// Empty means the v//vn form. Skipping is right there: the normal for
-				// that corner is legitimately unknown and gets generated later from
-				// the face geometry, which is better than failing the import.
+						: token.substr(secondSlash + 1);
+				// A malformed normal index is dropped rather than reported, and
+				// so is an index that lands outside normals[]. Both fall through
+				// to the generated-normal path, which is a strictly better answer
+				// than a failed import: a bad normal makes a mesh ugly, a bad
+				// position makes it unbuildable.
 				if (!normPart.empty())
 				{
 					// "v//vn" puts an empty texture index in the middle; the
@@ -941,6 +951,194 @@ namespace Wasteland {
 		// so SourcePath is meaningful and the parser stays the single owner
 		// of every parse error message.
 		return ParseOBJFromString(buffer.str(), filepath, outMesh, outError);
+	}
+
+	bool BuildProceduralMesh(const MeshData &data, ProceduralMesh &out,
+							 std::string &outError)
+	{
+		// Emptiness is judged by INDICES, matching ProceduralMesh::Empty: a
+		// mesh with vertices but no triangles draws nothing, so positions
+		// alone are not a mesh.
+		if (data.Indices.empty())
+		{
+			outError = "mesh '" + data.SourcePath + "' has no triangles";
+			return false;
+		}
+
+		// Every corner must have a position and a normal. The GPU reads both
+		// positionally from one interleaved buffer, so a mismatch cannot be
+		// padded -- it would render plausible-looking garbage. Rejecting is
+		// the only honest option; the caller reports outError.
+		if (data.Vertices.empty())
+		{
+			outError = "mesh '" + data.SourcePath + "' has indices but no vertices";
+			return false;
+		}
+
+		const size_t cornerCount = data.Vertices.size();
+		out.Positions.resize(cornerCount);
+		out.Normals.resize(cornerCount);
+		// TexCoords MAY be shorter than Positions -- ProceduralMesh documents
+		// that seam-duplicated vertices legitimately have no second UV. It may
+		// NOT be longer, which would mean the importer wrote a UV for a corner
+		// that does not exist.
+		out.TexCoords.clear();
+		out.TexCoords.reserve(cornerCount);
+
+		for (size_t i = 0; i < cornerCount; ++i)
+		{
+			const MeshVertex &corner = data.Vertices[i];
+			out.Positions[i] = glm::vec3(corner.Position[0], corner.Position[1],
+										 corner.Position[2]);
+			out.Normals[i] = glm::vec3(corner.Normal[0], corner.Normal[1],
+									   corner.Normal[2]);
+			// A zero-length normal is replaced with +Y rather than passed
+			// through: the raster batch normalizes on the CPU per draw, and a
+			// zero vector normalizes to NaN, which propagates into the shader
+			// as a black pixel on that triangle only. +Y is the same fallback
+			// the OBJ loader uses when it synthesizes normals.
+			if (out.Normals[i].x == 0.0f && out.Normals[i].y == 0.0f &&
+				out.Normals[i].z == 0.0f)
+				out.Normals[i] = glm::vec3(0.0f, 1.0f, 0.0f);
+		}
+
+		// Indices are copied verbatim. MeshData guarantees 0..Vertices.size()-1
+		// in order, but the conversion does not assume it: an importer that
+		// builds a real index list must still work.
+		out.Indices = data.Indices;
+
+		outError.clear();
+		return true;
+	}
+
+	const ProceduralMesh *MeshAssetCache::Get(const std::string &path,
+											  std::string *outError)
+	{
+		// An EMPTY path is a distinct key, not a cache miss. A MeshComponent
+		// with no path assigned is common (the component is added before the
+		// asset is chosen) and must be a cheap no-op rather than a load of
+		// whatever "" resolves to.
+		if (path.empty())
+		{
+			if (outError)
+				outError->clear();
+			return nullptr;
+		}
+
+		const auto found = m_Index.find(path);
+		if (found != m_Index.end())
+		{
+			const size_t index = found->second;
+			if (!m_Errors[index].empty())
+			{
+				// A cached FAILURE is served as a failure. Re-parsing a
+				// missing asset every frame would be an unbounded cost, and
+				// the reason is stable because the path has not changed.
+				if (outError)
+					*outError = m_Errors[index];
+				return nullptr;
+			}
+			if (outError)
+				outError->clear();
+			return &m_Meshes[index];
+		}
+
+		MeshData data;
+		std::string error;
+		bool loaded = false;
+
+		// glTF first, OBJ second: glTF is the interchange format the DCC
+		// pipeline emits, and .obj remains the blockout fallback. The choice
+		// is by EXTENSION, not by trying both -- a .gltf that fails to parse
+		// must report a glTF error, not fall through to an OBJ parser that
+		// would report a confusing one.
+		const std::string extension = [&path]()
+		{
+			const size_t dot = path.find_last_of('.');
+			if (dot == std::string::npos)
+				return std::string();
+			std::string suffix = path.substr(dot);
+			for (char &c : suffix)
+				c = (char)std::tolower((unsigned char)c);
+			return suffix;
+		}();
+
+		if (extension == ".gltf" || extension == ".glb")
+		{
+			// ImportGltf returns a GltfImportResult, not a bool: the failure
+			// message names the JSON path that broke, which is worth more than
+			// a false. Deindexed is used rather than Mesh.Deindex() because
+			// Weld is lossy for hard edges.
+			const GltfImportResult imported = ImportGltf(path);
+			if (imported.Ok())
+			{
+				data = imported.Deindexed;
+				loaded = true;
+			}
+			else
+			{
+				error = imported.Error;
+			}
+		}
+		else if (extension == ".obj")
+		{
+			loaded = LoadOBJ(path, data, error);
+		}
+		else if (extension == ".wlmesh")
+		{
+			// The authored format: an indexed mesh the editor itself saved.
+			// Loaded as an EditableMesh and de-indexed here rather than
+			// re-parsed, so the mesh the renderer gets is the mesh the editor
+			// wrote -- there is no second parse to disagree with the first.
+			Wasteland::MeshAsset asset;
+			if (Wasteland::MeshSerializer::Load(path, asset, &error))
+			{
+				data = asset.Mesh.Deindex();
+				loaded = true;
+			}
+		}
+		else
+		{
+			error = "unsupported mesh extension '" + extension
+					+ "' (supported: .gltf, .glb, .obj, .wlmesh)";
+		}
+
+		ProceduralMesh mesh;
+		if (loaded)
+		{
+			std::string convertError;
+			if (!BuildProceduralMesh(data, mesh, convertError))
+			{
+				loaded = false;
+				error = convertError;
+			}
+		}
+
+		// The entry is appended exactly once per path, so the index stored in
+		// m_Index stays valid for the life of the cache. A failed load still
+		// gets an (empty) mesh slot: m_Meshes and m_Errors are parallel arrays
+		// addressed by the same index, and a gap would desynchronize them.
+		const size_t index = m_Meshes.size();
+		m_Index.emplace(path, index);
+		m_Meshes.push_back(std::move(mesh));
+		m_Errors.push_back(loaded ? std::string() : error);
+
+		if (!loaded)
+		{
+			if (outError)
+				*outError = error;
+			return nullptr;
+		}
+		if (outError)
+			outError->clear();
+		return &m_Meshes[index];
+	}
+
+	void MeshAssetCache::Clear()
+	{
+		m_Index.clear();
+		m_Meshes.clear();
+		m_Errors.clear();
 	}
 
 } // namespace Wasteland

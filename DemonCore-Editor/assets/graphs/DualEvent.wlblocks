@@ -1,0 +1,91 @@
+kind: flow
+schema: 2
+name: DualEvent
+nodes:
+  # Two event nodes. Schema 2 allows this; schema 1 rejects it. Each becomes
+  # its own generated method, which is what makes a flow graph behave like a
+  # Blueprint (one function per event).
+  - id: ev_update
+    type: FlowOnEvent
+    x: 60
+    y: 80
+    event: OnUpdate
+  - id: ev_interact
+    type: FlowOnEvent
+    x: 60
+    y: 260
+    event: OnInteract
+
+  # OnUpdate: add (1, 0, 0) to the entity's position.
+  - id: get_pos
+    type: GetPosition
+    x: 380
+    y: 80
+  - id: offset
+    type: Vec3Add
+    x: 700
+    y: 80
+    pins:
+      - pin: B
+        value: (1, 0, 0)
+  - id: apply
+    type: SetTransform
+    x: 1020
+    y: 80
+
+  # OnInteract: add (0, 5, 0) instead. A different effect per event is the
+  # whole point -- it proves the two methods are separate, not one method
+  # that runs twice.
+  - id: get_pos2
+    type: GetPosition
+    x: 380
+    y: 260
+  - id: offset2
+    type: Vec3Add
+    x: 700
+    y: 260
+    pins:
+      - pin: B
+        value: (0, 5, 0)
+  - id: apply2
+    type: SetTransform
+    x: 1020
+    y: 260
+links:
+  - from:
+      node: ev_update
+      pin: Out
+    to:
+      node: apply
+      pin: In
+  - from:
+      node: get_pos
+      pin: Position
+    to:
+      node: offset
+      pin: A
+  - from:
+      node: offset
+      pin: Value
+    to:
+      node: apply
+      pin: Translation
+
+  - from:
+      node: ev_interact
+      pin: Out
+    to:
+      node: apply2
+      pin: In
+  - from:
+      node: get_pos2
+      pin: Position
+    to:
+      node: offset2
+      pin: A
+  - from:
+      node: offset2
+      pin: Value
+    to:
+      node: apply2
+      pin: Translation

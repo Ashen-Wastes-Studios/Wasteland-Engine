@@ -773,34 +773,40 @@ namespace Wasteland
 		}
 
 		// Ensure global RenderCommand API matches target api before creating contexts
-		// This makes the switch atomic (previously EditorLayer called SetAPI separately causing 1-frame mismatch)
-		// Bringing the process-wide API in line with the window's. The comment above
-		// records why this has to happen here rather than being left to the caller.
-		if (RendererAPI::GetAPI() != api)
-		{
-			// Clear cached resources from old NVRHI API before deleting it
-			if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
-				m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
-				m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+			// This makes the switch atomic (previously EditorLayer called SetAPI separately causing 1-frame mismatch)
+			// Bringing the process-wide API in line with the window's. The comment above
+			// records why this has to happen here rather than being left to the caller.
+			//
+			// Startup shortfall: at first launch m_CurrentAPI is None and s_RendererAPI is
+			// still the default OpenGLRendererAPI. If the global enum already matches the
+			// requested API, the old check skipped SetAPI entirely, leaving OpenGL as the
+			// live backend until the editor's delayed switch fired. Force SetAPI here so
+			// the correct backend is live before Renderer::Init() runs.
+			if (RendererAPI::GetAPI() != api || m_CurrentAPI == RendererAPI::API::None)
 			{
+				// Clear cached resources from old NVRHI API before deleting it
+				if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+					m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+					m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+				{
+					NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
+					if (nvrhiAPI)
+						nvrhiAPI->ClearCachedResources();
+				}
+				// DEFECT: this replaces the global API object outright. The cached-resource clear
+				// above is what makes that survivable; anything else holding the old API pointer
+				// across this line is left dangling.
+				RenderCommand::SetAPI(api);
+			}
+			else if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
+				 m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
+				 m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
+			{
+				// Clear cached resources when switching away from NVRHI but API enum already matches
 				NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
 				if (nvrhiAPI)
 					nvrhiAPI->ClearCachedResources();
-			}
-			// DEFECT: this replaces the global API object outright. The cached-resource clear
-			// above is what makes that survivable; anything else holding the old API pointer
-			// across this line is left dangling.
-			RenderCommand::SetAPI(api);
-		}
-		else if (m_CurrentAPI == RendererAPI::API::NVRHI_DX11 ||
-				 m_CurrentAPI == RendererAPI::API::NVRHI_DX12 ||
-				 m_CurrentAPI == RendererAPI::API::NVRHI_Vulkan)
-		{
-			// Clear cached resources when switching away from NVRHI but API enum already matches
-			NVRHIRendererAPI *nvrhiAPI = dynamic_cast<NVRHIRendererAPI *>(RenderCommand::GetRendererAPI());
-			if (nvrhiAPI)
-				nvrhiAPI->ClearCachedResources();
-			}
+				}
 
 			// Shut down the ImGui renderer backend while the OLD context is still
 			// alive. Its Shutdown releases backend device objects owned by the old

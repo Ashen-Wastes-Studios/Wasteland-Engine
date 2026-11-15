@@ -3,6 +3,15 @@
 // change the meaning of the standard headers that follow.
 #include "wlpch.h"
 
+// std::map, for VisualBlocksComponent::VariableOverrides (Task B.4).
+// PYBIND11_MAKE_OPAQUE needs the complete type, so it cannot rely on a
+// transitive include.
+#include <map>
+
+// std::string_view, for the Scene::GetAllEntitiesWith dispatch that compares a
+// caller-supplied component name against a stringified type name (Task B.3).
+#include <string_view>
+
 // The core pybind11 header. Everything else in this file is built from
 // py::class_, py::enum_, py::module_, py::object and py::args.
 #include <pybind11/pybind11.h>
@@ -114,6 +123,25 @@ PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::GraphNodeList);
 PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::GraphLinkList);
 // Graph-level variables.
 PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::GraphVariableList);
+
+// A scene's exposed-variable overrides are keyed by variable name. Opaque for
+// the reason every container here is: def_readwrite on a std::map hands Python
+// a COPY, so `component.VariableOverrides["Speed"] = "3.5"` would silently
+// mutate nothing -- and the editor's inspector writes exactly that way.
+// NOTE on VariableOverrides: it is exposed as two ACCESSORS, not as a bound
+// map. `PYBIND11_MAKE_OPAQUE(std::map<...>)` plus `bind_map` looks like the
+// usual container recipe, but bind_map's holder is a shared_ptr<Map> while the
+// component holds the map BY VALUE -- so a reference-returning getter cannot
+// wrap it, and the property fails at first use with "Did you forget to
+// #include <pybind11/stl.h>?". Two accessors avoid the holder mismatch entirely
+// and are also the shape the inspector actually needs: it iterates the graph's
+// declared variables and asks for each one by name.
+PYBIND11_MAKE_OPAQUE(std::map<std::string, std::string>);
+PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::GraphFunctionList);
+// The endpoint lists too: def_readwrite on a non-opaque vector hands back
+// a COPY, so `fn.Inputs.append(e)` would silently do nothing -- the exact
+// trap already recorded for StatePositions.
+PYBIND11_MAKE_OPAQUE(std::vector<Wasteland::VisualBlocks::GraphFunctionEndpoint>);
 // Blackboard entries. Opaque so a runtime can rebind a key's value from
 // Python during a behaviour tree's execution.
 PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::BlackboardKeyList);
@@ -205,12 +233,25 @@ PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::PinLiteralList);
 // MeshLoader brings in MeshVertex/MeshData and the OBJ parse entry points,
 // which are exposed precisely so mesh import is testable headlessly.
 #include "Wasteland/Renderer/MeshLoader.h"
+#include "Wasteland/Mesh/EditableMesh.h"
+#include "Wasteland/Mesh/MeshWriter.h"
+#include "Wasteland/Mesh/MeshEditHistory.h"
+#include "Wasteland/Mesh/MeshSculpt.h"
+#include "Wasteland/Mesh/MeshRemesh.h"
+#include "Wasteland/Mesh/MeshSerializer.h"
+#include "Wasteland/Mesh/MeshPicking.h"
+#include <array>
+#include "Wasteland/Mesh/Json.h"
+#include "Wasteland/Mesh/GltfImporter.h"
 
 #include "Wasteland/Animation/AnimationCurve.h"
 
 // SkinnedMesh and Skeleton are the two ends of the skinning contract: a
 // SkinnedMesh holds weights, a Skeleton holds the bind pose they index into.
 #include "Wasteland/Animation/AnimationClip.h"
+// The .wlanim asset format, bound so a test can round-trip text without the
+// filesystem and an importer can author an asset in memory.
+#include "Wasteland/Animation/AnimationSerializer.h"
 
 #include "Wasteland/Animation/AnimationStateMachine.h"
 
@@ -241,6 +282,7 @@ PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::PinLiteralList);
 // and as convenience methods on Scene, since the class form needs a Ref<Scene>
 // that a script rarely holds.
 #include "Wasteland/Scene/SceneSerializer.h"
+#include "Wasteland/Scene/MaterialSerializer.h"
 
 // SaveGame is the RUNTIME save path. Deliberately separate from
 // SceneSerializer: a save must never be able to overwrite authored content.
@@ -256,9 +298,39 @@ PYBIND11_MAKE_OPAQUE(Wasteland::VisualBlocks::PinLiteralList);
 // bound below comes from it, and the BIND_COMP_* macros at the bottom of the
 // file instantiate against these exact types.
 #include "Wasteland/Scene/Components.h"
+#include "Wasteland/Editor/ThumbnailCache.h"
+#include "Wasteland/Editor/ThumbnailImage.h"
+#include "Wasteland/Editor/ThumbnailGraph.h"
+#include "Wasteland/Editor/ThumbnailDiskCache.h"
+#include "Wasteland/Editor/ThumbnailPng.h"
+#include "Wasteland/Editor/NewAsset.h"
+#include "Wasteland/Editor/BoneThumbnail.h"
+#include "Wasteland/Editor/Bc1.h"
+#include "Wasteland/Project/ProjectTemplates.h"
+#include "Wasteland/Project/AssetCooker.h"
+#include "Wasteland/Project/PackageBuilder.h"
+#include "Wasteland/Project/ProfileAnalyzer.h"
+#include "Wasteland/Project/RepoStatus.h"
+#include "Wasteland/Project/StringTable.h"
+#include "Wasteland/Mesh/PackedMesh.h"
+#include "Wasteland/Scene/SaveBackup.h"
+#include "Wasteland/Scene/SceneSerializer.h"
+
+// The audio graph trigger map, made opaque here rather than with the other
+// containers at the top of this file: AudioGraphComponent is declared in
+// Components.h, which is included at this point, and PYBIND11_MAKE_OPAQUE
+// needs the COMPLETE type. Same reason as every other container -- a by-value
+// Python list would make `component.Triggers.append(t)` silently do nothing,
+// which is precisely how an authored event map would appear to save and then
+// never fire.
+PYBIND11_MAKE_OPAQUE(Wasteland::AudioGraphComponent::TriggerList);
 #include "Wasteland/Navigation/NavMesh.h"
 #include "Wasteland/Project/Project.h"
 #include "Wasteland/Scene/BehaviorTreeSystem.h"
+#include "Wasteland/Scene/AnimationSystem.h"
+#include "Wasteland/Scene/FlowGraphSystem.h"
+// For ScriptEventId and ScriptEventDispatcher, both bound on Entity.
+#include "Wasteland/Scene/ScriptEventDispatcher.h"
 
 // ScriptableEntity is the base a Python script class inherits from. Its two
 // bindings below hand out component references, because a script's OnCreate
@@ -621,7 +693,24 @@ py::class_<glm::vec3>(m, "Vec3")
                  // vector propagates silently through the whole transform stack.
                  if (len > 1e-6f)
                      v /= len;
-             });
+             })
+
+        // Component-wise arithmetic. Absent until now, which meant a script
+        // could not add two vectors at all -- the failure surfaced only at run
+        // time as `TypeError: unsupported operand type(s) for +`. That is the
+        // worst place to discover a missing binding: Vec3 looks complete (it
+        // has Length, Normalize and three components), and the gap is visible
+        // only when a graph or script actually does vector maths.
+        //
+        // __eq__ is deliberately NOT bound: in Python 3, defining __eq__
+        // without __hash__ makes the type unhashable, which would silently
+        // break any script using a Vec3 as a dict key or set member.
+        .def("__add__", [](const glm::vec3 &a, const glm::vec3 &b) {
+            return a + b;
+        })
+        .def("__sub__", [](const glm::vec3 &a, const glm::vec3 &b) {
+            return a - b;
+        });
 
 // glm::quat. Added alongside the Vec types because animation stores bone
     // rotation as a quaternion, and a BoneTransform with no way to construct
@@ -817,6 +906,576 @@ py::class_<Wasteland::MeshData>(m, "MeshData")
     // while Mesh is a submodule.
     py::module_ meshModule = m.def_submodule("Mesh", "OBJ mesh import");
 
+    // ====================================================================
+    // Editor support: thumbnail cache (Phase F)
+    // ====================================================================
+    //
+    // A submodule because these are editor-support types that happen to live in
+    // the engine so a headless test can execute them without a GL context. The
+    // panel itself stays in DemonCore-Editor and only uploads/draws the buffers
+    // produced here.
+    py::module_ editorModule = m.def_submodule("Editor", "editor support types");
+
+    py::enum_<Wasteland::Editor::ThumbnailKind>(editorModule, "ThumbnailKind")
+        .value("Texture", Wasteland::Editor::ThumbnailKind::Texture)
+        .value("Mesh", Wasteland::Editor::ThumbnailKind::Mesh)
+        .value("Material", Wasteland::Editor::ThumbnailKind::Material)
+        .value("Animation", Wasteland::Editor::ThumbnailKind::Animation)
+        .value("Scene", Wasteland::Editor::ThumbnailKind::Scene)
+        .value("FlowGraph", Wasteland::Editor::ThumbnailKind::FlowGraph)
+        .value("BehaviorTree", Wasteland::Editor::ThumbnailKind::BehaviorTree)
+        .value("AudioGraph", Wasteland::Editor::ThumbnailKind::AudioGraph)
+        .value("AudioClip", Wasteland::Editor::ThumbnailKind::AudioClip)
+        .value("Terrain", Wasteland::Editor::ThumbnailKind::Terrain)
+        .value("Script", Wasteland::Editor::ThumbnailKind::Script)
+        .value("Shader", Wasteland::Editor::ThumbnailKind::Shader)
+        .value("Document", Wasteland::Editor::ThumbnailKind::Document)
+        .value("Compiled", Wasteland::Editor::ThumbnailKind::Compiled)
+        .value("Directory", Wasteland::Editor::ThumbnailKind::Directory)
+        .value("Unknown", Wasteland::Editor::ThumbnailKind::Unknown);
+
+    editorModule.def("ThumbnailKindName", &Wasteland::Editor::ThumbnailKindName,
+                     py::arg("kind"));
+
+    // Classify is the contract the Content Browser's cell drawing depends on,
+    // so it is bound rather than re-implemented in Python: a second classifier
+    // in the test would prove the test right and the engine wrong.
+    editorModule.def("Classify",
+                     py::overload_cast<const std::string &>(
+                         &Wasteland::Editor::Classify),
+                     py::arg("path"));
+
+    py::class_<Wasteland::Editor::ThumbnailCacheKey>(editorModule,
+                                                     "ThumbnailCacheKey")
+        .def(py::init<>())
+        .def_readwrite("RelativePath",
+                       &Wasteland::Editor::ThumbnailCacheKey::RelativePath)
+        .def_readwrite("ModifiedTime",
+                       &Wasteland::Editor::ThumbnailCacheKey::ModifiedTime)
+        .def_readwrite("Size", &Wasteland::Editor::ThumbnailCacheKey::Size)
+        .def("__eq__",
+             [](const Wasteland::Editor::ThumbnailCacheKey &self,
+                const Wasteland::Editor::ThumbnailCacheKey &other)
+             { return self == other; })
+        .def("__str__", &Wasteland::Editor::ThumbnailCacheKey::ToString);
+
+    editorModule.def("MakeThumbnailCacheKey",
+                     &Wasteland::Editor::MakeThumbnailCacheKey,
+                     py::arg("relativePath"), py::arg("absolutePath"));
+
+    py::class_<Wasteland::Editor::ThumbnailEntry>(editorModule, "ThumbnailEntry")
+        .def(py::init<>())
+        .def_readonly("Kind", &Wasteland::Editor::ThumbnailEntry::Kind)
+        .def_readonly("Width", &Wasteland::Editor::ThumbnailEntry::Width)
+        .def_readonly("Height", &Wasteland::Editor::ThumbnailEntry::Height)
+        // Read-only: a script may inspect a thumbnail but must not be able to
+        // write into a cached buffer behind the cache's back.
+        .def_readonly("Pixels", &Wasteland::Editor::ThumbnailEntry::Pixels)
+        .def_readonly("Failed", &Wasteland::Editor::ThumbnailEntry::Failed)
+        .def_readonly("Ready", &Wasteland::Editor::ThumbnailEntry::Ready)
+        .def_readonly("Key", &Wasteland::Editor::ThumbnailEntry::Key)
+        .def("IsEmpty", &Wasteland::Editor::ThumbnailEntry::IsEmpty)
+        .def("SetFailed", &Wasteland::Editor::ThumbnailEntry::SetFailed,
+             py::arg("failed"));
+
+    // GenerateIcon is bound so a test can compare a real thumbnail against the
+    // icon it should have fallen back to. Without it, "the corrupt asset
+    // produced the fallback" is untestable -- the fallback cannot be
+    // reconstructed from outside.
+    editorModule.def("GenerateIcon", &Wasteland::Editor::GenerateIcon,
+                     py::arg("kind"));
+
+    py::class_<Wasteland::Editor::ThumbnailCache>(editorModule, "ThumbnailCache")
+        .def(py::init<>())
+        .def("SetGenerator",
+             &Wasteland::Editor::ThumbnailCache::SetGenerator,
+             py::arg("generator"))
+        .def("Request", &Wasteland::Editor::ThumbnailCache::Request,
+             py::arg("relativePath"), py::arg("absolutePath"),
+             py::arg("visible"),
+             // The returned entry points into the cache. reference_internal
+             // keeps the cache alive as long as Python holds the entry.
+             py::return_value_policy::reference_internal)
+        .def("Find", &Wasteland::Editor::ThumbnailCache::Find,
+             py::arg("relativePath"),
+             py::return_value_policy::reference_internal)
+        .def("Tick", &Wasteland::Editor::ThumbnailCache::Tick, py::arg("dt"))
+        .def("InvalidateAll", &Wasteland::Editor::ThumbnailCache::InvalidateAll)
+        .def("GetEntryCount", &Wasteland::Editor::ThumbnailCache::GetEntryCount)
+        .def("GetPendingCount", &Wasteland::Editor::ThumbnailCache::GetPendingCount)
+        .def("GetMaxPerFrame", &Wasteland::Editor::ThumbnailCache::GetMaxPerFrame)
+        .def("GetMaxEntries", &Wasteland::Editor::ThumbnailCache::GetMaxEntries)
+        .def("GetEvictionCount",
+             &Wasteland::Editor::ThumbnailCache::GetEvictionCount)
+        // F.8. The disk cache is reachable both through the memory cache and
+        // directly: a test of "does it survive a restart" needs a second object
+        // with no shared state, and driving it through a ThumbnailCache would
+        // leave the memory layer as a confound.
+        .def("SetDiskCacheRoot",
+             &Wasteland::Editor::ThumbnailCache::SetDiskCacheRoot)
+        .def("GetDiskCacheRoot",
+             &Wasteland::Editor::ThumbnailCache::GetDiskCacheRoot)
+        .def("GetDiskCache",
+             py::overload_cast<>(&Wasteland::Editor::ThumbnailCache::GetDiskCache),
+             py::return_value_policy::reference_internal)
+        .def("CheckForChanges",
+             &Wasteland::Editor::ThumbnailCache::CheckForChanges,
+             py::arg("visible"), py::arg("nowSeconds"), py::arg("throttleSeconds"));
+
+    // ---- F.3: texture thumbnails (decode + resample half) ------------------
+    //
+    // The GL upload is deliberately absent: Texture2D::Create needs a device,
+    // and these functions are the part that runs headlessly.
+
+    py::class_<Wasteland::Editor::DecodedImage>(editorModule, "DecodedImage")
+        .def(py::init<>())
+        .def_readonly("Width", &Wasteland::Editor::DecodedImage::Width)
+        .def_readonly("Height", &Wasteland::Editor::DecodedImage::Height)
+        .def_readonly("Pixels", &Wasteland::Editor::DecodedImage::Pixels)
+        .def_readonly("Error", &Wasteland::Editor::DecodedImage::Error)
+        .def("Ok", &Wasteland::Editor::DecodedImage::Ok);
+
+    editorModule.def("LoadImage", &Wasteland::Editor::LoadImage,
+                     py::arg("path"));
+
+    // pybind cannot marshal a raw (pointer, size) pair, so the memory overload
+    // is bound as bytes. `py::bytes` casts to std::string without a copy.
+    editorModule.def(
+        "LoadImageFromMemory",
+        [](py::bytes bytes)
+        {
+            const std::string data = bytes;
+            return Wasteland::Editor::LoadImageFromMemory(
+                reinterpret_cast<const std::uint8_t *>(data.data()), data.size());
+        },
+        py::arg("bytes"));
+
+    py::class_<Wasteland::Editor::ThumbnailBackground>(editorModule,
+                                                       "ThumbnailBackground")
+        .def(py::init<>())
+        .def_readwrite("R", &Wasteland::Editor::ThumbnailBackground::R)
+        .def_readwrite("G", &Wasteland::Editor::ThumbnailBackground::G)
+        .def_readwrite("B", &Wasteland::Editor::ThumbnailBackground::B);
+
+    editorModule.def("MakeTextureThumbnail",
+                     &Wasteland::Editor::MakeTextureThumbnail,
+                     py::arg("source"), py::arg("size"),
+                     py::arg("backgroundR"), py::arg("backgroundG"),
+                     py::arg("backgroundB"));
+
+    // ---- F.4: graph thumbnails --------------------------------------------
+
+    py::class_<Wasteland::Editor::GraphThumbnailResult>(editorModule,
+                                                        "GraphThumbnailResult")
+        .def(py::init<>())
+        .def_readonly("Entry",
+                      &Wasteland::Editor::GraphThumbnailResult::Entry)
+        .def_readonly("Error",
+                      &Wasteland::Editor::GraphThumbnailResult::Error)
+        .def_readonly("NodeCount",
+                      &Wasteland::Editor::GraphThumbnailResult::NodeCount)
+        .def_readonly("WireCount",
+                      &Wasteland::Editor::GraphThumbnailResult::WireCount)
+        .def("Ok", &Wasteland::Editor::GraphThumbnailResult::Ok);
+
+    editorModule.def("MakeGraphThumbnail",
+                     &Wasteland::Editor::MakeGraphThumbnail,
+                     py::arg("path"), py::arg("size"));
+
+    // ---- F.8: PNG encoding and the disk cache ------------------------------
+
+    py::class_<std::vector<std::uint8_t>>(editorModule, "ByteArray");
+
+    editorModule.def(
+        "EncodePngRGBA",
+        [](const std::vector<std::uint8_t> &rgba, std::uint32_t width,
+           std::uint32_t height)
+        {
+            std::vector<std::uint8_t> png;
+            std::string error;
+            if (!Wasteland::Editor::EncodePngRGBA(rgba.data(), width, height,
+                                                  png, error))
+                throw std::runtime_error(error);
+            return png;
+        },
+        py::arg("rgba"), py::arg("width"), py::arg("height"));
+
+    py::class_<Wasteland::Editor::ThumbnailDiskCache>(editorModule,
+                                                      "ThumbnailDiskCache")
+        .def(py::init<>())
+        .def("SetRoot", &Wasteland::Editor::ThumbnailDiskCache::SetRoot)
+        .def("GetRoot", &Wasteland::Editor::ThumbnailDiskCache::GetRoot)
+        .def("IsEnabled", &Wasteland::Editor::ThumbnailDiskCache::IsEnabled)
+        .def("CachePath", &Wasteland::Editor::ThumbnailDiskCache::CachePath)
+        .def("IsFresh", &Wasteland::Editor::ThumbnailDiskCache::IsFresh)
+        .def("Write",
+             [](Wasteland::Editor::ThumbnailDiskCache &self,
+                const std::string &relativePath,
+                const std::vector<std::uint8_t> &rgba, std::uint32_t width,
+                std::uint32_t height)
+             {
+                 std::string error;
+                 if (!self.Write(relativePath, rgba.data(), width, height,
+                                 error))
+                     throw std::runtime_error(error);
+                 return true;
+             })
+        .def("Read",
+             [](Wasteland::Editor::ThumbnailDiskCache &self,
+                const std::string &relativePath)
+             {
+                 std::vector<std::uint8_t> rgba;
+                 std::uint32_t width = 0, height = 0;
+                 std::string error;
+                 if (!self.Read(relativePath, rgba, width, height, error))
+                     throw std::runtime_error(error);
+                 return py::make_tuple(rgba, width, height);
+             })
+        .def("Clear", [](Wasteland::Editor::ThumbnailDiskCache &self)
+             {
+                 std::string error;
+                 if (!self.Clear(error))
+                     throw std::runtime_error(error);
+                 return true;
+             })
+        .def("Count", &Wasteland::Editor::ThumbnailDiskCache::Count);
+
+    // ---- I.1: project template registry ------------------------------------
+
+    py::class_<Wasteland::ProjectTemplate>(m, "ProjectTemplate")
+        .def(py::init<>())
+        .def_readwrite("Id", &Wasteland::ProjectTemplate::Id)
+        .def_readwrite("Name", &Wasteland::ProjectTemplate::Name)
+        .def_readwrite("Description", &Wasteland::ProjectTemplate::Description)
+        .def_readwrite("Category", &Wasteland::ProjectTemplate::Category)
+        .def_readwrite("SeedPath", &Wasteland::ProjectTemplate::SeedPath)
+        .def_readwrite("ThumbnailPath", &Wasteland::ProjectTemplate::ThumbnailPath)
+        .def_readwrite("DefaultLayout", &Wasteland::ProjectTemplate::DefaultLayout)
+        .def_readwrite("EngineVersion", &Wasteland::ProjectTemplate::EngineVersion)
+        .def_readwrite("BuiltIn", &Wasteland::ProjectTemplate::BuiltIn)
+        .def_readwrite("Compatible", &Wasteland::ProjectTemplate::Compatible)
+        .def_readwrite("IncompatibleReason",
+                       &Wasteland::ProjectTemplate::IncompatibleReason);
+
+    py::class_<Wasteland::ProjectTemplateRegistry>(m, "ProjectTemplateRegistry")
+        .def(py::init<>())
+        .def("AddBuiltInRoot",
+             &Wasteland::ProjectTemplateRegistry::AddBuiltInRoot)
+        .def("SetUserRoot", &Wasteland::ProjectTemplateRegistry::SetUserRoot)
+        .def("SetEngineVersion",
+             &Wasteland::ProjectTemplateRegistry::SetEngineVersion)
+        .def("GetEngineVersion",
+             &Wasteland::ProjectTemplateRegistry::GetEngineVersion)
+        .def("Discover", &Wasteland::ProjectTemplateRegistry::Discover)
+        .def_static("DeclaredBuiltIns",
+                    &Wasteland::ProjectTemplateRegistry::DeclaredBuiltIns)
+        .def_static("ParseManifest", [](const std::string &text,
+                                        const std::string &seedPath, bool builtIn)
+             {
+                 Wasteland::ProjectTemplate parsed;
+                 std::string error;
+                 if (!Wasteland::ProjectTemplateRegistry::ParseManifest(
+                         text, seedPath, builtIn, parsed, error))
+                     throw std::runtime_error(error);
+                 return parsed;
+             }, py::arg("text"), py::arg("seedPath"), py::arg("builtIn"))
+        .def_static("CompareVersions",
+                    &Wasteland::ProjectTemplateRegistry::CompareVersions,
+                    py::arg("left"), py::arg("right"));
+
+    // ---- J.6: save backup ring ---------------------------------------------
+    // pybind11 ships no caster for std::filesystem::path, so the path-taking
+    // members go through std::string and construct the path internally.
+    py::class_<Wasteland::SaveBackupRing>(m, "SaveBackupRing")
+        .def(py::init([](int keepCount, const std::string &directory)
+             {
+                 Wasteland::SaveBackupRing ring;
+                 ring.KeepCount = keepCount;
+                 ring.Directory = std::filesystem::path(directory);
+                 return ring;
+             }), py::arg("KeepCount") = 5, py::arg("Directory") = "")
+        .def_readwrite("KeepCount", &Wasteland::SaveBackupRing::KeepCount)
+        .def_property("Directory",
+                      [](const Wasteland::SaveBackupRing &self)
+                      {
+                          return self.Directory.string();
+                      },
+                      [](Wasteland::SaveBackupRing &self, const std::string &value)
+                      {
+                          self.Directory = std::filesystem::path(value);
+                      })
+        .def("Rotate",
+             [](Wasteland::SaveBackupRing &self, const std::string &target)
+             {
+                 std::string error;
+                 if (!self.Rotate(std::filesystem::path(target), &error))
+                     throw std::runtime_error(error);
+                 return true;
+             }, py::arg("target"))
+        .def("Count",
+             [](const Wasteland::SaveBackupRing &self, const std::string &target)
+             {
+                 return self.Count(std::filesystem::path(target));
+             }, py::arg("target"));
+
+    m.def("BackupPathFor",
+          [](const Wasteland::SaveBackupRing &ring, const std::string &target, int slot)
+          {
+              return Wasteland::BackupPathFor(ring, std::filesystem::path(target), slot)
+                  .string();
+          }, py::arg("ring"), py::arg("target"), py::arg("slot"));
+
+    // The scene layout version, so a test can assert the writer and the loader
+    // agree on it rather than hard-coding a number that silently drifts.
+    m.attr("SCENE_SCHEMA_VERSION") = Wasteland::SceneSerializer::kCurrentSchemaVersion;
+
+    // ---- J.2: asset cooker (deterministic + incremental) --------------------
+    m.def("Fnv1a64", [](const py::bytes &data)
+          {
+              const std::string bytes = data.cast<std::string>();
+              return Wasteland::Fnv1a64(
+                  reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+          }, py::arg("data"));
+    m.def("HashBytesOfFile", [](const std::string &path)
+          {
+              std::string readError;
+              const uint64_t hash =
+                  Wasteland::HashBytesOfFile(std::filesystem::path(path), &readError);
+              return py::make_tuple(hash, readError);
+          }, py::arg("path"));
+
+    // ---- J.3: package layout ------------------------------------------------
+    py::class_<Wasteland::PackageEntry>(m, "PackageEntry")
+        .def(py::init<>())
+        .def_readonly("RelativePath", &Wasteland::PackageEntry::RelativePath)
+        .def_readonly("Bytes", &Wasteland::PackageEntry::Bytes)
+        .def_readonly("ContentHash", &Wasteland::PackageEntry::ContentHash);
+    py::class_<Wasteland::PackageResult>(m, "PackageResult")
+        .def_readonly("Ok", &Wasteland::PackageResult::Ok)
+        .def_readonly("Error", &Wasteland::PackageResult::Error)
+        .def_readonly("Version", &Wasteland::PackageResult::Version)
+        .def_property_readonly("Files",
+                               [](const Wasteland::PackageResult &r)
+                               {
+                                   return r.Files;
+                               });
+    m.def("BuildPackage",
+          [](const std::string &staging, const std::string &exe,
+             const std::string &project, const std::string &assets,
+             const std::string &version)
+          {
+              return Wasteland::BuildPackage(
+                  std::filesystem::path(staging), std::filesystem::path(exe),
+                  std::filesystem::path(project), std::filesystem::path(assets),
+                  version);
+          }, py::arg("stagingDir"), py::arg("runtimeExe"),
+          py::arg("projectFile"), py::arg("cookedAssetsDir"), py::arg("version"));
+
+    // ---- J.4: profile budgets -------------------------------------------------
+    m.def("AnalyzeProfile",
+          [](const std::string &jsonText,
+             const std::vector<std::pair<std::string, double>> &budgets)
+          {
+              std::vector<Wasteland::ProfileBudget> converted;
+              converted.reserve(budgets.size());
+              for (const auto &entry : budgets)
+              {
+                  Wasteland::ProfileBudget budget;
+                  budget.System = entry.first;
+                  budget.BudgetMs = entry.second;
+                  converted.push_back(budget);
+              }
+              return Wasteland::AnalyzeProfile(jsonText, converted);
+          }, py::arg("jsonText"), py::arg("budgets"));
+    py::class_<Wasteland::ProfileSample>(m, "ProfileSample")
+        .def_readonly("System", &Wasteland::ProfileSample::System)
+        .def_readonly("EventCount", &Wasteland::ProfileSample::EventCount)
+        .def_readonly("TotalMs", &Wasteland::ProfileSample::TotalMs)
+        .def_readonly("MaxMs", &Wasteland::ProfileSample::MaxMs);
+    py::class_<Wasteland::ProfileReport>(m, "ProfileReport")
+        .def_readonly("Ok", &Wasteland::ProfileReport::Ok)
+        .def_readonly("Error", &Wasteland::ProfileReport::Error)
+        .def_readonly("EventCount", &Wasteland::ProfileReport::EventCount)
+        .def_readonly("TotalMs", &Wasteland::ProfileReport::TotalMs)
+        .def_property_readonly("Systems",
+                               [](const Wasteland::ProfileReport &r)
+                               {
+                                   return r.Systems;
+                               })
+        .def_property_readonly("Warnings",
+                               [](const Wasteland::ProfileReport &r)
+                               {
+                                   return r.Warnings;
+                               });
+
+    // ---- J.5: repo status data core ------------------------------------------
+    py::class_<Wasteland::RepoStatus>(m, "RepoStatus")
+        .def_readonly("Branch", &Wasteland::RepoStatus::Branch)
+        .def_readonly("DirtyFiles", &Wasteland::RepoStatus::DirtyFiles)
+        .def_readonly("UntrackedFiles", &Wasteland::RepoStatus::UntrackedFiles)
+        .def_readonly("IsRepository", &Wasteland::RepoStatus::IsRepository)
+        .def_readonly("Error", &Wasteland::RepoStatus::Error)
+        .def_property_readonly("LargeFileHints",
+                               [](const Wasteland::RepoStatus &s)
+                               {
+                                   return s.LargeFileHints;
+                               });
+    m.def("QueryRepoStatus",
+          [](const std::string &root, std::uint64_t lfsThresholdBytes)
+          {
+              return Wasteland::QueryRepoStatus(std::filesystem::path(root),
+                                                lfsThresholdBytes);
+          }, py::arg("repoRoot"), py::arg("lfsThresholdBytes") = 0);
+
+    // ---- J.7: string table + pseudo-localization ------------------------------
+    m.def("PseudoLocalizeText", &Wasteland::PseudoLocalizeText,
+          py::arg("text"));
+    py::class_<Wasteland::StringTable>(m, "StringTable")
+        .def(py::init<>())
+        .def("SetBase", &Wasteland::StringTable::SetBase,
+             py::arg("key"), py::arg("text"))
+        .def("SetLocaleOverride", &Wasteland::StringTable::SetLocaleOverride,
+             py::arg("locale"), py::arg("key"), py::arg("text"))
+        .def("SetActiveLocale", &Wasteland::StringTable::SetActiveLocale,
+             py::arg("locale"))
+        .def("Translate", &Wasteland::StringTable::Translate, py::arg("key"))
+        .def("Has", &Wasteland::StringTable::Has, py::arg("key"))
+        .def("Count", &Wasteland::StringTable::Count)
+        .def("PseudoRun", &Wasteland::StringTable::PseudoRun);
+
+    // ---- F.7 v1: bone-silhouette thumbnail -----------------------------------
+    py::class_<Wasteland::BoneThumbnailResult>(m, "BoneThumbnailResult")
+        .def_readonly("Pixels", &Wasteland::BoneThumbnailResult::Pixels)
+        .def_readonly("Size", &Wasteland::BoneThumbnailResult::Size)
+        .def_readonly("BoneCount", &Wasteland::BoneThumbnailResult::BoneCount);
+    m.def("MakeBoneHierarchyThumbnail",
+          [](const std::vector<float> &worldPositions,
+             const std::vector<int32_t> &parents, int size)
+          {
+              return Wasteland::MakeBoneHierarchyThumbnail(worldPositions, parents,
+                                                           size);
+          }, py::arg("worldPositions"), py::arg("parents"), py::arg("size"));
+
+    // ---- J.2: BC1 texture compression + mips ----------------------------------
+    m.def("Bc1BlockCount", &Wasteland::Bc1BlockCount,
+          py::arg("width"), py::arg("height"));
+    m.def("EncodeBc1Rgba",
+          [](const py::bytes &rgba, int width, int height)
+          {
+              const std::string src = rgba.cast<std::string>();
+              std::vector<std::uint8_t> out;
+              Wasteland::EncodeBc1Rgba(
+                  reinterpret_cast<const std::uint8_t *>(src.data()),
+                  width, height, out);
+              return py::bytes(reinterpret_cast<const char *>(out.data()),
+                               out.size());
+          }, py::arg("rgba"), py::arg("width"), py::arg("height"));
+    m.def("DownsampleBox",
+          [](const py::bytes &src, int width, int height)
+          {
+              const std::string data = src.cast<std::string>();
+              std::vector<std::uint8_t> out;
+              int outWidth = 0, outHeight = 0;
+              Wasteland::DownsampleBox(
+                  reinterpret_cast<const std::uint8_t *>(data.data()),
+                  width, height, out, outWidth, outHeight);
+              return py::make_tuple(
+                  py::bytes(reinterpret_cast<const char *>(out.data()), out.size()),
+                  outWidth, outHeight);
+          }, py::arg("src"), py::arg("width"), py::arg("height"));
+    m.def("MipChainSizes",
+          [](int width, int height)
+          {
+              std::vector<std::pair<int, int>> out;
+              Wasteland::MipChainSizes(width, height, out);
+              return out;
+          }, py::arg("width"), py::arg("height"));
+    m.def("CookTextureBc1",
+          [](const py::bytes &src, int width, int height)
+          {
+              const std::string data = src.cast<std::string>();
+              std::vector<std::uint8_t> combined;
+              std::vector<std::pair<int, int>> mips;
+              Wasteland::CookTextureBc1(
+                  reinterpret_cast<const std::uint8_t *>(data.data()),
+                  width, height, combined, mips);
+              return py::make_tuple(
+                  py::bytes(reinterpret_cast<const char *>(combined.data()),
+                            combined.size()),
+                  mips);
+          }, py::arg("src"), py::arg("width"), py::arg("height"));
+
+    // ---- I.4: save the current project as a template ---------------------------
+    m.def("SaveAsTemplate",
+          [](const std::string &targetDir, const std::string &assetsDir,
+             const std::string &name, const std::string &description)
+          {
+              std::string manifestPath;
+              std::string error;
+              if (!Wasteland::SaveAsTemplate(targetDir, assetsDir, name,
+                                             description, manifestPath, error))
+                  throw std::runtime_error(error);
+              return manifestPath;
+          }, py::arg("targetDir"), py::arg("assetsDir"), py::arg("name"),
+          py::arg("description"));
+
+    py::class_<Wasteland::AssetCooker>(m, "AssetCooker")
+        .def(py::init<>())
+        .def("CookIfStale",
+             [](Wasteland::AssetCooker &self, const std::string &source,
+                const std::string &output,
+                std::function<bool(const std::string &)> op)
+             {
+                 // The C++ operation takes a path; the Python callable takes a
+                 // string. Wrap so only the string crosses the boundary.
+                 const auto wrapped = [op](const std::filesystem::path &out) -> bool
+                 {
+                     return op(out.string());
+                 };
+                 const Wasteland::CookResult result = self.CookIfStale(
+                     std::filesystem::path(source),
+                     std::filesystem::path(output), wrapped);
+                 if (!result.Ok)
+                     throw std::runtime_error(result.Error);
+                 return py::make_tuple(result.Cooked, result.Error);
+             }, py::arg("source"), py::arg("output"), py::arg("op"));
+
+    // ---- J.2: packed mesh cook format ---------------------------------------
+    m.def("WritePackedMesh",
+          [](const std::string &output, Wasteland::EditableMesh &mesh,
+             int materialIndex)
+          {
+              std::string error;
+              if (!Wasteland::WritePackedMesh(std::filesystem::path(output), mesh,
+                                              materialIndex, &error))
+                  throw std::runtime_error(error);
+              return true;
+          }, py::arg("output"), py::arg("mesh"), py::arg("materialIndex"));
+    m.def("ReadPackedMesh",
+          [](const std::string &path)
+          {
+              Wasteland::MeshData out;
+              int materialIndex = 0;
+              std::string error;
+              if (!Wasteland::ReadPackedMesh(std::filesystem::path(path), out,
+                                             &materialIndex, &error))
+                  throw std::runtime_error(error);
+              return py::make_tuple(out, materialIndex);
+          }, py::arg("path"));
+
+    // ---- F.11: new-asset creation ------------------------------------------
+    editorModule.def("CreateEmptyAsset",
+                     [](const std::string &absolutePath,
+                        const std::string &assetName)
+                     {
+                         std::string error;
+                         if (!Wasteland::Editor::CreateEmptyAsset(absolutePath,
+                                                                  assetName, error))
+                             throw std::runtime_error(error);
+                         return true;
+                     },
+                     py::arg("absolutePath"), py::arg("assetName") = "");
+
 // ParseOBJ takes the OBJ source as TEXT, not a path. That is the whole reason
 // this binding exists: mesh parsing becomes testable in a headless process
 // with no temp file and no filesystem.
@@ -846,6 +1505,699 @@ meshModule.def("LoadOBJ",
                        return py::make_tuple(ok, py::cast(mesh), error);
                    },
                    py::arg("filepath"));
+
+// ---------------------------------------------------------------------------
+// ProceduralMesh -- the RENDERER's mesh layout, and the conversion into it.
+//
+// MeshData (de-indexed float arrays, what an importer produces) and
+// ProceduralMesh (parallel glm vectors, what the raster batch consumes) are
+// not interchangeable, so an imported mesh cannot be drawn without
+// BuildProceduralMesh. Both are bound because a test can only verify the
+// conversion if it can see both sides of it.
+//
+// Positions/Normals/TexCoords/Indices are COPY-OUT, the same trap as
+// MeshData.Vertices: appending from Python mutates a temporary. A script
+// builds a ProceduralMesh by parsing a file, not by hand.
+// ---------------------------------------------------------------------------
+py::class_<Wasteland::ProceduralMesh>(meshModule, "ProceduralMesh")
+        .def(py::init<>())
+        .def_property_readonly("Positions",
+                               [](const Wasteland::ProceduralMesh &m) { return m.Positions; })
+        .def_property_readonly("Normals",
+                               [](const Wasteland::ProceduralMesh &m) { return m.Normals; })
+        .def_property_readonly("TexCoords",
+                               [](const Wasteland::ProceduralMesh &m) { return m.TexCoords; })
+        .def_property_readonly("Indices",
+                               [](const Wasteland::ProceduralMesh &m) { return m.Indices; })
+        .def_property_readonly("VertexCount",
+                               [](const Wasteland::ProceduralMesh &m) { return m.Positions.size(); })
+        .def("Empty", &Wasteland::ProceduralMesh::Empty);
+
+meshModule.def("BuildProceduralMesh",
+                   [](const Wasteland::MeshData &data) {
+                       Wasteland::ProceduralMesh mesh;
+                       std::string error;
+                       const bool ok = Wasteland::BuildProceduralMesh(data, mesh, error);
+                       return py::make_tuple(ok, py::cast(mesh), error);
+                   },
+                   py::arg("data"));
+
+// MeshAssetCache is the per-scene path -> mesh table. Bound because a test can
+// assert the two behaviours that matter and that a scene cannot show: a mesh is
+// loaded ONCE for repeated requests, and a FAILURE is cached rather than
+// re-attempted every frame.
+py::class_<Wasteland::MeshAssetCache>(meshModule, "MeshAssetCache")
+        .def(py::init<>())
+        .def("Get",
+             [](Wasteland::MeshAssetCache &cache, const std::string &path) {
+                 std::string error;
+                 const Wasteland::ProceduralMesh *mesh = cache.Get(path, &error);
+                 // (mesh_or_none, error) rather than raising: a missing asset
+                 // is user data, not a bug, and a test wants to assert on the
+                 // reason.
+                 return py::make_tuple(mesh ? py::cast(*mesh) : py::none(), error);
+             },
+             py::arg("path"))
+        .def("Clear", &Wasteland::MeshAssetCache::Clear)
+        .def_property_readonly("Count", &Wasteland::MeshAssetCache::Count);
+
+// ---------------------------------------------------------------------------
+// EditableMesh -- the modelling-side half of mesh import.
+//
+// MeshData is DE-INDEXED and the renderer wants it that way; every modelling
+// operation wants the opposite. This binding is what makes the weld verifiable
+// in a headless process, which is the only place it can be verified at all.
+//
+// The nested Vertex/HalfEdge/Face structs are bound as opaque types rather than
+// flattened into tuples: a test (or a script) that has a HalfEdge object can
+// read its Twin and then index Edges with it, which is the whole shape of an
+// adjacency query. Flattening would force every consumer to re-pack the four
+// ints by hand.
+// ---------------------------------------------------------------------------
+py::class_<Wasteland::EditableMesh::Vertex>(meshModule, "MeshVertexEdit")
+        .def(py::init<>())
+        .def_property("Position",
+                      [](const Wasteland::EditableMesh::Vertex &v) {
+                          return glm::vec3(v.Position[0], v.Position[1],
+                                           v.Position[2]);
+                      },
+                      [](Wasteland::EditableMesh::Vertex &v,
+                         const glm::vec3 &p) {
+                          v.Position[0] = p.x;
+                          v.Position[1] = p.y;
+                          v.Position[2] = p.z;
+                      })
+        .def_property("Normal",
+                      [](const Wasteland::EditableMesh::Vertex &v) {
+                          return glm::vec3(v.Normal[0], v.Normal[1],
+                                           v.Normal[2]);
+                      },
+                      [](Wasteland::EditableMesh::Vertex &v,
+                         const glm::vec3 &n) {
+                          v.Normal[0] = n.x;
+                          v.Normal[1] = n.y;
+                          v.Normal[2] = n.z;
+                      })
+        .def_property("TexCoord",
+                      [](const Wasteland::EditableMesh::Vertex &v) {
+                          return glm::vec2(v.TexCoord[0], v.TexCoord[1]);
+                      },
+                      [](Wasteland::EditableMesh::Vertex &v,
+                         const glm::vec2 &t) {
+                          v.TexCoord[0] = t.x;
+                          v.TexCoord[1] = t.y;
+                      })
+        .def_readwrite("FirstEdge",
+                       &Wasteland::EditableMesh::Vertex::FirstEdge);
+
+py::class_<Wasteland::EditableMesh::HalfEdge>(meshModule, "MeshHalfEdge")
+        .def(py::init<>())
+        .def_readwrite("Twin", &Wasteland::EditableMesh::HalfEdge::Twin)
+        .def_readwrite("Next", &Wasteland::EditableMesh::HalfEdge::Next)
+        .def_readwrite("Vertex", &Wasteland::EditableMesh::HalfEdge::Vertex)
+        .def_readwrite("Face", &Wasteland::EditableMesh::HalfEdge::Face);
+
+py::class_<Wasteland::EditableMesh::Face>(meshModule, "MeshFace")
+        .def(py::init<>())
+        .def_readwrite("FirstEdge", &Wasteland::EditableMesh::Face::FirstEdge);
+
+py::class_<Wasteland::EditableMesh>(meshModule, "EditableMesh")
+        .def(py::init<>())
+        // Weld is static: it is the ENTRY point, the only way to build an
+        // EditableMesh from imported geometry, and a caller should not have to
+        // default-construct one first.
+        .def_static("Weld", &Wasteland::EditableMesh::Weld, py::arg("source"))
+        .def("Deindex", &Wasteland::EditableMesh::Deindex)
+        .def("RecomputeNormals", &Wasteland::EditableMesh::RecomputeNormals)
+        .def("Validate", &Wasteland::EditableMesh::Validate)
+        .def("IsValid", &Wasteland::EditableMesh::IsValid)
+        .def("IsTriangulated", &Wasteland::EditableMesh::IsTriangulated)
+        // COPY-OUT lists, same trap as MeshData.Vertices: appending from
+        // Python mutates a temporary. A script that wants to build a mesh by
+        // hand must go through Weld or the C++ API.
+        .def_property_readonly("Vertices",
+                               [](const Wasteland::EditableMesh &mesh) {
+                                   return mesh.Vertices;
+                               })
+        .def_property_readonly("Edges",
+                               [](const Wasteland::EditableMesh &mesh) {
+                                   return mesh.Edges;
+                               })
+        .def_property_readonly("Faces",
+                               [](const Wasteland::EditableMesh &mesh) {
+                                   return mesh.Faces;
+                               })
+        .def_property_readonly("VertexCount",
+                               &Wasteland::EditableMesh::GetVertexCount)
+        .def_property_readonly("EdgeCount",
+                               &Wasteland::EditableMesh::GetEdgeCount)
+        .def_property_readonly("FaceCount",
+                               &Wasteland::EditableMesh::GetFaceCount)
+        // The three methods a caller with a PROPERTY would reach for anyway.
+        // `mesh.VertexCount` reads better; `mesh.GetVertexCount()` is what the
+        // C++ API says, and a binding that only offers one form forces every
+        // consumer to translate.
+        .def("GetVertexCount", &Wasteland::EditableMesh::GetVertexCount)
+        .def("GetEdgeCount", &Wasteland::EditableMesh::GetEdgeCount)
+        .def("GetFaceCount", &Wasteland::EditableMesh::GetFaceCount)
+        // MUTATORS. Vertices/Edges/Faces are copy-out properties (the same
+        // trap MeshData.Vertices has), so `mesh.Edges[0].Twin = 7` mutates a
+        // temporary and silently does nothing. A test that wants to verify the
+        // validator must go through these; a script should not need them at
+        // all, which is why they are narrow and explicit rather than a generic
+        // element setter.
+        .def("SetEdgeTwin", &Wasteland::EditableMesh::SetEdgeTwin,
+             py::arg("edge"), py::arg("twin"))
+        .def("SetEdgeNext", &Wasteland::EditableMesh::SetEdgeNext,
+             py::arg("edge"), py::arg("next"))
+        .def("SetEdgeVertex", &Wasteland::EditableMesh::SetEdgeVertex,
+             py::arg("edge"), py::arg("vertex"))
+        .def("SetEdgeFace", &Wasteland::EditableMesh::SetEdgeFace,
+             py::arg("edge"), py::arg("face"))
+        .def("SetVertexPosition", &Wasteland::EditableMesh::SetVertexPosition,
+             py::arg("vertex"), py::arg("x"), py::arg("y"), py::arg("z"))
+        .def("SetVertexTexCoord", &Wasteland::EditableMesh::SetVertexTexCoord,
+             py::arg("vertex"), py::arg("u"), py::arg("v"))
+        // Modelling operations. Each returns something a test can assert on
+        // rather than a bare bool: a merge that reports "0 removed" when the
+        // caller expected three is a different failure from one that reports
+        // success.
+        .def("MergeByDistance", &Wasteland::EditableMesh::MergeByDistance,
+             py::arg("epsilon"))
+        .def("FlipNormals", &Wasteland::EditableMesh::FlipNormals)
+        .def("DeleteFaces",
+             [](Wasteland::EditableMesh &self, const std::vector<int32_t> &faces) {
+                 return self.DeleteFaces(faces.data(),
+                                         static_cast<int32_t>(faces.size()));
+             },
+             py::arg("faces"))
+        .def("ExtrudeFaces",
+             [](Wasteland::EditableMesh &self, const std::vector<int32_t> &faces,
+                const std::array<float, 3> &delta) {
+                 return self.ExtrudeFaces(faces.data(),
+                                          static_cast<int32_t>(faces.size()),
+                                          delta.data());
+             },
+             py::arg("faces"), py::arg("delta"))
+        .def("InsetFaces",
+             [](Wasteland::EditableMesh &self, const std::vector<int32_t> &faces,
+                float thickness) {
+                 return self.InsetFaces(faces.data(),
+                                        static_cast<int32_t>(faces.size()),
+                                        thickness);
+             },
+             py::arg("faces"), py::arg("thickness"))
+        .def("BevelEdges",
+             [](Wasteland::EditableMesh &self, const std::vector<int32_t> &edges,
+                float offset) {
+                 std::string error;
+                 const bool ok = self.BevelEdges(edges.data(),
+                                                 static_cast<int32_t>(edges.size()),
+                                                 offset, &error);
+                 return py::make_tuple(ok, error);
+             },
+             py::arg("edges"), py::arg("offset"))
+        .def("LoopCut",
+             [](Wasteland::EditableMesh &self, int32_t startEdge) {
+                 std::string error;
+                 const bool ok = self.LoopCut(startEdge, &error);
+                 return py::make_tuple(ok, error);
+             },
+             py::arg("startEdge"));
+
+    // The export half of the mesh round trip. Static, like MeshLoader.
+    //
+    // SaveOBJ takes the error as an out-parameter through a Python list rather
+    // than returning a tuple: a caller that wants the reason passes a list, and
+    // a caller that does not can ignore it. A (bool, str) tuple would make the
+    // common case carry a value nobody reads.
+    py::class_<Wasteland::MeshWriter>(meshModule, "MeshWriter")
+        .def_static("EmitOBJ", &Wasteland::MeshWriter::EmitOBJ,
+                    py::arg("mesh"))
+        .def_static("EmitOBJFromMeshData",
+                    &Wasteland::MeshWriter::EmitOBJFromMeshData,
+                    py::arg("data"))
+        .def_static("SaveOBJ",
+                    [](const std::string &path,
+                       const Wasteland::EditableMesh &mesh,
+                       py::object error) {
+                        std::string reason;
+                        const bool ok = Wasteland::MeshWriter::SaveOBJ(
+                            path, mesh, &reason);
+                        if (!error.is_none())
+                            error.cast<py::list>().append(reason);
+                        return ok;
+                    },
+                    py::arg("path"), py::arg("mesh"),
+                    py::arg("error") = py::none())
+        .def_static("SaveOBJFromMeshData",
+                    [](const std::string &path,
+                       const Wasteland::MeshData &data,
+                       py::object error) {
+                        std::string reason;
+                        const bool ok = Wasteland::MeshWriter::SaveOBJFromMeshData(
+                            path, data, &reason);
+                        if (!error.is_none())
+                            error.cast<py::list>().append(reason);
+                        return ok;
+                    },
+                    py::arg("path"), py::arg("data"),
+                    py::arg("error") = py::none());
+
+    // -----------------------------------------------------------------------
+    // Whole-mesh undo. A snapshot, not a command inverse: every op that
+    // re-welds permutes vertex, edge and twin order, so an inverse rebuilding
+    // from a stored delta would be reconstructing a mesh the delta no longer
+    // describes. See MeshEditHistory.h.
+    // -----------------------------------------------------------------------
+    py::class_<Wasteland::MeshEditHistory>(meshModule, "MeshEditHistory")
+        .def(py::init<int32_t>(), py::arg("depth") = 32)
+        .def("Push", &Wasteland::MeshEditHistory::Push, py::arg("mesh"))
+        .def("Undo", &Wasteland::MeshEditHistory::Undo, py::arg("mesh"))
+        .def("CanUndo", &Wasteland::MeshEditHistory::CanUndo)
+        .def("GetDepth", &Wasteland::MeshEditHistory::GetDepth)
+        .def("GetMaxDepth", &Wasteland::MeshEditHistory::GetMaxDepth)
+        .def("Clear", &Wasteland::MeshEditHistory::Clear);
+
+    // -----------------------------------------------------------------------
+    // Sculpt brushes. The stroke is a VALUE struct whose vector members are
+    // exposed as tuples: a float[3] is not a bindable type, and borrowing a
+    // pointer into a Python list would dangle the moment the list was
+    // collected. Copying three floats is not a hot path -- a stroke is
+    // applied once per mouse event.
+    // -----------------------------------------------------------------------
+    py::enum_<Wasteland::SculptBrush>(meshModule, "SculptBrush")
+        .value("Grab", Wasteland::SculptBrush::Grab)
+        .value("Smooth", Wasteland::SculptBrush::Smooth)
+        .value("Inflate", Wasteland::SculptBrush::Inflate)
+        .value("Flatten", Wasteland::SculptBrush::Flatten)
+        .value("Crease", Wasteland::SculptBrush::Crease);
+
+    py::class_<Wasteland::SculptStroke>(meshModule, "SculptStroke")
+        .def(py::init<>())
+        .def_readwrite("Brush", &Wasteland::SculptStroke::Brush)
+        .def_readwrite("Radius", &Wasteland::SculptStroke::Radius)
+        .def_readwrite("Strength", &Wasteland::SculptStroke::Strength)
+        .def_property("Center",
+            [](const Wasteland::SculptStroke &stroke) {
+                return py::make_tuple(stroke.Center[0],
+                                      stroke.Center[1],
+                                      stroke.Center[2]);
+            },
+            [](Wasteland::SculptStroke &stroke, const py::tuple &value) {
+                stroke.Center[0] = value[0].cast<float>();
+                stroke.Center[1] = value[1].cast<float>();
+                stroke.Center[2] = value[2].cast<float>();
+            })
+        .def_property("Direction",
+            [](const Wasteland::SculptStroke &stroke) {
+                return py::make_tuple(stroke.Direction[0],
+                                      stroke.Direction[1],
+                                      stroke.Direction[2]);
+            },
+            [](Wasteland::SculptStroke &stroke, const py::tuple &value) {
+                stroke.Direction[0] = value[0].cast<float>();
+                stroke.Direction[1] = value[1].cast<float>();
+                stroke.Direction[2] = value[2].cast<float>();
+            })
+        .def_property("PlaneNormal",
+            [](const Wasteland::SculptStroke &stroke) {
+                return py::make_tuple(stroke.PlaneNormal[0],
+                                      stroke.PlaneNormal[1],
+                                      stroke.PlaneNormal[2]);
+            },
+            [](Wasteland::SculptStroke &stroke, const py::tuple &value) {
+                stroke.PlaneNormal[0] = value[0].cast<float>();
+                stroke.PlaneNormal[1] = value[1].cast<float>();
+                stroke.PlaneNormal[2] = value[2].cast<float>();
+            })
+        .def_property("PlanePoint",
+            [](const Wasteland::SculptStroke &stroke) {
+                return py::make_tuple(stroke.PlanePoint[0],
+                                      stroke.PlanePoint[1],
+                                      stroke.PlanePoint[2]);
+            },
+            [](Wasteland::SculptStroke &stroke, const py::tuple &value) {
+                stroke.PlanePoint[0] = value[0].cast<float>();
+                stroke.PlanePoint[1] = value[1].cast<float>();
+                stroke.PlanePoint[2] = value[2].cast<float>();
+            })
+        .def_property("Mask",
+            [](const Wasteland::SculptStroke &stroke) {
+                return std::vector<float>(stroke.Mask);
+            },
+            [](Wasteland::SculptStroke &stroke, const std::vector<float> &value) {
+                stroke.Mask = value;
+            })
+        .def("GetMaskLength",
+            [](const Wasteland::SculptStroke &stroke) { return (int32_t)stroke.Mask.size(); });
+
+    meshModule.def("SculptStrokeApply", &Wasteland::SculptStrokeApply,
+                   py::arg("mesh"), py::arg("stroke"));
+    meshModule.def("SculptFalloff", &Wasteland::SculptFalloff,
+                   py::arg("distance"), py::arg("radius"));
+
+    // -----------------------------------------------------------------------
+    // Remesh and decimation. Both return (mesh, error) rather than raising:
+    // a caller sizing a voxel grid for an asset it has never seen needs the
+    // reason to adjust the grid, and an exception would discard the partial
+    // result it may still want to inspect.
+    // -----------------------------------------------------------------------
+    meshModule.def("VoxelRemesh",
+                   [](const Wasteland::EditableMesh &source, float voxelSize,
+                      int64_t maxVoxels) {
+                       std::string error;
+                       Wasteland::EditableMesh result =
+                           Wasteland::VoxelRemesh(source, voxelSize, maxVoxels, &error);
+                       return py::make_tuple(result, error);
+                   },
+                   py::arg("source"), py::arg("voxelSize"),
+                   py::arg("maxVoxels") = 40000000);
+    meshModule.def("DecimateMesh",
+                   [](const Wasteland::EditableMesh &source,
+                      int32_t targetTriangles) {
+                       std::string error;
+                       Wasteland::EditableMesh result =
+                           Wasteland::DecimateMesh(source, targetTriangles, &error);
+                       return py::make_tuple(result, error);
+                   },
+                   py::arg("source"), py::arg("targetTriangles"));
+    meshModule.def("CountBoundaryEdges", &Wasteland::CountBoundaryEdges,
+                   py::arg("mesh"));
+
+    // -----------------------------------------------------------------------
+    // .wlmesh asset format. Same (result, error) convention as the remesh pair
+    // above: a malformed asset is user data, not a bug, and a caller needs the
+    // reason.
+    //
+    // The four functions share one shape -- (mesh, materials, faceMaterial,
+    // sculptHistory, error) -- so a script can round-trip an asset without
+    // remembering which accessor holds the slot list.
+    // -----------------------------------------------------------------------
+    meshModule.def("EmitMesh",
+                   [](const Wasteland::EditableMesh &mesh,
+                      const std::vector<std::string> &materials,
+                      const std::vector<int32_t> &faceMaterial,
+                      const std::vector<Wasteland::EditableMesh> &history,
+                      bool includeHistory) {
+                       Wasteland::MeshAsset asset;
+                       asset.Mesh = mesh;
+                       asset.Materials = materials;
+                       asset.FaceMaterial = faceMaterial;
+                       asset.SculptHistory = history;
+                       const std::string text =
+                           Wasteland::MeshSerializer::Emit(asset, includeHistory);
+                       // An empty emit means a face loop is broken, which
+                       // Emit cannot report through a string return. Saying so
+                       // here rather than returning "" keeps a caller from
+                       // writing an empty file and believing it saved.
+                       const std::string error =
+                           text.empty()
+                               ? "the mesh could not be emitted (a face loop is broken)"
+                               : std::string();
+                       return py::make_tuple(text, error);
+                   },
+                   py::arg("mesh"),
+                   py::arg("materials") = std::vector<std::string>(),
+                   py::arg("faceMaterial") = std::vector<int32_t>(),
+                   py::arg("history") = std::vector<Wasteland::EditableMesh>(),
+                   py::arg("includeHistory") = false);
+
+    meshModule.def("ParseMesh",
+                   [](const std::string &text) {
+                       Wasteland::MeshAsset asset;
+                       std::string error;
+                       const bool ok =
+                           Wasteland::MeshSerializer::Parse(text, asset, error);
+                       // Every element is cast to a py::object. The failure path
+                       // passes temporaries and the success path passes lvalues,
+                       // and make_tuple deduces T& for an lvalue -- mixing the
+                       // two is C3487, "all return expressions must deduce to
+                       // the same type", which says nothing about which two
+                       // types it meant.
+                       return py::make_tuple(
+                           py::cast(ok ? asset.Mesh : Wasteland::EditableMesh()),
+                           py::cast(ok ? asset.Materials
+                                       : std::vector<std::string>()),
+                           py::cast(ok ? asset.FaceMaterial
+                                       : std::vector<int32_t>()),
+                           py::cast(ok ? asset.SculptHistory
+                                       : std::vector<Wasteland::EditableMesh>()),
+                           py::cast(error));
+                   },
+                   py::arg("text"));
+
+    meshModule.def("SaveMesh",
+                   [](const std::string &path,
+                      const Wasteland::EditableMesh &mesh,
+                      const std::vector<std::string> &materials,
+                      const std::vector<int32_t> &faceMaterial,
+                      const std::vector<Wasteland::EditableMesh> &history,
+                      bool includeHistory) {
+                       Wasteland::MeshAsset asset;
+                       asset.Mesh = mesh;
+                       asset.Materials = materials;
+                       asset.FaceMaterial = faceMaterial;
+                       asset.SculptHistory = history;
+                       std::string error;
+                       const bool ok = Wasteland::MeshSerializer::Save(
+                           path, asset, includeHistory, &error);
+                       return py::make_tuple(ok, error);
+                   },
+                   py::arg("path"),
+                   py::arg("mesh"),
+                   py::arg("materials") = std::vector<std::string>(),
+                   py::arg("faceMaterial") = std::vector<int32_t>(),
+                   py::arg("history") = std::vector<Wasteland::EditableMesh>(),
+                   py::arg("includeHistory") = false);
+
+    meshModule.def("LoadMesh",
+                   [](const std::string &path) {
+                       Wasteland::MeshAsset asset;
+                       std::string error;
+                       const bool ok =
+                           Wasteland::MeshSerializer::Load(path, asset, &error);
+                       // py::cast on every element, for the C3487 reason in
+                       // ParseMesh above.
+                       return py::make_tuple(
+                           py::cast(ok ? asset.Mesh : Wasteland::EditableMesh()),
+                           py::cast(ok ? asset.Materials
+                                       : std::vector<std::string>()),
+                           py::cast(ok ? asset.FaceMaterial
+                                       : std::vector<int32_t>()),
+                           py::cast(ok ? asset.SculptHistory
+                                       : std::vector<Wasteland::EditableMesh>()),
+                           py::cast(error));
+                   },
+                   py::arg("path"));
+
+    // -----------------------------------------------------------------------
+    // Per-face picking. Bound here rather than in the panel because the
+    // raycast is a pure function of a mesh and a ray: the panel's contribution
+    // is turning a mouse position into a ray, and that part cannot be tested
+    // headlessly. A picking bug (a face that selects one ring off, or a miss
+    // that selects nothing) looks like a UI quirk rather than a bug, so it is
+    // the part that most needs a test.
+    // -----------------------------------------------------------------------
+    py::class_<Wasteland::MeshPickResult>(meshModule, "MeshPickResult")
+        .def(py::init<>())
+        .def_readonly("Face", &Wasteland::MeshPickResult::Face)
+        .def_readonly("Distance", &Wasteland::MeshPickResult::Distance)
+        .def_readonly("U", &Wasteland::MeshPickResult::U)
+        .def_readonly("V", &Wasteland::MeshPickResult::V)
+        // A raw float[3] member cannot be bound directly; a property returning
+        // a tuple gives the caller the same three values without handing out a
+        // view into the struct that could dangle.
+        .def_property_readonly("Point",
+                               [](const Wasteland::MeshPickResult &self) {
+                                   return py::make_tuple(self.Point[0],
+                                                         self.Point[1],
+                                                         self.Point[2]);
+                               });
+
+    // std::array<float,3> converts from any Python sequence via
+    // pybind11/stl.h, so a test can pass plain tuples.
+    meshModule.def("IntersectTriangle",
+                   [](const std::array<float, 3> &v0,
+                      const std::array<float, 3> &v1,
+                      const std::array<float, 3> &v2,
+                      const std::array<float, 3> &origin,
+                      const std::array<float, 3> &direction) {
+                       float distance = 0.0f, u = 0.0f, v = 0.0f;
+                       const bool hit = Wasteland::IntersectTriangle(
+                           v0.data(), v1.data(), v2.data(),
+                           origin.data(), direction.data(), distance, u, v);
+                       return py::make_tuple(hit, distance, u, v);
+                   },
+                   py::arg("v0"), py::arg("v1"), py::arg("v2"),
+                   py::arg("origin"), py::arg("direction"));
+
+    meshModule.def("PickFace",
+                   [](const Wasteland::EditableMesh &mesh,
+                      const std::array<float, 3> &origin,
+                      const std::array<float, 3> &direction) {
+                       Wasteland::MeshPickResult result;
+                       const bool hit = Wasteland::PickFace(
+                           mesh, origin.data(), direction.data(), result);
+                       return py::make_tuple(hit, result);
+                   },
+                   py::arg("mesh"), py::arg("origin"), py::arg("direction"));
+
+// ---------------------------------------------------------------------------
+// glTF 2.0 import.
+//
+// Bound as a RETURNED RESULT OBJECT rather than out-parameters, because a
+// glTF import has one success signal and many data outputs. A tuple of seven
+// elements would put the error string in a position a caller has to remember.
+// ---------------------------------------------------------------------------
+// One glTF PBR material. Bound before GltfImportResult because the result
+// exposes a vector of these and pybind needs the element type registered.
+//
+// BaseColorFactor/EmissiveFactor are float arrays in C++ and are exposed as
+// glm::vec4/vec3, matching how every other colour is bound. AlbedoTexturePath
+// is the URI of a baseColorTexture image when the image has one; an EMBEDDED
+// bufferView image leaves it empty, and HasBaseColorTexture still reports that
+// a texture existed -- the distinction is the difference between "this
+// material points at a file" and "this material had a texture we could not
+// extract".
+py::class_<Wasteland::GltfMaterial>(meshModule, "GltfMaterial")
+        .def(py::init<>())
+        .def_readwrite("Name", &Wasteland::GltfMaterial::Name)
+        .def_property_readonly("BaseColorFactor",
+                               [](const Wasteland::GltfMaterial &m) {
+                                   return glm::vec4(m.BaseColorFactor[0],
+                                                    m.BaseColorFactor[1],
+                                                    m.BaseColorFactor[2],
+                                                    m.BaseColorFactor[3]);
+                               })
+        .def_readwrite("MetallicFactor", &Wasteland::GltfMaterial::MetallicFactor)
+        .def_readwrite("RoughnessFactor", &Wasteland::GltfMaterial::RoughnessFactor)
+        .def_property_readonly("EmissiveFactor",
+                               [](const Wasteland::GltfMaterial &m) {
+                                   return glm::vec3(m.EmissiveFactor[0],
+                                                    m.EmissiveFactor[1],
+                                                    m.EmissiveFactor[2]);
+                               })
+        .def_readwrite("NormalScale", &Wasteland::GltfMaterial::NormalScale)
+        .def_readwrite("AlbedoTexturePath",
+                       &Wasteland::GltfMaterial::AlbedoTexturePath)
+        .def_readwrite("HasBaseColorTexture",
+                       &Wasteland::GltfMaterial::HasBaseColorTexture)
+        .def_readwrite("HasNormalTexture",
+                       &Wasteland::GltfMaterial::HasNormalTexture)
+        // Recorded, not applied: MaterialComponent has no alpha-mode field.
+        .def_readwrite("AlphaMode", &Wasteland::GltfMaterial::AlphaMode);
+
+py::class_<Wasteland::GltfImportResult>(meshModule, "GltfImportResult")
+        .def_property_readonly("Error",
+                               [](const Wasteland::GltfImportResult &r) {
+                                   return r.Error;
+                               })
+        .def("Ok", &Wasteland::GltfImportResult::Ok)
+        // The mesh is the payload; everything else is metadata a caller reads
+        // only when it asked for a skinned or animated asset.
+        .def_readonly("Mesh", &Wasteland::GltfImportResult::Mesh)
+        // The DE-INDEXED geometry, which is what the renderer consumes. Bound
+        // separately from Mesh because a render-only caller must not round-trip
+        // through Mesh.Deindex(): Weld merges by position and keeps one normal,
+        // so a hard edge does not survive.
+        .def_readonly("Deindexed", &Wasteland::GltfImportResult::Deindexed)
+        .def_readonly("BoneNames", &Wasteland::GltfImportResult::BoneNames)
+        .def_readonly("BoneParents", &Wasteland::GltfImportResult::BoneParents)
+        .def_property_readonly("InverseBindMatrices",
+                               [](const Wasteland::GltfImportResult &r) {
+                                   return r.InverseBindMatrices;
+                               })
+        .def_property_readonly("Clips",
+                               [](const Wasteland::GltfImportResult &r) {
+                                   return r.Clips;
+                               })
+        .def_property_readonly("Materials",
+                               [](const Wasteland::GltfImportResult &r) {
+                                   return r.Materials;
+                               })
+        .def_property_readonly("ClipNames",
+                               [](const Wasteland::GltfImportResult &r) {
+                                   std::vector<std::string> names;
+                                   names.reserve(r.Clips.size());
+                                   for (const auto &clip : r.Clips)
+                                       names.push_back(clip.Name);
+                                   return names;
+                               });
+
+py::class_<Wasteland::GltfImportResult::Clip>(meshModule, "GltfClip")
+        .def_readonly("Name", &Wasteland::GltfImportResult::Clip::Name)
+        .def_readonly("Duration", &Wasteland::GltfImportResult::Clip::Duration)
+        .def_property_readonly("KeyTimes",
+                               [](const Wasteland::GltfImportResult::Clip &c) {
+                                   return c.KeyTimes;
+                               })
+        .def_property_readonly("Channels",
+                               [](const Wasteland::GltfImportResult::Clip &c) {
+                                   return c.Channels;
+                               })
+        .def_property_readonly("Values",
+                               [](const Wasteland::GltfImportResult::Clip &c) {
+                                   return c.Values;
+                               });
+
+py::class_<Wasteland::GltfImportResult::ClipChannel>(meshModule, "GltfClipChannel")
+        .def_readonly("Bone", &Wasteland::GltfImportResult::ClipChannel::Bone)
+        .def_readonly("Path", &Wasteland::GltfImportResult::ClipChannel::Path);
+
+meshModule.def("ImportGltf", &Wasteland::ImportGltf, py::arg("path"));
+
+// The text-level entry point, so a test can build a .gltf in memory and hand
+// in a binary chunk without touching the filesystem.
+meshModule.def("ImportGltfFromText",
+               [](const std::string &json, const std::string &binaryChunk,
+                  const std::string &baseDirectory) {
+                   return Wasteland::ImportGltfFromText(json, binaryChunk,
+                                                         baseDirectory);
+               },
+               py::arg("json"), py::arg("binaryChunk") = "",
+               py::arg("baseDirectory") = ".");
+
+// The JSON parser is exposed for its own tests. A parser bug and a glTF bug
+// have the same surface symptom ("import failed") and only a direct test can
+// tell them apart.
+meshModule.def("JsonParse",
+               [](const std::string &text) {
+                   Wasteland::JsonValue root;
+                   std::string error;
+                   const bool ok = Wasteland::JsonParse(text, root, error);
+                   // `py::object()` is a NULL handle, and make_tuple cannot
+                   // incref one -- the failure is "unable to convert argument
+                   // of type 'object'". `py::none()` is the absent value.
+                   return py::make_tuple(ok, ok ? py::cast(root) : py::none(),
+                                         error);
+               },
+               py::arg("text"));
+
+py::class_<Wasteland::JsonValue>(meshModule, "JsonValue")
+        .def("IsNull", &Wasteland::JsonValue::IsNull)
+        .def("IsBool", &Wasteland::JsonValue::IsBool)
+        .def("IsNumber", &Wasteland::JsonValue::IsNumber)
+        .def("IsString", &Wasteland::JsonValue::IsString)
+        .def("IsArray", &Wasteland::JsonValue::IsArray)
+        .def("IsObject", &Wasteland::JsonValue::IsObject)
+        .def("Find", &Wasteland::JsonValue::Find, py::arg("key"),
+             py::return_value_policy::reference_internal)
+        .def("At", &Wasteland::JsonValue::At, py::arg("index"),
+             py::return_value_policy::reference_internal)
+        .def("Size", &Wasteland::JsonValue::Size)
+        // StringValue/NumberValue/BoolValue are DATA MEMBERS, not methods.
+        // `.def(...)` binds a member pointer as a function pointer and
+        // `def_property_readonly` wants a getter FUNCTION -- neither accepts a
+        // data member, and both failed inside pybind's own header, so the
+        // diagnostic named pybind11.h rather than this file. A lambda is the
+        // form that reads like the accessor it is.
+        .def("AsString",
+             [](const Wasteland::JsonValue &v) { return v.StringValue; })
+        .def("AsNumber",
+             [](const Wasteland::JsonValue &v) { return v.NumberValue; })
+        .def("AsBool",
+             [](const Wasteland::JsonValue &v) { return v.BoolValue; });
 
 // Mat4 is the weakest binding in the file and the comment above it says so
 // indirectly. It has a default constructor, an Identity factory, and
@@ -1043,6 +2395,16 @@ anim.attr("BONE_NONE") = -1;
         }))
         .def_readwrite("Translation", &Wasteland::Animation::BoneTransform::Translation)
         .def_readwrite("Rotation", &Wasteland::Animation::BoneTransform::Rotation)
+        // The inverse-transpose normal matrix. ToMatrix is WRONG for normals under
+        // non-uniform scale; this is the matrix that keeps them perpendicular.
+        // Returned as 3 column tuples, the same shape ComputeWorldMatrices uses.
+        .def("ToNormalMatrix", [](const Wasteland::Animation::BoneTransform &bt) {
+            const glm::mat3 m = bt.ToNormalMatrix();
+            py::list out;
+            for (int c = 0; c < 3; ++c)
+                out.append(py::make_tuple(m[c].x, m[c].y, m[c].z));
+            return out;
+        })
         .def_readwrite("Scale", &Wasteland::Animation::BoneTransform::Scale)
         .def("ToMatrix", &Wasteland::Animation::BoneTransform::ToMatrix)
         // Identity is a STATIC property, and the lambda takes a discarded py::object
@@ -1094,6 +2456,20 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
              py::arg("time"), py::arg("value"),
              py::arg("mode") = Wasteland::Animation::Interpolation::Cubic)
         .def("RemoveKeyAtTime", &Wasteland::Animation::AnimationCurve::RemoveKeyAtTime, py::arg("time"))
+        // MoveKey is what the timeline's drag calls. Bound because a script
+        // authoring a clip needs the same edit, and because an unbound method
+        // the UI depends on cannot be tested headlessly.
+        .def("MoveKey", &Wasteland::Animation::AnimationCurve::MoveKey,
+             py::arg("fromTime"), py::arg("toTime"))
+        // GetKeys as (time, value) tuples rather than a vector of Keyframe:
+        // the struct is an implementation detail, and returning it would force
+        // a registration for the sake of a read-only view.
+        .def("GetKeys", [](const Wasteland::Animation::AnimationCurve &c) {
+            py::list out;
+            for (const auto &k : c.GetKeys())
+                out.append(py::make_tuple(k.Time, k.Value));
+            return out;
+        })
         .def("RemoveAllKeys", &Wasteland::Animation::AnimationCurve::RemoveAllKeys)
         .def("RecalculateAutoTangents", &Wasteland::Animation::AnimationCurve::RecalculateAutoTangents)
         .def("Evaluate", &Wasteland::Animation::AnimationCurve::Evaluate, py::arg("time"))
@@ -1118,6 +2494,15 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
         .def("AddKey", &Wasteland::Animation::RotationTrack::AddKey,
              py::arg("time"), py::arg("value"),
              py::arg("mode") = Wasteland::Animation::Interpolation::Cubic)
+        .def("RemoveKeyAtTime", &Wasteland::Animation::RotationTrack::RemoveKeyAtTime, py::arg("time"))
+        .def("MoveKey", &Wasteland::Animation::RotationTrack::MoveKey,
+             py::arg("fromTime"), py::arg("toTime"))
+        .def("GetKeys", [](const Wasteland::Animation::RotationTrack &t) {
+            py::list out;
+            for (const auto &k : t.GetKeys())
+                out.append(py::make_tuple(k.Time, k.Value));
+            return out;
+        })
         .def("RemoveAllKeys", &Wasteland::Animation::RotationTrack::RemoveAllKeys)
         .def("Evaluate", &Wasteland::Animation::RotationTrack::Evaluate, py::arg("time"))
         .def("IsEmpty", &Wasteland::Animation::RotationTrack::IsEmpty)
@@ -1253,10 +2638,9 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
         .def("ComputeWorldMatrices", [mat4ToColumns](const Wasteland::Animation::Skeleton &s,
                                         const Wasteland::Animation::Pose &pose) {
             std::vector<glm::mat4> world;
-            // The trailing false is the 'not additive' flag, and the identity matrix is
-            // the root parent transform. Both are hardcoded here rather than exposed, so
-            // a script cannot compute a world matrix in a different space.
-            s.ComputeWorldMatrices(pose, world, glm::mat4(1.0f), false);
+            // The identity root transform is hardcoded rather than exposed, so a script
+            // cannot compute a world matrix in a different space.
+            s.ComputeWorldMatrices(pose, world, glm::mat4(1.0f));
             py::list out;
             for (const glm::mat4 &m : world)
                 out.append(mat4ToColumns(m));
@@ -1274,7 +2658,7 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
              [mat4Translation](const Wasteland::Animation::Skeleton &s,
                 const Wasteland::Animation::Pose &pose, int32_t index) {
                  std::vector<glm::mat4> world;
-                 s.ComputeWorldMatrices(pose, world, glm::mat4(1.0f), false);
+                 s.ComputeWorldMatrices(pose, world, glm::mat4(1.0f));
                  if (index < 0 || (size_t)index >= world.size())
                      return glm::vec3(0.0f);
                  return mat4Translation(world[(size_t)index]);
@@ -1285,7 +2669,7 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
         .def("ComputeSkinningMatrices", [mat4ToColumns](const Wasteland::Animation::Skeleton &s,
                                            const Wasteland::Animation::Pose &pose) {
             std::vector<glm::mat4> matrices;
-            s.ComputeSkinningMatrices(pose, matrices, glm::mat4(1.0f));
+            s.ComputeSkinningMatrices(pose, matrices);
             py::list out;
             for (const glm::mat4 &m : matrices)
                 out.append(mat4ToColumns(m));
@@ -1438,6 +2822,12 @@ py::class_<Wasteland::Animation::Pose>(anim, "Pose")
                                const std::shared_ptr<Wasteland::Animation::Skeleton> &skeleton) {
             a.SetSkeleton(skeleton);
         }, py::arg("skeleton"))
+        // Selects how Evaluate combines instances. Interpolate (default) is the
+        // weighted average; Additive stacks the instances' offsets on top of the
+        // additive base. Without these the additive path was unreachable.
+        .def("SetBlendMode", &Wasteland::Animation::Animator::SetBlendMode,
+             py::arg("mode"))
+        .def("GetBlendMode", &Wasteland::Animation::Animator::GetBlendMode)
         .def("GetSkeleton", [](const Wasteland::Animation::Animator &a) {
             return a.GetSkeleton();
         })
@@ -1568,10 +2958,63 @@ py::class_<Wasteland::Animation::AnimationStateMachine>(anim, "AnimationStateMac
         .def("TransitionTo", &Wasteland::Animation::AnimationStateMachine::TransitionTo,
              py::arg("stateName"), py::arg("duration") = -1.0f)
         .def("GetCurrentState", &Wasteland::Animation::AnimationStateMachine::GetCurrentState)
+        // -1 before the first SetState. SetLooping takes an INSTANCE id, so without
+        // this a caller could not reach the instance the machine created.
+        .def("GetCurrentInstance", &Wasteland::Animation::AnimationStateMachine::GetCurrentInstance)
         .def("GetPreviousState", &Wasteland::Animation::AnimationStateMachine::GetPreviousState)
         .def("IsTransitioning", &Wasteland::Animation::AnimationStateMachine::IsTransitioning)
         .def("HasState", &Wasteland::Animation::AnimationStateMachine::HasState, py::arg("stateName"))
         .def("GetStateCount", &Wasteland::Animation::AnimationStateMachine::GetStateCount)
+        // Authoring API: the operations the Animator panel makes. Bound
+        // separately from the runtime API because a scene graph never calls
+        // them, but a test driving the panel's exact edits does.
+        .def("RemoveState", &Wasteland::Animation::AnimationStateMachine::RemoveState,
+             py::arg("name"))
+        .def("RemoveTransition", &Wasteland::Animation::AnimationStateMachine::RemoveTransition,
+             py::arg("fromState"), py::arg("toState"), py::arg("trigger"))
+        .def("SetStateSpeed", &Wasteland::Animation::AnimationStateMachine::SetStateSpeed,
+             py::arg("name"), py::arg("speed"))
+        .def("SetStateLooping", &Wasteland::Animation::AnimationStateMachine::SetStateLooping,
+             py::arg("name"), py::arg("looping"))
+        .def("SetStateTransitionDuration",
+             &Wasteland::Animation::AnimationStateMachine::SetStateTransitionDuration,
+             py::arg("name"), py::arg("duration"))
+        .def("SetStateClip", &Wasteland::Animation::AnimationStateMachine::SetStateClip,
+             py::arg("name"), py::arg("clip"))
+        .def("SetTransitionTrigger",
+             &Wasteland::Animation::AnimationStateMachine::SetTransitionTrigger,
+             py::arg("index"), py::arg("trigger"))
+        .def("SetTransitionDuration",
+             &Wasteland::Animation::AnimationStateMachine::SetTransitionDuration,
+             py::arg("index"), py::arg("duration"))
+        // FindState by name. Returns None rather than raising for an unknown
+        // name: a script checking "does this machine have a Walk state?" is
+        // asking a question, not reporting an error.
+        //
+        // Cast by VALUE: the pointer aliases the machine's own map entry, and a
+        // script that mutated the result expecting the machine to change would
+        // be surprised. Consistent with GetTrack's copy on the clip side.
+        .def("FindState", [](const Wasteland::Animation::AnimationStateMachine &sm,
+                             const std::string &stateName) -> py::object {
+            const Wasteland::Animation::AnimationState *state = sm.FindState(stateName);
+            if (state == nullptr)
+                return py::none();
+            return py::cast(*state);
+        }, py::arg("stateName"))
+        // The two enumerations. Both are COPIES: GetStates' backing container
+        // is an unordered_map, so returning a live view would hand out
+        // references into a container that AddState can rehash. A snapshot is
+        // the contract that cannot surprise the caller.
+        .def("GetStates", [](const Wasteland::Animation::AnimationStateMachine &sm) {
+            py::dict out;
+            for (const auto &entry : sm.GetStates())
+                out[py::str(entry.first)] = entry.second;
+            return out;
+        }, "A name -> AnimationState snapshot of the whole state table.")
+        .def("GetTransitions", [](const Wasteland::Animation::AnimationStateMachine &sm) {
+            return sm.GetTransitions();
+        }, "The transition list, in INSERTION order -- which is the priority "
+           "order FindTriggeredTransition uses.")
         // An explicit lambda, not the member pointer: GetAnimator is
         // overloaded (a const and a non-const overload), and pybind cannot
         // pick between them from the address alone, which fails as C2672.
@@ -1827,6 +3270,202 @@ py::class_<Wasteland::Animation::SkinnedMesh>(anim, "SkinnedMesh")
             std::string result = sm.Validate(error);
             return py::make_tuple(result.empty(), result);
         });
+
+    // ---- AnimationSerializer (.wlanim) ----
+    // Parse and Emit are bound alongside Load and Save so a test can round-trip
+    // TEXT without touching the filesystem, and so an importer can author an
+    // asset in memory and inspect the bytes it would write.
+    py::class_<Wasteland::Animation::AnimationError>(anim, "AnimationError")
+        .def_readonly("Message", &Wasteland::Animation::AnimationError::Message)
+        .def_readonly("Context", &Wasteland::Animation::AnimationError::Context)
+        .def("Format", &Wasteland::Animation::AnimationError::Format,
+             py::arg("fileName"));
+
+    py::class_<Wasteland::Animation::AnimationRetarget::Mapping>(anim,
+                                                                 "RetargetMapping")
+        .def(py::init<>())
+        .def_readwrite("SourceBone",
+                       &Wasteland::Animation::AnimationRetarget::Mapping::SourceBone)
+        .def_readwrite("TargetBone",
+                       &Wasteland::Animation::AnimationRetarget::Mapping::TargetBone);
+
+    py::class_<Wasteland::Animation::AnimationAsset::StatePosition>(anim, "StatePosition")
+        .def(py::init<>())
+        // No (x, y) ctor: StatePosition is an aggregate with no user-declared
+        // constructor, and layout is written through AnimationAsset.
+        // SetStatePosition instead.
+        .def_readwrite("X", &Wasteland::Animation::AnimationAsset::StatePosition::X)
+        .def_readwrite("Y", &Wasteland::Animation::AnimationAsset::StatePosition::Y);
+
+    py::class_<Wasteland::Animation::AnimationAsset>(anim, "AnimationAsset")
+        .def(py::init<>())
+        .def_readwrite("Name", &Wasteland::Animation::AnimationAsset::Name)
+        .def_readwrite("Skeleton",
+                       &Wasteland::Animation::AnimationAsset::Skeleton)
+        .def_readwrite("Clips", &Wasteland::Animation::AnimationAsset::Clips)
+        .def_readwrite("StateMachine",
+                       &Wasteland::Animation::AnimationAsset::StateMachine)
+        .def_readwrite("HasStateMachine",
+                       &Wasteland::Animation::AnimationAsset::HasStateMachine)
+        // Node positions are authoring-only and live outside the machine, so
+        // they round-trip through the serializer without ever entering the
+        // domain struct. Bound so a test can assert a drag survives a save.
+        // The retarget mapping is authoring metadata, so it round-trips through
+        // the serializer and never enters the playback path. Same container-copy
+        // hazard as StatePositions: `asset.Retarget[0].TargetBone = "x"` mutates a
+        // copy and is lost, so the accessors below are the real write path.
+        .def_readwrite("Retarget", &Wasteland::Animation::AnimationAsset::Retarget)
+        .def_readwrite("RetargetPositionScale",
+                       &Wasteland::Animation::AnimationAsset::RetargetPositionScale)
+        .def("AddRetargetMapping",
+             [](Wasteland::Animation::AnimationAsset &asset,
+                const std::string &sourceBone, const std::string &targetBone) {
+                 asset.Retarget.push_back(
+                     Wasteland::Animation::AnimationRetarget::Mapping{sourceBone,
+                                                                      targetBone});
+             }, py::arg("sourceBone"), py::arg("targetBone"))
+        .def("RemoveRetargetMapping",
+             [](Wasteland::Animation::AnimationAsset &asset, int index) {
+                 if (index < 0 ||
+                     static_cast<size_t>(index) >= asset.Retarget.size())
+                 {
+                     return false;
+                 }
+                 asset.Retarget.erase(asset.Retarget.begin() + index);
+                 return true;
+             }, py::arg("index"))
+        .def("GetRetargetCount",
+             [](const Wasteland::Animation::AnimationAsset &asset) {
+                 return static_cast<int>(asset.Retarget.size());
+             })
+        .def("GetRetargetSourceBone",
+             [](const Wasteland::Animation::AnimationAsset &asset, int index)
+                 -> std::string {
+                 if (index < 0 ||
+                     static_cast<size_t>(index) >= asset.Retarget.size())
+                 {
+                     return std::string();
+                 }
+                 return asset.Retarget[static_cast<size_t>(index)].SourceBone;
+             }, py::arg("index"))
+        .def("GetRetargetTargetBone",
+             [](const Wasteland::Animation::AnimationAsset &asset, int index)
+                 -> std::string {
+                 if (index < 0 ||
+                     static_cast<size_t>(index) >= asset.Retarget.size())
+                 {
+                     return std::string();
+                 }
+                 return asset.Retarget[static_cast<size_t>(index)].TargetBone;
+             }, py::arg("index"))
+        .def("ClearRetarget",
+             [](Wasteland::Animation::AnimationAsset &asset) {
+                 asset.Retarget.clear();
+                 asset.RetargetPositionScale = 1.0f;
+             })
+        .def_readwrite("StatePositions",
+                       &Wasteland::Animation::AnimationAsset::StatePositions)
+        // def_readwrite on a container hands Python a COPY, so
+        // `asset.StatePositions["X"] = p` silently no-ops. These accessors are
+        // the real write path, and anything that mutates layout must go through
+        // them.
+        .def("SetStatePosition",
+             [](Wasteland::Animation::AnimationAsset &asset,
+                const std::string &name, float x, float y) {
+                 asset.StatePositions[name] =
+                     Wasteland::Animation::AnimationAsset::StatePosition{x, y};
+             }, py::arg("name"), py::arg("x"), py::arg("y"))
+        .def("GetStatePosition",
+             [](const Wasteland::Animation::AnimationAsset &asset,
+                const std::string &name) -> py::object {
+                 const auto it = asset.StatePositions.find(name);
+                 if (it == asset.StatePositions.end())
+                     return py::none();
+                 return py::make_tuple(it->second.X, it->second.Y);
+             }, py::arg("name"))
+        .def("GetStatePositionCount",
+             [](const Wasteland::Animation::AnimationAsset &asset) {
+                 return asset.StatePositions.size();
+             });
+
+
+    // AnimationRetarget: the name mapping and the proportional scale. Static
+    // methods only -- it holds no state, so binding it as a class rather than a
+    // submodule keeps `Animation.RetargetClip(...)` reading like the C++.
+    py::class_<Wasteland::Animation::AnimationRetarget>(anim, "AnimationRetarget")
+        .def_static("BuildMap",
+                    [](const Wasteland::Animation::Skeleton &source,
+                       const Wasteland::Animation::Skeleton &target,
+                       const std::vector<Wasteland::Animation::AnimationRetarget::Mapping>
+                           &overrides) {
+                        return Wasteland::Animation::AnimationRetarget::BuildMap(
+                            source, target, overrides);
+                    }, py::arg("source"), py::arg("target"),
+                    py::arg("overrides") = std::vector<
+                        Wasteland::Animation::AnimationRetarget::Mapping>())
+        .def_static("HeightRatio",
+                    &Wasteland::Animation::AnimationRetarget::HeightRatio,
+                    py::arg("source"), py::arg("target"))
+        .def_static("RetargetClip",
+                    [](const Wasteland::Animation::AnimationClip &source,
+                       const Wasteland::Animation::Skeleton &sourceSkeleton,
+                       const Wasteland::Animation::Skeleton &targetSkeleton,
+                       const std::vector<Wasteland::Animation::AnimationRetarget::Mapping>
+                           &overrides,
+                       float positionScale) {
+                        return Wasteland::Animation::AnimationRetarget::RetargetClip(
+                            source, sourceSkeleton, targetSkeleton, overrides,
+                            positionScale);
+                    }, py::arg("source"), py::arg("sourceSkeleton"),
+                    py::arg("targetSkeleton"),
+                    py::arg("overrides") = std::vector<
+                        Wasteland::Animation::AnimationRetarget::Mapping>(),
+                    py::arg("positionScale") = 1.0f)
+        .def_static("SourceBoneForTarget",
+                    &Wasteland::Animation::AnimationRetarget::SourceBoneForTarget,
+                    py::arg("map"), py::arg("targetBone"))
+        .def_static("NormaliseBoneName",
+                    &Wasteland::Animation::AnimationRetarget::NormaliseBoneName,
+                    py::arg("name"));
+
+    anim.def("ParseAnimation",
+             [](const std::string &text,
+                Wasteland::Animation::AnimationAsset &asset) -> py::object {
+                 Wasteland::Animation::AnimationError error;
+                 if (Wasteland::Animation::AnimationSerializer::Parse(
+                         text, asset, error))
+                     return py::none();
+                 return py::cast(error);
+             }, py::arg("text"), py::arg("asset"),
+             "Returns None on success, or an AnimationError naming the problem.");
+
+    anim.def("EmitAnimation",
+             [](const Wasteland::Animation::AnimationAsset &asset) {
+                 return Wasteland::Animation::AnimationSerializer::Emit(asset);
+             }, py::arg("asset"), "Deterministic: the same asset always produces "
+             "byte-identical text.");
+
+    anim.def("LoadAnimation",
+             [](const std::string &path,
+                Wasteland::Animation::AnimationAsset &asset) -> py::object {
+                 Wasteland::Animation::AnimationError error;
+                 if (Wasteland::Animation::AnimationSerializer::Load(
+                         path, asset, error))
+                     return py::none();
+                 return py::cast(error);
+             }, py::arg("path"), py::arg("asset"),
+             "Returns None on success, or an AnimationError naming the problem.");
+
+    anim.def("SaveAnimation",
+             [](const std::string &path,
+                const Wasteland::Animation::AnimationAsset &asset) -> py::object {
+                 Wasteland::Animation::AnimationError error;
+                 if (Wasteland::Animation::AnimationSerializer::Save(
+                         path, asset, error))
+                     return py::none();
+                 return py::cast(error);
+             }, py::arg("path"), py::arg("asset"),
+             "Returns None on success, or an AnimationError naming the problem.");
 
 // ------------------------------------------------------------ Core: Input --
     // Core Input: six free functions on the root module. No submodule, so a
@@ -2428,7 +4067,6 @@ py::class_<Wasteland::Event>(m, "Event")
     // MouseMovedEvent exposes X and Y. There is no delta here; the delta is on
     // Input.GetMouseDelta at the root module.
     py::class_<Wasteland::MouseMovedEvent, Wasteland::Event>(m, "MouseMovedEvent")
-        .def(py::init<float, float>(), py::arg("x"), py::arg("y"))
         .def("GetX", &Wasteland::MouseMovedEvent::GetX)
         .def("GetY", &Wasteland::MouseMovedEvent::GetY);
     // MouseScrolledEvent offsets can be fractional. A script testing `> 0` on a
@@ -4095,6 +5733,20 @@ m.def("Renderer3D_SetSceneTransformEpoch",
         .def_readwrite("TexturePath",
              &Wasteland::MaterialComponent::TexturePath);
 
+// --- MeshComponent ---
+    // The DCC round-trip component: a mesh loaded from an asset path.
+    //
+    // MeshPath is the asset reference as written in the scene, relative to the
+    // project root. It is a PATH, not a mesh object: the geometry lives on the
+    // Scene's MeshAssetCache and is loaded on first draw, so a scene can be
+    // built and serialized in a headless process with no renderer.
+    py::class_<Wasteland::MeshComponent>(m, "MeshComponent")
+        .def(py::init<>())
+        .def_readwrite("MeshPath", &Wasteland::MeshComponent::MeshPath)
+        .def_readwrite("MaterialPath", &Wasteland::MeshComponent::MaterialPath)
+        .def_readwrite("CastShadow", &Wasteland::MeshComponent::CastShadow)
+        .def_readwrite("ReceiveShadow", &Wasteland::MeshComponent::ReceiveShadow);
+
 // --- CameraComponent ---
     // CameraComponent. Note this class had no Entity accessor for a long time
     // because the BIND_COMP_* macro stringified the fully qualified C++ type
@@ -4427,6 +6079,106 @@ py::class_<Wasteland::AreaLightComponent>(m, "AreaLightComponent")
                       // setting it to a value so large the tree never resumes.
                       &Wasteland::BehaviorTreeComponent::SuspendedTicks);
 
+// --- VisualBlocksComponent ---
+    // The third member of the authored-behaviour trio: a .wlblocks flow graph
+    // attaches exactly like a .py script or a .wlbtree. Until this existed the
+    // only way to run a graph was a hand-written host script, which is why
+    // assets/scripts/DamageFlashHost.py carries an AttributeError in its header.
+    //
+    // CompileError and Attached are read-only: the ENGINE owns them, and a
+    // script writing Attached would be asserting a fact the attach path has not
+    // verified. SuspendedTicks is readwrite so a script can pause a graph.
+    py::class_<Wasteland::VisualBlocksComponent>(m, "VisualBlocksComponent")
+        .def(py::init<>())
+        .def_readwrite("GraphPath", &Wasteland::VisualBlocksComponent::GraphPath)
+        .def_readwrite("GraphName", &Wasteland::VisualBlocksComponent::GraphName)
+        .def_readonly("CompileError", &Wasteland::VisualBlocksComponent::CompileError)
+        .def_readonly("Attached", &Wasteland::VisualBlocksComponent::Attached)
+        .def_readwrite("SuspendedTicks", &Wasteland::VisualBlocksComponent::SuspendedTicks)
+        // Task B.4. Per-entity values for the graph's EXPOSED variables, as
+        // authored literals. The inspector writes here; the runtime reads it
+        // every frame. Opaque, so item assignment reaches the real map.
+        // These bind the component's own member functions rather than
+        // lambdas, so the EDITOR can call the same accessors the runtime uses.
+        // A pybind lambda is invisible from C++, and the hierarchy inspector is
+        // C++ -- the first version of this was lambdas and the editor build
+        // failed with "'GetVariableOverride' is not a member".
+        .def("GetVariableOverride",
+             &Wasteland::VisualBlocksComponent::GetVariableOverride,
+             py::arg("name"))
+        .def("SetVariableOverride",
+             &Wasteland::VisualBlocksComponent::SetVariableOverride,
+             py::arg("name"), py::arg("value"))
+        .def("HasVariableOverride",
+             &Wasteland::VisualBlocksComponent::HasVariableOverride,
+             py::arg("name"))
+        .def("ClearVariableOverrides",
+             &Wasteland::VisualBlocksComponent::ClearVariableOverrides);
+
+// --- AnimationComponent ---
+    // The fourth member of the authored-behaviour set: a `.wlanim` asset
+    // attaches like a script, a tree or a graph. Until this existed the only
+    // way to drive a character was to build an Animator and a clip in a script
+    // by hand, which put the asset-loading and state-machine logic in every
+    // caller instead of in the engine.
+    //
+    // LoadError and Attached are read-only for the same reason as the other
+    // three: the ENGINE owns them, and a script writing Attached would be
+    // asserting a fact the load path has not verified.
+    py::class_<Wasteland::AnimationComponent>(m, "AnimationComponent")
+        .def(py::init<>())
+        .def_readwrite("AssetPath", &Wasteland::AnimationComponent::AssetPath)
+        .def_readwrite("DefaultState",
+                       &Wasteland::AnimationComponent::DefaultState)
+        .def_readwrite("MeshPath", &Wasteland::AnimationComponent::MeshPath)
+        .def_readwrite("LoopDefault",
+                       &Wasteland::AnimationComponent::LoopDefault)
+        .def_readwrite("PlayRate", &Wasteland::AnimationComponent::PlayRate)
+        .def_readonly("Attached", &Wasteland::AnimationComponent::Attached)
+        .def_readonly("LoadError", &Wasteland::AnimationComponent::LoadError);
+
+    // The one accessor gameplay code, the editor and the tests all want: "what
+    // is playing on this entity right now?". Returns the STATE MACHINE's
+    // Animator when the asset carries a machine, otherwise the runtime's bare
+    // one, and None when the entity has no live runtime (no component, an empty
+    // path, or an asset that failed to load).
+    //
+    // None rather than an exception for the missing case: asking about an entity
+    // that has no animation is a question, not an error, and every caller would
+    // otherwise have to wrap the call.
+    m.def("GetAnimationAnimator",
+          [](Wasteland::Entity &entity) -> Wasteland::Animation::Animator * {
+              if (!entity.IsValid())
+                  return nullptr;
+              return Wasteland::AnimationSystem::GetAnimator(entity.GetUUID());
+          },
+          py::arg("entity"),
+          py::return_value_policy::reference);
+
+    // Skinned-mesh hand-off. SetAnimationMesh returns False (not an exception) for
+    // "no runtime yet / invalid mesh / over 64 bones": the first is an ordering
+    // question the caller answers by ticking once, the others are data problems.
+    m.def("SetAnimationMesh",
+          [](Wasteland::Entity &entity, const Wasteland::Animation::SkinnedMesh &mesh) {
+              if (!entity.IsValid())
+                  return false;
+              return Wasteland::AnimationSystem::SetSkinnedMesh(entity.GetUUID(), mesh);
+          },
+          py::arg("entity"), py::arg("mesh"));
+
+    // The deformed vertex positions as the CPU skinner produced them, or None. A
+    // copy: the runtime rewrites its buffer every tick.
+    m.def("GetDeformedPositions",
+          [](Wasteland::Entity &entity) -> py::object {
+              if (!entity.IsValid())
+                  return py::none();
+              const auto *p = Wasteland::AnimationSystem::GetDeformedPositions(entity.GetUUID());
+              if (!p)
+                  return py::none();
+              return py::cast(*p);
+          },
+          py::arg("entity"));
+
 // --- NativeScriptComponent ---
     // Instance is a raw pointer (ScriptableEntity*), InstantiateScript/DestroyScript
     // are function pointers — skip the function-pointer members; they're C++-only.
@@ -4750,6 +6502,50 @@ py::class_<Wasteland::AudioListenerComponent>(m, "AudioListenerComponent")
         .def(py::init<>())
         .def_readwrite("Enabled", &Wasteland::AudioListenerComponent::Enabled);
 
+// AudioGraphTrigger: one entry of the component's event -> pin map. A nested
+// type bound at module scope because a script has to construct the list, and a
+// nested py::class_ would require the outer class object to be threaded
+// through every binding site.
+py::class_<Wasteland::AudioGraphComponent::Trigger>(m, "AudioGraphTrigger")
+        .def(py::init<>())
+        .def(py::init<std::string, std::string, std::string>(),
+             py::arg("event"), py::arg("node"), py::arg("pin"))
+        .def_readwrite("Event", &Wasteland::AudioGraphComponent::Trigger::Event)
+        .def_readwrite("Node", &Wasteland::AudioGraphComponent::Trigger::Node)
+        .def_readwrite("Pin", &Wasteland::AudioGraphComponent::Trigger::Pin);
+
+// bind_vector, not just PYBIND11_MAKE_OPAQUE: the opaque declaration only stops
+// the generic list_caster from silently handing Python a COPY, but the container
+// still has to be REGISTERED for a def_readwrite on it to resolve. Without this
+// the field raises "Unable to convert function return value to a Python type".
+py::bind_vector<Wasteland::AudioGraphComponent::TriggerList>(m,
+                                                             "AudioGraphTriggerList");
+
+// The trigger list is OPAQUE so a script's append is visible to the engine;
+// the declaration sits at the top of this file with the others, because
+// PYBIND11_MAKE_OPAQUE needs the complete type.
+
+// AudioGraphComponent: the authored counterpart to AvbProjectRuntime.
+// names the .wlavb, Triggers is the event map, and DurationSeconds bounds a
+// one-shot voice. CompileError and Attached are runtime state, so they are
+// read-only here: a script can inspect them but must not be able to declare a
+// failed graph healthy.
+py::class_<Wasteland::AudioGraphComponent>(m, "AudioGraphComponent")
+        .def(py::init<>())
+        .def_readwrite("GraphPath", &Wasteland::AudioGraphComponent::GraphPath)
+        .def_readwrite("PlayOnStart", &Wasteland::AudioGraphComponent::PlayOnStart)
+        .def_readwrite("Triggers", &Wasteland::AudioGraphComponent::Triggers)
+        .def_readwrite("Volume", &Wasteland::AudioGraphComponent::Volume)
+        .def_readwrite("DurationSeconds",
+                       &Wasteland::AudioGraphComponent::DurationSeconds)
+        .def_readwrite("Priority", &Wasteland::AudioGraphComponent::Priority)
+        .def_readwrite("Spatial", &Wasteland::AudioGraphComponent::Spatial)
+        .def_readwrite("MinDistance", &Wasteland::AudioGraphComponent::MinDistance)
+        .def_readwrite("MaxDistance", &Wasteland::AudioGraphComponent::MaxDistance)
+        .def_readwrite("CompileError",
+                       &Wasteland::AudioGraphComponent::CompileError)
+        .def_readwrite("Attached", &Wasteland::AudioGraphComponent::Attached);
+
 // AudioClip with a shared_ptr holder. Clips are expensive to decode and are
 // shared between every voice that plays them, so a copy per playback would
 // be the single largest audio cost in the engine.
@@ -4798,7 +6594,50 @@ py::class_<Wasteland::Audio::PlayRequest>(audio, "PlayRequest")
         .def_readwrite("Spatial", &Wasteland::Audio::PlayRequest::Spatial)
         .def_readwrite("Position", &Wasteland::Audio::PlayRequest::Position)
         .def_readwrite("MinDistance", &Wasteland::Audio::PlayRequest::MinDistance)
-        .def_readwrite("MaxDistance", &Wasteland::Audio::PlayRequest::MaxDistance);
+        .def_readwrite("MaxDistance", &Wasteland::Audio::PlayRequest::MaxDistance)
+        // The procedural source. Set this instead of a clip and the voice plays
+        // the callback's samples -- the path an audio graph takes.
+        .def_readwrite("Procedural", &Wasteland::Audio::PlayRequest::Procedural);
+
+// ProceduralVoice: a voice whose samples come from a callback rather than a
+// clip. Bound so the mixer's new voice path is testable WITHOUT a .wlavb: the
+// voice cap, the steal rules and the mute-still-advances behaviour are
+// properties of the voice, not of the graph feeding it, and requiring a graph
+// asset to test them would make the simplest regression the hardest to reach.
+py::class_<Wasteland::Audio::ProceduralVoice, std::shared_ptr<Wasteland::Audio::ProceduralVoice>>(audio, "ProceduralVoice")
+        .def(py::init<>())
+        .def_readwrite("Name", &Wasteland::Audio::ProceduralVoice::Name)
+        // Generate is a PROPERTY rather than def_readwrite because pybind
+        // cannot marshal a raw `float*` argument: handed straight through, the
+        // callable receives a bare float and `output[i] = x` raises
+        // "'float' object does not support item assignment". The setter adapts
+        // a Python callable to the C++ signature by handing it a LIST it can
+        // fill and copying the result back into the mixer's block.
+        //
+        // The contract is unchanged from the engine's side: fill `frames`
+        // mono samples, return true to keep playing.
+        .def_property(
+            "Generate",
+            [](Wasteland::Audio::ProceduralVoice &voice) { return voice.Generate; },
+            [](Wasteland::Audio::ProceduralVoice &voice, py::object callable)
+            {
+                if (callable.is_none())
+                {
+                    voice.Generate = nullptr;
+                    return;
+                }
+                voice.Generate = [callable](float *output, int frames) -> bool
+                {
+                    py::list samples = py::list();
+                    for (int index = 0; index < frames; ++index)
+                        samples.append(0.0f);
+                    const bool keepPlaying =
+                        callable(samples, frames).template cast<bool>();
+                    for (int index = 0; index < frames; ++index)
+                        output[index] = samples[index].template cast<float>();
+                    return keepPlaying;
+                };
+            });
 
 // Voice is a READ-ONLY view of one playing sound, plus IsPlaying. Every
 // field is def_readonly, so a script can watch a voice's volume and pitch
@@ -4877,6 +6716,10 @@ py::class_<Wasteland::Audio::Mixer, std::shared_ptr<Wasteland::Audio::Mixer>>(au
              py::arg("voiceId"), py::arg("volume"))
         .def("SetVoicePitch", &Wasteland::Audio::Mixer::SetVoicePitch,
              py::arg("voiceId"), py::arg("pitch"))
+        .def("PlayProcedural", &Wasteland::Audio::Mixer::PlayProcedural,
+             py::arg("request"), py::arg("procedural"))
+        .def("SetVoicePosition", &Wasteland::Audio::Mixer::SetVoicePosition,
+             py::arg("voiceId"), py::arg("position"))
         .def("IsPlaying", &Wasteland::Audio::Mixer::IsPlaying, py::arg("voiceId"))
         .def("GetActiveVoiceCount", &Wasteland::Audio::Mixer::GetActiveVoiceCount)
         .def("GetMaxVoices", &Wasteland::Audio::Mixer::GetMaxVoices)
@@ -4985,6 +6828,52 @@ py::class_<Wasteland::Audio::AudioSystem, std::shared_ptr<Wasteland::Audio::Audi
     .def("SetMasterVolume", &Wasteland::Audio::AudioSystem::SetMasterVolume,
          py::arg("volume"))
     .def("GetMasterVolume", &Wasteland::Audio::AudioSystem::GetMasterVolume)
+    // GetMixer is the handle a test -- or the editor's mixer panel -- needs to
+    // drive the mixer directly. Without it the only way to advance a
+    // procedural voice is the audio device, which a headless test cannot open.
+    // A POINTER with `reference` (not a reference with reference_internal):
+    // Mixer is held by a shared_ptr in Python, and binding a reference to a
+    // member of a shared_ptr-held object does not resolve the owner.
+    .def("GetMixer",
+         // An ALIASING shared_ptr with a no-op deleter, not a raw pointer:
+         // Mixer is bound with a shared_ptr holder, and returning a pointer to a
+         // member of a by-value object makes pybind try to construct that holder
+         // from a default-holder instance -- "Unable to load a custom holder
+         // type". The alias keeps the Python object's holder type correct while
+         // never freeing (AudioSystem owns the Mixer), and keep_alive ties the
+         // Python object's life to the AudioSystem so the alias cannot dangle.
+         [](Wasteland::Audio::AudioSystem &audio) {
+             return std::shared_ptr<Wasteland::Audio::Mixer>(
+                 &audio.GetMixer(), [](Wasteland::Audio::Mixer *) {});
+         },
+         py::keep_alive<0, 1>())
+    // ---- Audio graphs ----
+    // AttachGraph is what the OnComponentAdded hook calls. Exposed so a script
+    // can attach a graph to an entity it built at runtime, which is the only
+    // way a graph gets onto an entity that did not come from a scene file.
+    .def("AttachGraph",
+         // A lambda rather than a direct binding because the C++ signature
+         // returns the reason through a std::string* out-parameter, which
+         // pybind cannot express as a Python argument. (ok, error) keeps the
+         // reason readable, matching AttachGraph's C++ contract.
+         [](Wasteland::Audio::AudioSystem &audio, Wasteland::Entity entity) {
+             std::string error;
+             const bool ok = audio.AttachGraph(entity, &error);
+             return py::make_tuple(ok, error);
+         },
+         py::arg("entity"))
+    .def("DetachGraph", &Wasteland::Audio::AudioSystem::DetachGraph,
+         py::arg("entity"))
+    // TriggerGraph is the E.2 entry point: a gameplay event name in, a graph
+    // trigger out. The arg is accepted for a future value pin and is currently
+    // unused -- see the note in AudioSystem.cpp.
+    .def("TriggerGraph", &Wasteland::Audio::AudioSystem::TriggerGraph,
+         py::arg("entity"), py::arg("event"), py::arg("arg") = "")
+    .def("GetGraphVoiceCount", &Wasteland::Audio::AudioSystem::GetGraphVoiceCount)
+    .def("IsGraphAttached", &Wasteland::Audio::AudioSystem::IsGraphAttached,
+         py::arg("entity"))
+    .def("GetGraphError", &Wasteland::Audio::AudioSystem::GetGraphError,
+         py::arg("entity"))
     // PlayAutoStartSources is what the engine calls each frame for components
     // flagged PlayOnStart. Exposing it means a script driving its own loop can
     // start sources without finding each component itself.
@@ -5168,6 +7057,17 @@ py::class_<Wasteland::ViewStateComponent>(m, "ViewStateComponent")
         .def_readonly("NodeType", &Wasteland::BehaviorTreeTraceEntry::NodeType)
         .def_readonly("Event", &Wasteland::BehaviorTreeTraceEntry::Event);
 
+    // The engine events a script, flow graph or behaviour tree can respond to.
+    // Bound as an enum rather than a string so a caller cannot invent an id
+    // and get a silent no-op from a name nobody wrote.
+    py::enum_<Wasteland::ScriptEventId>(m, "ScriptEventId")
+        .value("BeginPlay", Wasteland::ScriptEventId::BeginPlay)
+        .value("Update", Wasteland::ScriptEventId::Update)
+        .value("Interact", Wasteland::ScriptEventId::Interact)
+        .value("Damage", Wasteland::ScriptEventId::Damage)
+        .value("ItemPickedUp", Wasteland::ScriptEventId::ItemPickedUp)
+        .value("AnimationEvent", Wasteland::ScriptEventId::AnimationEvent);
+
     // Entity is the handle a gameplay script spends its whole life holding. It
     // is a thin pair of (entt handle, Scene pointer) -- not an owning reference
     // -- so copying one is free and a destroyed entity leaves a dangling Scene
@@ -5179,6 +7079,37 @@ py::class_<Wasteland::ViewStateComponent>(m, "ViewStateComponent")
         // handle, and every method on it asserts.
         .def("IsValid", [](const Wasteland::Entity &e) { return e.IsValid(); })
         .def("GetUUID", [](Wasteland::Entity &e) { return e.GetUUID(); })
+        // The one call the PlayAnimation graph node drives. A method on Entity
+        // rather than a module function: it is meaningless without an entity, and
+        // the node's emitted lambda already holds the handle.
+        .def("PlayAnimation",
+             [](Wasteland::Entity &entity, const std::string &stateName, bool loop) {
+                 if (!entity.IsValid())
+                     return false;
+                 return Wasteland::AnimationSystem::PlayState(entity.GetUUID(), stateName, loop);
+             },
+             py::arg("stateName"), py::arg("loop") = true)
+        // The SetAnimationState graph node. A CROSSFADE, unlike PlayAnimation's
+        // hard cut -- two nodes rather than a mode pin, because a cut and a fade
+        // are different authoring intents. `duration` <= 0 uses the state's own
+        // transition duration.
+        .def("TransitionAnimationState",
+             [](Wasteland::Entity &entity, const std::string &stateName, float duration) {
+                 if (!entity.IsValid())
+                     return false;
+                 return Wasteland::AnimationSystem::TransitionState(
+                     entity.GetUUID(), stateName, duration);
+             },
+             py::arg("stateName"), py::arg("duration") = -1.0f)
+        // The SetTrigger graph node. Triggers let a machine leave a state without
+        // a transition authored for every cause.
+        .def("SetAnimationTrigger",
+             [](Wasteland::Entity &entity, const std::string &trigger) {
+                 if (!entity.IsValid())
+                     return false;
+                 return Wasteland::AnimationSystem::FireTrigger(entity.GetUUID(), trigger);
+             },
+             py::arg("trigger"))
         .def("GetName", [](Wasteland::Entity &e) { return e.GetName(); })
         // Trace access is identity-checked and component-checked before GetUUID:
         // Entity::GetUUID asserts if IDComponent is absent. The log is a bounded
@@ -5260,6 +7191,28 @@ py::gil_scoped_acquire gil;
                  return true;
              },
              py::arg("method"))
+        // Fire an engine event at this entity. Reaches the script, the flow
+        // graph AND the behaviour tree -- CallScriptMethod only reaches the
+        // script, which is why a graph's OnInteract never fired from native
+        // code before this existed.
+        //
+        // Returns nothing: a missing method on every attached system is a
+        // quiet no-op by design, so there is no meaningful boolean to hand
+        // back. A caller that needs to know whether anything answered
+        // observes the effect.
+        .def("DispatchScriptEvent",
+             [](Wasteland::Entity &e, Wasteland::ScriptEventId id, py::args args) {
+                 // Repackaged into a vector<py::object> because that is the
+                 // dispatcher's signature. reinterpret_borrow, not borrow:
+                 // the handles in `args` are already owned by the caller and
+                 // must not be destroyed on the way out.
+                 std::vector<py::object> packed;
+                 packed.reserve(args.size());
+                 for (py::handle arg : args)
+                     packed.push_back(py::reinterpret_borrow<py::object>(arg));
+                 Wasteland::ScriptEventDispatcher::Dispatch(e, id, packed);
+             },
+             py::arg("id"))
 
 // Returns True/False rather than the method's return value. A script that
 // wants the result must use GetScriptAttribute or read state afterwards.
@@ -5415,6 +7368,12 @@ py::gil_scoped_acquire gil;
                  if (name == "MaterialComponent")
                      if (auto *p = e.TryGetComponent<Wasteland::MaterialComponent>())
                          return py::cast(*p, py::return_value_policy::reference);
+                 // MeshComponent belongs beside MaterialComponent: a mesh entity
+                 // is the pair, and a script that looks up one by string should
+                 // be able to look up the other.
+                 if (name == "MeshComponent")
+                     if (auto *p = e.TryGetComponent<Wasteland::MeshComponent>())
+                         return py::cast(*p, py::return_value_policy::reference);
                  if (name == "SpriteRendererComponent")
                      if (auto *p = e.TryGetComponent<Wasteland::SpriteRendererComponent>())
                          return py::cast(*p, py::return_value_policy::reference);
@@ -5557,6 +7516,15 @@ BIND_COMP_HAS(Wasteland::TagComponent)
         BIND_COMP_ADD(Wasteland::TagComponent)
         BIND_COMP_ADDOR(Wasteland::TagComponent)
         BIND_COMP_REM(Wasteland::TagComponent)
+
+// AudioGraphComponent. BIND_GAMEPLAY_COMP rather than the six BIND_COMP_*
+// macros: those stringify the QUALIFIED type, so they would generate
+// `AddOrReplaceWasteland::AudioGraphComponent` -- a name Python cannot even
+// PARSE as an attribute access, forcing every caller to use getattr. The
+// gameplay macro takes an explicit short name, which is what a script needs.
+// AudioSourceComponent has no accessor at all, so a script that wants to attach
+// a graph to an entity it built at runtime needs these.
+BIND_GAMEPLAY_COMP(Wasteland::AudioGraphComponent, AudioGraphComponent)
 
 // TransformComponent. Note the macro uses the FULL type name, which is why
 // the generated Python method is GetWasteland::TransformComponent -- see
@@ -5808,6 +7776,14 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         BIND_COMP_ADD(Wasteland::BehaviorTreeComponent)
         BIND_COMP_ADDOR(Wasteland::BehaviorTreeComponent)
         BIND_COMP_REM(Wasteland::BehaviorTreeComponent)
+        // Flow graphs: same six accessors as scripts and trees, so attaching a
+        // graph looks exactly like attaching either from Python.
+        BIND_COMP_HAS(Wasteland::VisualBlocksComponent)
+        BIND_COMP_GET(Wasteland::VisualBlocksComponent)
+        BIND_COMP_TRYGET(Wasteland::VisualBlocksComponent)
+        BIND_COMP_ADD(Wasteland::VisualBlocksComponent)
+        BIND_COMP_ADDOR(Wasteland::VisualBlocksComponent)
+        BIND_COMP_REM(Wasteland::VisualBlocksComponent)
         BIND_COMP_HAS(Wasteland::WaterComponent)
         BIND_COMP_GET(Wasteland::WaterComponent)
         BIND_COMP_TRYGET(Wasteland::WaterComponent)
@@ -5865,6 +7841,15 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         // qualified C++ type, so the unqualified-name accessor must be
         // declared explicitly or a tree is not attachable at all.
         BIND_GAMEPLAY_COMP(Wasteland::BehaviorTreeComponent, BehaviorTreeComponent)
+        // Same reason again: without this a graph is constructible in Python
+        // but not ATTACHABLE, which is the exact gap the tree had.
+        BIND_GAMEPLAY_COMP(Wasteland::VisualBlocksComponent, VisualBlocksComponent)
+        BIND_GAMEPLAY_COMP(Wasteland::AnimationComponent, AnimationComponent)
+        // A mesh is constructible in Python but was not ATTACHABLE before this
+        // line -- the same gap BehaviorTreeComponent and VisualBlocksComponent
+        // had. Without it a script can build a MeshComponent and can never put
+        // one on an entity.
+        BIND_GAMEPLAY_COMP(Wasteland::MeshComponent, MeshComponent)
 
 // The 3D physics set a gameplay script needs to build a level:
         // static floors/walls, dynamic props, and the player's own collider
@@ -5888,6 +7873,20 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         // at the audio system rather than at a binding.
         BIND_GAMEPLAY_COMP(Wasteland::AudioSourceComponent, AudioSourceComponent)
         BIND_GAMEPLAY_COMP(Wasteland::AudioListenerComponent, AudioListenerComponent);
+
+        // Strip a leading "Wasteland::" from a stringified component type.
+        //
+        // Needed because the two binding macros disagree: BIND_COMP_* hands the
+        // FULL type name to the macro, so its key is "Wasteland::TransformComponent",
+        // while BIND_GAMEPLAY_COMP uses the short name. A caller cannot know
+        // which convention a given component used, so both must match.
+        constexpr auto ComponentShortName = [](const char *qualified) {
+            std::string_view view(qualified);
+            constexpr std::string_view prefix = "Wasteland::";
+            if (view.substr(0, prefix.size()) == prefix)
+                view.remove_prefix(prefix.size());
+            return view;
+        };
 
 // ======================================== SCENE: Scene ================
     // Scene with a shared_ptr holder. It is a value-ish engine object but is
@@ -6049,6 +8048,19 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
                     [](const std::string &path) {
                         std::string python, error;
                         if (!Wasteland::BehaviorTreeSystem::CompileTree(path, python, error))
+                            throw std::runtime_error(error);
+                        return python;
+                    },
+                    py::arg("path"))
+        // Compile an authored flow graph without attaching it, so "does this
+        // graph still compile?" is answerable from a test or a tool -- and so a
+        // test can inspect the emitted METHODS rather than only their effects.
+        // A schema-2 graph emits one method per event node, which is exactly
+        // what the multi-event suite asserts on.
+        .def_static("CompileFlowGraph",
+                    [](const std::string &path) {
+                        std::string python, error;
+                        if (!Wasteland::FlowGraphSystem::CompileGraph(path, python, error))
                             throw std::runtime_error(error);
                         return python;
                     },
@@ -6418,6 +8430,81 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
                  for (auto e : s.GetAllEntitiesWith<Wasteland::TagComponent>())
                      result.append(Wasteland::Entity(e, &s));
                  return result;
+             })
+        // GetAllEntitiesWith(name) -- the GENERIC form of the two queries above,
+        // so a Visual Blocks `GetAllEntitiesWith` node can take the component
+        // type as a runtime string instead of needing a per-type binding per
+        // node.
+        //
+        // The type list is the same set BIND_GAMEPLAY_COMP exposes, because a
+        // component a script cannot otherwise reach is not a component worth
+        // querying for. An unknown name yields an EMPTY LIST rather than
+        // raising: the caller is generated code, and "no such component" and
+        // "no entities carry it" should read the same to a loop.
+        .def("GetAllEntitiesWith",
+             // [&], not []: the dispatch compares against ComponentShortName,
+             // a namespace-scope helper declared above the class. A
+             // non-capturing lambda cannot see it.
+             [&](Wasteland::Scene &s, const std::string &name) {
+                 // Strip a leading "Wasteland::" so both spellings compare
+                 // equal. Anything else is left alone, so an unknown name
+                 // still falls through to the empty list.
+                 const std::string shortName =
+                     name.rfind("Wasteland::", 0) == 0
+                         ? name.substr(std::string("Wasteland::").size())
+                         : name;
+                 py::list result;
+                 const auto append = [&result, &s](auto view) {
+                     for (auto e : view)
+                         result.append(Wasteland::Entity(e, &s));
+                 };
+                 // BOTH spellings are accepted. BIND_COMP_* hands the FULL
+                 // type name to the macro, so the stringified key is
+                 // "Wasteland::TransformComponent"; BIND_GAMEPLAY_COMP uses
+                 // the short name. A script (or a generated node) cannot know
+                 // which convention a component used, and the first version
+                 // accepted only the qualified form -- so querying
+                 // "TransformComponent" silently returned nothing while
+                 // "Wasteland::TransformComponent" worked.
+#define WL_QUERY_COMP(Comp) \
+                 if (name == #Comp || shortName == ComponentShortName(#Comp)) { \
+                     append(s.GetAllEntitiesWith<Comp>()); \
+                     return result; \
+                 }
+                 WL_QUERY_COMP(Wasteland::TransformComponent)
+                 WL_QUERY_COMP(Wasteland::AudioGraphComponent)
+                 WL_QUERY_COMP(Wasteland::TagComponent)
+                 WL_QUERY_COMP(Wasteland::HealthComponent)
+                 WL_QUERY_COMP(Wasteland::WeaponComponent)
+                 WL_QUERY_COMP(Wasteland::HittableComponent)
+                 WL_QUERY_COMP(Wasteland::InteractableComponent)
+                 WL_QUERY_COMP(Wasteland::ViewStateComponent)
+                 WL_QUERY_COMP(Wasteland::InventoryComponent)
+                 WL_QUERY_COMP(Wasteland::PersistentComponent)
+                 WL_QUERY_COMP(Wasteland::QuestFlagsComponent)
+                 WL_QUERY_COMP(Wasteland::WorldTimerComponent)
+                 WL_QUERY_COMP(Wasteland::ItemDefinitionComponent)
+                 WL_QUERY_COMP(Wasteland::DroppedItemComponent)
+                 WL_QUERY_COMP(Wasteland::CameraComponent)
+                 WL_QUERY_COMP(Wasteland::ScriptComponent)
+                 WL_QUERY_COMP(Wasteland::BehaviorTreeComponent)
+                 WL_QUERY_COMP(Wasteland::VisualBlocksComponent)
+                 WL_QUERY_COMP(Wasteland::AnimationComponent)
+                 // A mesh is the DCC round-trip component, and a flow graph
+                 // filtering a level's props by "has a mesh" is the obvious
+                 // query -- without this entry the node silently returns
+                 // nothing for the name.
+                 WL_QUERY_COMP(Wasteland::MeshComponent)
+                 WL_QUERY_COMP(Wasteland::RigidBody3DComponent)
+                 WL_QUERY_COMP(Wasteland::BoxCollider3DComponent)
+                 WL_QUERY_COMP(Wasteland::SphereCollider3DComponent)
+                 WL_QUERY_COMP(Wasteland::CapsuleCollider3DComponent)
+                 WL_QUERY_COMP(Wasteland::RaycastIgnoreComponent)
+                 WL_QUERY_COMP(Wasteland::WeaponFeedbackComponent)
+                 WL_QUERY_COMP(Wasteland::AudioListenerComponent)
+                 WL_QUERY_COMP(Wasteland::AudioSourceComponent)
+#undef WL_QUERY_COMP
+                 return result;
              });
 
 // ======================================== SCENE: SceneSerializer =======
@@ -6436,6 +8523,66 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         // indenting rules as C++ and needs the identical helper to generate
         // consistent whitespace in generated code.
         .def_static("Trim", &Wasteland::SceneSerializer::Trim, py::arg("str"));
+
+// ======================================== SCENE: MaterialSerializer ========
+    // .wlmaterial -- the authored material asset MeshComponent::MaterialPath
+    // points at. Separate from SceneSerializer because a material file is one
+    // component, not one component among thirty inside an entity.
+    py::class_<Wasteland::MaterialSerializer>(m, "MaterialSerializer")
+        .def_static("Save",
+                    [](const std::string &path,
+                       const Wasteland::MaterialComponent &material) {
+                        std::string error;
+                        const bool ok = Wasteland::MaterialSerializer::Save(path, material, &error);
+                        return py::make_tuple(ok, error);
+                    },
+                    py::arg("path"), py::arg("material"))
+        .def_static("Load",
+                    [](const std::string &path,
+                       const Wasteland::MaterialComponent *base) {
+                        // `base` is the material to FILL, not replace: a field
+                        // absent from the file keeps the base's value. Passing
+                        // None starts from a default-constructed component.
+                        // Without this argument the merge behaviour is
+                        // untestable from Python -- the binding would always
+                        // start from defaults and the test could only see
+                        // what the file contained.
+                        Wasteland::MaterialComponent material;
+                        if (base)
+                            material = *base;
+                        std::string error;
+                        const bool ok = Wasteland::MaterialSerializer::Load(path, material, &error);
+                        return py::make_tuple(ok, py::cast(material), error);
+                    },
+                    py::arg("path"), py::arg("base") = nullptr)
+        // Emit/Parse exist so the FORMAT is testable without the filesystem,
+        // and so a tool can preview a save.
+        .def_static("Emit", &Wasteland::MaterialSerializer::Emit,
+                    py::arg("material"))
+        .def_static("Parse",
+                    [](const std::string &text,
+                       const Wasteland::MaterialComponent *base) {
+                        Wasteland::MaterialComponent material;
+                        if (base)
+                            material = *base;
+                        std::string error;
+                        const bool ok = Wasteland::MaterialSerializer::Parse(text, material, error);
+                        return py::make_tuple(ok, py::cast(material), error);
+                    },
+                    py::arg("text"), py::arg("base") = nullptr);
+
+    // The per-scene path -> material table behind MeshComponent::MaterialPath.
+    py::class_<Wasteland::MaterialAssetCache>(m, "MaterialAssetCache")
+        .def(py::init<>())
+        .def("Get",
+             [](Wasteland::MaterialAssetCache &cache, const std::string &path) {
+                 std::string error;
+                 const Wasteland::MaterialComponent *material = cache.Get(path, &error);
+                 return py::make_tuple(material ? py::cast(*material) : py::none(), error);
+             },
+             py::arg("path"))
+        .def("Clear", &Wasteland::MaterialAssetCache::Clear)
+        .def_property_readonly("Count", &Wasteland::MaterialAssetCache::Count);
 
 // ======================================== SCENE: ScriptableEntity ======
     // ScriptableEntity exposes exactly TWO accessors -- the transform and the
@@ -6616,6 +8763,9 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             // Python could neither read back nor set, and the authoring tests
             // for it failed against a feature that was half-shipped.
             .def_readwrite("Title", &vb::GraphNode::Title)
+            // Task B.5. The Blueprint per-node breakpoint toggle. Serialized
+            // with the graph, so a breakpoint survives a save/load.
+            .def_readwrite("Breakpoint", &vb::GraphNode::Breakpoint)
             .def_readwrite("X", &vb::GraphNode::X)
             .def_readwrite("Y", &vb::GraphNode::Y)
             .def_readwrite("EventName", &vb::GraphNode::EventName)
@@ -6659,7 +8809,13 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             .def(py::init<>())
             .def_readwrite("Name", &vb::GraphVariable::Name)
             .def_readwrite("Type", &vb::GraphVariable::Type)
-            .def_readwrite("DefaultLiteral", &vb::GraphVariable::DefaultLiteral);
+            .def_readwrite("DefaultLiteral", &vb::GraphVariable::DefaultLiteral)
+            // Task B.4. Both are authoring flags: Exposed is the Blueprint
+            // "Editable" checkbox and decides whether the value is stored per
+            // entity; Replicated is carried and round-tripped but does nothing
+            // until a replication layer exists.
+            .def_readwrite("Exposed", &vb::GraphVariable::Exposed)
+            .def_readwrite("Replicated", &vb::GraphVariable::Replicated);
 
         py::class_<vb::BlackboardKey>(vbMod, "BlackboardKey")
             .def(py::init<>())
@@ -6680,6 +8836,13 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             // back the live std::vector rather than a list copy, so append
             // and extend reach the graph.
             .def_readwrite("Variables", &vb::Graph::Variables)
+            // Task B.2. BasePath is load-time context, but it is bound because
+            // a test has to be able to confirm the loader set it -- an unset
+            // base makes every function path resolve against the process
+            // working directory, and the failure is a "body not found" error
+            // that names the wrong directory.
+            .def_readwrite("BasePath", &vb::Graph::BasePath)
+            .def_readwrite("Functions", &vb::Graph::Functions)
             .def_readwrite("Blackboard", &vb::Graph::Blackboard)
             .def_readwrite("Nodes", &vb::Graph::Nodes)
             .def_readwrite("Links", &vb::Graph::Links)
@@ -6705,6 +8868,27 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
         // top of this file meaningful. Without them pybind would refuse the type
         // outright rather than silently copying -- a loud failure, but still no way
         // to build a graph from Python.
+        // Task B.2. A function is a SIGNATURE (name + typed endpoints + a body
+        // path); the body itself is another graph. Binding the endpoints
+        // separately from GraphVariable is what keeps the two from being
+        // conflated in a test -- a variable has a default, a parameter does not.
+        py::class_<vb::GraphFunctionEndpoint>(vbMod, "GraphFunctionEndpoint")
+            .def(py::init<>())
+            .def_readwrite("Name", &vb::GraphFunctionEndpoint::Name)
+            .def_readwrite("Type", &vb::GraphFunctionEndpoint::Type);
+
+        py::class_<vb::GraphFunction>(vbMod, "GraphFunction")
+            .def(py::init<>())
+            .def_readwrite("Name", &vb::GraphFunction::Name)
+            .def_readwrite("Path", &vb::GraphFunction::Path)
+            // Opaque containers, so append reaches the graph rather than a copy.
+            .def_readwrite("Inputs", &vb::GraphFunction::Inputs)
+            .def_readwrite("Outputs", &vb::GraphFunction::Outputs);
+
+        py::bind_vector<vb::GraphFunctionList>(vbMod, "GraphFunctionList");
+        py::bind_vector<std::vector<vb::GraphFunctionEndpoint>>(vbMod,
+																"GraphFunctionEndpointList");
+
         py::bind_vector<vb::GraphNodeList>(vbMod, "GraphNodeList");
         py::bind_vector<vb::GraphLinkList>(vbMod, "GraphLinkList");
         py::bind_vector<vb::GraphVariableList>(vbMod, "GraphVariableList");
@@ -6776,6 +8960,14 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             return vb::GraphSerializer::Emit(graph);
         }, py::arg("graph"), "Deterministic: the same graph always produces "
            "byte-identical text.");
+
+        // The new-graph template, exposed so a test can run the EXACT text the
+        // editor writes through Parse, ValidateFlow and CompileFlow. A second
+        // copy of the template in the test would be the one that drifts.
+        vbMod.def("NewFlowGraphText", [](const std::string &graphName) {
+            return vb::GraphSerializer::NewFlowGraphText(graphName);
+        }, py::arg("graphName"), "The YAML a 'New Visual Script' creates. "
+           "Parses, validates and compiles by construction.");
 
         // Save shares Parse/Load's None-or-GraphError contract and therefore does
         // report failure. Contrast Scene::SaveScene higher up, which always
@@ -7045,6 +9237,23 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
                         &Wasteland::Project::GetEngineAssetsRoot);
     }
 
+    // ---- FlowGraphSystem: per-node debugging (Task B.5) ------------------
+    //
+    // The whole system was C++-only until now. These four are the surface the
+    // Visual Blocks panel needs: which entity is paused, on which node, and the
+    // two controls that release it.
+    py::class_<Wasteland::FlowGraphSystem>(m, "FlowGraphSystem")
+        .def_static("IsPaused",
+                    &Wasteland::FlowGraphSystem::IsPaused,
+                    py::arg("id"))
+        .def_static("GetPausedNode",
+                    &Wasteland::FlowGraphSystem::GetPausedNode,
+                    py::arg("id"))
+        .def_static("Resume",
+                    &Wasteland::FlowGraphSystem::Resume, py::arg("id"))
+        .def_static("Step",
+                    &Wasteland::FlowGraphSystem::Step, py::arg("id"));
+
     // Python-hosted tools do not own an Application whose destructor can clear
     // these process-wide pybind11 caches. Run cleanup from Python's atexit phase,
     // before CPython finalizes, so static maps never decref into a dead runtime.
@@ -7053,6 +9262,7 @@ BIND_COMP_HAS(Wasteland::ScriptComponent)
             if (!Py_IsInitialized())
                 return;
             Wasteland::BehaviorTreeSystem::Shutdown();
+            Wasteland::FlowGraphSystem::Shutdown();
             Wasteland::ScriptEngine::Shutdown();
             Wasteland_SetPythonEventHandler(py::object());
         }));

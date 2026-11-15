@@ -386,6 +386,28 @@ namespace Wasteland {
 	void Renderer2D::Shutdown()
 	{
 		WL_PROFILE_FUNCTION();
+
+		// EMPTY UNTIL NOW, AND THAT WAS A CRASH.
+		//
+		// Every GPU object here hangs off the file-scope s_Data, whose destructor runs
+		// at process exit -- after the graphics device has been destroyed. On Vulkan
+		// that is fatal: releasing a vertex array calls into the dead device's dispatch
+		// table and aborts inside nvoglv64.dll (nvrhi::vulkan::Buffer::~Buffer). The
+		// editor ended its run in an access violation on every clean exit.
+		//
+		// Releasing them here, while the device is alive, is the only correct order.
+		// Same set RecreateResources drops on an API switch, and for the same reason.
+		s_Data.QuadVertexArray = nullptr;
+		s_Data.CircleVertexArray = nullptr;
+		s_Data.LineVertexArray = nullptr;
+		s_Data.QuadVertexBuffer = nullptr;
+		s_Data.CircleVertexBuffer = nullptr;
+		s_Data.LineVertexBuffer = nullptr;
+		s_Data.WhiteTexture = nullptr;
+		s_Data.QuadShader = nullptr;
+		s_Data.CircleShader = nullptr;
+		s_Data.LineShader = nullptr;
+		s_Data.TextureSlots.fill(nullptr);
 	}
 
 	void Renderer2D::BeginScene(const Camera& camera, const glm::mat4& transform)

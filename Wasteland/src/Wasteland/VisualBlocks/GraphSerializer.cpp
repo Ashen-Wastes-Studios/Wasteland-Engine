@@ -15,6 +15,9 @@
 // The declaration of the two functions defined below. Included second for the
 // reason just described.
 #include "GraphSerializer.h"
+// std::filesystem: resolving a function's relative `path:` against the owning
+// graph's directory (Task B.2).
+#include <filesystem>
 
 // The parser and emitter. Nothing else in the engine uses YAML directly; this
 // format is confined to visual blocks.
@@ -80,8 +83,9 @@ namespace Wasteland::VisualBlocks
 			// Seven keys. Note the asymmetry this creates with the section parsers further
 			// down: the ROOT is allowlisted, but nothing inside variables, blackboard or a
 			// node's children list is, so a mistyped key there is ignored silently.
+			// "functions" is the Task B.2 addition. Eight keys now.
 			return key == "kind" || key == "schema" || key == "name" ||
-				   key == "variables" || key == "blackboard" ||
+				   key == "variables" || key == "functions" || key == "blackboard" ||
 				   key == "nodes" || key == "links";
 		}
 
@@ -98,9 +102,13 @@ namespace Wasteland::VisualBlocks
 			// read back by the editor once a node was renamed.
 			// The id/type pair is mandatory, the rest are optional. Ordering here matches
 			// neither the writer nor the reader; it is a lookup list, not a schema.
+			// 'breakpoint' belongs here for the same reason 'title' does: the
+			// writer emits it whenever the flag is set, so omitting it from this
+			// list would make a graph saved by the editor UNREADABLE by the editor.
 			return key == "id" || key == "type" || key == "x" || key == "y" ||
 				   key == "title" || key == "event" || key == "latent" ||
-				   key == "abort" || key == "children" || key == "pins";
+				   key == "abort" || key == "children" || key == "pins" ||
+				   key == "breakpoint";
 		}
 
 		// Pin literals are the smallest mappings in the format: an id and a value.
@@ -231,6 +239,17 @@ namespace Wasteland::VisualBlocks
 			error.Message = path + ": " + error.Message;
 			return false;
 		}
+
+		// Task B.2: record WHERE this graph was loaded from, so a function's
+		// relative `path:` resolves against the owning graph's directory.
+		//
+		// Set HERE rather than only in FlowGraphSystem: the serializer is the
+		// one place every loader goes through, and a graph loaded by a tool or
+		// a test would otherwise carry an empty BasePath -- making every
+		// function path resolve against the process working directory, which
+		// surfaces as a "body not found" error naming the wrong directory.
+		outGraph.BasePath =
+			std::filesystem::path(path).parent_path().string();
 		// `error` is not cleared here; Parse already reset it on the success path.
 		return true;
 	}
@@ -308,7 +327,11 @@ namespace Wasteland::VisualBlocks
 			scratch.Kind = root["kind"].as<std::string>();
 			// The only closed vocabulary in the format, and the reason a graph authored by
 			// a newer build with a third kind is refused rather than half-read.
-			if (scratch.Kind != "flow" && scratch.Kind != "tree")
+			// "function" is the Task B.2 addition. It must be accepted HERE as
+			// well as in the emitter, or a function body file fails to load with
+			// "unknown kind" before any validator can say anything useful.
+			if (scratch.Kind != "flow" && scratch.Kind != "tree" &&
+				scratch.Kind != "function")
 			{
 				// The value is echoed so the author can see what was rejected.
 				error.Message = "unknown kind '" + scratch.Kind +
@@ -334,6 +357,88 @@ namespace Wasteland::VisualBlocks
 		// --- variables ---
 		// Variables are the flow-graph form of named storage. The blackboard below is
 		// the behaviour-tree equivalent, and the two are parsed by near-identical code.
+		if (root["functions"])
+		{
+			// Task B.2. The function library of a flow graph.
+			//
+			// Parsed BEFORE nodes: a CallFunction node's pins are resolved from
+			// this list, so the validator needs it populated.
+			//
+			// Endpoint types are read as text and translated, so an unknown type
+			// is an ERROR rather than an exception -- the same rule as variables.
+			// An endpoint with no name is an error for the same reason a variable
+			// with no name is: it is the key every caller refers to.
+			for (const YAML::Node &item : root["functions"])
+			{
+				GraphFunction function;
+				function.Name = item["name"] ? item["name"].as<std::string>() : "";
+				if (function.Name.empty())
+				{
+					error.Message = "a function has no 'name'";
+					return false;
+				}
+				function.Path = item["path"] ? item["path"].as<std::string>() : "";
+
+				auto parseEndpoints = [](const YAML::Node &seq,
+										std::vector<GraphFunctionEndpoint> &out,
+										const char *what,
+										const std::string &owner,
+										std::string &errorText) -> bool
+				{
+					for (const YAML::Node &entry : seq)
+					{
+						GraphFunctionEndpoint endpoint;
+						endpoint.Name =
+							entry["name"] ? entry["name"].as<std::string>() : "";
+						if (endpoint.Name.empty())
+						{
+							errorText = std::string("a function ") + what +
+										" has no 'name'";
+							return false;
+						}
+						if (entry["type"])
+						{
+							const std::string typeName =
+								entry["type"].as<std::string>();
+							PinType type = PinType::Float;
+							if (!PinTypeFromName(typeName, type))
+							{
+								errorText = "function '" + owner +
+											"' has an unknown " + what +
+											" type '" + typeName + "'";
+								return false;
+							}
+							endpoint.Type = type;
+						}
+						out.push_back(endpoint);
+					}
+					return true;
+				};
+
+				if (item["inputs"])
+				{
+					std::string endpointError;
+					if (!parseEndpoints(item["inputs"], function.Inputs, "input",
+										function.Name, endpointError))
+					{
+						error.Message = endpointError;
+						return false;
+					}
+				}
+				if (item["outputs"])
+				{
+					std::string endpointError;
+					if (!parseEndpoints(item["outputs"], function.Outputs, "output",
+										function.Name, endpointError))
+					{
+						error.Message = endpointError;
+						return false;
+					}
+				}
+				scratch.Functions.push_back(function);
+			}
+		}
+
 		if (root["variables"])
 		{
 			// DEFECT: no IsSequence() check on root["variables"]. yaml-cpp's node_data::begin
@@ -392,6 +497,12 @@ namespace Wasteland::VisualBlocks
 					// on save. That is the reason it is not parsed at all -- and also why the
 					// validation asymmetry above exists.
 					variable.DefaultLiteral = item["default"].as<std::string>();
+				// Both flags are optional and default to false, so a file authored
+				// before they existed loads unchanged.
+				if (item["exposed"])
+					variable.Exposed = item["exposed"].as<bool>();
+				if (item["replicated"])
+					variable.Replicated = item["replicated"].as<bool>();
 				// DEFECT: no duplicate-name check, unlike the node loop below which rejects a
 				// repeated id. Two variables sharing a name load successfully, and which one a
 				// read resolves to becomes a matter of list order.
@@ -546,6 +657,10 @@ namespace Wasteland::VisualBlocks
 				// Same optionality as x.
 				if (item["y"])
 					node.Y = item["y"].as<float>();
+				// A breakpoint is optional and defaults to false, so a file
+				// authored before debugging existed loads unchanged.
+				if (item["breakpoint"])
+					node.Breakpoint = item["breakpoint"].as<bool>();
 				// The user-supplied display name. Present in this allowlist thanks to the fix
 				// recorded in IsKnownNodeKey; before that, any graph with a renamed node was
 				// rejected on load.
@@ -834,6 +949,56 @@ namespace Wasteland::VisualBlocks
 				// with an empty default comes back with DefaultLiteral set to an empty string
 				// rather than absent, which a reader cannot tell from 'no default key'.
 				out << YAML::Key << "default" << YAML::Value << variable.DefaultLiteral;
+				// Emitted only when TRUE: a false flag is the default, and omitting
+				// it keeps an existing file byte-identical on a round-trip -- which
+				// is exactly what the doc-example comparison asserts.
+				if (variable.Exposed)
+					out << YAML::Key << "exposed" << YAML::Value << true;
+				if (variable.Replicated)
+					out << YAML::Key << "replicated" << YAML::Value << true;
+				out << YAML::EndMap;
+			}
+			out << YAML::EndSeq;
+		}
+
+		// The function library (Task B.2). Emitted only when non-empty, so a graph
+		// that declares no functions is byte-for-byte what it was before.
+		//
+		// Endpoints are written in declaration order and named explicitly: the
+		// parameter NAMES are part of the contract -- a CallFunction node exposes
+		// one pin per name, so reordering or renaming them breaks every saved
+		// caller, exactly as reordering a node's pins would.
+		if (!graph.Functions.empty())
+		{
+			out << YAML::Key << "functions" << YAML::Value << YAML::BeginSeq;
+			for (const GraphFunction &function : graph.Functions)
+			{
+				out << YAML::BeginMap;
+				out << YAML::Key << "name" << YAML::Value << function.Name;
+				out << YAML::Key << "path" << YAML::Value << function.Path;
+
+				out << YAML::Key << "inputs" << YAML::Value << YAML::BeginSeq;
+				for (const GraphFunctionEndpoint &endpoint : function.Inputs)
+				{
+					out << YAML::BeginMap;
+					out << YAML::Key << "name" << YAML::Value << endpoint.Name;
+					out << YAML::Key << "type" << YAML::Value
+						<< PinTypeName(endpoint.Type);
+					out << YAML::EndMap;
+				}
+				out << YAML::EndSeq;
+
+				out << YAML::Key << "outputs" << YAML::Value << YAML::BeginSeq;
+				for (const GraphFunctionEndpoint &endpoint : function.Outputs)
+				{
+					out << YAML::BeginMap;
+					out << YAML::Key << "name" << YAML::Value << endpoint.Name;
+					out << YAML::Key << "type" << YAML::Value
+						<< PinTypeName(endpoint.Type);
+					out << YAML::EndMap;
+				}
+				out << YAML::EndSeq;
+
 				out << YAML::EndMap;
 			}
 			out << YAML::EndSeq;
@@ -871,6 +1036,10 @@ namespace Wasteland::VisualBlocks
 			out << YAML::Key << "x" << YAML::Value << node.X;
 			// Same, for the vertical coordinate.
 			out << YAML::Key << "y" << YAML::Value << node.Y;
+			// A breakpoint, only when set. Omitting it when false is what keeps
+			// an existing graph byte-identical on a round-trip.
+			if (node.Breakpoint)
+				out << YAML::Key << "breakpoint" << YAML::Value << true;
 			// From here on node fields are omitted when empty or false, which is the
 			// convention the rest of the writer follows.
 			if (!node.Title.empty())
@@ -1011,6 +1180,71 @@ namespace Wasteland::VisualBlocks
 			return false;
 		}
 		return true;
+	}
+
+	// The template a designer gets from "New Visual Script".
+	// ---
+	// A raw string literal: the body is YAML, and a raw literal keeps the '#'
+	// comments and the two-space indentation from being mangled by escapes.
+	std::string GraphSerializer::NewFlowGraphText(const std::string &graphName)
+	{
+		static const char *kTemplate = R"(kind: flow
+schema: 2
+name: "%NAME%"
+nodes:
+  # Entry point. Rename the event to change WHEN this graph runs; schema 2
+  # allows several, and the compiler emits one Python method per event.
+  - id: ev
+    type: FlowOnEvent
+    x: 60
+    y: 80
+    event: OnUpdate
+links: []
+)";
+
+		// The name is emitted as a YAML DOUBLE-QUOTED scalar, and the three
+		// characters that would end or escape one are backslash-escaped.
+		//
+		// Quoting is not redundant with the panel's SanitizeName, which strips
+		// the characters illegal in a Windows path component: that set does not
+		// include '#', '&', '!' or a leading '*', all of which change how a
+		// BARE scalar is read. This function is public and a caller may pass a
+		// name that never went through SanitizeName, so it must be correct on
+		// its own.
+		std::string escaped;
+		// Reserved up front: a name is short, but the reallocation is avoidable
+		// and the reserve costs one line.
+		escaped.reserve(graphName.size() + 2);
+		for (char c : graphName)
+		{
+			// Only the characters that are special inside a double-quoted
+			// scalar. Everything else, including '#', is literal once quoted.
+			switch (c)
+			{
+				case '\\': escaped += "\\\\"; break;
+				case '"':  escaped += "\\\""; break;
+				case '\n': escaped += "\\n";  break;
+				case '\r': escaped += "\\r";  break;
+				// A bare tab is legal but invisible; writing it as a tab keeps
+				// the file readable. NUL cannot reach here from a std::string
+				// that came off the command line, and is left literal.
+				default:   escaped.push_back(c); break;
+			}
+		}
+
+		// One search-and-replace rather than a stream: the template is static
+		// apart from the name, so the substitution is visible in one line and
+		// there is no formatting machinery to get wrong.
+		static const std::string kPlaceholder = "%NAME%";
+		std::string out = kTemplate;
+		const size_t at = out.find(kPlaceholder);
+		// The placeholder is a literal in kTemplate above; the guard is here
+		// so a future edit that renames it fails loudly rather than silently
+		// writing a template with the placeholder still in it.
+		if (at != std::string::npos)
+			out.replace(at, kPlaceholder.size(), escaped);
+
+		return out;
 	}
 
 }

@@ -103,6 +103,16 @@ namespace Wasteland
         // model can read instead of unwinding through the tool dispatcher.
         static std::filesystem::path ResolveProjectPath(const std::string &path, std::string &error);
 
+        // Resolves a path that may be either project-relative or engine-source-
+        // relative. Engine paths are identified by starting with "Wasteland/" or
+        // "DemonCore-Editor/" and are resolved against the repo root.
+        static std::filesystem::path ResolveProjectOrEnginePath(const std::string &path, std::string &error);
+
+        // Walks up from the current working directory looking for a known repo
+        // marker (Makefile or Wasteland.sln). Falls back to the CWD if nothing
+        // is found within 8 levels.
+        static std::filesystem::path FindRepoRoot();
+
         // Project tools
         // Separated from the file tools by comment only. There is NO privilege boundary:
         // the model reaches all of them through ExecuteTool, and SetStartScene changes
@@ -135,11 +145,27 @@ namespace Wasteland
         bool LoadGraphAsset(const std::string &path, std::filesystem::path &fullPath,
                             VisualBlocks::Graph &graph, std::string &error);
 
+        // Python execution tool
+        std::string PythonExec(const std::string &code);
+
+        // Web search tool. maxResults is clamped inside the handler rather than by
+        // the caller, so every call site gets the same bound.
+        std::string WebSearch(const std::string &query, int maxResults);
+
+        // Codebase tools
+        std::string SearchFiles(const std::string &query, const std::string &dir);
+        std::string ListDir(const std::string &dir);
+        std::string GetSymbolInfo(const std::string &symbol);
+        std::string GetEngineTree();
+
         // Memory tools
         // One file whose path GetMemoryPath() owns, so the model never supplies a path
         // -- which is why these skip the ResolveProjectPath check.
         std::string ReadMemory();
         std::string AppendMemory(const std::string &text);
+        std::string SearchMemory(const std::string &query);
+        std::string RecordToolTelemetry(const std::string &toolName, const std::string &status, int durationMs);
+        std::string ForgetMemory(const std::string &key);
 
         // Entity inspection tools
         std::string ListEntities();

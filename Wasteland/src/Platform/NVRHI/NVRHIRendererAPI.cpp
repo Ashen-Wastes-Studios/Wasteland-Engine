@@ -435,6 +435,19 @@ namespace Wasteland
 			return nullptr;
 		}
 
+		// DEVICE-LOST GUARD. Creating a pipeline on a removed D3D12 device does not
+		// return null -- nvrhi's d3d12 backend asks the device for a root signature
+		// first, CreateRootSignature returns DXGI_ERROR_DEVICE_REMOVED, and the
+		// lookup on the (empty) result faults inside getRootSignature. That is a hard
+		// crash with no frame left to report it from. Once the context knows the GPU
+		// was reset there is nothing to draw until the device is recreated, so bail
+		// out here and let the frame render nothing instead.
+		if (m_Context->IsDeviceLost())
+		{
+			WL_CORE_ERROR("GetOrCreatePipeline: Device lost, skipping pipeline creation");
+			return nullptr;
+		}
+
 		// The one genuinely expensive call on the miss path. It can fail on a bad desc,
 		// an unsupported format combination, or shader/entry-point mismatch.
 		auto pipeline = device->createGraphicsPipeline(pipelineDesc, fb);
@@ -561,7 +574,8 @@ namespace Wasteland
 
 	// The main draw path. Everything it needs is either cached or rebuilt per call;
 	// the pipeline and binding set come from the caches above.
-	void NVRHIRendererAPI::DrawIndexed(const Ref<VertexArray> &vertexArray, uint32_t indexCount)
+	void NVRHIRendererAPI::DrawIndexed(const Ref<VertexArray> &vertexArray, uint32_t indexCount,
+	                                   uint32_t instanceCount, uint32_t firstInstance)
 	{
 		WL_PROFILE_FUNCTION();
 
@@ -744,7 +758,7 @@ namespace Wasteland
 			uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 			// Default DrawArguments: no vertex offset, no instance count, no index offset,
 			// so this is a single non-instanced draw.
-			cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
+			cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount).setInstanceCount(instanceCount).setStartInstanceLocation(firstInstance));
 			// Ends the transient list. Nothing else will close it, so this is mandatory
 			// before the executeCommandList below.
 			cmd->close();
@@ -762,7 +776,7 @@ namespace Wasteland
 		uint32_t actualIndexCount = (indexCount > 0) ? indexCount : nvrhiIB->GetCount();
 		// Batched twin of the draw above. This is the line that actually rasterises in
 		// normal frame flow; the transient branch is only for out-of-frame calls.
-		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount));
+		cmd->drawIndexed(nvrhi::DrawArguments().setVertexCount(actualIndexCount).setInstanceCount(instanceCount).setStartInstanceLocation(firstInstance));
 	}
 
 	// Unimplemented. Both parameters are unused; the WARN below is the only output,

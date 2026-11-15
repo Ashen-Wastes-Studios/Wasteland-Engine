@@ -1,6 +1,13 @@
 #include "wlpch.h"
 
 #include "NodeRegistry.h"
+// Compiler: the SHARED SanitizeIdentifier. A node's ResolvePins must derive the
+// same Python identifier from the same author-supplied name that the compiler
+// does -- a second copy is a call node that compiles and then raises
+// AttributeError on a method that was never emitted.
+#include "Compiler.h"
+// std::set: the closed operator allowlist in Compare's emitter.
+#include <set>
 
 // C++17 nested-namespace syntax. The flow-graph palette lives in its own
 // translation unit but registers into the SAME NodeRegistry the behaviour
@@ -274,10 +281,15 @@ namespace Wasteland::VisualBlocks
 				// The name to read. Same VarRef treatment as the write side, so both
 				// ends of a round trip resolve to the same attribute.
 				MakeIn("Name", "Name", PinType::String, true, ""),
-				// The read result. Typed Float, so a Bool or String variable is
-				// inconsistent with this node -- unlike SetVariable's Any pin, there is
-				// no wildcard on the read path.
-				MakeOut("Value", "Value", PinType::Float),
+				// The read result, typed ANY.
+				//
+				// It was Float, with a comment saying a Bool or String variable was
+				// "inconsistent with this node". That was wrong: the node emits
+				// `self.<name>` and returns whatever the variable holds, so the type
+				// is whatever the AUTHOR declared. Float-typing it meant a declared
+				// Int variable (a loop counter, say) could not feed an Int pin --
+				// exactly the read a ForEach index publish exists to serve.
+				MakeOut("Value", "Value", PinType::Any),
 			};
 			// An EXPRESSION node: it produces a value, it does not run. Its
 			// output becomes a temp the consuming node reads.
@@ -367,7 +379,13 @@ namespace Wasteland::VisualBlocks
 				// even though the pin exists -- the compiler appends whatever hangs off
 				// Done after the loop closes. Contrast Branch, which emits both markers.
 				// That asymmetry is a contract between this file and Compiler.cpp.
-				return "while " + ctx.InBool("Condition") + ":\n" + Body("Body");
+				// Same Done marker as ForEach: the pin is declared and linkable but
+				// was never emitted, so a While silently swallowed everything after
+				// it. The comment above this node claims the compiler emits it --
+				// it does not; the emitter is the only place the marker can be
+				// written, because only the emitter knows the loop's own indent.
+				return "while " + ctx.InBool("Condition") + ":\n" + Body("Body") +
+					   Body("Done");
 			};
 			registry.Register(def);
 		}
@@ -423,11 +441,54 @@ namespace Wasteland::VisualBlocks
 				// The loop header. The loop variable is a real Python LOCAL scoped to the
 				// generated method, which is what makes nested loops safe -- an inner
 				// `for i` shadows an outer one rather than colliding on an attribute.
-				// 					   "):\n" + Body("Body");
 				// The closing paren, the mandatory block colon+newline, and the body
 				// marker.
+				//
+				// PUBLISH THE LOOP VARIABLE BEFORE THE BODY.
+				// ---------------------------------------
+				// Without this the loop variable is a Python LOCAL that no node can
+				// reach: `GetEntityAtIndex` needs an Index pin fed by a link or a
+				// literal, and no node outputs `i`. A graph could iterate a count
+				// OR index a list, but not both -- which is exactly what a
+				// nearest-target scan is. Task B.6 hit this and could not be
+				// authored at all.
+				//
+				// Writing it into the graph variable of the SAME NAME makes it
+				// readable with GetVariable, and the declaration is the author's
+				// signal that the variable is part of the graph's state rather than
+				// an implementation detail of the loop.
+				//
+				// ONE tab, not ctx.Indent+1: the caller indents the returned
+				// statement by its own level, so this string is RELATIVE. An
+				// absolute indentation here produced a body at 2*(indent+1) beside
+				// a sibling at indent+1 -- a Python unindent error.
+				std::string body = Body("Body");
+				// Only publish when the graph actually DECLARES the variable. An
+				// undeclared name would still work in Python (it would set an
+				// attribute), but a graph that reads it back through GetVariable
+				// would fail validation -- so emitting the write would be a silent
+				// no-op that hides the authoring error instead of surfacing it.
+				// A linear scan: Graphs carry a handful of variables, and this runs
+					// once per compilation, not per tick.
+				bool declared = false;
+				if (ctx.Graph != nullptr)
+					for (const GraphVariable &v : ctx.Graph->Variables)
+						if (v.Name == clean)
+						{
+							declared = true;
+							break;
+						}
+				std::string publish;
+				if (declared)
+					publish = "\tself." + clean + " = " + clean + "\n";
+				// The Done marker, at the loop's OWN indent level (column 0 of this
+				// relative string; the caller adds the base indent). Without it the
+				// exec chain stops dead at the loop: the pin is declared, the
+				// validator accepts a link into it, and the continuation is
+				// SILENTLY DROPPED from the generated method. Task B.6 hit this --
+				// the chaser's scan compiled and everything after it vanished.
 				return "for " + clean + " in range(" + ctx.InInt("Count") +
-					   "):\n" + Body("Body");
+					   "):\n" + publish + body + Body("Done");
 			};
 			registry.Register(def);
 		}
@@ -519,9 +580,19 @@ namespace Wasteland::VisualBlocks
 			NodeDef def;
 			def.TypeId = typeId;
 			def.Category = "Flow/Math";
+			// ANY, not Float. The factory was float-only, which made `Equal` and
+			// `NotEqual` FLOAT comparisons and left STRING and ENTITY equality
+			// inexpressible -- the defect the comment below records. A graph that
+			// must exclude SELF from a candidate scan has no other way to compare
+			// two entities, and adding a second node would collide with this one
+			// on the TypeId that already exists.
+			//
+			// `ctx.In` rather than `ctx.InFloat`: the pin's type is the author's
+			// choice, and a float-only accessor would coerce a string or an entity
+			// instead of passing it through.
 			def.Pins = {
-				MakeIn("A", "A", PinType::Float, false, "0"),
-				MakeIn("B", "B", PinType::Float, false, "0"),
+				MakeIn("A", "A", PinType::Any, false, "0"),
+				MakeIn("B", "B", PinType::Any, false, "0"),
 				// Bool, unlike addBinary's Float. This is the single behavioural
 				// difference between the two factories.
 				MakeOut("Value", "Value", PinType::Bool),
@@ -529,8 +600,8 @@ namespace Wasteland::VisualBlocks
 			std::string operatorText = op;
 			def.Emit = [operatorText](const EmitContext &ctx, EmitOutputs &out) {
 				out.Outputs.push_back(
-					{ "Value", "(" + ctx.InFloat("A") + " " + operatorText + " " +
-								   ctx.InFloat("B") + ")" });
+					{ "Value", "(" + ctx.In("A") + " " + operatorText + " " +
+								   ctx.In("B") + ")" });
 				return std::string();
 			};
 			registry.Register(def);
@@ -716,13 +787,31 @@ namespace Wasteland::VisualBlocks
 			def.TypeId = "GetPosition";
 			def.Category = "Flow/Scene";
 			def.Pins = {
+				// An OPTIONAL target. Unset (the default) reads SELF, which keeps
+				// every existing graph byte-identical.
+				//
+				// Why the pin exists at all: without it the node could only ever
+				// read the entity the graph is attached to, so NO behaviour that
+				// reasons about ANOTHER entity -- a chaser measuring distance to a
+				// candidate, a weapon finding its wielder -- was expressible.
+				// Task B.6 hit exactly that.
+				MakeIn("Target", "Target", PinType::Entity, false, "None"),
 				MakeOut("Position", "Position", PinType::Vec3),
 			};
-			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
 				// Entity.GetTransform returns a TransformComponent value whose bound
 				// Translation member is the engine's current world position.
+				//
+				// The comparison against the literal "None" is how "unset" is
+				// detected. An authored None means the same thing, which is fine.
+				const std::string target = ctx.InEntity("Target");
+				const std::string expression =
+					(target == "None")
+						? "self.entity.GetTransform().Translation"
+						: ("((lambda t: t.GetTransform().Translation if t is not None "
+						   "else Wasteland.Vec3(0.0, 0.0, 0.0))(" + target + "))");
 				out.Outputs.push_back(
-					{ "Position", "self.entity.GetTransform().Translation" });
+					{ "Position", expression });
 				return std::string();
 			};
 			registry.Register(def);
@@ -750,16 +839,201 @@ namespace Wasteland::VisualBlocks
 		}
 
 		{
+			// Vec3Add -- the vector counterpart of the Float arithmetic nodes.
+			//
+			// The five arithmetic nodes are Float-ONLY, so a flow graph had no way
+			// to offset a position: GetPosition yields a Vec3 and SetTransform
+			// consumes one, but nothing could add them. The most basic thing a
+			// component graph does -- move something by a little, every tick --
+			// was unauthorable.
+			//
+			// Deliberately ONE node rather than a vector-math family. A
+			// Vec3Subtract or Vec3Scale can be added when a graph needs one;
+			// adding them speculatively would be palette noise.
+			NodeDef def;
+			def.TypeId = "Vec3Add";
+			def.Category = "Flow/Math";
+			def.Pins = {
+				MakeIn("A", "A", PinType::Vec3, false, "(0, 0, 0)"),
+				MakeIn("B", "B", PinType::Vec3, false, "(0, 0, 0)"),
+				MakeOut("Value", "Value", PinType::Vec3),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// Vec3 is a pybind11 value type, so `+` is a normal Python
+				// operator -- unlike the Float nodes, no operator text is spliced
+				// in, and the parentheses are the only precedence guard needed.
+				out.Outputs.push_back(
+					{ "Value", "(" + ctx.InVec3("A") + " + " +
+								   ctx.InVec3("B") + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// Vec3Length -- the magnitude of a vector.
+			//
+			// Added for Task B.2's ClampLen function, which cannot be written
+			// without it: clamping a vector to a maximum length is
+			// `p * (maxLen / len(p))`, and every other piece of that already
+			// existed. A length primitive is not a one-off -- it is the most
+			// common vector operation there is.
+			//
+			// Emitted as an exponent rather than math.sqrt: the generated module
+			// imports ONLY Wasteland (see CompileFlow's preamble), so referencing
+			// math would NameError at runtime. `** 0.5` needs no import and is
+			// exact for the magnitudes a length check compares.
+			NodeDef def;
+			def.TypeId = "Vec3Length";
+			def.Category = "Flow/Math";
+			def.Pins = {
+				MakeIn("Value", "Value", PinType::Vec3, false, "(0, 0, 0)"),
+				MakeOut("Length", "Length", PinType::Float),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string v = ctx.InVec3("Value");
+				out.Outputs.push_back(
+					{ "Length", "((" + v + ".x * " + v + ".x + " +
+							   v + ".y * " + v + ".y + " + v + ".z * " + v +
+							   ".z) ** 0.5)" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// Vec3Scale -- componentwise multiply by a scalar.
+			//
+			// The counterpart to Vec3Length in ClampLen. Written as an explicit
+			// per-component expression rather than `v * s` because Vec3's
+			// pybind11 binding defines no __mul__ with a float scalar -- only
+			// Vec3 + Vec3 exists (see Vec3Add).
+			NodeDef def;
+			def.TypeId = "Vec3Scale";
+			def.Category = "Flow/Math";
+			// The vector input is named "Vector", NOT "Value": an input and an
+			// output may not share a pin id. The first version did, and the
+			// link check resolved `Value` to the INPUT, so a correct graph
+			// reported "pin 'Value' is an input, so it cannot be a link source".
+			def.Pins = {
+				MakeIn("Vector", "Vector", PinType::Vec3, false, "(0, 0, 0)"),
+				MakeIn("Scale", "Scale", PinType::Float, false, "1"),
+				MakeOut("Value", "Value", PinType::Vec3),
+			};
+		{
+			// Vec3Normalize (Task B.6). The direction half of "walk toward the
+			// target": scale the delta to unit length. Expressible as
+			// Vec3Scale(delta, 1/len) but only with a divide, which did not exist.
+			NodeDef def;
+			def.TypeId = "Vec3Normalize";
+			def.Category = "Flow/Math";
+			def.Pins = {
+				MakeIn("Vector", "Vector", PinType::Vec3, true, "(0, 0, 0)"),
+				MakeOut("Value", "Value", PinType::Vec3),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string v = ctx.InVec3("Vector");
+				// Zero length is the same common case as Divide's zero divisor: a
+				// graph standing on its target. The neutral answer is no direction.
+				out.Outputs.push_back(
+					{ "Value", "((lambda t: Wasteland.Vec3(0.0, 0.0, 0.0) "
+							   "if t.Length() == 0 else Wasteland.Vec3(t.x / t.Length(), "
+							   "t.y / t.Length(), t.z / t.Length()))(" + v + "))" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string v = ctx.InVec3("Vector");
+				const std::string s = ctx.InFloat("Scale");
+				out.Outputs.push_back(
+					{ "Value", "Wasteland.Vec3(" + v + ".x * " + s + ", " +
+							   v + ".y * " + s + ", " + v + ".z * " + s + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+
+		{
 			NodeDef def;
 			def.TypeId = "GetHealth";
 			def.Category = "Flow/Scene";
 			def.Pins = {
+				// Optional target, same contract as GetPosition above. Reading a
+				// candidate's health is the other half of "which entity is closest
+				// and worth attacking".
+				MakeIn("Target", "Target", PinType::Entity, false, "None"),
 				MakeOut("Value", "Health", PinType::Float),
 			};
-			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
 				// These exact bindings are exposed by Entity and HealthComponent.
-				out.Outputs.push_back(
-					{ "Value", "self.entity.GetHealthComponent().Current" });
+				//
+				// TryGet (not Get) for the TARGET: Get would raise on an entity
+				// with no HealthComponent, and a candidate scan walks every entity
+				// in the scene. A missing component reads as 0.0 -- dead, which is
+				// the answer a scan wants.
+				const std::string target = ctx.InEntity("Target");
+				const std::string expression =
+					(target == "None")
+					? "self.entity.GetHealthComponent().Current"
+						: ("((lambda t: (t.TryGetHealthComponent().Current "
+					   "if t is not None and t.TryGetHealthComponent() is not None "
+					   "else 0.0))(" + target + "))");
+				out.Outputs.push_back({ "Value", expression });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// ApplyDamage (Task B.6). The flow library had no damage node, so the
+			// enemy's contact attack -- the whole point of the behaviour -- could
+			// not be expressed in a graph. GetHealth reads; this writes.
+			//
+			// A STATEMENT, not an expression: it has an exec in/out so it sits in
+			// the tick chain, and it returns nothing because a damage call has no
+			// meaningful value to wire.
+			NodeDef def;
+			// "DamageEntity", NOT "ApplyDamage": the behaviour-tree library
+			// already registers an `ApplyDamage` (a blackboard-keyed task), and
+			// registration is keyed by TypeId with the LAST register winning -- so
+			// a second node under that name silently REPLACES the tree's, and
+			// every shipped .wlbtree using it changes behaviour.
+			def.TypeId = "DamageEntity";
+			def.Category = "Flow/Combat";
+			def.Pins = {
+				MakeExecIn("In", "In"),
+				MakeExecOut("Out", "Then"),
+				// The TARGET, not self. Contact damage lands on whoever the enemy
+				// is standing next to, which is never the enemy.
+				MakeIn("Target", "Target", PinType::Entity, true, "None"),
+				MakeIn("Amount", "Amount", PinType::Float, true, "0"),
+				// Whether the call landed, so a graph can branch on it. HealthComponent
+				// exposes Invulnerable and DamageCooldown, so a hit can be refused --
+				// and a graph that cannot tell a refused hit from a landed one would
+				// cooldown itself for nothing.
+				MakeOut("Applied", "Applied", PinType::Bool),
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string target = ctx.In("Target");
+				const std::string amount = ctx.InFloat("Amount");
+				// The target may be None, or may not carry a HealthComponent -- a
+				// graph that lost its target this tick still reaches this node.
+				// TryGet returns None for both, so the guard covers both.
+				//
+				// The call goes through the TARGET's HealthComponent, not a Scene
+				// method: Scene.ApplyDamage is not bound, and HealthComponent
+				// already owns the invulnerability and cooldown rules that decide
+				// whether a hit lands.
+				const std::string call =
+					"((lambda t: (t.TryGetHealthComponent().ApplyDamage(" +
+					amount + ") if t is not None and "
+					"t.TryGetHealthComponent() is not None else False))(" +
+					target + "))";
+				out.Outputs.push_back({ "Applied", call });
 				return std::string();
 			};
 			registry.Register(def);
@@ -802,6 +1076,496 @@ namespace Wasteland::VisualBlocks
 				// tick; Scene.PlaySound accepts one registered clip name.
 				return "Wasteland.Scene.GetActiveScene().PlaySound(" +
 					   ctx.In("ClipName") + ")";
+			};
+			registry.Register(def);
+		}
+
+		// ================================================================
+		// ANIMATION -- the pose and the state machine, reachable from a graph.
+		//
+		// These are the nodes an Animation Blueprint's equivalents compile down to
+		// in UE: a state change is a function call, and a bone transform is a read.
+		// Both directions are covered -- PlayAnimation/SetAnimationState/
+		// SetTrigger write, GetPoseBonePosition/GetPoseBoneRotation read.
+		// ================================================================
+
+		{
+			NodeDef def;
+			def.TypeId = "GetPoseBonePosition";
+			def.Category = "Flow/Animation";
+			def.Pins = {
+				// A bone NAME, not an index: an index would silently address a
+				// different bone on any rig whose bone order differs, which is the
+				// same trap the retarget mapping exists to avoid.
+				MakeIn("Bone", "Bone", PinType::String, true, "Arm"),
+				// World rather than local. Local is the pose's own space; a muzzle
+				// or footstep test needs world, so the common case is the default.
+				MakeIn("World", "World", PinType::Bool, false, "true"),
+				MakeOut("Position", "Position", PinType::Vec3),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// ctx.In returns a PARSED Python literal, so a String pin already
+				// carries its own quotes -- wrapping it again would emit ""Arm"".
+				// An empty pin becomes an empty string literal, which the helper
+				// answers with None rather than raising.
+				const std::string bone = ctx.In("Bone").empty() ? "\"\"" : ctx.In("Bone");
+				const std::string lookup = "_pose_bone(self.entity, " + bone + ")";
+				const std::string lookupWorld =
+					"_pose_bone_world(self.entity, " + bone + ")";
+				// InBool is a Python EXPRESSION, not a C++ bool, so the pin selects
+				// between the two through a generated conditional -- a C++ ternary
+				// would evaluate the pin's text as a compile-time truthiness test.
+				//
+				// Local reads the pose's own translation; world reads through
+				// Skeleton.GetBoneWorldPosition, which recomputes the world matrices
+				// -- correct, and O(bones) per query. A graph reading many bones per
+				// tick should compute them once and index; that is a documented cost,
+				// not a surprise.
+				const std::string condition =
+					ctx.InBool("World").empty() ? "True" : ctx.InBool("World");
+				out.Outputs.push_back({ "Position", "(" + lookupWorld + " if " +
+												 condition + " else " + lookup + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "GetPoseBoneRotation";
+			def.Category = "Flow/Animation";
+			def.Pins = {
+				MakeIn("Bone", "Bone", PinType::String, true, "Arm"),
+				// Vec4, not Quat: a flow pin is a plain value, and a quaternion is
+				// four floats. The component order is (x, y, z, w) -- the same order
+				// the Quat binding uses, and the OPPOSITE of glm's internal (w, x, y,
+				// z), which is the trap that makes Quat(0,0,0,1) not an identity.
+				MakeOut("Rotation", "Rotation", PinType::Vec4),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// A parsed literal, as in GetPoseBonePosition -- already quoted.
+				const std::string bone = ctx.In("Bone").empty() ? "\"\"" : ctx.In("Bone");
+				// A lambda so the lookup runs once; a bare attribute chain would ask
+				// the engine twice per read when the bone is missing.
+				const std::string lookup = "_pose_bone(self.entity, " + bone + ")";
+				out.Outputs.push_back(
+					{ "Rotation",
+					  "(lambda b: None if b is None else (b.Rotation.x, b.Rotation.y, "
+					  "b.Rotation.z, b.Rotation.w))(" + lookup + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// The animation event entry point.
+			//
+			// A SECOND event node rather than the general FlowOnEvent, because an
+			// author should not have to know that the engine's hook is named
+			// "OnAnimationEvent" -- the same reason a palette has a BeginPlay node
+			// instead of a generic Event node they must type a name into.
+			//
+			// The method name is derived by TYPE when the authored `event` field is
+			// empty: Compiler.cpp maps an OnAnimationEvent node to the
+			// "OnAnimationEvent" handler, so a graph that names the type and nothing
+			// else is correct rather than silently compiling to OnUpdate.
+			NodeDef def;
+			def.TypeId = "OnAnimationEvent";
+			def.Category = "Flow/Animation";
+			def.Pins = { MakeExecOut("Out", "Then") };
+			def.Emit = [](const EmitContext &, EmitOutputs &) {
+				// The event node IS the method the compiler already opened; it emits
+				// no statement of its own.
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// OnBeginPlay -- the Construction Script entry (plan B.1).
+			//
+			// A TYPE-named event, like OnAnimationEvent: nothing to author in the
+			// `event:` field, because the type IS the hook. The dispatcher already
+			// maps ScriptEventId::BeginPlay to the method name "OnBeginPlay"
+			// (ScriptEventDispatcher.cpp:15), so this node needs no compiler
+			// special case beyond GraphNode::IsTypeNamedEvent.
+			//
+			// Runs ONCE per runtime start, not per frame: Scene::OnRuntimeStart
+			// dispatches BeginPlay, and FlowGraphSystem ticks only a graph whose
+			// entry method is OnUpdate -- so a graph whose first event is this one
+			// is inert between runs, which is exactly the construction-script
+			// contract.
+			NodeDef def;
+			def.TypeId = "OnBeginPlay";
+			def.Category = "Flow/Event";
+			def.Pins = { MakeExecOut("Out", "Then") };
+			def.Emit = [](const EmitContext &, EmitOutputs &) {
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// CallFunction -- Task B.2.
+			//
+			// The pin set is RESOLVED per node, because one pin per PARAMETER of
+			// the named function is the entire point: parameter names are
+			// author-supplied and differ between functions, so no static vector
+			// can describe them.
+			//
+			// ResolvePins is shared by the validator (to type-check links) and
+			// the compiler (to emit), via NodeRegistry::EffectivePins -- the same
+			// consolidation that B.1 made for IsTypeNamedEvent. A resolver that
+			// answered differently in the two would let a graph validate and then
+			// miscompile.
+			NodeDef def;
+			def.TypeId = "CallFunction";
+			def.Category = "Flow/Function";
+			def.Pins = {
+				MakeExecIn("In", "In"),
+				MakeExecOut("Out", "Then"),
+				MakeIn("Name", "Function", PinType::String, true, ""),
+			};
+			def.ResolvePins = [](const Graph &graph, const GraphNode &node)
+				-> std::vector<PinDef>
+			{
+				std::vector<PinDef> pins = {
+					MakeExecIn("In", "In"),
+					MakeExecOut("Out", "Then"),
+					MakeIn("Name", "Function", PinType::String, true, ""),
+				};
+
+				// The selected function's Name literal. Empty when unset or
+				// unparsable, which is the validator's to report -- the resolver
+				// just returns the base pins so nothing downstream crashes.
+				std::string functionName;
+				for (const PinLiteral &literal : node.Literals)
+				{
+					if (literal.Key != "Name")
+						continue;
+					std::string parsed;
+					std::string parseError;
+					if (ParseLiteral(PinType::String, literal.Value, parsed,
+									 parseError))
+						// ParseLiteral yields a QUOTED Python literal; the
+						// declaration's Name is raw text. Without unquoting the
+						// comparison never matched, so the resolver returned only
+						// the base pins and the node looked like it had no
+						// parameters at all.
+						functionName = UnquotePyLiteral(parsed);
+				}
+
+				if (functionName.empty())
+					return pins;
+
+				// Lookup by name. A miss returns the base pins; the validator
+				// reports "unknown function" against the node.
+				const GraphFunction *found = nullptr;
+				for (const GraphFunction &function : graph.Functions)
+				{
+					if (function.Name == functionName)
+					{
+						found = &function;
+						break;
+					}
+				}
+				if (found == nullptr)
+					return pins;
+
+				// One input pin per declared parameter, named after it. Required:
+				// a function argument is not optional, and the validator's
+				// required-input check must be able to see it.
+				for (const GraphFunctionEndpoint &input : found->Inputs)
+					pins.push_back(MakeIn(input.Name, input.Name, input.Type, true,
+										  ""));
+
+				// One output pin per declared return value.
+				for (const GraphFunctionEndpoint &output : found->Outputs)
+					pins.push_back(MakeOut(output.Name, output.Name, output.Type));
+
+				return pins;
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out)
+				-> std::string
+			{
+				// The call itself is a STATEMENT: it advances the exec chain and
+				// assigns the results to temps that the output pins read.
+				//
+				// `self._fn_<Name>` is emitted by CompileFlow on the same class,
+				// so the call and the body cannot drift apart -- there is no
+				// module-level registry to look up.
+				std::string functionName = ctx.In("Name");
+				// ctx.In returns an ALREADY-QUOTED Python literal (B.1 trap).
+				// Stripping the quotes here would be wrong; the name is used both
+				// as an identifier fragment and as a call argument.
+				// ctx.In returns an already-quoted Python literal; the method
+				// name needs the raw text. UnquotePyLiteral is the shared
+				// inverse of ParseLiteral, so the two cannot drift.
+				const std::string bareName =
+					UnquotePyLiteral(functionName);
+
+				std::string method = Compiler::SanitizeIdentifier(bareName, "fn");
+				if (method.empty())
+					return "CallFunction: the function name is empty";
+
+				// Arguments in DECLARATION order, read from the resolved inputs.
+				std::vector<std::string> args;
+				for (const auto &input : ctx.Inputs)
+					args.push_back(input.second);
+
+				std::string call = "self._fn_" + method + "(";
+				for (size_t i = 0; i < args.size(); ++i)
+				{
+					if (i)
+						call += ", ";
+					call += args[i];
+				}
+				call += ")";
+
+				// One temp holding the whole returned tuple. The output pins
+				// index into it, so a single-output function still round-trips
+				// through the same shape -- one code path, not two.
+				// The call expression is handed to the compiler as this node's
+				// OUTPUT, not emitted as a statement here.
+				//
+				// Why not ctx.AllocTemp: the Compiler never wires that callback
+				// (EmitContext::AllocTemp is declared, and nothing in Compiler.cpp
+				// assigns it), so calling it would throw std::bad_function_call.
+				// More importantly, emitOwnStatement ALREADY writes
+				// `self._vb_<node>_<pin> = <expression>` for every output pin --
+				// so returning the expression here produces exactly one assignment
+				// and successors read it back through the normal temp attribute.
+				//
+				// The exec chain is advanced separately: this node's exec OUT is
+				// followed by the walker, and the statement it needs is the
+				// assignment the compiler writes.
+				const Graph *graph = ctx.Graph;
+				const GraphNode *node = ctx.Node;
+				if (graph != nullptr && node != nullptr)
+				{
+					const NodeDef *self = NodeRegistry::Get().Find(node->TypeId);
+					if (self != nullptr && self->ResolvePins)
+					{
+						for (const PinDef &pin : self->ResolvePins(*graph, *node))
+						{
+							// Exec outputs carry no value; they are control edges.
+							if (pin.Dir != PinDir::Out || pin.Type == PinType::Exec)
+								continue;
+							out.Outputs.emplace_back(pin.Id, call);
+						}
+					}
+				}
+
+				// A statement node's return value is its statement text. There is
+				// none here: the assignment is emitted by the compiler from the
+				// output above, and the exec edge is a link.
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			// Max -- the larger of two floats.
+			//
+			// Added for Task B.2's ClampLen, which needs a branch-free clamp:
+			// `p * (maxLen / max(len(p), maxLen))` shrinks an over-long vector and
+			// leaves a short one alone, with no Branch and therefore no second
+			// Return node. A clamp expressed with a Branch needs two returns, and
+			// the flow exec walker emits a converged node only ONCE -- so the
+			// branch version silently drops one arm.
+			NodeDef def;
+			def.TypeId = "Max";
+			def.Category = "Flow/Math";
+			def.Pins = {
+				MakeIn("A", "A", PinType::Float, false, "0"),
+				MakeIn("B", "B", PinType::Float, false, "0"),
+				MakeOut("Value", "Value", PinType::Float),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				out.Outputs.push_back(
+					{ "Value", "max(" + ctx.InFloat("A") + ", " +
+							   ctx.InFloat("B") + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+
+		{
+			// Compare -- float comparison producing a Bool, for Branch's
+			// Condition pin.
+			//
+			// Added for Task B.2's ClampLen body, which branches on
+			// `length > maxLen`. NodeLibraryV1 has a `Compare` too, but it is a
+			// BEHAVIOUR-TREE leaf: it emits a lambda returning SUCCESS/FAILURE
+			// and is rejected by the tree validator's role rules. The two share
+			// a TypeId across libraries on purpose -- the registry is per-library
+			// -- so this is the flow-shaped one.
+			NodeDef def;
+			// "CompareValue", NOT "Compare": the behaviour-tree library already
+			// registers a `Compare` TypeId with role `condition`, and
+			// registration is keyed by TypeId -- so two libraries sharing one
+			// made RuntimeTypes() answer a single role and the node library
+			// test failed on "Compare has role 'condition'". The name states
+			// what this one does: it returns a BOOL for a Branch condition,
+			// where the tree's Compare emits a SUCCESS/FAILURE lambda.
+			def.TypeId = "CompareValue";
+			def.Category = "Flow/Math";
+			def.Pins = {
+				MakeIn("A", "A", PinType::Float, false, "0"),
+				MakeIn("B", "B", PinType::Float, false, "0"),
+				MakeIn("Op", "Op", PinType::String, false, ">"),
+				MakeOut("Value", "Value", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				// The operator is validated against a closed set rather than
+				// spliced in blindly: an authored `Op` is a STRING PIN, so
+				// without this a typo would emit `a >x b` and surface as a
+				// SyntaxError in generated code.
+				static const std::set<std::string> allowed = {
+					"==", "!=", "<", "<=", ">", ">="
+				};
+				std::string op = ctx.In("Op");
+				if (op.size() >= 2 && op.front() == '"' && op.back() == '"')
+					op = op.substr(1, op.size() - 2);
+				if (allowed.count(op) == 0)
+					op = ">";
+
+				out.Outputs.push_back(
+					{ "Value", "(" + ctx.InFloat("A") + " " + op + " " +
+							   ctx.InFloat("B") + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+
+		{
+			// FunctionEntry -- the implicit entry point of a `kind: function`
+			// graph (Task B.2).
+			//
+			// Its output pins are RESOLVED from the graph's declared function, so
+			// each parameter appears as a named, typed pin. That is what lets an
+			// author wire a parameter into the body without a variable read: the
+			// emitted expression is the bare LOCAL name, not `self.<name>`, which
+			// is correct because a function has no instance state to read.
+			//
+			// The alternative -- routing parameters through GetVariable -- would
+			// emit `self.p`, and `self.p` does not exist on a function method.
+			NodeDef def;
+			def.TypeId = "FunctionEntry";
+			def.Category = "Flow/Function";
+			// The exec OUT is STATIC -- it does not depend on the function
+			// signature -- so it belongs in def.Pins. Leaving it out made the
+			// registry report an empty pin list for a node that genuinely has
+			// one, and the schema suite then demanded a doc row with no pins.
+			// The parameter outputs stay in ResolvePins: their names and types
+			// come from the signature, which no static list can describe.
+			def.Pins = { MakeExecOut("Out", "Then") };
+			def.ResolvePins = [](const Graph &graph, const GraphNode &)
+				-> std::vector<PinDef>
+			{
+				std::vector<PinDef> pins = { MakeExecOut("Out", "Then") };
+				if (!graph.Functions.empty())
+				{
+					for (const GraphFunctionEndpoint &input :
+						 graph.Functions[0].Inputs)
+						pins.push_back(MakeOut(input.Name, input.Name, input.Type));
+				}
+				return pins;
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out)
+				-> std::string
+			{
+				// One output per parameter, named after it, whose expression is
+				// the method's own argument. ctx.Node is set, so the resolver's
+				// pin list is available for the ordering.
+				//
+				// The exec OUT is what makes a body with no Branch walkable:
+				// findFunctionEntry looks for a node with an exec out and no
+				// incoming exec, and a pure data chain (entry -> ... -> Return)
+				// has none without it. The author wires entry.Out to Return.In
+				// exactly as they would wire an event to its first node.
+				const Graph *graph = ctx.Graph;
+				const GraphNode *node = ctx.Node;
+				if (graph == nullptr || node == nullptr)
+					return std::string();
+
+				const NodeDef *self = NodeRegistry::Get().Find(node->TypeId);
+				if (self == nullptr || !self->ResolvePins)
+					return std::string();
+
+				for (const PinDef &pin : self->ResolvePins(*graph, *node))
+				{
+					// Exec outputs carry no value; they are control edges.
+					if (pin.Dir != PinDir::Out || pin.Type == PinType::Exec)
+						continue;
+					const std::string name = Compiler::SanitizeIdentifier(pin.Id, "arg");
+					if (name.empty())
+						return "FunctionEntry: a parameter name is empty";
+					out.Outputs.emplace_back(pin.Id, name);
+				}
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+
+		{
+			// Return -- the terminator of a `kind: function` graph (Task B.2).
+			//
+			// Its pins are RESOLVED from the graph's single declared function, so
+			// a return statement always matches the signature the caller was
+			// compiled against. A mismatch is a validation error, not a runtime
+			// tuple of the wrong arity.
+			//
+			// Only meaningful inside a function graph; the validator rejects a
+			// Return in a flow graph.
+			NodeDef def;
+			def.TypeId = "Return";
+			def.Category = "Flow/Function";
+			def.Pins = { MakeExecIn("In", "In") };
+			def.ResolvePins = [](const Graph &graph, const GraphNode &)
+				-> std::vector<PinDef>
+			{
+				std::vector<PinDef> pins = { MakeExecIn("In", "In") };
+				// A function graph declares exactly one function: itself. Taking
+				// [0] is correct there; on a flow graph this node is rejected by
+				// the validator, so an empty list is never observed in practice.
+				if (!graph.Functions.empty())
+				{
+					for (const GraphFunctionEndpoint &output :
+						 graph.Functions[0].Outputs)
+						pins.push_back(MakeIn(output.Name, output.Name, output.Type,
+										  true, ""));
+				}
+				return pins;
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &)
+				-> std::string
+			{
+				// The returned tuple, in DECLARATION order. A single output still
+				// returns a one-tuple -- the caller indexes [0] either way, so
+				// there is one code shape rather than two.
+				std::vector<std::string> values;
+				for (const auto &input : ctx.Inputs)
+					values.push_back(input.second);
+
+				std::string statement = "return (";
+				for (size_t i = 0; i < values.size(); ++i)
+				{
+					if (i)
+						statement += ", ";
+					statement += values[i];
+				}
+				// A trailing comma for the one-element case is what makes it a
+				// tuple rather than a parenthesised expression.
+				if (values.size() == 1)
+					statement += ",";
+				statement += ")\n";
+				return statement;
 			};
 			registry.Register(def);
 		}
@@ -870,6 +1634,188 @@ namespace Wasteland::VisualBlocks
 				return std::string("break");
 			};
 			registry.Register(def);
+
+		// ==================================================== Flow/Component
+		//
+		// Task B.3. A component is addressed by NAME (a string pin) rather than by
+		// a pin per type, because a pin per type would need a registry lookup at
+		// AUTHORING time and the validator already cannot know what a runtime
+		// entity carries. The name is resolved by a generated helper that
+		// dispatches over the bound TryGet*/AddOr* accessors.
+		//
+		// The helpers are emitted only when a graph contains a node that needs
+		// them -- the same rule as _pose_bone.
+		{
+			NodeDef def;
+			def.TypeId = "CastTo";
+			def.Category = "Flow/Component";
+			def.Pins = {
+				MakeIn("Entity", "Entity", PinType::Entity, true, "None"),
+				// The component type NAME, exactly as bound on Entity: HealthComponent,
+				// TransformComponent, and so on. Not a class reference -- this engine
+				// has no reflection, so a name is the only handle there is.
+				MakeIn("Type", "Component Type", PinType::String, true, ""),
+				// Any, because the component's type is the AUTHOR's choice. Pinning it
+				// to a concrete type would make every other component uncastable.
+				MakeOut("Value", "Value", PinType::Any),
+				MakeOut("Success", "Success", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string entity = ctx.In("Entity");
+				const std::string type = Unquote(ctx.In("Type"));
+				// `_component_get` returns None when the entity is null, the type is
+				// unknown, or the component is absent -- three different reasons that
+				// all read as "no component", which is exactly UE's Cast To result.
+				//
+				// The Success output is computed from the SAME expression rather than
+				// a second lookup: two lookups would be two opportunities to disagree,
+				// and a graph reading Value and Success from the same node must see
+				// one answer.
+				out.Outputs.push_back(
+					{ "Value", "_component_get(" + entity + ", \"" + type + "\")" });
+				out.Outputs.push_back(
+					{ "Success", "(_component_get(" + entity + ", \"" + type +
+							"\") is not None)" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			// The same operation as CastTo without the Success pin: GetComponent is
+			// the spelling an author uses when a None is a fine answer and a branch
+			// on Success would be noise. Both emit the SAME helper -- two helpers
+			// would be two implementations of one question.
+			def.TypeId = "GetComponent";
+			def.Category = "Flow/Component";
+			def.Pins = {
+				MakeIn("Entity", "Entity", PinType::Entity, true, "None"),
+				MakeIn("Type", "Component Type", PinType::String, true, ""),
+				MakeOut("Value", "Value", PinType::Any),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				out.Outputs.push_back(
+					{ "Value", "_component_get(" + ctx.In("Entity") + ", \"" +
+							Unquote(ctx.In("Type")) + "\")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			// AddOrReplace, by name. The component VALUE arrives as Any because its
+			// type is the author's choice; the helper passes it straight through to
+			// the bound AddOr<Name> accessor.
+			def.TypeId = "SetComponent";
+			def.Category = "Flow/Component";
+			// Exec pins, because this is a STATEMENT: it mutates the entity and
+			// must sit in the exec chain. The first version omitted them, so a
+			// correct graph reported "'SetComponent' has no input pin 'In'" --
+			// a node that cannot be wired to anything.
+			def.Pins = {
+				MakeExecIn("In", "In"),
+				MakeExecOut("Out", "Then"),
+				MakeIn("Entity", "Entity", PinType::Entity, true, "None"),
+				MakeIn("Type", "Component Type", PinType::String, true, ""),
+				MakeIn("Value", "Value", PinType::Any, false, "None"),
+				MakeOut("Success", "Success", PinType::Bool),
+			};
+			def.IsStatement = true;
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				out.Outputs.push_back(
+					{ "Success", "_component_set(" + ctx.In("Entity") + ", \"" +
+							Unquote(ctx.In("Type")) + "\", " + ctx.In("Value") + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			// The graph's OWN entity. In this engine there is no owner relationship
+			// (no OwnerComponent exists), so GetActor and GetOwner answer the same
+			// question and both are documented as such -- a second spelling rather
+			// than a second concept.
+			def.TypeId = "GetActor";
+			def.Category = "Flow/Component";
+			def.Pins = { MakeOut("Actor", "Actor", PinType::Entity) };
+			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+				out.Outputs.push_back({ "Actor", "self.entity" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			def.TypeId = "GetOwner";
+			def.Category = "Flow/Component";
+			def.Pins = { MakeOut("Owner", "Owner", PinType::Entity) };
+			def.Emit = [](const EmitContext &, EmitOutputs &out) {
+				out.Outputs.push_back({ "Owner", "self.entity" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			// The typed scene query, generalised from SenseNearest's "nearest with
+			// a Transform". The component type is a name; the helper dispatches
+			// over Scene's bound queries and returns a Python list.
+			//
+			// Count and Entities are BOTH emitted because a list pin type does not
+			// exist: an author loops over Count and reads by index, or consumes
+			// Entities as an opaque list.
+			def.TypeId = "GetAllEntitiesWith";
+			def.Category = "Flow/Component";
+			def.Pins = {
+				MakeIn("Type", "Component Type", PinType::String, true, ""),
+				MakeOut("Count", "Count", PinType::Int),
+				MakeOut("Entities", "Entities", PinType::Any),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string list =
+					"_entities_with(self.scene, \"" + Unquote(ctx.In("Type")) + "\")";
+				out.Outputs.push_back({ "Count", "len(" + list + ")" });
+				out.Outputs.push_back({ "Entities", list });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
+		{
+			NodeDef def;
+			// The list accessor that makes Entities/Count usable: index a query
+			// result. `List` is Any because the only producer is the query node,
+			// whose output is a Python list.
+			def.TypeId = "GetEntityAtIndex";
+			def.Category = "Flow/Component";
+			def.Pins = {
+				MakeIn("List", "List", PinType::Any, true, "None"),
+				MakeIn("Index", "Index", PinType::Int, false, "0"),
+				MakeOut("Entity", "Entity", PinType::Entity),
+				MakeOut("Valid", "Valid", PinType::Bool),
+			};
+			def.Emit = [](const EmitContext &ctx, EmitOutputs &out) {
+				const std::string list = ctx.In("List");
+				const std::string index = ctx.In("Index");
+				// A bounds check rather than a bare subscript: an out-of-range index
+				// raising IndexError from generated code is a confusing way to learn
+				// a loop ran one iteration long, and Valid is the branch an author
+				// actually wants.
+				const std::string item = ("(((" + list + ")[(" + index + ")]"
+					" if 0 <= (" + index + ") < len(" + list + ") else None))");
+				out.Outputs.push_back({ "Entity", item });
+				out.Outputs.push_back(
+					{ "Valid", "0 <= (" + index + ") < len(" + list + ")" });
+				return std::string();
+			};
+			registry.Register(def);
+		}
+
 		}
 	}
 

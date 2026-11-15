@@ -72,6 +72,10 @@ def main():
         print(f"   {k:18} {v}")
 
     print()
+    # The aggregate harness reads an "N/N checks passed" line; without one this
+    # suite runs but is reported UNCOUNTED and its result is invisible.
+    passed = sum(1 for k in before if before[k] == after[k])
+    print("%d/%d checks passed" % (passed, len(before)))
     ok = True
     for k in before:
         if before[k] != after[k]:
